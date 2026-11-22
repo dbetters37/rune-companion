@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+"""Prints a one-line-per-suite summary of the JUnit XML results of the given modules (default: all)."""
+import glob, re, sys, os
+
+root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+modules = sys.argv[1:] or [d for d in sorted(os.listdir(root)) if os.path.isdir(os.path.join(root, d, "build", "test-results"))]
+total = failed = 0
+for module in modules:
+    files = sorted(glob.glob(os.path.join(root, module, "build", "test-results", "**", "TEST-*.xml"), recursive=True))
+    for path in files:
+        text = open(path, encoding="utf-8", errors="replace").read()
+        m = re.search(r'<testsuite name="([^"]+)" tests="(\d+)" skipped="(\d+)" failures="(\d+)" errors="(\d+)"', text)
+        if not m:
+            continue
+        name, tests, skipped, failures, errors = m.group(1), *map(int, m.groups()[1:])
+        total += tests
+        bad = failures + errors
+        failed += bad
+        if bad:
+            print(f"FAIL {module}: {name}: {bad} of {tests} failed")
+            for case in re.finditer(r'<testcase name="([^"]+)"[^>]*>\s*<(?:failure|error) message="([^"]{0,600})', text):
+                print(f"     - {case.group(1)}: {case.group(2)}")
+print(f"{total} tests, {failed} failed, in modules: {', '.join(modules)}")
+sys.exit(1 if failed else 0)

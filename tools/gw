@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Runs Gradle one build at a time (several people or agents may share this checkout) and
+# strips JVM start-up noise. Usage: tools/gw :module:task [more tasks or flags]
+set -o pipefail
+cd "$(dirname "$0")/.."
+exec 9>"${TMPDIR:-/tmp}/aicc-gradle.lock"
+flock 9
+./gradlew --console=plain "$@" 2>&1 | grep -v -E '^Picked up (JAVA_TOOL_OPTIONS|_JAVA_OPTIONS)'
