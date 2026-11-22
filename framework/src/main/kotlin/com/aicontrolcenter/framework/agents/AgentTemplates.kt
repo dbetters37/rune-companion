@@ -5,6 +5,7 @@ import com.aicontrolcenter.core.agents.AgentKind
 import com.aicontrolcenter.core.agents.AgentTemplate
 import com.aicontrolcenter.core.agents.DelegationPolicy
 import com.aicontrolcenter.core.agents.GenerationSettings
+import com.aicontrolcenter.framework.tools.BuiltInTools
 
 /**
  * Built-in starting points for new agents. A template is only a pre-filled draft: the agent
@@ -23,7 +24,7 @@ object AgentTemplates {
     /** Templates instantiated on first run, in creation order. */
     val starterTeam: List<String> = listOf(DIRECTOR, RESEARCHER, ANALYST, WRITER, REVIEWER, OPERATOR)
 
-    val all: List<AgentTemplate> = listOf(
+    private val definitions: List<AgentTemplate> = listOf(
         AgentTemplate(
             id = DIRECTOR,
             title = "Director",
@@ -195,6 +196,13 @@ object AgentTemplates {
             ),
         ),
     )
+
+    /**
+     * Every template, with the framework's read-only basic tools (clock, team list) switched
+     * on, so a new agent can answer "what day is it" without the owner configuring anything.
+     */
+    val all: List<AgentTemplate> =
+        definitions.map { it.copy(draft = it.draft.copy(toolIds = it.draft.toolIds + BuiltInTools.defaultToolIds)) }
 
     fun byId(id: String): AgentTemplate? = all.firstOrNull { it.id == id }
 }

@@ -19,7 +19,8 @@ kotlin {
 
 dependencies {
     api(project(":core"))
-    implementation(libs.okhttp)
+    // The entry point accepts a shared OkHttpClient, so OkHttp is part of this module's API.
+    api(libs.okhttp)
     testImplementation(project(":testkit"))
     testImplementation(libs.okhttp.mockwebserver)
 }
