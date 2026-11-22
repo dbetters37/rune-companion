@@ -19,6 +19,7 @@ import java.util.UUID
 @Serializable @JvmInline value class ToolId(val value: String) { override fun toString(): String = value }
 @Serializable @JvmInline value class EventId(val value: String) { override fun toString(): String = value }
 @Serializable @JvmInline value class RequestId(val value: String) { override fun toString(): String = value }
+@Serializable @JvmInline value class ConversationId(val value: String) { override fun toString(): String = value }
 
 /** Source of new identifiers. Injected everywhere so tests can be deterministic. */
 fun interface IdGenerator {
@@ -41,3 +42,4 @@ fun IdGenerator.spaceId() = SpaceId(newId("spc"))
 fun IdGenerator.messageId() = MessageId(newId("msg"))
 fun IdGenerator.eventId() = EventId(newId("evt"))
 fun IdGenerator.requestId() = RequestId(newId("req"))
+fun IdGenerator.conversationId() = ConversationId(newId("cnv"))

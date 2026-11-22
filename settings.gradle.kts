@@ -25,6 +25,8 @@ rootProject.name = "ai-control-center"
 include(":core")
 include(":testkit")
 include(":framework")
+include(":providers")
+include(":providers-anthropic")
 include(":data")
 include(":device")
 include(":app")

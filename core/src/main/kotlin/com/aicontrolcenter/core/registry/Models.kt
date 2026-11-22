@@ -18,6 +18,11 @@ data class ModelProvider(
     val baseUrl: String? = null,
     /** Alias of the API key inside the secret vault. The key itself is never stored here. */
     val apiKeyAlias: String? = null,
+    /**
+     * Extra HTTP headers sent with every request, for example a client title. They are stored
+     * in the registry in plain form, so they must not carry credentials: the API key goes in
+     * the vault, and header names that normally carry credentials are rejected on entry.
+     */
     val extraHeaders: Map<String, String> = emptyMap(),
     /** Where prompts sent to this provider physically go. Drives every "leaves the device" indicator. */
     val locality: Locality,
