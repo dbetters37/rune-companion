@@ -24,6 +24,7 @@ import com.aicontrolcenter.core.registry.CapabilityTier
 import com.aicontrolcenter.core.registry.ConnectionStatus
 import com.aicontrolcenter.core.registry.DiscoverySource
 import com.aicontrolcenter.core.registry.Locality
+import com.aicontrolcenter.core.registry.ModelCapabilities
 import com.aicontrolcenter.core.registry.ModelDescriptor
 import com.aicontrolcenter.core.registry.ModelProvider
 import com.aicontrolcenter.core.registry.ModelSource
@@ -172,7 +173,7 @@ class EntityMapperTest {
                 "modelName" to listOf(sample.copy(modelName = "qwen3:8b")),
                 "displayName" to listOf(sample.copy(displayName = "Qwen 3")),
                 "capabilities" to listOf(
-                    sample.copy(capabilities = com.aicontrolcenter.core.registry.ModelCapabilities()),
+                    sample.copy(capabilities = ModelCapabilities()),
                     sample.copy(
                         capabilities = sample.capabilities.copy(
                             chat = false, toolCalling = false, vision = false, streaming = false, jsonOutput = false,

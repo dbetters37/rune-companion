@@ -1,0 +1,140 @@
+package com.aicontrolcenter.app.ui.agents
+
+import androidx.compose.runtime.Immutable
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.aicontrolcenter.app.ui.components.StatusLabel
+import com.aicontrolcenter.app.ui.components.toStatusLabel
+import com.aicontrolcenter.app.ui.theme.StatusTone
+import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.agents.AgentAvailability
+import com.aicontrolcenter.core.agents.AgentKind
+import com.aicontrolcenter.core.agents.UnavailableReason
+import com.aicontrolcenter.core.registry.AgentEntry
+import com.aicontrolcenter.core.registry.Locality
+import com.aicontrolcenter.core.registry.RegistryDirectory
+import com.aicontrolcenter.core.registry.RegistrySnapshot
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
+
+/** Narrows the agent list by whether an agent could run right now. */
+enum class AgentStatusFilter(val label: String) {
+    ALL("Any status"),
+    READY("Ready"),
+    UNAVAILABLE("Unavailable"),
+    DISABLED("Disabled"),
+    ;
+
+    fun matches(tone: StatusTone): Boolean = when (this) {
+        ALL -> true
+        READY -> tone == StatusTone.READY
+        UNAVAILABLE -> tone == StatusTone.UNAVAILABLE
+        DISABLED -> tone == StatusTone.DISABLED
+    }
+}
+
+/** The model an agent points at, resolved against the registry. */
+@Immutable
+data class ModelRefUi(
+    val name: String,
+    val providerName: String?,
+    val locality: Locality?,
+    /** False when the agent references a model id that is no longer in the registry. */
+    val registered: Boolean = true,
+)
+
+@Immutable
+data class AgentRowUi(
+    val id: AgentId,
+    val name: String,
+    val kind: AgentKind,
+    val description: String,
+    val colorIndex: Int,
+    /** Null means no model is assigned. */
+    val model: ModelRefUi?,
+    val status: StatusLabel,
+    /** The framework's explanation, shown when the chip's label alone does not say why. */
+    val statusDetail: String?,
+    val isDesignatedDirector: Boolean,
+)
+
+@Immutable
+data class AgentsUiState(
+    val isLoading: Boolean = true,
+    val rows: List<AgentRowUi> = emptyList(),
+    /** Agents in the registry before filtering, to tell "no agents" from "no matches". */
+    val totalCount: Int = 0,
+    val query: String = "",
+    val roleFilter: AgentKind? = null,
+    val statusFilter: AgentStatusFilter = AgentStatusFilter.ALL,
+) {
+    val hasActiveFilters: Boolean
+        get() = query.isNotBlank() || roleFilter != null || statusFilter != AgentStatusFilter.ALL
+}
+
+/** The agent list with search and filters. Reads the live registry; changes nothing. */
+class AgentsViewModel(
+    directory: RegistryDirectory,
+    initialStatusFilter: AgentStatusFilter = AgentStatusFilter.ALL,
+) : ViewModel() {
+
+    private data class Criteria(val query: String, val role: AgentKind?, val status: AgentStatusFilter)
+
+    private val criteria = MutableStateFlow(Criteria("", null, initialStatusFilter))
+
+    val uiState: StateFlow<AgentsUiState> = combine(directory.observe(), criteria) { snapshot, criteria ->
+        val needle = criteria.query.trim()
+        AgentsUiState(
+            isLoading = false,
+            rows = snapshot.agents
+                .map { it.toRow(snapshot) }
+                .filter { row ->
+                    (needle.isEmpty() || row.name.contains(needle, ignoreCase = true)) &&
+                        (criteria.role == null || row.kind == criteria.role) &&
+                        criteria.status.matches(row.status.tone)
+                },
+            totalCount = snapshot.agents.size,
+            query = criteria.query,
+            roleFilter = criteria.role,
+            statusFilter = criteria.status,
+        )
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        AgentsUiState(statusFilter = initialStatusFilter),
+    )
+
+    fun setQuery(query: String) = criteria.update { it.copy(query = query) }
+
+    fun setRoleFilter(role: AgentKind?) = criteria.update { it.copy(role = role) }
+
+    fun setStatusFilter(status: AgentStatusFilter) = criteria.update { it.copy(status = status) }
+
+    fun clearFilters() = criteria.update { Criteria("", null, AgentStatusFilter.ALL) }
+}
+
+internal fun AgentEntry.toRow(snapshot: RegistrySnapshot): AgentRowUi {
+    val status = availability.toStatusLabel()
+    val unavailable = availability as? AgentAvailability.Unavailable
+    return AgentRowUi(
+        id = profile.id,
+        name = profile.name,
+        kind = profile.kind,
+        description = profile.description,
+        colorIndex = profile.colorIndex,
+        model = profile.modelId?.let { snapshot.modelRef(it) },
+        status = status,
+        statusDetail = unavailable?.takeIf { it.reason != UnavailableReason.NO_MODEL_ASSIGNED }?.detail,
+        isDesignatedDirector = isDesignatedDirector,
+    )
+}
+
+internal fun RegistrySnapshot.modelRef(id: com.aicontrolcenter.core.ModelId): ModelRefUi {
+    val model = modelsById[id] ?: return ModelRefUi("Unregistered model", null, null, registered = false)
+    val provider = provider(model)
+    return ModelRefUi(model.displayName, provider?.name, provider?.locality)
+}

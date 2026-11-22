@@ -22,12 +22,12 @@ internal class AesGcmVaultCipher(private val key: () -> SecretKey) : VaultCipher
     override fun encrypt(plaintext: ByteArray, associatedData: ByteArray): ByteArray {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, key())
-        cipher.updateAAD(associatedData)
-        val body = cipher.doFinal(plaintext)
         val iv = cipher.iv
         if (iv == null || iv.size != IV_BYTES) {
             throw GeneralSecurityException("The cipher did not supply a $IV_BYTES-byte IV.")
         }
+        cipher.updateAAD(associatedData)
+        val body = cipher.doFinal(plaintext)
         return ByteArray(HEADER_BYTES + body.size).also { sealed ->
             sealed[0] = FORMAT_V1
             iv.copyInto(sealed, destinationOffset = 1)

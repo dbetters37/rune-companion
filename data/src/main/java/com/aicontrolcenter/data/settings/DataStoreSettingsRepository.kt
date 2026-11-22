@@ -28,12 +28,15 @@ import java.io.IOException
  * JSON string under one key, so a change to several fields is written atomically and a new
  * field needs no migration (a value stored before the field existed decodes with its default).
  *
- * Stored data that cannot be used never crashes the app; it degrades to defaults:
+ * Stored data that is damaged never crashes the app; it degrades to defaults:
  * - a preferences file that is not a valid file at all is replaced by an empty one;
  * - a value that is not valid settings JSON reads as [FrameworkSettings] defaults, and the
- *   next [update] overwrites it;
- * - a file that cannot be read right now (I/O error) reads as defaults without being touched,
- *   and observers are switched to the real values as soon as a later read succeeds.
+ *   next [update] overwrites it.
+ *
+ * A file that merely cannot be read right now (an I/O error) is a different case and is *not*
+ * papered over with defaults: the real settings may be intact, and the defaults would, among
+ * other things, switch local-only mode off. [get] and [update] fail with [IOException], and
+ * [settings] keeps retrying and emits once the file is readable again.
  */
 class DataStoreSettingsRepository internal constructor(
     private val store: DataStore<Preferences>,
@@ -42,20 +45,24 @@ class DataStoreSettingsRepository internal constructor(
     override val settings: Flow<FrameworkSettings> = store.data
         .retryWhen { failure, attempt ->
             if (failure !is IOException) return@retryWhen false
-            Log.w(TAG, "Settings could not be read; using defaults and trying again.", failure)
-            emit(emptyPreferences())
+            Log.w(TAG, "Settings could not be read; trying again.", failure)
             delay(retryDelayMillis(attempt))
             true
         }
         .map { preferences -> decode(preferences[SETTINGS_KEY]) }
         .distinctUntilChanged()
 
-    override suspend fun get(): FrameworkSettings = settings.first()
+    /** @throws IOException if the settings file exists but cannot be read. */
+    override suspend fun get(): FrameworkSettings = decode(store.data.first()[SETTINGS_KEY])
 
     /**
      * Atomic: DataStore runs one edit at a time and hands each the latest stored value, so
      * concurrent updates compose instead of overwriting each other. If [transform] throws,
-     * nothing is written. A failure to write is thrown to the caller as an [IOException].
+     * nothing is written. A failure to read or write the file is thrown to the caller as an
+     * [IOException], and nothing is changed.
+     *
+     * DataStore calls [transform] in the caller's coroutine context; only the file access
+     * happens on the store's own dispatcher.
      */
     override suspend fun update(transform: (FrameworkSettings) -> FrameworkSettings): FrameworkSettings {
         var updated: FrameworkSettings? = null

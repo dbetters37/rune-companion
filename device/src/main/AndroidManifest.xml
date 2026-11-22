@@ -1,2 +1,106 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" />
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+        Package visibility (Android 11+). Everything the device layer asks PackageManager is
+        covered by the entries below, so QUERY_ALL_PACKAGES is deliberately not requested.
+
+        The <package> list must match KnownAiApps plus CompanionPackages; QueriesManifestTest
+        fails when they drift apart.
+    -->
+    <queries>
+        <!-- Every app with a launcher icon: the manual-registration picker and the name heuristic. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <!-- Capability probes. -->
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="text/plain" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="image/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT" />
+            <data android:mimeType="text/plain" />
+        </intent>
+        <!-- Device assistants. -->
+        <intent>
+            <action android:name="android.intent.action.ASSIST" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VOICE_COMMAND" />
+        </intent>
+        <intent>
+            <action android:name="android.service.voice.VoiceInteractionService" />
+        </intent>
+
+        <!-- Cloud assistants and AI browsers (CloudAiApps.kt). -->
+        <package android:name="com.openai.chatgpt" />
+        <package android:name="com.openai.sora" />
+        <package android:name="com.google.android.apps.bard" />
+        <package android:name="com.google.android.googlequicksearchbox" />
+        <package android:name="com.google.android.apps.labs.language.tailwind" />
+        <package android:name="com.google.android.apps.aistudio" />
+        <package android:name="com.anthropic.claude" />
+        <package android:name="com.anthropic.aibo" />
+        <package android:name="com.microsoft.copilot" />
+        <package android:name="com.microsoft.office.officehubrow" />
+        <package android:name="com.microsoft.emmx" />
+        <package android:name="ai.perplexity.app.android" />
+        <package android:name="ai.perplexity.comet" />
+        <package android:name="ai.x.grok" />
+        <package android:name="com.deepseek.chat" />
+        <package android:name="com.facebook.stella" />
+        <package android:name="ai.mistral.chat" />
+        <package android:name="com.poe.android" />
+        <package android:name="ai.inflection.pi" />
+        <package android:name="ai.character.app" />
+        <package android:name="com.moonshot.kimichat" />
+        <package android:name="com.moonshot.kimiclaw" />
+        <package android:name="ai.qwenlm.chat.android" />
+        <package android:name="com.tongyi.intl" />
+        <package android:name="com.aliyun.tongyi" />
+        <package android:name="com.larus.nova" />
+        <package android:name="com.larus.wolf" />
+        <package android:name="com.tencent.hunyuan.app.chat" />
+        <package android:name="com.you.browser" />
+        <package android:name="com.brave.browser" />
+        <package android:name="com.duckduckgo.mobile.android" />
+        <package android:name="me.proton.android.lumo" />
+        <package android:name="tech.butterfly.app" />
+        <package android:name="ai.manus.agents" />
+        <package android:name="ai.mainfunc.genspark" />
+        <package android:name="ai.replika.app" />
+        <package android:name="com.laylacloud" />
+        <package android:name="xyz.chatboxapp.chatbox" />
+
+        <!-- Local runners, API clients and Termux (LocalAiApps.kt). -->
+        <package android:name="com.google.ai.edge.gallery" />
+        <package android:name="com.google.aiedge.gallery" />
+        <package android:name="com.pocketpalai" />
+        <package android:name="ai.mlc.mlcchat" />
+        <package android:name="com.layla" />
+        <package android:name="com.Vali98.ChatterUI" />
+        <package android:name="com.danemadsen.maid" />
+        <package android:name="ai.offgridmobile" />
+        <package android:name="io.shubham0204.smollmandroid" />
+        <package android:name="com.alibaba.mnnllm.android" />
+        <package android:name="com.druk.lmplayground" />
+        <package android:name="com.llamatik.app.android" />
+        <package android:name="com.anythingllm" />
+        <package android:name="com.freakurl.apps.ollama" />
+        <package android:name="me.rerere.rikkahub" />
+        <package android:name="dev.chungjungsoo.gptmobile" />
+        <package android:name="app.cogwheel.conduit" />
+        <package android:name="ai.openclaw.app" />
+        <package android:name="com.termux" />
+
+        <!-- Not AI apps; their presence is reported as a device feature (CompanionPackages). -->
+        <package android:name="com.google.android.aicore" />
+        <package android:name="com.termux.api" />
+    </queries>
+</manifest>

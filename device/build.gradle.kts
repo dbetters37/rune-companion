@@ -1,6 +1,5 @@
 plugins {
     alias(libs.plugins.android.library)
-    alias(libs.plugins.kotlin.serialization)
 }
 
 android {
@@ -18,7 +17,11 @@ android {
     }
 
     testOptions {
-        unitTests { isIncludeAndroidResources = true }
+        unitTests {
+            isIncludeAndroidResources = true
+            // Lets QueriesManifestTest read the source manifest whatever the working directory is.
+            all { it.systemProperty("aicc.deviceManifest", "$projectDir/src/main/AndroidManifest.xml") }
+        }
     }
 }
 
@@ -34,7 +37,10 @@ dependencies {
     implementation(libs.androidx.core.ktx)
 
     testImplementation(project(":testkit"))
+    // The registry is exercised against the real scanner to prove the two fit together.
+    testImplementation(project(":framework"))
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.androidx.test.ext.junit)
     testImplementation(libs.robolectric)
+    testImplementation(libs.turbine)
 }

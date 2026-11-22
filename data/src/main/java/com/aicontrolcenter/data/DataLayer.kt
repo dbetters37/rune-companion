@@ -32,7 +32,8 @@ import java.io.File
  * root creates exactly one of these and hands its members to the framework.
  *
  * Members are created on first use and then shared, so constructing a [DataLayer] is cheap and
- * touches no file; all storage work runs on [ioDispatcher].
+ * touches no file. Every database query, file read and write, and encryption runs on
+ * [ioDispatcher], whatever thread the caller is on.
  *
  * Where things live (all app-private, nothing leaves the device):
  * - the database in the app's database directory;

@@ -1,0 +1,113 @@
+package com.aicontrolcenter.app.ui.shell
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.movableContentOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
+import com.aicontrolcenter.app.di.AppGraph
+import com.aicontrolcenter.app.di.LocalAppGraph
+import com.aicontrolcenter.app.ui.theme.AppTheme
+
+/** Width from which the app uses a navigation rail instead of a bottom bar. */
+private val WideLayoutMinWidth = 600.dp
+
+/** The whole app for one [graph]: theme, composition root and navigation shell. */
+@Composable
+fun AiControlCenterRoot(graph: AppGraph) {
+    AppTheme {
+        CompositionLocalProvider(LocalAppGraph provides graph) { AppShell() }
+    }
+}
+
+/**
+ * The frame around every screen. Phones get a bottom bar with four sections and "More", which
+ * opens a sheet listing all eight; wide screens get a rail with all eight. The bottom bar is
+ * shown on section roots only, so inner screens (an editor, a detail page) have the full height.
+ */
+@Composable
+fun AppShell(modifier: Modifier = Modifier) {
+    val graph = LocalAppGraph.current
+    val navController = rememberNavController()
+    val shellViewModel = viewModel { ShellViewModel(graph.registryDirectory) }
+    val shellState by shellViewModel.uiState.collectAsStateWithLifecycle()
+    val backStackEntry by navController.currentBackStackEntryAsState()
+    val destination = backStackEntry?.destination
+    val currentSection = destination?.section() ?: Section.DASHBOARD
+    val isTopLevel = destination?.isTopLevel() ?: true
+    var showMore by rememberSaveable { mutableStateOf(false) }
+    val openSection: (Section) -> Unit = { section -> navController.navigateToSection(section.route) }
+
+    // Movable so the navigation host keeps its state when a resize swaps bar for rail.
+    val screens = remember(navController) {
+        movableContentOf { hostModifier: Modifier -> AppNavHost(navController, hostModifier) }
+    }
+
+    BoxWithConstraints(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        if (maxWidth >= WideLayoutMinWidth) {
+            Row(Modifier.fillMaxSize()) {
+                AppNavigationRail(currentSection, shellState, openSection)
+                Box(Modifier.weight(1f).consumeWindowInsets(WindowInsets.systemBars.only(WindowInsetsSides.Start))) {
+                    screens(Modifier.fillMaxSize())
+                }
+            }
+        } else {
+            Column(Modifier.fillMaxSize()) {
+                Box(
+                    Modifier.weight(1f).then(
+                        // The bar already sits above the system navigation area.
+                        if (isTopLevel) {
+                            Modifier.consumeWindowInsets(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
+                        } else {
+                            Modifier
+                        },
+                    ),
+                ) {
+                    screens(Modifier.fillMaxSize())
+                }
+                if (isTopLevel) {
+                    AppBottomBar(
+                        current = currentSection,
+                        state = shellState,
+                        onOpenSection = openSection,
+                        onOpenMore = { showMore = true },
+                    )
+                }
+            }
+        }
+    }
+
+    if (showMore) {
+        MoreSheet(
+            current = currentSection,
+            state = shellState,
+            onOpenSection = { section ->
+                showMore = false
+                openSection(section)
+            },
+            onDismiss = { showMore = false },
+        )
+    }
+}
