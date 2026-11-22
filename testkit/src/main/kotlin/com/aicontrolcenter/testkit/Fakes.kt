@@ -3,6 +3,7 @@ package com.aicontrolcenter.testkit
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.IdGenerator
 import com.aicontrolcenter.core.registry.AiAppScanner
+import com.aicontrolcenter.core.registry.controlChannels
 import com.aicontrolcenter.core.registry.DiscoveredApp
 import com.aicontrolcenter.core.registry.InstalledAppInfo
 import com.aicontrolcenter.core.security.SecretVault
@@ -98,4 +99,26 @@ class FakeDeviceInspector(
     ),
 ) : com.aicontrolcenter.core.device.DeviceInspector {
     override suspend fun inspect() = report
+}
+
+/** Records hand-offs instead of starting activities. */
+class FakeAiAppLauncher : com.aicontrolcenter.core.registry.AiAppLauncher {
+    val launched = mutableListOf<String>()
+    val handedOff = mutableListOf<Pair<String, String>>()
+
+    override suspend fun launch(app: com.aicontrolcenter.core.registry.AiApp): com.aicontrolcenter.core.registry.LaunchResult {
+        if (com.aicontrolcenter.core.registry.ControlChannel.LAUNCH !in app.controlChannels()) {
+            return com.aicontrolcenter.core.registry.LaunchResult.NotPossible("${app.label} cannot be opened.")
+        }
+        launched += app.packageName
+        return com.aicontrolcenter.core.registry.LaunchResult.Started
+    }
+
+    override suspend fun handOffText(app: com.aicontrolcenter.core.registry.AiApp, text: String): com.aicontrolcenter.core.registry.LaunchResult {
+        if (com.aicontrolcenter.core.registry.ControlChannel.INTENT_HANDOFF !in app.controlChannels()) {
+            return com.aicontrolcenter.core.registry.LaunchResult.NotPossible("${app.label} does not accept shared text.")
+        }
+        handedOff += app.packageName to text
+        return com.aicontrolcenter.core.registry.LaunchResult.Started
+    }
 }

@@ -45,8 +45,11 @@ enum class DiscoverySource {
     /** Matched the built-in catalog of known AI application packages. */
     CATALOG,
 
-    /** Found by querying Android for apps that handle an AI-relevant intent. */
+    /** Found by querying Android for apps that handle an AI-relevant intent (for example the assist intent). */
     INTENT_QUERY,
+
+    /** Not in the catalog; its name suggests an AI app. Unverified until the user confirms it. */
+    HEURISTIC,
 
     /** Added by the user from the list of installed apps. */
     MANUAL,
@@ -143,3 +146,25 @@ data class InstalledAppInfo(
     val versionName: String? = null,
     val isSystemApp: Boolean = false,
 )
+
+/** Outcome of asking Android to open or hand something to another app. */
+sealed interface LaunchResult {
+    /** Android accepted the request and the other app's UI is opening. */
+    data object Started : LaunchResult
+
+    /** Nothing was started. [reason] is a sentence suitable for showing to the user. */
+    data class NotPossible(val reason: String) : LaunchResult
+}
+
+/**
+ * Starts supported hand-offs to a registered app. Every method checks [controlChannels] first
+ * and refuses anything the app does not support or the user has not allowed. A hand-off opens
+ * the other app's own UI; whatever that app then answers is not returned to this framework.
+ */
+interface AiAppLauncher {
+    /** Opens the app. Requires [ControlChannel.LAUNCH]. */
+    suspend fun launch(app: AiApp): LaunchResult
+
+    /** Hands [text] to the app's UI by share intent or prompt link. Requires [ControlChannel.INTENT_HANDOFF]. */
+    suspend fun handOffText(app: AiApp, text: String): LaunchResult
+}
