@@ -25,7 +25,7 @@ class DefaultRegistryDirectory(
 
     override fun observe(): Flow<RegistrySnapshot> {
         val registry = combine(providers.observeAll(), models.observeAll(), apps.observeAll(), settings.settings) { p, m, a, s ->
-            RegistrySnapshot(providers = p, models = m, apps = a, settings = s)
+            RegistrySnapshot(providers = p, models = m, apps = a.filterNot { it.hidden }, settings = s)
         }
         return combine(agents.observeAll(), agents.observeStats(), registry) { profiles, stats, base ->
             val modelsById = base.models.associateBy { it.id }

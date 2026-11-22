@@ -18,7 +18,9 @@ import com.aicontrolcenter.core.registry.ModelProvider
 import com.aicontrolcenter.core.registry.ModelSource
 import com.aicontrolcenter.core.registry.ModelStatus
 import com.aicontrolcenter.core.registry.ProviderKind
+import com.aicontrolcenter.core.registry.authorisedChannels
 import com.aicontrolcenter.core.registry.controlChannels
+import com.aicontrolcenter.core.registry.effectiveLocality
 import com.aicontrolcenter.core.security.maskSecret
 import com.aicontrolcenter.core.settings.FrameworkSettings
 import kotlinx.serialization.json.Json
@@ -29,31 +31,76 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class CoreModelTest {
+    private fun infer(url: String?, kind: ProviderKind = ProviderKind.OPENAI_COMPATIBLE) = Locality.infer(kind, url)
+
     @Test
-    fun `locality is inferred from the host and never under-reports`() {
-        assertEquals(Locality.ON_DEVICE, Locality.infer(null))
-        assertEquals(Locality.ON_DEVICE, Locality.infer("http://127.0.0.1:11434"))
-        assertEquals(Locality.ON_DEVICE, Locality.infer("http://localhost:8080/v1"))
-        assertEquals(Locality.ON_DEVICE, Locality.infer("http://[::1]:8080/v1"))
-        assertEquals(Locality.LOCAL_NETWORK, Locality.infer("http://192.168.1.20:1234/v1"))
-        assertEquals(Locality.LOCAL_NETWORK, Locality.infer("http://10.0.0.5"))
-        assertEquals(Locality.LOCAL_NETWORK, Locality.infer("http://172.16.4.4/v1"))
-        assertEquals(Locality.LOCAL_NETWORK, Locality.infer("http://100.101.102.103:11434"))
-        assertEquals(Locality.LOCAL_NETWORK, Locality.infer("http://desktop.local:11434"))
-        assertEquals(Locality.CLOUD, Locality.infer("http://172.32.0.1/v1"))
-        assertEquals(Locality.CLOUD, Locality.infer("https://api.example.com/v1"))
-        assertEquals(Locality.CLOUD, Locality.infer("https://user:pw@api.example.com:443/v1"))
-        assertEquals(Locality.CLOUD, Locality.infer("https://8.8.8.8"))
-        assertEquals(Locality.CLOUD, Locality.infer("://"))
-        assertEquals(Locality.CLOUD, Locality.infer("https://localhost.evil.example"))
-        assertEquals(Locality.CLOUD, Locality.infer("https://127.evil.example"))
+    fun `locality is inferred from the host`() {
+        assertEquals(Locality.ON_DEVICE, infer("http://127.0.0.1:11434"))
+        assertEquals(Locality.ON_DEVICE, infer("http://127.8.9.10/v1"))
+        assertEquals(Locality.ON_DEVICE, infer("http://localhost:8080/v1"))
+        assertEquals(Locality.ON_DEVICE, infer("HTTP://LOCALHOST:8080/v1"))
+        assertEquals(Locality.ON_DEVICE, infer("http://[::1]:8080/v1"))
+        assertEquals(Locality.ON_DEVICE, infer("http://0.0.0.0:8080"))
+        assertEquals(Locality.LOCAL_NETWORK, infer("http://192.168.1.20:1234/v1"))
+        assertEquals(Locality.LOCAL_NETWORK, infer("http://10.0.0.5"))
+        assertEquals(Locality.LOCAL_NETWORK, infer("http://172.16.4.4/v1"))
+        assertEquals(Locality.LOCAL_NETWORK, infer("http://100.101.102.103:11434"))
+        assertEquals(Locality.LOCAL_NETWORK, infer("http://desktop.local:11434"))
+        assertEquals(Locality.LOCAL_NETWORK, infer("http://[fd12:3456::1]:11434"))
+        assertEquals(Locality.CLOUD, infer("http://172.32.0.1/v1"))
+        assertEquals(Locality.CLOUD, infer("https://api.example.com/v1"))
+        assertEquals(Locality.CLOUD, infer("https://user:pw@api.example.com:443/v1"))
+        assertEquals(Locality.CLOUD, infer("https://8.8.8.8"))
+    }
+
+    @Test
+    fun `locality never under-reports for odd or crafted addresses`() {
+        val cloud = listOf(
+            "://", "not a url", "localhost:8080", "127.0.0.1", "ftp://127.0.0.1/", "file:///etc/hosts",
+            "https://localhost.evil.example", "https://127.evil.example", "http://127.0.0.1.evil.example/",
+            // Parsed differently by lenient HTTP clients: the real host is evil.example.
+            "http://evil.example\\@127.0.0.1/", "https://evil.example\\@localhost/v1",
+            "http://127.0.0.1:80@evil.example/", "http://localhost@evil.example/",
+            // No scheme, with a local-looking URL further in.
+            "evil.example/?next=http://127.0.0.1", "evil.example/proxy/http://localhost/v1", "api.evil.example/v1#x://192.168.1.2",
+            "http://evil.example/#@127.0.0.1", "http://evil.example/?@localhost",
+            "http://127.1", "http://0x7f.0.0.1", "http://2130706433", "http://127.0.0.1 .evil.example",
+            "http://ex ample.com", "http://exa_mple.local.evil.example", "http://١٢٧.0.0.1",
+        )
+        for (url in cloud) assertEquals(Locality.CLOUD, infer(url), "must be treated as cloud: $url")
+    }
+
+    @Test
+    fun `a missing address is local only for kinds that run in this process`() {
+        for (blank in listOf(null, "", "   ")) {
+            assertEquals(Locality.ON_DEVICE, infer(blank, ProviderKind.ON_DEVICE))
+            assertEquals(Locality.ON_DEVICE, infer(blank, ProviderKind.SIMULATOR))
+            assertEquals(Locality.CLOUD, infer(blank, ProviderKind.OPENAI_COMPATIBLE))
+            assertEquals(Locality.CLOUD, infer(blank, ProviderKind.ANTHROPIC))
+            assertEquals(Locality.CLOUD, infer(blank, ProviderKind.GEMINI))
+            assertEquals(Locality.CLOUD, infer(blank, ProviderKind.OLLAMA))
+        }
+    }
+
+    @Test
+    fun `a provider can never be labelled more private than its address`() {
+        val mislabelled = provider.copy(locality = Locality.ON_DEVICE)
+        assertEquals(Locality.CLOUD, mislabelled.effectiveLocality)
+        assertEquals(
+            UnavailableReason.BLOCKED_BY_LOCAL_ONLY_MODE,
+            reason(availability(providers = listOf(mislabelled, localProvider), settings = FrameworkSettings(localOnlyMode = true))),
+        )
+        val overCautious = localProvider.copy(baseUrl = "http://127.0.0.1:11434", locality = Locality.CLOUD)
+        assertEquals(Locality.CLOUD, overCautious.effectiveLocality, "a stricter stored label is respected")
     }
 
     private val provider = ModelProvider(
         id = ProviderId("p"), name = "Cloud", kind = ProviderKind.OPENAI_COMPATIBLE, baseUrl = "https://api.example.com",
         locality = Locality.CLOUD, status = ConnectionStatus.ONLINE, createdAt = 0, updatedAt = 0,
     )
-    private val localProvider = provider.copy(id = ProviderId("local"), name = "Phone", locality = Locality.ON_DEVICE)
+    private val localProvider = provider.copy(
+        id = ProviderId("local"), name = "Phone", kind = ProviderKind.OLLAMA, baseUrl = "http://127.0.0.1:11434", locality = Locality.ON_DEVICE,
+    )
     private val model = ModelDescriptor(
         id = ModelId("m"), providerId = provider.id, modelName = "x", displayName = "X", source = ModelSource.MANUAL,
         status = ModelStatus.AVAILABLE, createdAt = 0, updatedAt = 0,
@@ -107,23 +154,49 @@ class CoreModelTest {
     }
 
     @Test
-    fun `control channels only include what the app supports and the user authorised`() {
+    fun `control channels only include what the app supports and the owner authorised`() {
+        val operatorOn = FrameworkSettings(operatorEnabled = true, accessibilityOperatorEnabled = true)
         val app = AiApp(
             id = AiAppId("x"), packageName = "p", label = "P", source = DiscoverySource.CATALOG,
             capabilities = setOf(AiAppCapability.LAUNCH, AiAppCapability.SHARE_TEXT), firstSeenAt = 0, lastSeenAt = 0,
         )
-        assertEquals(setOf(ControlChannel.LAUNCH, ControlChannel.INTENT_HANDOFF), app.controlChannels())
+        assertEquals(setOf(ControlChannel.LAUNCH, ControlChannel.INTENT_HANDOFF), app.controlChannels(operatorOn))
+        val full = app.copy(capabilities = app.capabilities + AiAppCapability.PROCESS_TEXT, accessibilityAuthorized = true)
         assertEquals(
             setOf(ControlChannel.LAUNCH, ControlChannel.INTENT_HANDOFF, ControlChannel.ROUND_TRIP_TEXT, ControlChannel.ACCESSIBILITY),
-            app.copy(capabilities = app.capabilities + AiAppCapability.PROCESS_TEXT, accessibilityAuthorized = true).controlChannels(),
+            full.controlChannels(operatorOn),
         )
-        assertEquals(emptySet(), app.copy(enabled = false, accessibilityAuthorized = true).controlChannels())
-        assertEquals(emptySet(), app.copy(status = AiAppStatus.NOT_INSTALLED, accessibilityAuthorized = true).controlChannels())
+        assertEquals(emptySet(), app.copy(enabled = false, accessibilityAuthorized = true).controlChannels(operatorOn))
+        assertEquals(emptySet(), app.copy(hidden = true, accessibilityAuthorized = true).controlChannels(operatorOn))
+        assertEquals(emptySet(), app.copy(status = AiAppStatus.NOT_INSTALLED, accessibilityAuthorized = true).controlChannels(operatorOn))
         assertEquals(
             setOf(ControlChannel.LINKED_API),
-            app.copy(status = AiAppStatus.NOT_INSTALLED, linkedProviderId = ProviderId("p")).controlChannels(),
+            app.copy(status = AiAppStatus.NOT_INSTALLED, linkedProviderId = ProviderId("p")).controlChannels(operatorOn),
         )
-        assertEquals(emptySet(), app.copy(capabilities = emptySet()).controlChannels())
+        assertEquals(emptySet(), app.copy(capabilities = emptySet()).controlChannels(operatorOn))
+        assertEquals(
+            setOf(ControlChannel.LAUNCH),
+            app.copy(capabilities = setOf(AiAppCapability.LAUNCH, AiAppCapability.SHARE_IMAGE)).controlChannels(operatorOn),
+            "an app that only accepts images offers no text hand-off",
+        )
+    }
+
+    @Test
+    fun `accessibility is never a usable channel unless both operator switches are on`() {
+        val app = AiApp(
+            id = AiAppId("x"), packageName = "p", label = "P", source = DiscoverySource.CATALOG,
+            capabilities = setOf(AiAppCapability.LAUNCH), accessibilityAuthorized = true, firstSeenAt = 0, lastSeenAt = 0,
+        )
+        assertTrue(ControlChannel.ACCESSIBILITY in app.authorisedChannels(), "the owner's own choice stays visible")
+        for (settings in listOf(
+            FrameworkSettings(),
+            FrameworkSettings(operatorEnabled = true),
+            FrameworkSettings(accessibilityOperatorEnabled = true),
+        )) {
+            assertEquals(setOf(ControlChannel.LAUNCH), app.controlChannels(settings))
+        }
+        assertTrue(app.copy(source = DiscoverySource.HEURISTIC).isUnverified)
+        assertTrue(!app.copy(source = DiscoverySource.HEURISTIC, verifiedByUser = true).isUnverified)
     }
 
     @Test
@@ -136,9 +209,11 @@ class CoreModelTest {
     }
 
     @Test
-    fun `secrets are masked for display`() {
-        assertEquals("sk-a…9f2c", maskSecret("sk-abcdefgh9f2c"))
-        assertEquals("••••", maskSecret("abc"))
-        assertEquals("••••••••", maskSecret("12345678"))
+    fun `masking never reveals a short secret or its length`() {
+        assertEquals("sk-a…9f2c", maskSecret("sk-abcdefghijklmnop9f2c"))
+        for (short in listOf("", "abc", "12345678", "123456789", "hunter2pass", "x".repeat(19))) {
+            assertEquals("••••••••", maskSecret(short))
+        }
+        assertEquals("aaaa…bbbb", maskSecret("aaaa" + "x".repeat(12) + "bbbb"))
     }
 }

@@ -13,11 +13,14 @@ import com.aicontrolcenter.core.agents.DelegationPolicy
 import com.aicontrolcenter.core.agents.GenerationSettings
 import com.aicontrolcenter.core.agents.MemoryPolicy
 import com.aicontrolcenter.core.agents.toDraft
+import com.aicontrolcenter.framework.agents.AgentDeletionListener
 import com.aicontrolcenter.framework.agents.AgentTemplates
 import com.aicontrolcenter.framework.agents.DefaultAgentManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -201,8 +204,72 @@ class AgentManagerTest {
 
     @Test
     fun `concurrent creates never produce duplicate names`() = runTest {
-        val created = (1..25).map { async { manager.createFromTemplate(AgentTemplates.ANALYST) } }.awaitAll()
-        assertEquals(25, created.map { it.name.lowercase() }.toSet().size)
-        assertEquals(25, created.map { it.id }.toSet().size)
+        val created = withContext(Dispatchers.Default) {
+            (1..200).map { async { manager.createFromTemplate(AgentTemplates.ANALYST) } }.awaitAll()
+        }
+        assertEquals(200, created.map { it.name.lowercase() }.toSet().size)
+        assertEquals(200, created.map { it.id }.toSet().size)
+        assertEquals(200, created.map { it.createdAt }.toSet().size, "creation times must be distinct so listing order is stable")
+    }
+
+    @Test
+    fun `names of every length can be duplicated and are compared one way`() = runTest {
+        for (length in 34..40) {
+            val source = manager.create(AgentDraft(name = "L$length" + "x".repeat(length - "L$length".length)))
+            val copy = manager.duplicate(source.id)
+            assertTrue(copy.name.length <= 40 && copy.name != source.name && copy.name == copy.name.trim(), "length $length gave '${copy.name}'")
+            assertTrue(copy.name.endsWith(" copy"), "length $length gave '${copy.name}'")
+        }
+        val long = manager.create(AgentDraft(name = "y".repeat(39)))
+        // The wanted name is cut to 40 characters, which collides with the existing one once trimmed.
+        assertEquals("y".repeat(38) + " 2", manager.createFromTemplate(AgentTemplates.BLANK, "y".repeat(39) + " B").name)
+        assertTrue(manager.validate(AgentDraft(name = "  " + long.name.uppercase() + " ")).isNotEmpty())
+    }
+
+    @Test
+    fun `seeding resumes after an interruption instead of leaving half a team`() = runTest {
+        val failing = FailingAfter(world.agents, allowedUpserts = 3)
+        val interrupted = DefaultAgentManager(failing, world.settings, world.activity, world.ids, world.clock)
+        assertFailsWith<IllegalStateException> { interrupted.ensureDefaults() }
+        assertEquals(3, world.agents.getAll().size)
+        assertEquals(0, world.settings.get().seedVersion, "a failed first run must not be marked as done")
+
+        manager.ensureDefaults()
+        assertEquals(listOf("Director", "Researcher", "Analyst", "Writer", "Reviewer", "Operator"), world.agents.getAll().map { it.name })
+        assertEquals(1, world.agents.getAll().count { it.kind == AgentKind.DIRECTOR })
+    }
+
+    @Test
+    fun `a failing clean-up listener does not stop the others or the audit entry`() = runTest {
+        val cleaned = mutableListOf<String>()
+        val guarded = DefaultAgentManager(
+            world.agents, world.settings, world.activity, world.ids, world.clock,
+            deletionListeners = listOf(
+                AgentDeletionListener { error("memory store unavailable") },
+                AgentDeletionListener { cleaned += it.name },
+            ),
+        )
+        val agent = guarded.create(AgentDraft(name = "Temp"))
+        guarded.delete(agent.id)
+        assertNull(world.agents.get(agent.id))
+        assertEquals(listOf("Temp"), cleaned)
+        assertEquals(listOf("Clean-up after deleting an agent failed", "Agent deleted"), world.log.all.takeLast(2).map { it.title })
+    }
+
+    @Test
+    fun `duplicating never produces an invalid colour`() = runTest {
+        val source = manager.create(AgentDraft(name = "Edge", colorIndex = Int.MAX_VALUE))
+        assertEquals(0, manager.duplicate(source.id).colorIndex)
+    }
+}
+
+/** An agent repository that starts throwing after a number of writes, to simulate an interrupted first run. */
+private class FailingAfter(
+    private val delegate: com.aicontrolcenter.core.registry.AgentRepository,
+    private var allowedUpserts: Int,
+) : com.aicontrolcenter.core.registry.AgentRepository by delegate {
+    override suspend fun upsert(agent: com.aicontrolcenter.core.agents.AgentProfile) {
+        check(allowedUpserts-- > 0) { "storage went away" }
+        delegate.upsert(agent)
     }
 }

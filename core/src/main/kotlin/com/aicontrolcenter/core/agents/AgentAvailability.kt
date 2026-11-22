@@ -6,6 +6,7 @@ import com.aicontrolcenter.core.registry.ConnectionStatus
 import com.aicontrolcenter.core.registry.ModelDescriptor
 import com.aicontrolcenter.core.registry.ModelProvider
 import com.aicontrolcenter.core.registry.ModelStatus
+import com.aicontrolcenter.core.registry.effectiveLocality
 import com.aicontrolcenter.core.settings.FrameworkSettings
 
 /** Whether an agent could run a task right now, and if not, exactly why. */
@@ -71,7 +72,7 @@ private fun modelProblem(
     val provider = providers[model.providerId]
         ?: return no(UnavailableReason.PROVIDER_NOT_REGISTERED, "The provider of ${model.displayName} is no longer registered.")
     if (!provider.enabled) return no(UnavailableReason.PROVIDER_DISABLED, "Provider ${provider.name} is disabled.")
-    if (settings.localOnlyMode && provider.locality.leavesDevice) {
+    if (settings.localOnlyMode && provider.effectiveLocality.leavesDevice) {
         return no(
             UnavailableReason.BLOCKED_BY_LOCAL_ONLY_MODE,
             "Local-only mode is on and ${provider.name} would send data off this device.",

@@ -10,8 +10,13 @@ import com.aicontrolcenter.core.registry.ControlChannel
 import com.aicontrolcenter.core.registry.DiscoveredApp
 import com.aicontrolcenter.core.registry.DiscoverySource
 import com.aicontrolcenter.core.registry.InstalledAppInfo
-import com.aicontrolcenter.core.registry.controlChannels
+import com.aicontrolcenter.core.registry.authorisedChannels
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -40,7 +45,7 @@ class AiAppRegistryTest {
         assertEquals(AiAppStatus.INSTALLED, app.status)
         assertEquals(DiscoverySource.CATALOG, app.source)
         assertFalse(app.accessibilityAuthorized, "registration must never imply accessibility control")
-        assertEquals(setOf(ControlChannel.LAUNCH, ControlChannel.INTENT_HANDOFF), app.controlChannels())
+        assertEquals(setOf(ControlChannel.LAUNCH, ControlChannel.INTENT_HANDOFF), app.authorisedChannels())
 
         val events = world.log.all.size
         val second = registry.discover()
@@ -81,7 +86,7 @@ class AiAppRegistryTest {
         val gone = registry.discover().missing.single()
         assertEquals(AiAppStatus.NOT_INSTALLED, gone.status)
         assertFalse(gone.accessibilityAuthorized, "authorisation must not survive uninstall")
-        assertEquals(emptySet(), gone.controlChannels())
+        assertEquals(emptySet(), gone.authorisedChannels())
         assertTrue(registry.discover().missing.isEmpty(), "already-missing apps are not reported again")
         assertFailsWith<IllegalArgumentException> { registry.setAccessibilityAuthorized(id, true) }
 
@@ -97,7 +102,7 @@ class AiAppRegistryTest {
         world.scanner.aiApps = listOf(chatbot().copy(enabledInSystem = false))
         val app = registry.discover().added.single()
         assertEquals(AiAppStatus.DISABLED_BY_SYSTEM, app.status)
-        assertEquals(emptySet(), app.controlChannels())
+        assertEquals(emptySet(), app.authorisedChannels())
     }
 
     @Test
@@ -146,8 +151,106 @@ class AiAppRegistryTest {
         assertEquals(count, world.log.all.size, "repeating a decision is a no-op")
 
         registry.remove(id)
-        assertNull(world.apps.get(id))
+        assertTrue(world.directory.snapshot().apps.isEmpty())
         registry.remove(id)
+        assertFailsWith<IllegalArgumentException> { registry.setEnabled(id, true) }
         assertFailsWith<IllegalArgumentException> { registry.setEnabled(AiAppId("app_missing"), false) }
+    }
+
+    @Test
+    fun `a removed app stays removed across scans and can be registered again by hand`() = runTest {
+        world.scanner.aiApps = listOf(chatbot())
+        world.scanner.installed = listOf(InstalledAppInfo("com.vendor.chatbot", "Chatbot"), notes)
+        val id = registry.discover().added.single().id
+        registry.setAccessibilityAuthorized(id, true)
+        registry.remove(id)
+
+        val rescan = registry.discover()
+        assertTrue(rescan.added.isEmpty() && rescan.updated.isEmpty() && rescan.missing.isEmpty(), "a removed app must not come back")
+        assertTrue(registry.observeApps().first().isEmpty())
+        assertEquals(listOf("Chatbot", "Notes"), registry.unregisteredInstalledApps().map { it.label })
+
+        val back = registry.registerManually("com.vendor.chatbot")
+        assertEquals(id, back.id)
+        assertFalse(back.hidden)
+        assertFalse(back.accessibilityAuthorized, "authorisation does not survive removal")
+        assertEquals(DiscoverySource.MANUAL, back.source)
+        assertEquals(listOf(back), registry.observeApps().first())
+
+        // A manually added app that the owner removes is simply forgotten.
+        val manual = registry.registerManually("com.other.notes")
+        registry.remove(manual.id)
+        assertNull(world.apps.get(manual.id))
+    }
+
+    @Test
+    fun `a heuristic match is unverified until the owner confirms it`() = runTest {
+        world.scanner.aiApps = listOf(chatbot().copy(source = DiscoverySource.HEURISTIC))
+        val app = registry.discover().added.single()
+        assertTrue(app.isUnverified)
+        registry.confirm(app.id)
+        assertFalse(world.apps.get(app.id)!!.isUnverified)
+        registry.discover()
+        assertFalse(world.apps.get(app.id)!!.isUnverified, "a later scan must not undo the confirmation")
+    }
+
+    @Test
+    fun `a reinstalled or re-signed app loses its accessibility authorisation`() = runTest {
+        val original = chatbot().copy(firstInstallTime = 1_000, signingCertSha256 = "aa".repeat(32))
+        world.scanner.aiApps = listOf(original)
+        val id = registry.discover().added.single().id
+        registry.setAccessibilityAuthorized(id, true)
+
+        world.scanner.aiApps = listOf(original.copy(versionName = "2.0"))
+        registry.discover()
+        assertTrue(world.apps.get(id)!!.accessibilityAuthorized, "an ordinary update keeps the authorisation")
+
+        world.scanner.aiApps = listOf(original.copy(signingCertSha256 = "bb".repeat(32)))
+        assertEquals(1, registry.refreshStatuses())
+        assertFalse(world.apps.get(id)!!.accessibilityAuthorized)
+        assertEquals("Accessibility authorisation withdrawn", world.log.all.last().title)
+        assertEquals(Severity.WARNING, world.log.all.last().severity)
+
+        registry.setAccessibilityAuthorized(id, true)
+        world.scanner.aiApps = listOf(original.copy(signingCertSha256 = "bb".repeat(32), firstInstallTime = 9_000))
+        registry.discover()
+        assertFalse(world.apps.get(id)!!.accessibilityAuthorized, "a reinstall under the same signature also resets it")
+
+        registry.setAccessibilityAuthorized(id, true)
+        world.scanner.aiApps = listOf(original.copy(signingCertSha256 = null, firstInstallTime = null))
+        registry.discover()
+        assertTrue(world.apps.get(id)!!.accessibilityAuthorized, "unknown identity is not treated as a change")
+    }
+
+    @Test
+    fun `apps found in one scan are listed by name and withdrawals and links are logged`() = runTest {
+        world.scanner.aiApps = listOf("Charlie", "alpha", "Echo", "bravo", "Delta").map {
+            chatbot().copy(packageName = "pkg.$it", label = it)
+        }
+        registry.discover()
+        assertEquals(listOf("alpha", "bravo", "Charlie", "Delta", "Echo"), registry.observeApps().first().map { it.label })
+
+        val app = world.apps.getByPackage("pkg.alpha")!!
+        registry.setAccessibilityAuthorized(app.id, true)
+        registry.linkProvider(app.id, ProviderId("prv_1"))
+        assertEquals("AI app linked to provider", world.log.all.last().title)
+        world.scanner.aiApps = world.scanner.aiApps.filterNot { it.label == "alpha" }
+        registry.refreshStatuses()
+        assertEquals("Accessibility authorisation withdrawn", world.log.all.last().title)
+        assertFailsWith<IllegalArgumentException> { registry.setAccessibilityAuthorized(app.id, true) }
+    }
+
+    @Test
+    fun `concurrent scans and registrations never duplicate a package`() = runTest {
+        world.scanner.aiApps = (1..20).map { chatbot().copy(packageName = "pkg.$it", label = "App $it") }
+        world.scanner.installed = (1..20).map { InstalledAppInfo("manual.$it", "Manual $it") }
+        withContext(Dispatchers.Default) {
+            val scans = (1..10).map { launch { registry.discover() } }
+            val manual = (1..20).map { launch { runCatching { registry.registerManually("manual.$it") } } }
+            (scans + manual).joinAll()
+        }
+        val packages = world.apps.getAll().map { it.packageName }
+        assertEquals(40, packages.size)
+        assertEquals(40, packages.toSet().size)
     }
 }

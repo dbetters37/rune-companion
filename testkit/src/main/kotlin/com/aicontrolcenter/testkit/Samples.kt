@@ -43,9 +43,12 @@ object Samples {
         enabled: Boolean = true,
     ) = AgentProfile(
         id = AgentId(id), name = name, kind = kind, description = "Finds and summarises sources.",
-        systemInstructions = "Research carefully.\nCite what you use.", personality = "Curious, precise.",
-        responsibilities = listOf("Gather sources", "Summarise findings"), skills = setOf("research", "analysis"),
-        modelId = modelId?.let(::ModelId), fallbackModelIds = listOf(ModelId("mdl_fallback")),
+        systemInstructions = "Research carefully.\nCite what you use; quote \"exactly\".", personality = "Curious, precise — never vague 🔎",
+        // Deliberately unsorted and full of delimiters: order and content must survive storage.
+        responsibilities = listOf("Summarise findings, briefly", "Gather \"primary\" sources", "", "Plan; assign | track"),
+        skills = setOf("research", "analysis", "fact-checking"),
+        modelId = modelId?.let(::ModelId),
+        fallbackModelIds = listOf(ModelId("mdl_z_fallback"), ModelId("mdl_a_fallback"), ModelId("mdl_m_fallback")),
         generation = GenerationSettings(temperature = 0.4, maxOutputTokens = 2048),
         toolIds = setOf(ToolId("memory.search"), ToolId("workspace.write_file")),
         memory = MemoryPolicy(
@@ -67,7 +70,7 @@ object Samples {
         createdAt: Long = 1_000,
     ) = ModelProvider(
         id = ProviderId(id), name = name, kind = kind, baseUrl = baseUrl, apiKeyAlias = "provider/$id",
-        extraHeaders = mapOf("X-Title" to "AI Control Center"), locality = locality, enabled = enabled,
+        extraHeaders = mapOf("X-Title" to "AI Control Center", "X-Note" to "a,b; \"c\""), locality = locality, enabled = enabled,
         status = status, statusMessage = "ok", lastCheckedAt = createdAt + 1, createdAt = createdAt, updatedAt = createdAt + 2,
     )
 
@@ -98,7 +101,8 @@ object Samples {
         versionName = "4.2.1", source = DiscoverySource.CATALOG,
         capabilities = setOf(AiAppCapability.LAUNCH, AiAppCapability.SHARE_TEXT, AiAppCapability.PROCESS_TEXT),
         status = status, enabled = true, accessibilityAuthorized = true, linkedProviderId = ProviderId("prv_sample"),
-        promptDeepLink = "https://chat.example.com/?q={prompt}", notes = "Work account",
+        promptDeepLink = "https://chat.example.com/?q={prompt}", notes = "Work account, \"shared\"\nsecond line",
+        firstInstallTime = 500, signingCertSha256 = "ab".repeat(32), verifiedByUser = true, hidden = false,
         firstSeenAt = firstSeenAt, lastSeenAt = firstSeenAt + 10,
     )
 

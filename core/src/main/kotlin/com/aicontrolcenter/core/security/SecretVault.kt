@@ -22,8 +22,10 @@ interface SecretVault {
 /** Thrown when the vault cannot encrypt or decrypt, e.g. the device keystore entry was lost. */
 class SecretVaultException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
-/** A masked preview safe to display, e.g. "sk-a…9f2c". */
-fun maskSecret(secret: String): String = when {
-    secret.length <= 8 -> "•".repeat(secret.length.coerceAtLeast(4))
-    else -> secret.take(4) + "…" + secret.takeLast(4)
-}
+/**
+ * A masked preview safe to display. Only long secrets reveal anything: at most the first and
+ * last four characters of a secret of 20 characters or more. Shorter ones show a fixed mask,
+ * so neither their content nor their length leaks.
+ */
+fun maskSecret(secret: String): String =
+    if (secret.length >= 20) secret.take(4) + "…" + secret.takeLast(4) else "••••••••"

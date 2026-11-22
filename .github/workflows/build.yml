@@ -30,19 +30,37 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Install Android SDK packages
+      # The build downloads the SDK packages it needs once the licences are accepted.
+      - name: Accept Android SDK licences
         run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.2" "build-tools;37.0.0"
+          mkdir -p "$ANDROID_HOME/licenses"
+          if [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          fi
+
+      # Optional private signing key. Without these secrets the public development key in
+      # keystore/ is used.
+      - name: Prepare signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.AICC_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/aicc.keystore"
+            echo "AICC_KEYSTORE_FILE=$RUNNER_TEMP/aicc.keystore" >> "$GITHUB_ENV"
+          fi
 
       - name: Run unit tests
         run: ./gradlew test --stacktrace
 
-      - name: Build debug APK
-        run: ./gradlew :app:assembleDebug --stacktrace
+      - name: Build APK
+        env:
+          AICC_KEYSTORE_PASSWORD: ${{ secrets.AICC_KEYSTORE_PASSWORD }}
+          AICC_KEY_ALIAS: ${{ secrets.AICC_KEY_ALIAS }}
+          AICC_KEY_PASSWORD: ${{ secrets.AICC_KEY_PASSWORD }}
+        run: ./gradlew :app:assembleRelease --stacktrace
 
       - name: Name the APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk AIControlCenter.apk
+        run: cp app/build/outputs/apk/release/app-release.apk AIControlCenter.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

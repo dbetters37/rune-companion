@@ -61,16 +61,22 @@ enum class Locality {
 
     companion object {
         /**
-         * Classifies a base URL by its host. Unknown or unparsable hosts are treated as [CLOUD]
-         * so that the app never under-reports data leaving the device.
+         * Classifies where requests to a provider go. The result errs towards [CLOUD]: an
+         * address that is missing where one is required, that is not a plain http(s) URL, or
+         * that does not parse strictly, is treated as leaving the device.
+         *
+         * A blank address means "in this process" only for kinds that run in-process; for
+         * every other kind it means the vendor's default endpoint, which is remote.
          */
-        fun infer(baseUrl: String?): Locality {
-            if (baseUrl.isNullOrBlank()) return ON_DEVICE
-            val host = hostOf(baseUrl)?.lowercase() ?: return CLOUD
+        fun infer(kind: ProviderKind, baseUrl: String?): Locality {
+            if (baseUrl.isNullOrBlank()) {
+                return if (kind == ProviderKind.ON_DEVICE || kind == ProviderKind.SIMULATOR) ON_DEVICE else CLOUD
+            }
+            val host = hostOf(baseUrl) ?: return CLOUD
             if (host == "localhost" || host == "::1") return ON_DEVICE
             if (host.endsWith(".local") || host.endsWith(".lan") || host.endsWith(".home.arpa")) return LOCAL_NETWORK
             val octets = host.split('.').map { it.toIntOrNull() }
-            if (octets.size == 4 && octets.all { it != null && it in 0..255 }) {
+            if (octets.size == 4 && octets.all { it != null && it in 0..255 } && host.all { it.isDigit() || it == '.' }) {
                 val a = octets[0]!!
                 val b = octets[1]!!
                 // 127.0.0.0/8 is loopback. 0.0.0.0 is what a server binds to, and reaches this device.
@@ -86,19 +92,33 @@ enum class Locality {
             return CLOUD
         }
 
+        /**
+         * The host of a strict http(s) URL, lower-cased and without IPv6 brackets, or null.
+         * java.net.URI is deliberately unforgiving (it rejects backslashes, spaces and other
+         * characters that lenient parsers reinterpret), so a URL crafted to look local to one
+         * parser and remote to another does not parse here and is classified as cloud.
+         */
         private fun hostOf(url: String): String? {
-            var rest = url.trim()
-            val scheme = rest.indexOf("://")
-            if (scheme >= 0) rest = rest.substring(scheme + 3)
-            rest = rest.substringBefore('/').substringBefore('?').substringBefore('#')
-            rest = rest.substringAfterLast('@')
-            if (rest.isEmpty()) return null
-            if (rest.startsWith("[")) return rest.substringAfter('[').substringBefore(']').ifEmpty { null }
-            // A bare IPv6 literal has more than one ':'; host:port has exactly one.
-            return if (rest.count { it == ':' } == 1) rest.substringBefore(':') else rest
+            val uri = try {
+                java.net.URI(url.trim())
+            } catch (e: java.net.URISyntaxException) {
+                return null
+            }
+            val scheme = uri.scheme?.lowercase() ?: return null
+            if (scheme != "http" && scheme != "https") return null
+            val host = uri.host ?: return null
+            return host.removePrefix("[").removeSuffix("]").lowercase().ifEmpty { null }
         }
     }
 }
+
+/**
+ * Where prompts sent to this provider really go: the more remote of what is stored and what
+ * its address implies. Policy checks and every "leaves the device" indicator use this, so a
+ * provider record can never be labelled more private than its endpoint.
+ */
+val ModelProvider.effectiveLocality: Locality
+    get() = maxOf(locality, Locality.infer(kind, baseUrl))
 
 enum class ConnectionStatus { UNKNOWN, ONLINE, OFFLINE, AUTH_ERROR, ERROR }
 

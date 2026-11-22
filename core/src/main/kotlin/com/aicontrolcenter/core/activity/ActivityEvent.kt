@@ -78,9 +78,13 @@ data class ActivityFilter(
 }
 
 interface ActivityLog {
+    /** Appends an event. An event whose id was already recorded is ignored: the log is append-only. */
     suspend fun record(event: ActivityEvent)
 
-    /** Newest first, at most [limit] events matching [filter]; re-emits as events arrive. */
+    /**
+     * Newest first (events with the same time: latest recorded first), at most [limit] events
+     * matching [filter]; re-emits as events arrive.
+     */
     fun observe(filter: ActivityFilter = ActivityFilter(), limit: Int = 200): Flow<List<ActivityEvent>>
 
     suspend fun recent(filter: ActivityFilter = ActivityFilter(), limit: Int = 200): List<ActivityEvent>

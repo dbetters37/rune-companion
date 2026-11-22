@@ -18,22 +18,36 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // Every build is signed with the same key so that a newer build installs over an older one
+    // without uninstalling (which would wipe locally stored agents, memories and keys).
+    // By default that is the development key committed in keystore/, which is public: anyone
+    // can sign with it. To sign with a private key instead, point AICC_KEYSTORE_FILE at a
+    // keystore and set AICC_KEYSTORE_PASSWORD, AICC_KEY_ALIAS and AICC_KEY_PASSWORD (CI reads
+    // them from repository secrets; see README).
+    val privateKeystore: String? = System.getenv("AICC_KEYSTORE_FILE")?.takeIf { it.isNotBlank() }
     signingConfigs {
-        // A fixed, committed debug key so every CI build can be installed over the previous one
-        // without uninstalling (which would wipe locally stored agents and memories).
-        getByName("debug") {
-            storeFile = rootProject.file("keystore/debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+        create("shared") {
+            if (privateKeystore != null) {
+                storeFile = file(privateKeystore)
+                storePassword = System.getenv("AICC_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("AICC_KEY_ALIAS")
+                keyPassword = System.getenv("AICC_KEY_PASSWORD")
+            } else {
+                storeFile = rootProject.file("keystore/debug.keystore")
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
         }
     }
 
     buildTypes {
-        debug { signingConfig = signingConfigs.getByName("debug") }
+        debug { signingConfig = signingConfigs.getByName("shared") }
         release {
+            // Not debuggable, so adb cannot read the app's data. Code shrinking stays off until
+            // keep rules have been proven on a device.
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("shared")
         }
     }
 

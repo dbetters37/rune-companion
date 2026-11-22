@@ -39,7 +39,10 @@ data class AgentProfile(
     val memory: MemoryPolicy = MemoryPolicy(),
     val delegation: DelegationPolicy = DelegationPolicy(),
     val enabled: Boolean = true,
-    /** Index into the UI's accent palette, so an agent keeps a stable colour. */
+    /**
+     * Chooses the agent's accent colour. Any non-negative value is valid; consumers pick the
+     * colour with `colorIndex % paletteSize`.
+     */
     val colorIndex: Int = 0,
     /** Id of the template this agent was created from, for reference only. */
     val templateId: String? = null,

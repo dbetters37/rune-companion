@@ -25,34 +25,53 @@ data class DiscoveryReport(
  * The registry of AI applications on this phone: discovery, manual registration, status
  * tracking and per-app authorisation. Registration records that an app exists; it never grants
  * control beyond the app's [controlChannels].
+ *
+ * Methods that take an id throw [IllegalArgumentException] when no visible app has that id,
+ * except [remove], which does nothing in that case.
  */
 interface AiAppRegistry {
+    /** Registered apps, without the ones the owner removed. */
     fun observeApps(): Flow<List<AiApp>>
 
-    /** Scans the device and merges the result into the registry. User settings on existing entries are kept. */
+    /**
+     * Scans the device and merges the result into the registry. The owner's settings on
+     * existing entries are kept, removed apps stay removed, and an app whose install identity
+     * changed loses its accessibility authorisation.
+     */
     suspend fun discover(): DiscoveryReport
 
     /** Re-checks only the already registered apps. Returns how many entries changed. */
     suspend fun refreshStatuses(): Int
 
-    /** Launchable installed apps that are not registered yet, for the manual-registration picker. */
+    /** Launchable installed apps that are not in the registry, for the manual-registration picker. */
     suspend fun unregisteredInstalledApps(): List<InstalledAppInfo>
 
     /**
-     * Registers an installed app chosen by the user.
+     * Registers an installed app chosen by the owner, or brings back one that was removed.
      * @throws IllegalArgumentException if the package is not installed or is already registered.
      */
     suspend fun registerManually(packageName: String): AiApp
 
     suspend fun setEnabled(id: AiAppId, enabled: Boolean)
 
-    /** Records the user's explicit decision to allow or forbid accessibility operation of this app. */
+    /** Records the owner's confirmation that a heuristically detected app is an AI app. */
+    suspend fun confirm(id: AiAppId)
+
+    /**
+     * Records the owner's explicit decision to allow or forbid accessibility operation of this app.
+     * @throws IllegalArgumentException when allowing an app that is not currently installed and enabled.
+     */
     suspend fun setAccessibilityAuthorized(id: AiAppId, authorized: Boolean)
 
+    /** Links the app to a registered provider of the same vendor's models, or unlinks it with null. */
     suspend fun linkProvider(id: AiAppId, providerId: ProviderId?)
 
     suspend fun updateNotes(id: AiAppId, notes: String)
 
+    /**
+     * Takes the app out of the registry. A later scan will not bring it back; registering it
+     * manually will.
+     */
     suspend fun remove(id: AiAppId)
 }
 

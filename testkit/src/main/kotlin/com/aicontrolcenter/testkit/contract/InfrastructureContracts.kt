@@ -10,8 +10,12 @@ import com.aicontrolcenter.core.security.SecretVault
 import com.aicontrolcenter.core.settings.FrameworkSettings
 import com.aicontrolcenter.core.settings.SettingsRepository
 import com.aicontrolcenter.testkit.Samples
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -30,6 +34,35 @@ abstract class ActivityLogContract {
         log.record(second)
         assertEquals(listOf(second, first), log.recent())
         assertEquals(listOf(second, first), log.observe().first())
+    }
+
+    @Test
+    fun `events with the same time are returned newest recorded first`() = runTest {
+        val log = createLog()
+        log.record(Samples.event(id = "evt_a", at = 100))
+        log.record(Samples.event(id = "evt_b", at = 100))
+        log.record(Samples.event(id = "evt_c", at = 100))
+        assertEquals(listOf("evt_c", "evt_b", "evt_a"), log.recent().map { it.id.value })
+        assertEquals(listOf("evt_c", "evt_b"), log.recent(limit = 2).map { it.id.value })
+    }
+
+    @Test
+    fun `recording an id twice keeps the first event`() = runTest {
+        val log = createLog()
+        log.record(Samples.event(id = "evt_1", at = 100))
+        log.record(Samples.event(id = "evt_1", at = 200).copy(title = "Second"))
+        assertEquals(listOf(Samples.event(id = "evt_1", at = 100)), log.recent())
+    }
+
+    @Test
+    fun `an open observer sees later events`() = runTest {
+        val log = createLog()
+        val seen = collectIn(backgroundScope, log.observe())
+        awaitUntil { seen.isNotEmpty() }
+        log.record(Samples.event(id = "evt_1", at = 100))
+        awaitUntil { seen.last().size == 1 }
+        log.clear()
+        awaitUntil { seen.last().isEmpty() }
     }
 
     @Test
@@ -105,6 +138,19 @@ abstract class SettingsRepositoryContract {
         assertEquals(changed, repo.update { changed })
         assertEquals(changed, repo.get())
         assertEquals(changed, repo.settings.first())
+    }
+
+    @Test
+    fun `an open observer sees later updates and concurrent updates are all applied`() = runTest {
+        val repo = createRepository()
+        val seen = collectIn(backgroundScope, repo.settings)
+        awaitUntil { seen.isNotEmpty() }
+        val start = repo.get().maxMessagesPerObjective
+        withContext(Dispatchers.Default) {
+            (1..50).map { launch { repo.update { it.copy(maxMessagesPerObjective = it.maxMessagesPerObjective + 1) } } }.joinAll()
+        }
+        assertEquals(start + 50, repo.get().maxMessagesPerObjective)
+        awaitUntil { seen.last().maxMessagesPerObjective == start + 50 }
     }
 
     @Test

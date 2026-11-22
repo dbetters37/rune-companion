@@ -47,8 +47,10 @@ class InMemoryAgentRepository : AgentRepository {
     override fun observeStats(): Flow<Map<AgentId, AgentStats>> = stats
     override suspend fun getStats(id: AgentId): AgentStats = stats.value[id] ?: AgentStats()
 
-    override suspend fun updateStats(id: AgentId, transform: (AgentStats) -> AgentStats) =
+    override suspend fun updateStats(id: AgentId, transform: (AgentStats) -> AgentStats) {
+        if (id !in agents.value) return
         stats.update { it + (id to transform(it[id] ?: AgentStats())) }
+    }
 }
 
 class InMemoryProviderRepository : ProviderRepository {
@@ -102,7 +104,8 @@ class InMemoryActivityLog : ActivityLog {
     /** Every event in insertion order, for assertions. */
     val all: List<ActivityEvent> get() = events.value
 
-    override suspend fun record(event: ActivityEvent) = events.update { it + event }
+    override suspend fun record(event: ActivityEvent) =
+        events.update { all -> if (all.any { it.id == event.id }) all else all + event }
 
     private fun select(all: List<ActivityEvent>, filter: ActivityFilter, limit: Int): List<ActivityEvent> =
         all.asReversed().asSequence().filter(filter::matches)

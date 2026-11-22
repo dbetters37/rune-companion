@@ -3,7 +3,7 @@ package com.aicontrolcenter.testkit
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.IdGenerator
 import com.aicontrolcenter.core.registry.AiAppScanner
-import com.aicontrolcenter.core.registry.controlChannels
+import com.aicontrolcenter.core.registry.authorisedChannels
 import com.aicontrolcenter.core.registry.DiscoveredApp
 import com.aicontrolcenter.core.registry.InstalledAppInfo
 import com.aicontrolcenter.core.security.SecretVault
@@ -107,7 +107,7 @@ class FakeAiAppLauncher : com.aicontrolcenter.core.registry.AiAppLauncher {
     val handedOff = mutableListOf<Pair<String, String>>()
 
     override suspend fun launch(app: com.aicontrolcenter.core.registry.AiApp): com.aicontrolcenter.core.registry.LaunchResult {
-        if (com.aicontrolcenter.core.registry.ControlChannel.LAUNCH !in app.controlChannels()) {
+        if (com.aicontrolcenter.core.registry.ControlChannel.LAUNCH !in app.authorisedChannels()) {
             return com.aicontrolcenter.core.registry.LaunchResult.NotPossible("${app.label} cannot be opened.")
         }
         launched += app.packageName
@@ -115,7 +115,7 @@ class FakeAiAppLauncher : com.aicontrolcenter.core.registry.AiAppLauncher {
     }
 
     override suspend fun handOffText(app: com.aicontrolcenter.core.registry.AiApp, text: String): com.aicontrolcenter.core.registry.LaunchResult {
-        if (com.aicontrolcenter.core.registry.ControlChannel.INTENT_HANDOFF !in app.controlChannels()) {
+        if (com.aicontrolcenter.core.registry.ControlChannel.INTENT_HANDOFF !in app.authorisedChannels()) {
             return com.aicontrolcenter.core.registry.LaunchResult.NotPossible("${app.label} does not accept shared text.")
         }
         handedOff += app.packageName to text

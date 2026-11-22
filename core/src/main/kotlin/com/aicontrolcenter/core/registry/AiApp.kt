@@ -2,6 +2,7 @@ package com.aicontrolcenter.core.registry
 
 import com.aicontrolcenter.core.AiAppId
 import com.aicontrolcenter.core.ProviderId
+import com.aicontrolcenter.core.settings.FrameworkSettings
 import kotlinx.serialization.Serializable
 
 /**
@@ -36,9 +37,26 @@ data class AiApp(
     /** Web URL template that opens the service with a pre-filled prompt; `{prompt}` is replaced. */
     val promptDeepLink: String? = null,
     val notes: String = "",
+    /**
+     * When Android first installed this package, and the SHA-256 of its signing certificate.
+     * Together they identify the installed app: if either changes, something else now lives
+     * under the package name and earlier authorisations no longer apply. Null when unknown.
+     */
+    val firstInstallTime: Long? = null,
+    val signingCertSha256: String? = null,
+    /** True once the owner confirmed that a heuristically detected app really is an AI app. */
+    val verifiedByUser: Boolean = false,
+    /**
+     * True for an app the owner removed from the registry although scans still find it. The
+     * entry is kept, out of sight, so that the next scan does not bring the app back.
+     */
+    val hidden: Boolean = false,
     val firstSeenAt: Long,
     val lastSeenAt: Long,
-)
+) {
+    /** A name-based guess that nobody has confirmed yet. */
+    val isUnverified: Boolean get() = source == DiscoverySource.HEURISTIC && !verifiedByUser
+}
 
 /** How an app entered the registry. */
 enum class DiscoverySource {
@@ -107,22 +125,35 @@ enum class ControlChannel {
     LINKED_API,
 }
 
-/** The complete set of interactions permitted with this app right now. Empty when unusable. */
-fun AiApp.controlChannels(): Set<ControlChannel> {
-    if (!enabled) return emptySet()
+/**
+ * What the app supports and the owner has authorised for it, before framework-wide switches
+ * are applied. Use this to show or edit the app's own settings; use [controlChannels] to
+ * decide or claim what can actually be done right now.
+ */
+fun AiApp.authorisedChannels(): Set<ControlChannel> {
+    if (!enabled || hidden) return emptySet()
     val channels = mutableSetOf<ControlChannel>()
     if (linkedProviderId != null) channels += ControlChannel.LINKED_API
     if (status != AiAppStatus.INSTALLED) return channels
     if (AiAppCapability.LAUNCH in capabilities) channels += ControlChannel.LAUNCH
-    if (AiAppCapability.SHARE_TEXT in capabilities ||
-        AiAppCapability.SHARE_IMAGE in capabilities ||
-        AiAppCapability.PROMPT_DEEP_LINK in capabilities
-    ) {
+    // Hand-off carries text. An app that only accepts shared images offers no text hand-off.
+    if (AiAppCapability.SHARE_TEXT in capabilities || AiAppCapability.PROMPT_DEEP_LINK in capabilities) {
         channels += ControlChannel.INTENT_HANDOFF
     }
     if (AiAppCapability.PROCESS_TEXT in capabilities) channels += ControlChannel.ROUND_TRIP_TEXT
     if (accessibilityAuthorized) channels += ControlChannel.ACCESSIBILITY
     return channels
+}
+
+/**
+ * The complete set of interactions permitted with this app right now. Accessibility operation
+ * needs the per-app authorisation and both operator master switches; without them it is not
+ * listed, whatever the app's own setting says.
+ */
+fun AiApp.controlChannels(settings: FrameworkSettings): Set<ControlChannel> {
+    val channels = authorisedChannels()
+    val operatorOn = settings.operatorEnabled && settings.accessibilityOperatorEnabled
+    return if (operatorOn) channels else channels - ControlChannel.ACCESSIBILITY
 }
 
 /** A package reported by a device scan, before it is merged into the registry. */
@@ -136,6 +167,9 @@ data class DiscoveredApp(
     val source: DiscoverySource,
     val enabledInSystem: Boolean = true,
     val promptDeepLink: String? = null,
+    /** See [AiApp.firstInstallTime] and [AiApp.signingCertSha256]. */
+    val firstInstallTime: Long? = null,
+    val signingCertSha256: String? = null,
 )
 
 /** Any installed, launchable app; shown when the user registers an app manually. */
@@ -157,8 +191,8 @@ sealed interface LaunchResult {
 }
 
 /**
- * Starts supported hand-offs to a registered app. Every method checks [controlChannels] first
- * and refuses anything the app does not support or the user has not allowed. A hand-off opens
+ * Starts supported hand-offs to a registered app. Every method checks [authorisedChannels]
+ * first and refuses anything the app does not support or the user has not allowed. A hand-off opens
  * the other app's own UI; whatever that app then answers is not returned to this framework.
  */
 interface AiAppLauncher {

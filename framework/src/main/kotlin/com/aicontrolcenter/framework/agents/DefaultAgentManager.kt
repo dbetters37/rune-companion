@@ -6,6 +6,7 @@ import com.aicontrolcenter.core.IdGenerator
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.activity.ActivityRecorder
 import com.aicontrolcenter.core.activity.ActivityType
+import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.agentId
 import com.aicontrolcenter.core.agents.AgentDraft
 import com.aicontrolcenter.core.agents.AgentField
@@ -21,8 +22,10 @@ import com.aicontrolcenter.core.agents.toDraft
 import com.aicontrolcenter.core.agents.toProfile
 import com.aicontrolcenter.core.registry.AgentRepository
 import com.aicontrolcenter.core.settings.SettingsRepository
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /** Called after an agent is deleted so other subsystems can clean up what belonged to it. */
 fun interface AgentDeletionListener {
@@ -58,7 +61,7 @@ class DefaultAgentManager(
             name.isEmpty() -> issues += ValidationIssue(AgentField.NAME, "Give the agent a name.")
             name.length > MAX_NAME_LENGTH ->
                 issues += ValidationIssue(AgentField.NAME, "Keep the name to $MAX_NAME_LENGTH characters or fewer.")
-            existing.any { it.id != editing && it.name.equals(name, ignoreCase = true) } ->
+            existing.any { it.id != editing && nameKey(it.name) == nameKey(name) } ->
                 issues += ValidationIssue(AgentField.NAME, "Another agent is already called \"$name\".")
         }
         if (editing != null && editing == directorId && draft.kind != AgentKind.DIRECTOR) {
@@ -91,7 +94,9 @@ class DefaultAgentManager(
     private suspend fun createLocked(draft: AgentDraft): AgentProfile {
         val issues = validate(draft, null, agents.getAll(), settings.get().directorAgentId)
         if (issues.isNotEmpty()) throw AgentValidationException(issues)
-        val now = clock.now()
+        // Strictly after every existing agent, so creation order is the listing order even when
+        // several agents are created within one clock tick.
+        val now = maxOf(clock.now(), (agents.getAll().maxOfOrNull { it.createdAt } ?: Long.MIN_VALUE) + 1)
         val agent = draft.toProfile(ids.agentId(), createdAt = now, updatedAt = now)
         agents.upsert(agent)
         activity.record(ActivityType.REGISTRY, "Agent created", "${agent.name} (${agent.kind.label})", agentId = agent.id)
@@ -119,8 +124,10 @@ class DefaultAgentManager(
     override suspend fun duplicate(id: AgentId, newName: String?): AgentProfile = mutex.withLock {
         val source = agents.get(id) ?: throw AgentOperationException("That agent no longer exists.")
         val existing = agents.getAll()
-        val wanted = newName?.trim()?.takeIf { it.isNotEmpty() } ?: "${source.name} copy".take(MAX_NAME_LENGTH)
-        val draft = source.toDraft().copy(name = uniqueName(wanted, existing), colorIndex = source.colorIndex + 1)
+        val wanted = newName?.trim()?.takeIf { it.isNotEmpty() }
+            ?: (source.name.take(MAX_NAME_LENGTH - COPY_SUFFIX.length).trimEnd() + COPY_SUFFIX)
+        val nextColor = if (source.colorIndex in 0 until Int.MAX_VALUE) source.colorIndex + 1 else 0
+        val draft = source.toDraft().copy(name = uniqueName(wanted, existing), colorIndex = nextColor)
         val copy = createLocked(draft)
         activity.record(ActivityType.REGISTRY, "Agent duplicated", "${source.name} → ${copy.name}", agentId = copy.id)
         copy
@@ -169,20 +176,47 @@ class DefaultAgentManager(
         if (settings.get().directorAgentId == id) {
             throw AgentOperationException("${agent.name} is the designated Director. Designate another Director before deleting it.")
         }
-        agents.delete(id)
-        deletionListeners.forEach { it.onAgentDeleted(agent) }
-        activity.record(ActivityType.REGISTRY, "Agent deleted", agent.name)
+        // Once the agent is gone, clean-up and the audit entry must all run, even if the caller
+        // is cancelled or one listener fails. Listeners must not call back into this manager.
+        withContext(NonCancellable) {
+            agents.delete(id)
+            for (listener in deletionListeners) {
+                try {
+                    listener.onAgentDeleted(agent)
+                } catch (e: Exception) {
+                    activity.record(
+                        ActivityType.ERROR, "Clean-up after deleting an agent failed",
+                        "${agent.name}: ${e.message ?: e::class.simpleName}", severity = Severity.ERROR,
+                    )
+                }
+            }
+            activity.record(ActivityType.REGISTRY, "Agent deleted", agent.name)
+        }
         Unit
     }
 
     override suspend fun ensureDefaults() = mutex.withLock {
         if (settings.get().seedVersion >= SEED_VERSION) return@withLock
-        if (agents.getAll().isEmpty()) {
-            for (templateId in starterTeam) {
-                val template = templates.firstOrNull { it.id == templateId } ?: continue
-                createLocked(template.draft.copy(name = uniqueName(template.draft.name, agents.getAll())))
+        // Resumable: an interrupted first run continues with the templates that are still
+        // missing, and an owner who already has agents of their own is left alone.
+        val existing = agents.getAll()
+        val seedable = existing.isEmpty() || existing.all { it.templateId in starterTeam }
+        if (seedable) {
+            withContext(NonCancellable) {
+                var created = 0
+                for (templateId in starterTeam) {
+                    if (agents.getAll().any { it.templateId == templateId }) continue
+                    val template = templates.firstOrNull { it.id == templateId } ?: continue
+                    createLocked(template.draft.copy(name = uniqueName(template.draft.name, agents.getAll())))
+                    created++
+                }
+                if (created > 0) {
+                    activity.record(
+                        ActivityType.SYSTEM, "Starter team created",
+                        "$created agents were set up. Each needs a model before it can work.",
+                    )
+                }
             }
-            activity.record(ActivityType.SYSTEM, "Starter team created", "${starterTeam.size} agents were set up. Assign each a model to put it to work.")
         }
         val current = settings.get()
         val director = current.directorAgentId?.let { agents.get(it) }
@@ -191,15 +225,18 @@ class DefaultAgentManager(
         Unit
     }
 
+    /** One key for "the same name": trimmed and case-folded the same way everywhere. */
+    private fun nameKey(name: String): String = name.trim().uppercase().lowercase()
+
     private fun uniqueName(wanted: String, existing: List<AgentProfile>): String {
-        val taken = existing.map { it.name.lowercase() }.toSet()
-        val base = wanted.take(MAX_NAME_LENGTH)
-        if (base.lowercase() !in taken) return base
+        val taken = existing.mapTo(HashSet()) { nameKey(it.name) }
+        val base = wanted.trim().take(MAX_NAME_LENGTH).trimEnd()
+        if (nameKey(base) !in taken) return base
         var n = 2
         while (true) {
             val suffix = " $n"
-            val candidate = base.take(MAX_NAME_LENGTH - suffix.length) + suffix
-            if (candidate.lowercase() !in taken) return candidate
+            val candidate = base.take(MAX_NAME_LENGTH - suffix.length).trimEnd() + suffix
+            if (nameKey(candidate) !in taken) return candidate
             n++
         }
     }
@@ -225,6 +262,7 @@ class DefaultAgentManager(
 
     companion object {
         const val MAX_NAME_LENGTH = 40
+        private const val COPY_SUFFIX = " copy"
         const val MAX_OUTPUT_TOKENS = 200_000
         const val MAX_RECALL_LIMIT = 50
         const val MAX_DELEGATION_DEPTH = 10

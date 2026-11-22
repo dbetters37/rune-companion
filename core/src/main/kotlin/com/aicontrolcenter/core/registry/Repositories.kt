@@ -11,7 +11,8 @@ import kotlinx.coroutines.flow.Flow
 /*
  * Persistence ports for the registry. Implementations: Room (the app) and in-memory (tests).
  * All "observe" flows emit the current value immediately and again after every change.
- * Lists are ordered by creation time, oldest first, unless stated otherwise.
+ * Lists are ordered by creation time (first-seen time for apps), oldest first, with ties
+ * broken by id. Services that create several rows at once give them increasing timestamps.
  */
 
 interface AgentRepository {
@@ -20,7 +21,7 @@ interface AgentRepository {
     suspend fun getAll(): List<AgentProfile>
     suspend fun get(id: AgentId): AgentProfile?
 
-    /** Inserts or replaces by id. */
+    /** Inserts or replaces the profile by id. The agent's stats are not touched. */
     suspend fun upsert(agent: AgentProfile)
 
     /** Removes the agent and its stats. No-op if absent. */
@@ -31,7 +32,10 @@ interface AgentRepository {
     /** Returns the stored stats, or an all-zero [AgentStats] for an agent without history. */
     suspend fun getStats(id: AgentId): AgentStats
 
-    /** Atomically applies [transform] to the agent's stats. */
+    /**
+     * Atomically applies [transform] to the agent's stats; concurrent calls never lose an
+     * update. Does nothing for an agent that does not exist, so stats never outlive an agent.
+     */
     suspend fun updateStats(id: AgentId, transform: (AgentStats) -> AgentStats)
 }
 

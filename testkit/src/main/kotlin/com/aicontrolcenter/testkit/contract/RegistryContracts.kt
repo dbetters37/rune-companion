@@ -11,8 +11,12 @@ import com.aicontrolcenter.core.registry.AiAppStatus
 import com.aicontrolcenter.core.registry.ModelRepository
 import com.aicontrolcenter.core.registry.ProviderRepository
 import com.aicontrolcenter.testkit.Samples
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -113,9 +117,65 @@ abstract class AgentRepositoryContract {
         assertEquals(expected, repo.getStats(agent.id))
         assertEquals(expected, repo.observeStats().first()[agent.id])
     }
+
+    @Test
+    fun `an open observer sees later changes to agents and stats`() = runTest {
+        val repo = createRepository()
+        val agent = Samples.agent()
+        val lists = collectIn(backgroundScope, repo.observeAll())
+        val single = collectIn(backgroundScope, repo.observe(agent.id))
+        val stats = collectIn(backgroundScope, repo.observeStats())
+        awaitUntil { lists.isNotEmpty() && single.isNotEmpty() && stats.isNotEmpty() }
+        repo.upsert(agent)
+        awaitUntil { lists.last() == listOf(agent) && single.last() == agent }
+        repo.updateStats(agent.id) { it.copy(tasksCompleted = 2) }
+        awaitUntil { stats.last()[agent.id]?.tasksCompleted == 2 }
+        repo.delete(agent.id)
+        awaitUntil { lists.last().isEmpty() && single.last() == null && agent.id !in stats.last() }
+    }
+
+    @Test
+    fun `saving a profile again keeps the agent's stats`() = runTest {
+        val repo = createRepository()
+        val agent = Samples.agent()
+        repo.upsert(agent)
+        repo.updateStats(agent.id) { it.copy(tasksCompleted = 7, inputTokens = 99) }
+        repo.upsert(agent.copy(name = "Renamed", enabled = false))
+        assertEquals(AgentStats(tasksCompleted = 7, inputTokens = 99), repo.getStats(agent.id))
+    }
+
+    @Test
+    fun `concurrent stats updates are all applied`() = runTest {
+        val repo = createRepository()
+        val agent = Samples.agent()
+        repo.upsert(agent)
+        withContext(Dispatchers.Default) {
+            (1..100).map { launch { repo.updateStats(agent.id) { it.copy(toolCalls = it.toolCalls + 1) } } }.joinAll()
+        }
+        assertEquals(100, repo.getStats(agent.id).toolCalls)
+    }
+
+    @Test
+    fun `stats are not kept for an agent that does not exist`() = runTest {
+        val repo = createRepository()
+        repo.updateStats(AgentId("agt_ghost")) { it.copy(tasksCompleted = 1) }
+        assertEquals(AgentStats(), repo.getStats(AgentId("agt_ghost")))
+        assertTrue(repo.observeStats().first().isEmpty())
+    }
 }
 
 abstract class ProviderRepositoryContract {
+    @Test
+    fun `an open observer sees later changes`() = runTest {
+        val repo = createRepository()
+        val seen = collectIn(backgroundScope, repo.observeAll())
+        awaitUntil { seen.isNotEmpty() }
+        repo.upsert(Samples.provider())
+        awaitUntil { seen.last().size == 1 }
+        repo.delete(Samples.provider().id)
+        awaitUntil { seen.last().isEmpty() }
+    }
+
     protected abstract fun createRepository(): ProviderRepository
 
     @Test
@@ -152,6 +212,17 @@ abstract class ProviderRepositoryContract {
 }
 
 abstract class ModelRepositoryContract {
+    @Test
+    fun `an open observer sees later changes`() = runTest {
+        val repo = createRepository()
+        val seen = collectIn(backgroundScope, repo.observeAll())
+        awaitUntil { seen.isNotEmpty() }
+        repo.upsert(Samples.model())
+        awaitUntil { seen.last().size == 1 }
+        repo.deleteByProvider(Samples.model().providerId)
+        awaitUntil { seen.last().isEmpty() }
+    }
+
     protected abstract fun createRepository(): ModelRepository
 
     @Test
@@ -205,6 +276,19 @@ abstract class ModelRepositoryContract {
 }
 
 abstract class AiAppRepositoryContract {
+    @Test
+    fun `an open observer sees later changes`() = runTest {
+        val repo = createRepository()
+        val seen = collectIn(backgroundScope, repo.observeAll())
+        awaitUntil { seen.isNotEmpty() }
+        repo.upsert(Samples.aiApp())
+        awaitUntil { seen.last().size == 1 }
+        repo.upsert(Samples.aiApp().copy(hidden = true))
+        awaitUntil { seen.last().singleOrNull()?.hidden == true }
+        repo.delete(Samples.aiApp().id)
+        awaitUntil { seen.last().isEmpty() }
+    }
+
     protected abstract fun createRepository(): AiAppRepository
 
     @Test
