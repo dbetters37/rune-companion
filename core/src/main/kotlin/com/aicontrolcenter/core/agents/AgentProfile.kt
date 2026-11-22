@@ -170,3 +170,9 @@ enum class AgentActivity {
     /** Its last task failed or it asked a question; the user should look. */
     NEEDS_ATTENTION,
 }
+
+/** Live view of what every agent is doing, for the dashboard and the agent network. */
+interface AgentActivityMonitor {
+    /** Agents that are not in the map are idle. */
+    val states: kotlinx.coroutines.flow.StateFlow<Map<AgentId, AgentRuntimeState>>
+}
