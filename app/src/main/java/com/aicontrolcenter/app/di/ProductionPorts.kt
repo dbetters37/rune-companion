@@ -1,25 +1,35 @@
 package com.aicontrolcenter.app.di
 
 import android.content.Context
+import com.aicontrolcenter.data.DataLayer
+import com.aicontrolcenter.device.DeviceLayer
+import kotlinx.coroutines.flow.map
 
 /**
  * Builds the real, on-device implementations of every port.
  *
  * This is the only place in the app that names the `:data` and `:device` modules, so swapping
  * a storage or platform implementation never touches a screen or a view model. It is called
- * once per process, lazily, from [com.aicontrolcenter.app.AiControlCenterApp.graph], with the
- * application context; it must not block (open the database and the keystore lazily or on
- * first use) and must return a [Ports] in which:
+ * once per process, lazily, with the application context. Nothing here blocks: the encrypted
+ * database, the settings file and the keystore are opened on first use, off the main thread.
  *
- *  - `agents`, `providers`, `models`, `aiApps`, `activityLog` and `settings` are the persistent
- *    implementations that pass the `:testkit` contract suites;
- *  - `secretVault` is the keystore-backed vault;
- *  - `aiAppScanner` and `deviceInspector` read the device through PackageManager and the
- *    public system APIs;
- *  - `aiAppLauncher` is the plain Android launcher. Do not wrap it in `LoggingAiAppLauncher`:
- *    [AppGraph] does that, and wrapping twice would log every hand-off twice;
- *  - `clock` and `idGenerator` can stay at their defaults;
- *  - `packageChanges` emits `Unit` whenever a package is added, removed, replaced or has its
- *    enabled state changed, for as long as it is collected.
+ * The launcher is passed unwrapped; [AppGraph] adds the activity-log wrapper.
  */
-fun createProductionPorts(context: Context): Ports = TODO("wired to :data and :device at integration")
+fun createProductionPorts(context: Context): Ports {
+    val appContext = context.applicationContext
+    val data = DataLayer(appContext)
+    val device = DeviceLayer(appContext)
+    return Ports(
+        agents = data.agents,
+        providers = data.providers,
+        models = data.models,
+        aiApps = data.aiApps,
+        activityLog = data.activityLog,
+        settings = data.settings,
+        secretVault = data.secretVault,
+        aiAppScanner = device.scanner,
+        aiAppLauncher = device.launcher,
+        deviceInspector = device.deviceInspector,
+        packageChanges = device.packageChanges.map { },
+    )
+}

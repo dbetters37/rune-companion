@@ -80,6 +80,8 @@ kotlin {
 dependencies {
     implementation(project(":core"))
     implementation(project(":framework"))
+    implementation(project(":data"))
+    implementation(project(":device"))
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)

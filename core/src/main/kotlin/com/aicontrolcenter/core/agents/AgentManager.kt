@@ -105,7 +105,7 @@ interface AgentManager {
     suspend fun designateDirector(id: AgentId)
 
     /**
-     * Deletes an agent.
+     * Deletes an agent. Does nothing if the agent no longer exists.
      * @throws AgentOperationException for the designated Director; designate another one first.
      */
     suspend fun delete(id: AgentId)

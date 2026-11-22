@@ -59,7 +59,8 @@ interface AiAppRegistry {
 
     /**
      * Records the owner's explicit decision to allow or forbid accessibility operation of this app.
-     * @throws IllegalArgumentException when allowing an app that is not currently installed and enabled.
+     * @throws IllegalArgumentException when allowing an app that is not installed, or that is
+     * disabled in Android settings.
      */
     suspend fun setAccessibilityAuthorized(id: AiAppId, authorized: Boolean)
 

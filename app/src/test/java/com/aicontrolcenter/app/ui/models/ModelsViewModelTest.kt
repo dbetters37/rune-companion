@@ -44,7 +44,7 @@ class ModelsViewModelTest {
         assertEquals("Known AI app", chatbot.sourceLabel)
         assertFalse(chatbot.unverified)
         assertEquals(listOf("Can be opened", "Accepts shared text", "Processes selected text"), chatbot.capabilities)
-        assertEquals(listOf("Open it", "Hand text to it", "Process text and return it"), chatbot.permitted)
+        assertEquals(listOf("Open it", "Hand text to it"), chatbot.permitted, "a text round trip is not offered: nothing implements it")
 
         val assistant = state.apps.first { it.label == "Sample Assistant" }
         assertEquals(listOf("Open it"), assistant.permitted, "accepting shared images does not make text hand-off possible")

@@ -236,7 +236,7 @@ class DeviceLayerRegistryTest {
         assertEquals(DiscoverySource.MANUAL, notes.source)
         assertEquals("Notes", notes.label)
         assertEquals("4.1", notes.versionName)
-        assertEquals(setOf(ControlChannel.LAUNCH, ControlChannel.ROUND_TRIP_TEXT), notes.authorisedChannels())
+        assertEquals(setOf(ControlChannel.LAUNCH), notes.authorisedChannels())
         assertTrue(registry.unregisteredInstalledApps().isEmpty())
 
         assertFailsWith<IllegalArgumentException> { registry.registerManually(device.ownPackage) }

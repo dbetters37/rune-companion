@@ -115,7 +115,7 @@ enum class ControlChannel {
     /** Hand text or a file to the app's own UI. The app's answer does not come back. */
     INTENT_HANDOFF,
 
-    /** Send text and receive processed text back (ACTION_PROCESS_TEXT). */
+    /** Send text and receive processed text back (ACTION_PROCESS_TEXT). Reserved: not offered yet. */
     ROUND_TRIP_TEXT,
 
     /** Operate the app's UI through the accessibility service; only after explicit authorisation. */
@@ -140,7 +140,9 @@ fun AiApp.authorisedChannels(): Set<ControlChannel> {
     if (AiAppCapability.SHARE_TEXT in capabilities || AiAppCapability.PROMPT_DEEP_LINK in capabilities) {
         channels += ControlChannel.INTENT_HANDOFF
     }
-    if (AiAppCapability.PROCESS_TEXT in capabilities) channels += ControlChannel.ROUND_TRIP_TEXT
+    // ROUND_TRIP_TEXT is not granted yet: no launcher path implements it, and AI chat apps use
+    // the process-text action as a one-way entry that returns nothing. PROCESS_TEXT stays a
+    // reported capability; the channel is added here when a round trip is actually possible.
     if (accessibilityAuthorized) channels += ControlChannel.ACCESSIBILITY
     return channels
 }

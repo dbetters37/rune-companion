@@ -163,8 +163,9 @@ class CoreModelTest {
         assertEquals(setOf(ControlChannel.LAUNCH, ControlChannel.INTENT_HANDOFF), app.controlChannels(operatorOn))
         val full = app.copy(capabilities = app.capabilities + AiAppCapability.PROCESS_TEXT, accessibilityAuthorized = true)
         assertEquals(
-            setOf(ControlChannel.LAUNCH, ControlChannel.INTENT_HANDOFF, ControlChannel.ROUND_TRIP_TEXT, ControlChannel.ACCESSIBILITY),
+            setOf(ControlChannel.LAUNCH, ControlChannel.INTENT_HANDOFF, ControlChannel.ACCESSIBILITY),
             full.controlChannels(operatorOn),
+            "a round trip is never claimed while nothing implements it",
         )
         assertEquals(emptySet(), app.copy(enabled = false, accessibilityAuthorized = true).controlChannels(operatorOn))
         assertEquals(emptySet(), app.copy(hidden = true, accessibilityAuthorized = true).controlChannels(operatorOn))

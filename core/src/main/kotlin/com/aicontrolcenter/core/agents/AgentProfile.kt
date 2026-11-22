@@ -40,8 +40,8 @@ data class AgentProfile(
     val delegation: DelegationPolicy = DelegationPolicy(),
     val enabled: Boolean = true,
     /**
-     * Chooses the agent's accent colour. Any non-negative value is valid; consumers pick the
-     * colour with `colorIndex % paletteSize`.
+     * Chooses the agent's accent colour. Consumers pick the colour with
+     * `Math.floorMod(colorIndex, paletteSize)`, so any value is safe.
      */
     val colorIndex: Int = 0,
     /** Id of the template this agent was created from, for reference only. */
