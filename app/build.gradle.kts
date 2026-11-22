@@ -82,6 +82,8 @@ dependencies {
     implementation(project(":framework"))
     implementation(project(":data"))
     implementation(project(":device"))
+    implementation(project(":providers"))
+    implementation(project(":providers-anthropic"))
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
