@@ -27,6 +27,10 @@ import java.util.UUID
  * Ollama delivers each tool call whole. Recent versions give calls an `id`; older ones do not,
  * and the framework needs one to pair a result with its call, so a missing id is synthesised.
  *
+ * `prompt_eval_cached_count` is read for the cached share of the prompt. Ollama's API document
+ * lists that field for `/api/generate` only, so for chat it is an unconfirmed extra that simply
+ * stays zero when absent.
+ *
  * Not safe for concurrent use; one instance per reply.
  *
  * @param newCallId supplies ids for calls that arrive without one

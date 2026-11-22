@@ -11,6 +11,13 @@ import com.aicontrolcenter.core.agents.AgentKind
 import com.aicontrolcenter.core.agents.DelegationPolicy
 import com.aicontrolcenter.core.agents.GenerationSettings
 import com.aicontrolcenter.core.agents.MemoryPolicy
+import com.aicontrolcenter.core.llm.ChatMessage
+import com.aicontrolcenter.core.llm.ChatRole
+import com.aicontrolcenter.core.llm.ImageContent
+import com.aicontrolcenter.core.llm.ProviderData
+import com.aicontrolcenter.core.llm.TokenUsage
+import com.aicontrolcenter.core.llm.ToolCallRequest
+import com.aicontrolcenter.core.llm.ToolResultContent
 import com.aicontrolcenter.core.registry.AiAppCapability
 import com.aicontrolcenter.core.registry.AiAppStatus
 import com.aicontrolcenter.core.registry.CapabilityTier
@@ -33,6 +40,9 @@ import com.aicontrolcenter.data.settings.SettingsCodec
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.descriptors.elementNames
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import kotlinx.serialization.serializer
 import org.junit.Test
 import kotlin.test.assertEquals
@@ -72,6 +82,7 @@ class StoredNamesGoldenTest {
             "SYSTEM", "USER_ACTION", "REGISTRY", "MESSAGE", "MODEL_CALL", "TOOL_CALL", "PERMISSION", "APPROVAL",
             "TASK", "MEMORY", "DATA_EGRESS", "ERROR",
         )
+        assertStoredNames<ChatRole>("SYSTEM", "USER", "ASSISTANT", "TOOL")
     }
 
     @Test
@@ -96,6 +107,56 @@ class StoredNamesGoldenTest {
             "contextWindow", "maxOutputTokens",
         )
         assertStoredKeys(EgressInfo.serializer(), "destinationHost", "locality", "providerId", "purpose", "approxBytes")
+    }
+
+    @Test
+    fun `keys of a stored conversation message and its token usage`() {
+        assertStoredKeys(
+            ChatMessage.serializer(),
+            "role", "text", "images", "toolCalls", "toolResult", "reasoning", "providerData",
+        )
+        assertStoredKeys(ImageContent.serializer(), "mimeType", "base64")
+        assertStoredKeys(ToolCallRequest.serializer(), "id", "name", "arguments")
+        assertStoredKeys(ToolResultContent.serializer(), "callId", "toolName", "content", "isError")
+        assertStoredKeys(ProviderData.serializer(), "kind", "payload")
+        assertStoredKeys(TokenUsage.serializer(), "inputTokens", "outputTokens", "cachedInputTokens")
+    }
+
+    @Test
+    fun `exact text of the conversation entry columns`() {
+        assertEquals(
+            """{"role":"USER","text":"Look","images":[{"mimeType":"image/png","base64":"aGVsbG8="}],"toolCalls":[],""" +
+                """"toolResult":null,"reasoning":null,"providerData":null}""",
+            encodeColumn(ChatMessage.serializer(), ChatMessage.user("Look", listOf(ImageContent("image/png", "aGVsbG8=")))),
+        )
+        assertEquals(
+            """{"role":"ASSISTANT","text":"Checking","images":[],""" +
+                """"toolCalls":[{"id":"call_1","name":"clock_now","arguments":{"zone":"UTC"}}],"toolResult":null,""" +
+                """"reasoning":"The owner wants the time.",""" +
+                """"providerData":{"kind":"ANTHROPIC","payload":[{"type":"thinking","signature":"c2ln"}]}}""",
+            encodeColumn(
+                ChatMessage.serializer(),
+                ChatMessage(
+                    role = ChatRole.ASSISTANT, text = "Checking",
+                    toolCalls = listOf(ToolCallRequest("call_1", "clock_now", buildJsonObject { put("zone", "UTC") })),
+                    reasoning = "The owner wants the time.",
+                    providerData = ProviderData(
+                        ProviderKind.ANTHROPIC,
+                        buildJsonArray { add(buildJsonObject { put("type", "thinking"); put("signature", "c2ln") }) },
+                    ),
+                ),
+            ),
+        )
+        assertEquals(
+            """{"role":"TOOL","text":"","images":[],"toolCalls":[],""" +
+                """"toolResult":{"callId":"call_1","toolName":"clock_now","content":"10:00","isError":false},""" +
+                """"reasoning":null,"providerData":null}""",
+            encodeColumn(ChatMessage.serializer(), ChatMessage.toolResult("call_1", "clock_now", "10:00")),
+        )
+        assertEquals(
+            """{"inputTokens":120,"outputTokens":30,"cachedInputTokens":100}""",
+            encodeColumn(TokenUsage.serializer(), TokenUsage(120, 30, 100)),
+        )
     }
 
     @Test

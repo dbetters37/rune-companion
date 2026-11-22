@@ -148,7 +148,9 @@ internal class GeminiReplyAssembler(private val http: ProviderHttp, private val 
          * STOP and MAX_TOKENS map directly; CONTINUATION (the per-request token limit was hit
          * with more to say) is also a length cut. Every reason that means the content was
          * filtered is a refusal. The rest (a malformed function call, OTHER, values added
-         * later) are reported as unknown rather than guessed at.
+         * later) are reported as unknown rather than guessed at. CONTINUATION and
+         * PUP_LIMITED_DISABLED could not be re-confirmed against Google's reference; they are
+         * kept because mapping a value the API never sends costs nothing.
          */
         fun finishReasonOf(raw: String?): FinishReason = when (raw) {
             "STOP" -> FinishReason.STOP

@@ -17,11 +17,16 @@ internal class Redactor(secrets: List<String?>) {
         return BEARER.replace(cleaned, "Bearer $MASK")
     }
 
+    /** Whether the message of [error] or of anything in its cause chain quotes a secret. */
+    fun appearsIn(error: Throwable): Boolean =
+        generateSequence(error) { it.cause }.take(MAX_CAUSE_DEPTH).any { link -> link.message?.let { clean(it) != it } == true }
+
     override fun toString(): String = "Redactor(${secrets.size} secrets)"
 
     private companion object {
         const val MIN_SECRET_LENGTH = 6
         const val MASK = "[redacted]"
+        const val MAX_CAUSE_DEPTH = 8
         val BEARER = Regex("(?i)bearer\\s+[A-Za-z0-9._~+/=-]{6,}")
     }
 }

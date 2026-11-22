@@ -4,19 +4,29 @@ import android.content.Context
 import androidx.datastore.preferences.preferencesDataStoreFile
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.ConversationId
 import com.aicontrolcenter.core.activity.ActivityFilter
 import com.aicontrolcenter.core.agents.AgentStats
+import com.aicontrolcenter.core.chat.Conversation
+import com.aicontrolcenter.core.chat.ConversationEntry
+import com.aicontrolcenter.core.llm.ChatMessage
+import com.aicontrolcenter.core.llm.TokenUsage
 import com.aicontrolcenter.core.security.SecretVaultException
 import com.aicontrolcenter.data.repository.RoomAgentRepository
 import com.aicontrolcenter.data.security.DatabaseKeyException
 import com.aicontrolcenter.data.security.SoftwareVaultCipher
 import com.aicontrolcenter.data.security.VaultCipher
 import com.aicontrolcenter.testkit.Samples
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExecutorCoroutineDispatcher
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -59,6 +69,7 @@ class DataLayerTest {
         assertSame(data.models, data.models)
         assertSame(data.aiApps, data.aiApps)
         assertSame(data.activityLog, data.activityLog)
+        assertSame(data.conversations, data.conversations)
         assertSame(data.settings, data.settings)
         assertSame(data.secretVault, data.secretVault)
 
@@ -74,6 +85,11 @@ class DataLayerTest {
         val model = Samples.model()
         val app = Samples.aiApp()
         val event = Samples.event()
+        val conversation = Conversation(ConversationId("cnv_1"), agent.id, "First chat", createdAt = 2_000, updatedAt = 2_500)
+        val question = ConversationEntry(conversation.id, seq = 0, ChatMessage.user("What time is it?"), at = 2_100)
+        val answer = ConversationEntry(
+            conversation.id, seq = 1, ChatMessage.assistant("Ten o'clock."), at = 2_200, modelName = "model-x", usage = TokenUsage(120, 30),
+        )
 
         val first = dataLayer()
         first.agents.upsert(agent)
@@ -82,6 +98,8 @@ class DataLayerTest {
         first.models.upsert(model)
         first.aiApps.upsert(app)
         first.activityLog.record(event)
+        first.conversations.upsertConversation(conversation)
+        assertEquals(listOf(question, answer), listOf(question, answer).map { first.conversations.appendEntry(it) })
         first.settings.update { it.copy(directorAgentId = agent.id, localOnlyMode = true) }
         first.secretVault.put(provider.apiKeyAlias!!, "sk-home-server")
         first.close()
@@ -93,9 +111,29 @@ class DataLayerTest {
         assertEquals(listOf(model), second.models.getByProvider(provider.id))
         assertEquals(app, second.aiApps.getByPackage(app.packageName))
         assertEquals(listOf(event), second.activityLog.recent(ActivityFilter(egressOnly = true)))
+        assertEquals(listOf(conversation), second.conversations.observeConversations(agent.id).first())
+        assertEquals(listOf(question, answer), second.conversations.observeEntries(conversation.id).first())
+        // Numbering carries on where it stopped before the restart.
+        assertEquals(2, second.conversations.appendEntry(question.copy(at = 2_300)).seq)
         assertEquals(agent.id, second.settings.get().directorAgentId)
         assertTrue(second.settings.get().localOnlyMode)
         assertEquals("sk-home-server", second.secretVault.get(provider.apiKeyAlias!!))
+    }
+
+    @Test
+    fun `entries appended from many threads to the database file get consecutive numbers`() = runTest {
+        // The file-backed database has a pool of connections, unlike the in-memory one of the contract suite.
+        val data = dataLayer()
+        val id = ConversationId("cnv_1")
+        data.conversations.upsertConversation(Conversation(id, AgentId("agt_a"), "Chat", createdAt = 1, updatedAt = 1))
+        withContext(Dispatchers.Default) {
+            (1..80).map { n ->
+                launch { data.conversations.appendEntry(ConversationEntry(id, seq = 0, ChatMessage.user("m$n"), at = n.toLong())) }
+            }.joinAll()
+        }
+        val entries = data.conversations.getEntries(id)
+        assertEquals((0..79).toList(), entries.map { it.seq })
+        assertEquals((1..80).map { "m$it" }.toSet(), entries.map { it.message.text }.toSet())
     }
 
     @Test

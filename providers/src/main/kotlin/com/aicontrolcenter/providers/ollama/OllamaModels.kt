@@ -28,7 +28,8 @@ import kotlinx.serialization.json.put
  *
  * `/api/show` answers with a `capabilities` array ("completion", "tools", "vision",
  * "thinking", "embedding", ...), which maps directly onto tool calling, vision, chat and
- * embeddings. Reasoning and coding tiers are not something Ollama reports; they are estimated
+ * embeddings. Ollama's API document shows the array but only the first and third of those
+ * values; the others are what its server reports and are not enumerated there. Reasoning and coding tiers are not something Ollama reports; they are estimated
  * from the parameter count it does report, one step higher for a model with a thinking mode.
  *
  * The context window is the `num_ctx` set in the model's Modelfile when there is one, otherwise

@@ -25,6 +25,11 @@ data class HttpTimeouts(
  * Redirects are not followed. Model APIs do not redirect, and following one would send the
  * conversation, and for providers that authenticate with a custom header also the key, to
  * whatever address a misconfigured or hostile server names.
+ *
+ * OkHttp's own recovery is left on. It re-sends a request whose pooled connection the server
+ * had already closed, which would otherwise surface as a network failure after every idle
+ * period, and it repeats a request once after a 408. Every other retry decision belongs to the
+ * framework, which sees the mapped [com.aicontrolcenter.core.llm.LlmException].
  */
 internal fun providerHttpClient(shared: OkHttpClient?, timeouts: HttpTimeouts): OkHttpClient =
     (shared?.newBuilder() ?: OkHttpClient.Builder())

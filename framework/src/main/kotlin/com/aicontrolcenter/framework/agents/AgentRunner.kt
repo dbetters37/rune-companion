@@ -34,8 +34,9 @@ import kotlinx.coroutines.withTimeoutOrNull
  *  - The transcript only grows. Messages are sent back to the model exactly as they were
  *    received (including provider data), because providers validate their own earlier output.
  *  - Every tool call the model made gets exactly one result message, even when the run is
- *    stopped by a limit, a time-out or cancellation; the result then says the tool did not
- *    run. A transcript with an unanswered call would be rejected on the next turn.
+ *    stopped by a limit, a time-out or cancellation; the result then says that the tool did
+ *    not run, or that it was stopped half-way. A transcript with an unanswered call would be
+ *    rejected on the next turn.
  *  - Model failures and limits end the run with a result, never with an exception. Only
  *    cancellation of the caller propagates, after what was produced has been handed over.
  *  - Tool results go back to the model as tool messages and nowhere else: they cannot change
@@ -119,6 +120,9 @@ class AgentRunner(
         /** Calls of the last assistant message that have no result message yet. */
         private val unanswered = ArrayList<ToolCallRequest>()
 
+        /** The call whose tool is running right now, if any. */
+        private var executing: ToolCallRequest? = null
+
         suspend fun loop(): Ending {
             while (true) {
                 if (modelCalls >= maxModelCalls) {
@@ -189,7 +193,9 @@ class AgentRunner(
                 report("Running tool: ${spec?.title ?: call.name.take(MAX_TOOL_NAME_SHOWN)}")
                 listener.onToolStarted(call, spec)
                 toolCalls++
+                executing = call
                 val execution = executor.execute(call, toolContext)
+                executing = null
                 if (!execution.outcome.ok) toolErrors++
                 unanswered.remove(call)
                 append(ChatMessage.toolResult(call.id, call.name, execution.outcome.content, isError = !execution.outcome.ok), null, null)
@@ -201,7 +207,9 @@ class AgentRunner(
         /**
          * Leaves the transcript in a state the next turn can build on: a reply that was still
          * arriving is kept as far as it got, and every call still waiting for its tool gets a
-         * result saying why it did not run. Does nothing when nothing is open.
+         * result saying why it did not run. A tool that was stopped while running is reported
+         * as interrupted rather than as not run: the model must not assume that nothing
+         * happened. Does nothing when nothing is open.
          */
         suspend fun closeOpenWork(reason: String) {
             if (partial.isNotBlank()) {
@@ -210,9 +218,16 @@ class AgentRunner(
                 append(ChatMessage.assistant(lastText), modelName, null)
             }
             val open = unanswered.toList()
+            val interrupted = executing
             unanswered.clear()
+            executing = null
             for (call in open) {
-                append(ChatMessage.toolResult(call.id, call.name, "This tool was not run: $reason", isError = true), null, null)
+                val explanation = if (call === interrupted) {
+                    "This tool was stopped before it finished, so whether it had any effect is unknown. Reason: $reason"
+                } else {
+                    "This tool was not run: $reason"
+                }
+                append(ChatMessage.toolResult(call.id, call.name, explanation, isError = true), null, null)
             }
         }
 

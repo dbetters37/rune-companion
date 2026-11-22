@@ -20,8 +20,9 @@ import kotlin.test.assertTrue
 
 /**
  * Guards the exported schema that is committed next to the code (`data/schemas`): it has to
- * exist, describe the six tables and their indexes, match the database this build actually
- * creates, and every version in it must be reachable by a migration.
+ * exist, describe all tables and their indexes, match the database this build actually
+ * creates, every version in it must be reachable by a migration, and a version that has been
+ * released must stay as it was.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
@@ -46,11 +47,14 @@ class SchemaExportTest {
         }.toSet()
 
     @Test
-    fun `the current schema is exported and lists all six tables`() {
+    fun `the current schema is exported and lists all eight tables`() {
         val current = schema(AiccDatabase.VERSION)
         assertEquals(AiccDatabase.VERSION, current.getValue("version").jsonPrimitive.int)
         assertEquals(
-            setOf("agents", "agent_stats", "providers", "models", "ai_apps", "activity_events"),
+            setOf(
+                "agents", "agent_stats", "providers", "models", "ai_apps", "activity_events",
+                "conversations", "conversation_entries",
+            ),
             current.tables().keys,
         )
     }
@@ -74,6 +78,34 @@ class SchemaExportTest {
         assertEquals(
             setOf(listOf("first_seen_at", "id"), listOf("package_name"), listOf("linked_provider_id")),
             tables.getValue("ai_apps").indexColumns(),
+        )
+        assertEquals(setOf(listOf("updated_at"), listOf("agent_id", "updated_at")), tables.getValue("conversations").indexColumns())
+    }
+
+    @Test
+    fun `entries are unique per conversation and sequence number and belong to their conversation`() {
+        val entries = schema(AiccDatabase.VERSION).tables().getValue("conversation_entries")
+        // The primary key is the unique index that reading a conversation in order relies on.
+        assertEquals(
+            listOf("conversation_id", "seq"),
+            entries.getValue("primaryKey").jsonObject.getValue("columnNames").jsonArray.map { it.jsonPrimitive.content },
+        )
+        val foreignKey = entries.getValue("foreignKeys").jsonArray.single().jsonObject
+        assertEquals("conversations", foreignKey.getValue("table").jsonPrimitive.content)
+        assertEquals("CASCADE", foreignKey.getValue("onDelete").jsonPrimitive.content)
+        assertEquals(listOf("conversation_id"), foreignKey.getValue("columns").jsonArray.map { it.jsonPrimitive.content })
+        assertEquals(listOf("id"), foreignKey.getValue("referencedColumns").jsonArray.map { it.jsonPrimitive.content })
+    }
+
+    @Test
+    fun `the schema of the released version 1 is still the one that was released`() {
+        // Phones hold databases with exactly this schema. Regenerating or editing 1.json would make
+        // the migration tests start from a database that never existed.
+        val released = schema(1)
+        assertEquals("771a2500805fc58d277bd82d0535d125", released.getValue("identityHash").jsonPrimitive.content)
+        assertEquals(
+            setOf("agents", "agent_stats", "providers", "models", "ai_apps", "activity_events"),
+            released.tables().keys,
         )
     }
 

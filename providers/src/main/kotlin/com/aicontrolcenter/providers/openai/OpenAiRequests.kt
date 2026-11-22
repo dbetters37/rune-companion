@@ -28,6 +28,13 @@ import kotlinx.serialization.json.putJsonObject
  *  - The output limit is sent as `max_tokens`, which every implementation knows. Models that
  *    have dropped it are switched to `max_completion_tokens` by the parameter tolerance.
  *  - `tool_choice` is sent only to forbid tool use; "auto" is the protocol's default.
+ *
+ * Verification: platform.openai.com and openrouter.ai could not be reached from the build
+ * environment, so the request and reply fields here, in [OpenAiReplyAssembler] and in
+ * [OpenAiModels] follow the published protocol as known when this was written rather than a
+ * fresh reading of the reference. The fields individual services add (`reasoning_details`,
+ * `extra_content`, `prompt_cache_hit_tokens`, the model-list metadata) are all read leniently:
+ * if one is renamed, that piece of information is lost, not the call.
  */
 internal object OpenAiRequests {
     const val MAX_TOKENS = "max_tokens"

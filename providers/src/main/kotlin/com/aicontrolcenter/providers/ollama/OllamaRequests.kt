@@ -24,6 +24,14 @@ import kotlinx.serialization.json.putJsonObject
  * `tool_name`. Ollama has no way to forbid tool use, so [ToolChoice.NONE] is honoured by not
  * offering the tools at all; unlike other providers it does not need them to read a history
  * that contains calls.
+ *
+ * Verification: checked against `docs/api.md` of the Ollama repository in November 2026, which
+ * documents `think` (a boolean or "low", "medium", "high", "max"), `tool_name`, `format`,
+ * `options` and `images` as used here. Two things sent here are not in that document: the `id`
+ * of a tool call and `tool_call_id` on a tool result. Recent servers issue and accept ids,
+ * older ones ignore fields they do not know, so they are sent. It is also not documented
+ * whether a model whose thinking can only be switched on or off accepts a level; a refusal is
+ * handled by the parameter tolerance.
  */
 internal object OllamaRequests {
     /** The one optional setting Ollama rejects outright: models without a thinking mode refuse it. */

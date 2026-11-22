@@ -19,6 +19,9 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    // Room's MigrationTestHelper reads the exported schemas as assets of the test.
+    sourceSets.getByName("test").assets.srcDir("$projectDir/schemas")
+
     testOptions {
         unitTests {
             isIncludeAndroidResources = true

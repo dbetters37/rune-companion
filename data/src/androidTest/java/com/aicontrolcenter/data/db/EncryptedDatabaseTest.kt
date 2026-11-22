@@ -5,14 +5,20 @@ import android.database.SQLException
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.ConversationId
 import com.aicontrolcenter.core.agents.AgentKind
 import com.aicontrolcenter.core.agents.AgentProfile
 import com.aicontrolcenter.core.agents.AgentStats
+import com.aicontrolcenter.core.chat.Conversation
+import com.aicontrolcenter.core.chat.ConversationEntry
+import com.aicontrolcenter.core.llm.ChatMessage
+import com.aicontrolcenter.core.llm.ImageContent
 import com.aicontrolcenter.data.DataLayer
 import com.aicontrolcenter.data.DatabaseEncryption
 import com.aicontrolcenter.data.repository.RoomAgentRepository
 import com.aicontrolcenter.data.security.AndroidKeystoreVaultCipher
 import com.aicontrolcenter.data.security.DatabaseKeyException
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -25,6 +31,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -114,6 +121,34 @@ class EncryptedDatabaseTest {
             assertFalse(file.contains(MARKER), "${file.name} contains stored text in the clear")
             assertFalse(file.contains("CREATE TABLE"), "${file.name} contains the schema in the clear")
         }
+    }
+
+    @Test
+    fun conversationsWithLargeMessagesAreStoredEncryptedAndRemovedWithTheirEntries() = runTest {
+        val conversation = Conversation(ConversationId("cnv_encrypted"), agent.id, MARKER, createdAt = 1_000, updatedAt = 1_000)
+        // The size of a photo attached to a message: more than fits into one cursor window.
+        val photo = ImageContent("image/jpeg", "QUJD".repeat(1_000_000))
+        val first = encryptedLayer()
+        first.conversations.upsertConversation(conversation)
+        val stored = listOf(
+            first.conversations.appendEntry(ConversationEntry(conversation.id, seq = 0, ChatMessage.user(MARKER, listOf(photo)), at = 1_100)),
+            first.conversations.appendEntry(
+                ConversationEntry(conversation.id, seq = 0, ChatMessage.assistant("Seen."), at = 1_200, modelName = "model-x"),
+            ),
+        )
+        first.close()
+
+        for (file in databaseFiles(databaseName)) {
+            assertFalse(file.contains(MARKER), "${file.name} contains stored text in the clear")
+        }
+
+        val second = encryptedLayer()
+        assertEquals(listOf(conversation), second.conversations.observeConversations().first())
+        assertEquals(stored, second.conversations.getEntries(conversation.id))
+
+        second.conversations.deleteConversation(conversation.id)
+        assertNull(second.conversations.getConversation(conversation.id))
+        assertEquals(emptyList(), second.conversations.getEntries(conversation.id))
     }
 
     @Test

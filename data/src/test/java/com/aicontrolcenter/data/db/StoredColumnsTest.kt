@@ -1,10 +1,15 @@
 package com.aicontrolcenter.data.db
 
 import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.ConversationId
 import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.agents.AgentStats
 import com.aicontrolcenter.core.agents.GenerationSettings
 import com.aicontrolcenter.core.agents.MemoryPolicy
+import com.aicontrolcenter.core.chat.Conversation
+import com.aicontrolcenter.core.chat.ConversationEntry
+import com.aicontrolcenter.core.llm.ChatMessage
+import com.aicontrolcenter.core.llm.TokenUsage
 import com.aicontrolcenter.data.StoredDataException
 import com.aicontrolcenter.data.db.mapper.level
 import com.aicontrolcenter.data.db.mapper.toDomain
@@ -122,5 +127,41 @@ class StoredColumnsTest {
     fun `stats keep 64-bit token counts`() {
         val big = AgentStats(inputTokens = Long.MAX_VALUE, outputTokens = 6_000_000_000, totalTaskDurationMs = Long.MAX_VALUE - 1)
         assertEquals(big, big.toEntity(AgentId("agt_big")).toDomain())
+    }
+
+    @Test
+    fun `a conversation and its entries keep what is queried on as plain columns and the message as JSON`() {
+        val conversation = Conversation(ConversationId("cnv_1"), AgentId("agt_sample"), "Chat", createdAt = 10, updatedAt = 20).toEntity()
+        assertEquals("agt_sample", conversation.agentId)
+        assertEquals(20L, conversation.updatedAt)
+        assertEquals(Conversation(ConversationId("cnv_1"), AgentId("agt_sample"), "Chat", 10, 20), conversation.toDomain())
+
+        val entry = ConversationEntry(
+            ConversationId("cnv_1"), seq = 4, ChatMessage.assistant("Hi"), at = 30, modelName = "model-x",
+            usage = TokenUsage(120, 30, 100), error = "The provider is overloaded.",
+        )
+        val stored = entry.toEntity()
+        assertEquals("cnv_1", stored.conversationId)
+        assertEquals(4, stored.seq)
+        assertEquals(30L, stored.at)
+        assertEquals("model-x", stored.modelName)
+        assertEquals("The provider is overloaded.", stored.error)
+        assertEquals(
+            setOf("role", "text", "images", "toolCalls", "toolResult", "reasoning", "providerData"),
+            Json.parseToJsonElement(stored.messageJson).jsonObject.keys,
+        )
+        assertEquals(entry, stored.toDomain())
+
+        val plain = entry.copy(modelName = null, usage = null, error = null)
+        assertNull(plain.toEntity().usageJson)
+        assertEquals(plain, plain.toEntity().toDomain())
+    }
+
+    @Test
+    fun `an unreadable message is reported with its conversation and number but without the content`() {
+        val stored = ConversationEntry(ConversationId("cnv_1"), seq = 4, ChatMessage.user("private"), at = 30).toEntity()
+        val failure = assertFailsWith<StoredDataException> { stored.copy(messageJson = """{"role":"USER","text":"private""").toDomain() }
+        assertEquals("Column conversation_entries.message_json of row 'cnv_1#4' does not hold readable JSON.", failure.message)
+        assertFailsWith<StoredDataException> { stored.copy(usageJson = "[]").toDomain() }
     }
 }

@@ -132,11 +132,13 @@ class ProviderHttpTest : MockServerTest() {
             override fun canceled(call: Call) = cancelled.countDown()
         }).build()
         // One event arrives at once; the rest of the body trickles in far too slowly to finish.
+        // MockWebServer throttles the reading of the request by the same amount, so the first
+        // period has to be large enough to take in the whole request body.
         val first = """data: {"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}""" + "\n\n"
         server.enqueue(
             MockResponse.Builder().addHeader("Content-Type", "text/event-stream")
-                .body(first + ": padding ".repeat(2_000))
-                .throttleBody(first.length.toLong(), 30, TimeUnit.SECONDS)
+                .body(first + ": keep-alive\n".repeat(2_000))
+                .throttleBody(2_048, 30, TimeUnit.SECONDS)
                 .build(),
         )
         runBlocking {

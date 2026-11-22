@@ -107,4 +107,6 @@ internal class HttpFailure(
     val detail: ErrorDetail,
     /** From the Retry-After (or retry-after-ms) header. */
     val retryAfterMs: Long? = null,
+    /** The error arrived inside a 2xx reply or stream; [status] is then the classification, not what was sent. */
+    val embedded: Boolean = false,
 )

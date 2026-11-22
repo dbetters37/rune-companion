@@ -3,6 +3,7 @@ package com.aicontrolcenter.data
 import android.content.Context
 import androidx.sqlite.db.SupportSQLiteOpenHelper
 import com.aicontrolcenter.core.activity.ActivityLog
+import com.aicontrolcenter.core.chat.ConversationRepository
 import com.aicontrolcenter.core.registry.AgentRepository
 import com.aicontrolcenter.core.registry.AiAppRepository
 import com.aicontrolcenter.core.registry.ModelRepository
@@ -15,6 +16,7 @@ import com.aicontrolcenter.data.db.SqlCipher
 import com.aicontrolcenter.data.repository.RoomActivityLog
 import com.aicontrolcenter.data.repository.RoomAgentRepository
 import com.aicontrolcenter.data.repository.RoomAiAppRepository
+import com.aicontrolcenter.data.repository.RoomConversationRepository
 import com.aicontrolcenter.data.repository.RoomModelRepository
 import com.aicontrolcenter.data.repository.RoomProviderRepository
 import com.aicontrolcenter.data.security.AndroidKeystoreVaultCipher
@@ -81,6 +83,7 @@ class DataLayer(
     val models: ModelRepository by lazy { RoomModelRepository(database, ioDispatcher) }
     val aiApps: AiAppRepository by lazy { RoomAiAppRepository(database, ioDispatcher) }
     val activityLog: ActivityLog by lazy { RoomActivityLog(database, ioDispatcher) }
+    val conversations: ConversationRepository by lazy { RoomConversationRepository(database, ioDispatcher) }
 
     val settings: SettingsRepository by lazy {
         DataStoreSettingsRepository.create(appContext, CoroutineScope(settingsJob + ioDispatcher), settingsFileName)

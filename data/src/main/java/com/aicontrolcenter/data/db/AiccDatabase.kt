@@ -8,19 +8,22 @@ import androidx.sqlite.db.SupportSQLiteOpenHelper
 import com.aicontrolcenter.data.db.dao.ActivityEventDao
 import com.aicontrolcenter.data.db.dao.AgentDao
 import com.aicontrolcenter.data.db.dao.AiAppDao
+import com.aicontrolcenter.data.db.dao.ConversationDao
 import com.aicontrolcenter.data.db.dao.ModelDao
 import com.aicontrolcenter.data.db.dao.ProviderDao
 import com.aicontrolcenter.data.db.entity.ActivityEventEntity
 import com.aicontrolcenter.data.db.entity.AgentEntity
 import com.aicontrolcenter.data.db.entity.AgentStatsEntity
 import com.aicontrolcenter.data.db.entity.AiAppEntity
+import com.aicontrolcenter.data.db.entity.ConversationEntity
+import com.aicontrolcenter.data.db.entity.ConversationEntryEntity
 import com.aicontrolcenter.data.db.entity.ModelEntity
 import com.aicontrolcenter.data.db.entity.ProviderEntity
 import kotlinx.coroutines.CoroutineDispatcher
 
 /**
  * The app's single SQLite database: the registry (agents and their stats, providers, models,
- * AI applications) and the activity log.
+ * AI applications), the activity log and the conversations with agents.
  *
  * The schema is exported to `data/schemas` and versioned with the code. There is no destructive
  * fallback: opening a database whose version has no migration path fails loudly instead of
@@ -36,6 +39,8 @@ import kotlinx.coroutines.CoroutineDispatcher
         ModelEntity::class,
         AiAppEntity::class,
         ActivityEventEntity::class,
+        ConversationEntity::class,
+        ConversationEntryEntity::class,
     ],
     version = AiccDatabase.VERSION,
     exportSchema = true,
@@ -46,9 +51,11 @@ abstract class AiccDatabase : RoomDatabase() {
     internal abstract fun modelDao(): ModelDao
     internal abstract fun aiAppDao(): AiAppDao
     internal abstract fun activityEventDao(): ActivityEventDao
+    internal abstract fun conversationDao(): ConversationDao
 
     companion object {
-        const val VERSION = 1
+        /** Version 1 was the first release; 2 added conversations. See [AiccMigrations]. */
+        const val VERSION = 2
         const val DEFAULT_NAME = "aicc.db"
 
         /**

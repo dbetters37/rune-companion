@@ -25,10 +25,17 @@ import kotlinx.serialization.json.putJsonObject
 import kotlinx.serialization.json.add
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
 import org.junit.rules.Timeout
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.fail
@@ -93,6 +100,20 @@ fun fullConversation(model: String) = ChatRequest(
 )
 
 fun simpleRequest(model: String = "test-model", text: String = "Hello") = ChatRequest(model = model, messages = listOf(ChatMessage.user(text)))
+
+/**
+ * A client that answers every request itself with [body] and records what was asked. Nothing
+ * reaches the network, so it can show where an adapter would send a request to its real
+ * default address.
+ */
+class CannedClient(private val body: String) {
+    val requests = CopyOnWriteArrayList<Request>()
+    val client: OkHttpClient = OkHttpClient.Builder().addInterceptor { chain ->
+        requests += chain.request()
+        Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+            .body(body.toResponseBody("application/json".toMediaType())).build()
+    }.build()
+}
 
 /** Base for tests that talk to a [MockWebServer]. */
 abstract class MockServerTest {

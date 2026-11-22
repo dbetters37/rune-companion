@@ -112,12 +112,16 @@ internal class ProviderHttp(
         }
     }.flowOn(Dispatchers.IO)
 
+    /**
+     * The parser's own exception is not kept as the cause: it quotes the text around the point
+     * of failure, and a body can echo anything the server was sent, the key included.
+     */
     fun decode(body: String): JsonElement {
         if (body.isBlank()) throw errors.malformed("the body was empty")
         return try {
             Json.parseToJsonElement(body)
         } catch (e: SerializationException) {
-            throw errors.malformed("the body was not JSON", e)
+            throw errors.malformed("the body was not JSON")
         }
     }
 

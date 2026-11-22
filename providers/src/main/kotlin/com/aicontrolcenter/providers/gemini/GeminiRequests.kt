@@ -36,6 +36,15 @@ import kotlinx.serialization.json.putJsonObject
  *    because Gemini wants all the responses to a turn's calls together, after all the calls.
  *  - Tool schemas go in `parametersJsonSchema`, the field that takes standard JSON Schema;
  *    `parameters` accepts only an OpenAPI subset.
+ *
+ * Verification: ai.google.dev could not be reached from the build environment. Confirmed
+ * through search excerpts of Google's documentation only: that Gemini 3 and later answer 400
+ * when the signature of the first function call of a step is missing, the [SKIP_SIGNATURE]
+ * value, `parametersJsonSchema`, and the thinking levels (MINIMAL, LOW, MEDIUM, HIGH, not all
+ * of them on every model). Not confirmed afresh: `id` on `functionCall` and
+ * `functionResponse`, the exact set of finish and block reasons, and that
+ * `thoughtsTokenCount` is counted apart from `candidatesTokenCount`
+ * ([GeminiReplyAssembler]), and the `thinking` flag of the model list ([GeminiModels]).
  */
 internal object GeminiRequests {
     const val TEMPERATURE = "temperature"

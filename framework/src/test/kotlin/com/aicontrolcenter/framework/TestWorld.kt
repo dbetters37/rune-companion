@@ -165,7 +165,7 @@ class TestWorld(
         return agent
     }
 
-    fun register(tool: Tool): Tool = tool.also(toolRegistry::register)
+    fun <T : Tool> register(tool: T): T = tool.also(toolRegistry::register)
 
     fun events(type: ActivityType): List<ActivityEvent> = log.all.filter { it.type == type }
 

@@ -40,32 +40,32 @@ internal class ErrorMapper(private val label: String, private val redactor: Reda
         val detail = failure.detail
         return when {
             status == 401 || status == 403 ->
-                LlmException.Authentication(describe("rejected the API key or does not allow this request", status, detail))
+                LlmException.Authentication(describe("rejected the API key or does not allow this request", failure))
             status == 404 ->
                 if (detail.code == "model_not_found" || "model" in detail.searchable) {
-                    LlmException.ModelNotFound(describe("does not have this model", status, detail))
+                    LlmException.ModelNotFound(describe("does not have this model", failure))
                 } else {
-                    LlmException.InvalidRequest(describe("has nothing at this address; check the base URL", status, detail), status)
+                    LlmException.InvalidRequest(describe("has nothing at this address; check the base URL", failure), status)
                 }
-            status == 408 || status == 504 -> LlmException.Timeout(describe("timed out", status, detail))
+            status == 408 || status == 504 -> LlmException.Timeout(describe("timed out", failure))
             status == 429 -> LlmException.RateLimited(
-                describe("is limiting requests", status, detail),
+                describe("is limiting requests", failure),
                 retryAfterMs = failure.retryAfterMs ?: detail.retryDelayMs,
             )
             status == 529 || (status == 503 && saysOverloaded(detail)) ->
-                LlmException.Overloaded(describe("is overloaded", status, detail))
-            status in 500..599 -> LlmException.Server(describe("had an internal error", status, detail), status)
+                LlmException.Overloaded(describe("is overloaded", failure))
+            status in 500..599 -> LlmException.Server(describe("had an internal error", failure), status)
             status == 400 || status == 413 || status == 422 -> when {
-                saysBadKey(detail) -> LlmException.Authentication(describe("rejected the API key", status, detail))
+                saysBadKey(detail) -> LlmException.Authentication(describe("rejected the API key", failure))
                 saysContextTooLong(detail) ->
-                    LlmException.ContextTooLong(describe("says the conversation no longer fits the model's context window", status, detail))
-                saysModelMissing(detail) -> LlmException.ModelNotFound(describe("does not have this model", status, detail))
-                else -> LlmException.InvalidRequest(describe("rejected the request", status, detail), status)
+                    LlmException.ContextTooLong(describe("says the conversation no longer fits the model's context window", failure))
+                saysModelMissing(detail) -> LlmException.ModelNotFound(describe("does not have this model", failure))
+                else -> LlmException.InvalidRequest(describe("rejected the request", failure), status)
             }
             status in 300..399 -> LlmException.InvalidRequest(
-                describe("answered with a redirect, which is not followed; check the base URL", status, detail), status,
+                describe("answered with a redirect, which is not followed; check the base URL", failure), status,
             )
-            else -> LlmException.InvalidRequest(describe("rejected the request", status, detail), status)
+            else -> LlmException.InvalidRequest(describe("rejected the request", failure), status)
         }
     }
 
@@ -76,30 +76,38 @@ internal class ErrorMapper(private val label: String, private val redactor: Reda
      */
     fun fromEmbedded(detail: ErrorDetail): LlmException {
         val status = detail.code?.toIntOrNull()?.takeIf { it in 300..599 } ?: 500
-        return fromHttp(HttpFailure(status, detail, retryAfterMs = null))
+        return fromHttp(HttpFailure(status, detail, retryAfterMs = null, embedded = true))
     }
 
+    /**
+     * The original exception is kept as the cause for diagnosis, unless its own text quotes a
+     * secret (a status line or header echoed by a proxy can end up in one); then only its kind
+     * survives, in the message.
+     */
     fun fromIo(e: IOException): LlmException {
         val reason = redactor.clean(e.message ?: e.javaClass.simpleName)
+        val cause = e.takeUnless { redactor.appearsIn(it) }
         return when {
             e is SocketTimeoutException || (e is InterruptedIOException && e.message == "timeout") ->
-                LlmException.Timeout("$label did not respond in time ($reason).", e)
-            e is UnknownHostException -> LlmException.Network("$label could not be found: the host name does not resolve.", e)
-            e is ConnectException -> LlmException.Network("Could not connect to $label ($reason).", e)
-            e is SSLException -> LlmException.Network("Could not establish a secure connection to $label ($reason).", e)
-            else -> LlmException.Network("The connection to $label failed ($reason).", e)
+                LlmException.Timeout("$label did not respond in time ($reason).", cause)
+            e is UnknownHostException -> LlmException.Network("$label could not be found: the host name does not resolve.", cause)
+            e is ConnectException -> LlmException.Network("Could not connect to $label ($reason).", cause)
+            e is SSLException -> LlmException.Network("Could not establish a secure connection to $label ($reason).", cause)
+            else -> LlmException.Network("The connection to $label failed ($reason).", cause)
         }
     }
 
-    fun malformed(what: String, cause: Throwable? = null): LlmException.MalformedResponse =
-        LlmException.MalformedResponse("$label sent a reply that could not be understood: $what.", cause)
+    fun malformed(what: String): LlmException.MalformedResponse =
+        LlmException.MalformedResponse("$label sent a reply that could not be understood: $what.")
 
     /** The stream closed before the provider marked the reply as finished. */
     fun droppedStream(): LlmException.Network = LlmException.Network("The reply from $label was cut off before it was complete.")
 
-    private fun describe(what: String, status: Int, detail: ErrorDetail): String {
-        val theirWords = detail.message.ifEmpty { null }?.let { ": $it" } ?: "."
-        return "$label $what (HTTP $status)$theirWords"
+    private fun describe(what: String, failure: HttpFailure): String {
+        val theirWords = failure.detail.message.ifEmpty { null }?.let { ": $it" } ?: "."
+        // An error embedded in a successful reply was classified by a code, not sent with that status.
+        val status = if (failure.embedded) "" else " (HTTP ${failure.status})"
+        return "$label $what$status$theirWords"
     }
 
     private fun saysBadKey(detail: ErrorDetail): Boolean =

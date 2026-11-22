@@ -10,7 +10,6 @@ import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.llm.DetectedServer
 import com.aicontrolcenter.core.llm.LlmException
 import com.aicontrolcenter.core.llm.ModelSyncReport
-import com.aicontrolcenter.core.llm.ProviderConnection
 import com.aicontrolcenter.core.llm.ProviderDraft
 import com.aicontrolcenter.core.llm.ProviderHealth
 import com.aicontrolcenter.core.llm.ProviderManager
@@ -39,8 +38,6 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import java.net.URI
-import java.net.URISyntaxException
 
 /**
  * Connects, checks and removes providers and keeps their models. See [ProviderManager].
@@ -54,7 +51,7 @@ import java.net.URISyntaxException
  *  - [ModelDescriptor] has no field for "edited by the owner", so a listed model whose name or
  *    capabilities the owner changes becomes a [ModelSource.MANUAL] model. Refreshing never
  *    overwrites the description of anything but [ModelSource.PROVIDER_LISTING] models, and only
- *    those are marked unavailable when the provider stops listing them.
+ *    those are marked unavailable when the provider stops listing them (see [ModelListingMerge]).
  */
 class DefaultProviderManager(
     private val providers: ProviderRepository,
@@ -66,8 +63,11 @@ class DefaultProviderManager(
     private val ids: IdGenerator,
     private val clock: Clock,
     override val presets: List<ProviderPreset> = ProviderPresets.all,
-    private val localProbes: List<ProviderPreset> = ProviderPresets.localProbes,
+    localProbes: List<ProviderPreset> = ProviderPresets.localProbes,
 ) : ProviderManager {
+
+    private val localServers = LocalServerDetector(providers, connections, localProbes)
+    private val listingMerge = ModelListingMerge(ids)
 
     // ---- providers ----
 
@@ -223,56 +223,7 @@ class DefaultProviderManager(
             null
         }
 
-    override suspend fun detectLocalServers(): List<DetectedServer> {
-        val takenPorts = providers.getAll().mapNotNull { loopbackPort(it) }.toSet()
-        return coroutineScope {
-            localProbes
-                .filter { preset -> loopbackPort(preset.kind, preset.baseUrl)?.let { it !in takenPorts } == true }
-                .map { preset -> async { probeLocal(preset) } }
-                .awaitAll()
-                .filterNotNull()
-        }
-    }
-
-    private suspend fun probeLocal(preset: ProviderPreset): DetectedServer? {
-        val baseUrl = preset.baseUrl ?: return null
-        val candidate = ModelProvider(
-            id = ProviderId("probe_${preset.id}"), name = preset.title, kind = preset.kind, baseUrl = baseUrl,
-            locality = Locality.ON_DEVICE, createdAt = 0, updatedAt = 0,
-        )
-        val adapter = try {
-            connections.openUncached(ProviderConnection(candidate, apiKey = null)) ?: return null
-        } catch (e: Exception) {
-            return null
-        }
-        return try {
-            // Nothing listening is the normal case, so any failure simply means "not found".
-            val listed = withTimeoutOrNull(PROBE_TIMEOUT_MS) { adapter.listModels() } ?: return null
-            DetectedServer(preset.id, preset.title, baseUrl, preset.kind, listed.size)
-        } catch (e: Exception) {
-            rethrowIfCancelled(e)
-            null
-        } finally {
-            try {
-                adapter.close()
-            } catch (e: Exception) {
-                // A probe adapter that fails to close holds nothing worth reporting.
-            }
-        }
-    }
-
-    private fun loopbackPort(provider: ModelProvider): Int? = loopbackPort(provider.kind, provider.baseUrl)
-
-    /** The port of an address on this phone, or null for anything else. Two servers cannot share one, so it identifies the server. */
-    private fun loopbackPort(kind: ProviderKind, baseUrl: String?): Int? {
-        if (baseUrl == null || Locality.infer(kind, baseUrl) != Locality.ON_DEVICE) return null
-        val uri = try {
-            URI(baseUrl)
-        } catch (e: URISyntaxException) {
-            return null
-        }
-        return if (uri.port > 0) uri.port else if (uri.scheme.equals("https", ignoreCase = true)) 443 else 80
-    }
+    override suspend fun detectLocalServers(): List<DetectedServer> = localServers.detect()
 
     // ---- models ----
 
@@ -296,54 +247,20 @@ class DefaultProviderManager(
 
     private suspend fun merge(provider: ModelProvider, listed: List<RemoteModel>): ModelSyncReport {
         if (providers.get(provider.id) == null) throw IllegalArgumentException(PROVIDER_GONE)
-        val reported = LinkedHashMap<String, RemoteModel>()
-        for (remote in listed) {
-            val name = remote.name.trim()
-            if (name.isNotEmpty() && name !in reported) reported[name] = remote
-        }
-        val existing = models.getByProvider(provider.id)
-        val known = existing.associateBy { it.modelName }
-        val now = clock.now()
-        var createdAt = nextCreationTime(models.getAll().maxOfOrNull { it.createdAt })
-
-        val added = ArrayList<ModelDescriptor>()
-        val updated = ArrayList<ModelDescriptor>()
-        for ((name, remote) in reported) {
-            val current = known[name]
-            if (current == null) {
-                added += ModelDescriptor(
-                    id = ids.modelId(), providerId = provider.id, modelName = name,
-                    displayName = remote.displayName?.trim()?.ifEmpty { null } ?: name,
-                    capabilities = remote.capabilities ?: ModelCapabilityEstimator.estimate(provider.kind, name),
-                    source = ModelSource.PROVIDER_LISTING, sizeBytes = remote.sizeBytes, status = ModelStatus.AVAILABLE,
-                    createdAt = createdAt, updatedAt = createdAt,
-                )
-                createdAt++
-                continue
-            }
-            val describedByListing = current.source == ModelSource.PROVIDER_LISTING
-            val refreshed = current.copy(
-                displayName = remote.displayName?.trim()?.takeIf { describedByListing && it.isNotEmpty() } ?: current.displayName,
-                capabilities = remote.capabilities?.takeIf { describedByListing } ?: current.capabilities,
-                sizeBytes = remote.sizeBytes ?: current.sizeBytes,
-                status = ModelStatus.AVAILABLE,
-            )
-            if (refreshed != current) updated += refreshed.copy(updatedAt = now)
-        }
-        val missing = existing.filter { it.source == ModelSource.PROVIDER_LISTING && it.modelName !in reported }
-        val newlyMissing = missing.filter { it.status != ModelStatus.UNAVAILABLE }.map { it.copy(status = ModelStatus.UNAVAILABLE, updatedAt = now) }
-        val stillMissing = missing.filter { it.status == ModelStatus.UNAVAILABLE }
-
-        if (added.isNotEmpty() || updated.isNotEmpty() || newlyMissing.isNotEmpty()) {
+        val changes = listingMerge.changes(
+            provider, existing = models.getByProvider(provider.id), listed = listed,
+            now = clock.now(), firstCreationTime = nextCreationTime(models.getAll().maxOfOrNull { it.createdAt }),
+        )
+        if (!changes.isEmpty) {
             withContext(NonCancellable) {
-                models.upsertAll(added + updated + newlyMissing)
+                models.upsertAll(changes.toStore)
                 activity.record(
                     ActivityType.REGISTRY, "Models refreshed",
-                    "${provider.name}: ${added.size} added, ${updated.size} updated, ${newlyMissing.size} no longer listed",
+                    "${provider.name}: ${changes.added.size} added, ${changes.updated.size} updated, ${changes.newlyMissing.size} no longer listed",
                 )
             }
         }
-        return ModelSyncReport(added, updated, newlyMissing + stillMissing)
+        return changes.report()
     }
 
     override suspend fun addModel(providerId: ProviderId, modelName: String, displayName: String?, capabilities: ModelCapabilities?): ModelDescriptor =
@@ -446,6 +363,5 @@ class DefaultProviderManager(
         const val PROVIDER_GONE = "That provider no longer exists."
         const val MODEL_GONE = "That model no longer exists."
         const val CHECK_TIMEOUT_MS = 20_000L
-        const val PROBE_TIMEOUT_MS = 1_500L
     }
 }

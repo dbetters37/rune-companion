@@ -2,6 +2,7 @@ package com.aicontrolcenter.data.repository
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aicontrolcenter.core.activity.ActivityLog
+import com.aicontrolcenter.core.chat.ConversationRepository
 import com.aicontrolcenter.core.registry.AgentRepository
 import com.aicontrolcenter.core.registry.AiAppRepository
 import com.aicontrolcenter.core.registry.ModelRepository
@@ -10,6 +11,7 @@ import com.aicontrolcenter.data.testing.InMemoryDatabaseRule
 import com.aicontrolcenter.testkit.contract.ActivityLogContract
 import com.aicontrolcenter.testkit.contract.AgentRepositoryContract
 import com.aicontrolcenter.testkit.contract.AiAppRepositoryContract
+import com.aicontrolcenter.testkit.contract.ConversationRepositoryContract
 import com.aicontrolcenter.testkit.contract.ModelRepositoryContract
 import com.aicontrolcenter.testkit.contract.ProviderRepositoryContract
 import org.junit.Rule
@@ -54,4 +56,11 @@ class RoomAiAppRepositoryContractTest : AiAppRepositoryContract() {
 class RoomActivityLogContractTest : ActivityLogContract() {
     @get:Rule val db = InMemoryDatabaseRule()
     override fun createLog(): ActivityLog = RoomActivityLog(db.database)
+}
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [35])
+class RoomConversationRepositoryContractTest : ConversationRepositoryContract() {
+    @get:Rule val db = InMemoryDatabaseRule()
+    override fun createRepository(): ConversationRepository = RoomConversationRepository(db.database)
 }

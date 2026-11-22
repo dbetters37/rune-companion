@@ -91,7 +91,10 @@ internal class GeminiChatClient(
                     ?.let { THINKING_SETTINGS to it.permanent }
             } ?: return null
             omitted = omitted + refused.first
-            if (refused.second) refused.first.forEach { memory.remember(scope, it) }
+            // Models before Gemini 3 refuse JSON output only in combination with tools, so a
+            // refusal seen while tools were offered says nothing about JSON output on its own.
+            val aboutTheCombination = GeminiRequests.RESPONSE_MIME_TYPE in refused.first && request.tools.isNotEmpty()
+            if (refused.second && !aboutTheCombination) refused.first.forEach { memory.remember(scope, it) }
             return body()
         }
     }
