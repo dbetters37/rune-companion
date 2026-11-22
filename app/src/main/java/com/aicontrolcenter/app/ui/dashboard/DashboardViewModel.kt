@@ -53,6 +53,7 @@ class DashboardViewModel(
         DashboardUiState(
             isLoading = false,
             summary = snapshot.toSummary(),
+            setupNotice = snapshot.setupNotice(),
             attention = snapshot.attentionItems(),
             network = network,
             selectedNode = network.node(local.selectedNodeId),

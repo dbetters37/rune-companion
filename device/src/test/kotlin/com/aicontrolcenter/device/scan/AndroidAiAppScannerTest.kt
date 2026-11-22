@@ -21,8 +21,10 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.security.MessageDigest
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -35,6 +37,9 @@ class AndroidAiAppScannerTest {
     private val scanner = AndroidAiAppScanner(device.application, dispatcher = Dispatchers.Unconfined)
 
     private suspend fun scan(): Map<String, DiscoveredApp> = scanner.scanForAiApps().associateBy { it.packageName }
+
+    private fun sha256Hex(text: String): String =
+        MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
 
     @Test
     fun `finds installed catalog apps with exactly the capabilities their intent filters give`() = runTest {
@@ -203,7 +208,13 @@ class AndroidAiAppScannerTest {
     @Test
     fun `the name heuristic proposes launchable AI-named apps and leaves messaging apps alone`() = runTest {
         device.install("com.example.pocket", label = "Pocket AI") { launcher() }
-        device.install("com.example.gptkeyboard", label = "Smart Keyboard") {
+        device.install("com.example.gptnotes", label = "Smart Notes") {
+            launcher()
+            sharesText()
+        }
+        // Tools that merely advertise an AI feature.
+        device.install("com.example.typing", label = "AI Keyboard") { launcher() }
+        device.install("com.opera.browser", label = "Opera browser with AI") {
             launcher()
             sharesText()
         }
@@ -219,10 +230,71 @@ class AndroidAiAppScannerTest {
         device.install("com.example.aiservice", label = "AI Service") { sharesText() }
 
         val apps = scan()
-        assertEquals(setOf("com.example.pocket", "com.example.gptkeyboard"), apps.keys)
+        assertEquals(setOf("com.example.pocket", "com.example.gptnotes"), apps.keys)
         assertTrue(apps.values.all { it.source == DiscoverySource.HEURISTIC })
         assertEquals(setOf(LAUNCH), apps.getValue("com.example.pocket").capabilities)
-        assertEquals(setOf(LAUNCH, SHARE_TEXT), apps.getValue("com.example.gptkeyboard").capabilities)
+        assertEquals(setOf(LAUNCH, SHARE_TEXT), apps.getValue("com.example.gptnotes").capabilities)
+        assertEquals(DiscoverySource.MANUAL, scanner.inspect("com.example.typing")?.source, "inspect agrees with the scan")
+    }
+
+    @Test
+    fun `reports when the app was first installed and which certificate signs it`() = runTest {
+        device.install(
+            "com.openai.chatgpt", label = "ChatGPT", firstInstalledAt = 1_700_000_000_000, signedBy = listOf("vendor key"),
+        ) { launcher() }
+        device.install("com.termux", label = "Termux") { launcher() }
+
+        val chatGpt = scan().getValue("com.openai.chatgpt")
+        assertEquals(1_700_000_000_000, chatGpt.firstInstallTime)
+        assertEquals(sha256Hex("vendor key"), chatGpt.signingCertSha256)
+        assertEquals(64, chatGpt.signingCertSha256?.length)
+        assertEquals(chatGpt.signingCertSha256, chatGpt.signingCertSha256?.lowercase())
+
+        val inspected = assertNotNull(scanner.inspect("com.openai.chatgpt"))
+        assertEquals(chatGpt.firstInstallTime to chatGpt.signingCertSha256, inspected.firstInstallTime to inspected.signingCertSha256)
+
+        // What Android does not report stays unknown instead of becoming a made-up value.
+        val termux = scan().getValue("com.termux")
+        assertNull(termux.firstInstallTime)
+        assertNull(termux.signingCertSha256)
+    }
+
+    @Test
+    fun `the identity changes when the certificate or the installation changes`() = runTest {
+        device.install(
+            "com.openai.chatgpt", label = "ChatGPT", firstInstalledAt = 1_700_000_000_000, signedBy = listOf("vendor key"),
+        ) { launcher() }
+        val original = scan().getValue("com.openai.chatgpt")
+
+        device.setVersion("com.openai.chatgpt", "2.0")
+        val updated = scan().getValue("com.openai.chatgpt")
+        assertEquals(original.signingCertSha256, updated.signingCertSha256, "an ordinary update keeps the identity")
+        assertEquals(original.firstInstallTime, updated.firstInstallTime)
+
+        device.setSigners("com.openai.chatgpt", listOf("somebody else's key"))
+        val resigned = scan().getValue("com.openai.chatgpt")
+        assertEquals(sha256Hex("somebody else's key"), resigned.signingCertSha256)
+        assertNotEquals(original.signingCertSha256, resigned.signingCertSha256)
+        assertEquals(resigned.signingCertSha256, scanner.inspect("com.openai.chatgpt")?.signingCertSha256)
+
+        device.setFirstInstallTime("com.openai.chatgpt", 1_800_000_000_000)
+        assertEquals(1_800_000_000_000, scan().getValue("com.openai.chatgpt").firstInstallTime)
+    }
+
+    @Test
+    fun `several signers give one value that does not depend on their order`() = runTest {
+        device.install("com.openai.chatgpt", label = "ChatGPT", signedBy = listOf("key one", "key two")) { launcher() }
+        val oneWay = scan().getValue("com.openai.chatgpt").signingCertSha256
+
+        device.setSigners("com.openai.chatgpt", listOf("key two", "key one"))
+        val otherWay = scan().getValue("com.openai.chatgpt").signingCertSha256
+
+        assertEquals(oneWay, otherWay)
+        assertEquals(sha256Hex(listOf(sha256Hex("key one"), sha256Hex("key two")).sorted().joinToString("")), oneWay)
+        assertNotEquals(sha256Hex("key one"), oneWay)
+
+        device.setSigners("com.openai.chatgpt", listOf("key one", "key three"))
+        assertNotEquals(oneWay, scan().getValue("com.openai.chatgpt").signingCertSha256)
     }
 
     @Test

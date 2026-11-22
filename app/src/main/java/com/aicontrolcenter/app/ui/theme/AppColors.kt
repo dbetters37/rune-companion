@@ -29,6 +29,12 @@ enum class StatusTone {
 
     /** Switched off on purpose. */
     DISABLED,
+
+    /**
+     * Not usable yet, for a reason that is expected and not a fault: a step of setting up that
+     * has not happened. Deliberately calm, so an unfinished setup never reads as an error.
+     */
+    INFO,
 }
 
 /**
@@ -44,6 +50,7 @@ data class AppColors(
     val attention: Color,
     val unavailable: Color,
     val disabled: Color,
+    val info: Color,
     val onDevice: Color,
     val localNetwork: Color,
     val cloud: Color,
@@ -60,6 +67,7 @@ data class AppColors(
         StatusTone.ATTENTION -> attention
         StatusTone.UNAVAILABLE -> unavailable
         StatusTone.DISABLED -> disabled
+        StatusTone.INFO -> info
     }
 
     fun locality(locality: Locality): Color = when (locality) {

@@ -14,17 +14,26 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Measures this phone with public Android APIs: `Build`, `ActivityManager`, `StatFs` and
- * `PackageManager`. It needs no permission and sends nothing anywhere.
+ * Measures this phone with public Android APIs: `Build`, `ActivityManager`, `StatFs`,
+ * `PackageManager` and, from Android 16, `AdvancedProtectionManager`. The only permission
+ * involved is the normal one for reading the Advanced Protection state; nothing is sent
+ * anywhere and no other app's data is read.
  *
  * Values the platform cannot supply are reported as null or 0 rather than guessed, which the
  * report's consumers already treat as "unknown".
  */
-class AndroidDeviceInspector(
+class AndroidDeviceInspector internal constructor(
     context: Context,
-    private val clock: Clock = WallClock,
-    private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val clock: Clock,
+    private val dispatcher: CoroutineDispatcher,
+    private val advancedProtection: AdvancedProtectionReader,
 ) : DeviceInspector {
+
+    constructor(
+        context: Context,
+        clock: Clock = WallClock,
+        dispatcher: CoroutineDispatcher = Dispatchers.IO,
+    ) : this(context, clock, dispatcher, PlatformAdvancedProtectionReader(context.applicationContext ?: context))
 
     private val appContext: Context = context.applicationContext ?: context
 
@@ -52,7 +61,7 @@ class AndroidDeviceInspector(
             storageTotalBytes = storage.totalBytes,
             storageFreeBytes = storage.freeBytes,
             openGlEsVersion = glEsVersionName,
-            features = DeviceFeatureProbe(appContext.packageManager)
+            features = DeviceFeatureProbe(appContext.packageManager, advancedProtection)
                 .probe(glEs.reqGlEsVersion, glEsVersionName, isLowRam),
             generatedAt = clock.now(),
         )

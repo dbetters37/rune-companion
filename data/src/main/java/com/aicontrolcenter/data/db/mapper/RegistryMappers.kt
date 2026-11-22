@@ -95,6 +95,10 @@ internal fun AiApp.toEntity(): AiAppEntity = AiAppEntity(
     linkedProviderId = linkedProviderId?.value,
     promptDeepLink = promptDeepLink,
     notes = notes,
+    firstInstallTime = firstInstallTime,
+    signingCertSha256 = signingCertSha256,
+    verifiedByUser = verifiedByUser,
+    hidden = hidden,
     firstSeenAt = firstSeenAt,
     lastSeenAt = lastSeenAt,
 )
@@ -115,6 +119,10 @@ internal fun AiAppEntity.toDomain(): AiApp {
         linkedProviderId = linkedProviderId?.let(::ProviderId),
         promptDeepLink = promptDeepLink,
         notes = notes,
+        firstInstallTime = firstInstallTime,
+        signingCertSha256 = signingCertSha256,
+        verifiedByUser = verifiedByUser,
+        hidden = hidden,
         firstSeenAt = firstSeenAt,
         lastSeenAt = lastSeenAt,
     )

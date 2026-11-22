@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -65,8 +64,11 @@ internal fun EcosystemSummarySection(
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(Spacing.md)) {
         AppCard(contentPadding = PaddingValues(0.dp)) {
             AgentAvailabilityBlock(summary, onOpenAgents)
-            RowDivider()
-            DirectorRow(summary.director, onOpenAgent, onOpenAgents)
+            // An empty registry has nobody to direct; the missing Director is only worth a row once agents exist.
+            if (summary.agentCount > 0) {
+                RowDivider()
+                DirectorRow(summary.director, onOpenAgent, onOpenAgents)
+            }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
             StatTile(
@@ -123,18 +125,19 @@ private fun AgentAvailabilityBlock(summary: EcosystemSummary, onOpenAgents: () -
             verticalArrangement = Arrangement.spacedBy(Spacing.sm),
         ) {
             AvailabilityCount(summary.readyAgents, "Ready", StatusTone.READY)
-            AvailabilityCount(summary.unavailableAgents, "Unavailable", StatusTone.UNAVAILABLE)
+            if (summary.agentsWithoutModel > 0) {
+                AvailabilityCount(summary.agentsWithoutModel, "No model yet", StatusTone.INFO)
+            }
+            // "Unavailable" is always shown unless the only reason is a missing model.
+            if (summary.unavailableAgents > 0 || summary.agentsWithoutModel == 0) {
+                AvailabilityCount(summary.unavailableAgents, "Unavailable", StatusTone.UNAVAILABLE)
+            }
             AvailabilityCount(summary.disabledAgents, "Disabled", StatusTone.DISABLED)
         }
-        Text(
-            text = "Nothing is running: this version manages agents but cannot execute tasks yet.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 
-/** Proportions of ready, unavailable and disabled agents. Decorative: the counts below say the same in words. */
+/** Proportions of ready, model-less, unavailable and disabled agents. Decorative: the counts below say the same in words. */
 @Composable
 private fun AvailabilityBar(summary: EcosystemSummary) {
     val colors = appColors
@@ -149,6 +152,7 @@ private fun AvailabilityBar(summary: EcosystemSummary) {
     ) {
         listOf(
             summary.readyAgents to colors.ready,
+            summary.agentsWithoutModel to colors.info,
             summary.unavailableAgents to colors.unavailable,
             summary.disabledAgents to colors.disabled,
         ).filter { it.first > 0 }.forEach { (count, color) ->
@@ -196,22 +200,26 @@ private fun DirectorRow(director: DirectorSummary?, onOpenAgent: (AgentId) -> Un
     ) {
         if (director == null) {
             Icon(
-                StatusTone.UNAVAILABLE.icon,
+                StatusTone.ATTENTION.icon,
                 contentDescription = null,
-                tint = appColors.unavailable,
+                tint = appColors.attention,
                 modifier = Modifier.size(28.dp),
             )
             Column(Modifier.weight(1f)) {
-                Text("No Director designated", style = MaterialTheme.typography.titleSmall)
                 Text(
-                    "Objectives have nowhere to go until an agent is designated.",
+                    "No Director designated",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    "Objectives will have nowhere to go until an agent is designated.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         } else {
             AgentAvatar(director.name, director.colorIndex, size = 44.dp)
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
                     text = director.name,
                     style = MaterialTheme.typography.titleSmall,
@@ -220,19 +228,13 @@ private fun DirectorRow(director: DirectorSummary?, onOpenAgent: (AgentId) -> Un
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = if (director.canRun) "Designated Director" else "Designated Director · ${director.status.text}",
+                    text = "Designated Director",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
                 )
+                StatusChip(label = director.runLabel, tone = director.status.tone)
             }
-            StatusChip(
-                label = if (director.canRun) "Can run" else "Cannot run",
-                tone = director.status.tone,
-            )
         }
-        Spacer(Modifier.size(0.dp))
         Icon(AppIcons.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

@@ -5,19 +5,19 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aicontrolcenter.app.ui.components.UserMessage
 import com.aicontrolcenter.core.AiAppId
-import com.aicontrolcenter.core.activity.ActivityRecorder
-import com.aicontrolcenter.core.activity.ActivityType
 import com.aicontrolcenter.core.registry.AiApp
 import com.aicontrolcenter.core.registry.AiAppLauncher
 import com.aicontrolcenter.core.registry.AiAppRegistry
 import com.aicontrolcenter.core.registry.ControlChannel
 import com.aicontrolcenter.core.registry.LaunchResult
 import com.aicontrolcenter.core.registry.controlChannels
+import com.aicontrolcenter.core.settings.SettingsRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -30,6 +30,12 @@ data class AiAppDetailUiState(
     val app: AiApp? = null,
     /** Exactly what the framework may do with the app right now. */
     val channels: Set<ControlChannel> = emptySet(),
+    /**
+     * True when the owner authorised accessibility operation for this app but it is not in
+     * [channels], because the operator switches are off. Shown so the owner's decision and its
+     * actual effect are never confused.
+     */
+    val accessibilityAuthorisedButInactive: Boolean = false,
     /** Set once after this screen removed the app; the route leaves the screen. */
     val removed: Boolean = false,
     val isBusy: Boolean = false,
@@ -41,14 +47,14 @@ data class AiAppDetailUiState(
 
 /**
  * One registered AI application. Everything that touches the other app goes through
- * [AiAppLauncher], which enforces the app's control channels; this class never starts an
- * activity itself and never claims more than those channels allow.
+ * [AiAppLauncher], which enforces the app's control channels and writes the activity entry;
+ * this class never starts an activity itself and never claims more than those channels allow.
  */
 class AiAppDetailViewModel(
     private val appId: AiAppId,
     private val registry: AiAppRegistry,
     private val launcher: AiAppLauncher,
-    private val activity: ActivityRecorder,
+    settings: SettingsRepository,
 ) : ViewModel() {
 
     private data class Local(val removed: Boolean = false, val isBusy: Boolean = false, val message: UserMessage? = null)
@@ -58,12 +64,15 @@ class AiAppDetailViewModel(
 
     val uiState: StateFlow<AiAppDetailUiState> = combine(
         registry.observeApps().map { apps -> apps.firstOrNull { it.id == appId } },
+        settings.settings,
         local,
-    ) { app, local ->
+    ) { app, settings, local ->
+        val channels = app?.controlChannels(settings).orEmpty()
         AiAppDetailUiState(
             isLoading = false,
             app = app,
-            channels = app?.controlChannels().orEmpty(),
+            channels = channels,
+            accessibilityAuthorisedButInactive = app?.accessibilityAuthorized == true && ControlChannel.ACCESSIBILITY !in channels,
             removed = local.removed,
             isBusy = local.isBusy,
             message = local.message,
@@ -71,6 +80,12 @@ class AiAppDetailViewModel(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AiAppDetailUiState())
 
     fun setEnabled(enabled: Boolean) = run { registry.setEnabled(appId, enabled) }
+
+    /** Records the owner's word that an app found only by its name really is an AI application. */
+    fun confirm() = run {
+        registry.confirm(appId)
+        show("Confirmed as an AI application.")
+    }
 
     /** Records the owner's explicit decision. The warning dialog is the screen's responsibility. */
     fun setAccessibilityAuthorized(authorized: Boolean) = run {
@@ -91,7 +106,7 @@ class AiAppDetailViewModel(
     fun openApp() = run {
         val app = currentApp() ?: return@run
         when (val result = launcher.launch(app)) {
-            LaunchResult.Started -> activity.record(ActivityType.USER_ACTION, "Opened ${app.label}", "Nothing was sent to it.")
+            LaunchResult.Started -> Unit
             is LaunchResult.NotPossible -> show(result.reason)
         }
     }
@@ -104,22 +119,19 @@ class AiAppDetailViewModel(
             return@run
         }
         when (val result = launcher.handOffText(app, text)) {
-            LaunchResult.Started -> {
-                // The text itself is not logged: only that a hand-off happened and how large it was.
-                activity.record(
-                    ActivityType.USER_ACTION,
-                    "Text handed to ${app.label}",
-                    "${text.length} characters. The reply stays in that app and is not visible here.",
-                )
-                show("Handed to ${app.label}. Its reply stays in that app.")
-            }
+            LaunchResult.Started -> show("Handed to ${app.label}. Its reply stays in that app.")
             is LaunchResult.NotPossible -> show(result.reason)
         }
     }
 
     fun messageShown() = local.update { it.copy(message = null) }
 
-    private fun currentApp(): AiApp? = uiState.value.app
+    /** Read from the registry rather than from [uiState], which is only current while the screen collects it. */
+    private suspend fun currentApp(): AiApp? {
+        val app = registry.observeApps().first().firstOrNull { it.id == appId }
+        if (app == null) show("This app is no longer in the registry.")
+        return app
+    }
 
     private fun show(text: String) = local.update { it.copy(message = UserMessage(text, ++messageCounter)) }
 

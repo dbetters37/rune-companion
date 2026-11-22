@@ -6,16 +6,20 @@ import android.os.Looper
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.cash.turbine.test
 import com.aicontrolcenter.core.activity.ActivityRecorder
+import com.aicontrolcenter.core.activity.ActivityType
 import com.aicontrolcenter.core.registry.AiAppCapability
 import com.aicontrolcenter.core.registry.AiAppStatus
 import com.aicontrolcenter.core.registry.ControlChannel
 import com.aicontrolcenter.core.registry.DiscoverySource
 import com.aicontrolcenter.core.registry.LaunchResult
+import com.aicontrolcenter.core.registry.authorisedChannels
 import com.aicontrolcenter.core.registry.controlChannels
+import com.aicontrolcenter.core.settings.FrameworkSettings
 import com.aicontrolcenter.device.packages.PackageChange
 import com.aicontrolcenter.device.packages.PackageChangeKind
 import com.aicontrolcenter.device.testing.FakeDevice
 import com.aicontrolcenter.framework.registry.DefaultAiAppRegistry
+import com.aicontrolcenter.framework.registry.LoggingAiAppLauncher
 import com.aicontrolcenter.testkit.FakeClock
 import com.aicontrolcenter.testkit.InMemoryActivityLog
 import com.aicontrolcenter.testkit.InMemoryAiAppRepository
@@ -27,6 +31,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -45,9 +50,9 @@ class DeviceLayerRegistryTest {
     private val clock = FakeClock(autoAdvanceMs = 1)
     private val ids = SequentialIdGenerator()
     private val repository = InMemoryAiAppRepository()
-    private val registry = DefaultAiAppRegistry(
-        repository, layer.scanner, ActivityRecorder(InMemoryActivityLog(), ids, clock), ids, clock,
-    )
+    private val activityLog = InMemoryActivityLog()
+    private val recorder = ActivityRecorder(activityLog, ids, clock)
+    private val registry = DefaultAiAppRegistry(repository, layer.scanner, recorder, ids, clock)
 
     private suspend fun registered(packageName: String) = assertNotNull(repository.getByPackage(packageName), packageName)
 
@@ -65,8 +70,8 @@ class DeviceLayerRegistryTest {
         val chatGpt = registered("com.openai.chatgpt")
         assertEquals(DiscoverySource.CATALOG, chatGpt.source)
         assertEquals("OpenAI", chatGpt.vendor)
-        assertEquals(setOf(ControlChannel.LAUNCH, ControlChannel.INTENT_HANDOFF), chatGpt.controlChannels())
-        assertEquals(setOf(ControlChannel.LAUNCH), registered("com.termux").controlChannels())
+        assertEquals(setOf(ControlChannel.LAUNCH, ControlChannel.INTENT_HANDOFF), chatGpt.authorisedChannels())
+        assertEquals(setOf(ControlChannel.LAUNCH), registered("com.termux").authorisedChannels())
 
         assertEquals(LaunchResult.Started, layer.launcher.handOffText(chatGpt, "Draft a reply"))
         val shared = assertNotNull(shadowOf(device.application).nextStartedActivity)
@@ -84,7 +89,7 @@ class DeviceLayerRegistryTest {
         assertEquals(1, registry.refreshStatuses())
         val disabled = registered("com.openai.chatgpt")
         assertEquals(AiAppStatus.DISABLED_BY_SYSTEM, disabled.status)
-        assertEquals(emptySet(), disabled.controlChannels())
+        assertEquals(emptySet(), disabled.authorisedChannels())
         assertIs<LaunchResult.NotPossible>(layer.launcher.launch(disabled))
         assertIs<LaunchResult.NotPossible>(layer.launcher.handOffText(disabled, "hello"))
 
@@ -128,6 +133,87 @@ class DeviceLayerRegistryTest {
     }
 
     @Test
+    fun `a different installation under the same package name loses its accessibility authorisation`() = runTest {
+        device.install(
+            "com.openai.chatgpt", label = "ChatGPT", firstInstalledAt = 1_700_000_000_000, signedBy = listOf("vendor key"),
+        ) {
+            launcher()
+            sharesText()
+        }
+        registry.discover()
+        val original = registered("com.openai.chatgpt")
+        assertEquals(1_700_000_000_000, original.firstInstallTime)
+        assertEquals(64, original.signingCertSha256?.length)
+        registry.setAccessibilityAuthorized(original.id, true)
+        val operatorOn = FrameworkSettings(operatorEnabled = true, accessibilityOperatorEnabled = true)
+        assertTrue(ControlChannel.ACCESSIBILITY in registered("com.openai.chatgpt").controlChannels(operatorOn))
+
+        // An ordinary update keeps the authorisation.
+        device.setVersion("com.openai.chatgpt", "2.0")
+        assertEquals(1, registry.refreshStatuses())
+        assertTrue(registered("com.openai.chatgpt").accessibilityAuthorized)
+
+        // The same package name, now signed by somebody else.
+        device.setSigners("com.openai.chatgpt", listOf("somebody else's key"))
+        val stale = registered("com.openai.chatgpt")
+        val refused = assertIs<LaunchResult.NotPossible>(layer.launcher.handOffText(stale, "Draft a reply"))
+        assertTrue("different installation" in refused.reason, refused.reason)
+        assertNull(shadowOf(device.application).peekNextStartedActivity())
+
+        assertEquals(1, registry.refreshStatuses())
+        val replaced = registered("com.openai.chatgpt")
+        assertFalse(replaced.accessibilityAuthorized)
+        assertFalse(ControlChannel.ACCESSIBILITY in replaced.controlChannels(operatorOn))
+        assertTrue(replaced.signingCertSha256 != original.signingCertSha256)
+        assertEquals(original.id, replaced.id)
+        // The refreshed entry describes what is installed now, so the owner can use it again.
+        assertEquals(LaunchResult.Started, layer.launcher.handOffText(replaced, "Draft a reply"))
+    }
+
+    @Test
+    fun `an app the owner removed stays removed across scans and cannot be used`() = runTest {
+        device.install("com.openai.chatgpt", label = "ChatGPT") {
+            launcher()
+            sharesText()
+        }
+        registry.discover()
+        val chatGpt = registered("com.openai.chatgpt")
+
+        registry.remove(chatGpt.id)
+        val rescan = registry.discover()
+        assertTrue(rescan.added.isEmpty() && rescan.updated.isEmpty() && rescan.missing.isEmpty())
+        val hidden = registered("com.openai.chatgpt")
+        assertTrue(hidden.hidden)
+        assertEquals(emptySet(), hidden.authorisedChannels())
+        val refused = assertIs<LaunchResult.NotPossible>(layer.launcher.handOffText(hidden, "hello"))
+        assertTrue("removed from the registry" in refused.reason, refused.reason)
+        assertEquals(listOf("com.openai.chatgpt"), registry.unregisteredInstalledApps().map { it.packageName })
+
+        val back = registry.registerManually("com.openai.chatgpt")
+        assertEquals(LaunchResult.Started, layer.launcher.handOffText(back, "hello"))
+    }
+
+    @Test
+    fun `hand-offs are logged by the framework wrapper without the text itself`() = runTest {
+        device.install("com.openai.chatgpt", label = "ChatGPT") {
+            launcher()
+            sharesText()
+        }
+        registry.discover()
+        val launcher = LoggingAiAppLauncher(layer.launcher, recorder)
+        val text = "Zebra crossing 4711"
+
+        assertEquals(LaunchResult.Started, launcher.handOffText(registered("com.openai.chatgpt"), text))
+        assertIs<LaunchResult.NotPossible>(launcher.handOffText(registered("com.openai.chatgpt").copy(enabled = false), text))
+
+        val events = activityLog.all
+        val egress = events.single { it.type == ActivityType.DATA_EGRESS }
+        assertEquals("app:com.openai.chatgpt", egress.egress?.destinationHost)
+        assertTrue(events.any { "switched off" in it.detail })
+        assertTrue(events.none { text in it.title || text in it.detail }, "the handed-off text must not reach the log")
+    }
+
+    @Test
     fun `the device report comes from the same entry point`() = runTest {
         val report = layer.deviceInspector.inspect()
         assertEquals(35, report.sdkInt)
@@ -150,7 +236,7 @@ class DeviceLayerRegistryTest {
         assertEquals(DiscoverySource.MANUAL, notes.source)
         assertEquals("Notes", notes.label)
         assertEquals("4.1", notes.versionName)
-        assertEquals(setOf(ControlChannel.LAUNCH, ControlChannel.ROUND_TRIP_TEXT), notes.controlChannels())
+        assertEquals(setOf(ControlChannel.LAUNCH, ControlChannel.ROUND_TRIP_TEXT), notes.authorisedChannels())
         assertTrue(registry.unregisteredInstalledApps().isEmpty())
 
         assertFailsWith<IllegalArgumentException> { registry.registerManually(device.ownPackage) }

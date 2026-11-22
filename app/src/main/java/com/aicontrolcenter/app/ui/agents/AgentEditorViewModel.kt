@@ -15,6 +15,7 @@ import com.aicontrolcenter.core.agents.ValidationIssue
 import com.aicontrolcenter.core.agents.toDraft
 import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.registry.RegistryDirectory
+import com.aicontrolcenter.core.registry.effectiveLocality
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -102,7 +103,7 @@ class AgentEditorViewModel(
                         id = model.id,
                         name = model.displayName,
                         providerName = provider?.name ?: "Unregistered provider",
-                        locality = provider?.locality,
+                        locality = provider?.effectiveLocality,
                         note = when {
                             !model.enabled -> "Disabled"
                             provider == null -> "Provider missing"
@@ -191,7 +192,8 @@ class AgentEditorViewModel(
 
     fun save() {
         val current = state.value
-        if (current.isSaving || current.isLoading || current.notFound) return
+        // A second tap while the first save is still being acted on must not save again.
+        if (current.isSaving || current.isLoading || current.notFound || current.savedAgentId != null) return
         state.update { it.copy(isSaving = true) }
         viewModelScope.launch {
             try {
@@ -223,7 +225,14 @@ class AgentEditorViewModel(
     private fun validate(draft: AgentDraft) {
         validation?.cancel()
         validation = viewModelScope.launch {
-            val issues = agentManager.validate(draft, editingId)
+            val issues = try {
+                agentManager.validate(draft, editingId)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // Validation reads the registry. If that fails, saving reports the problem; typing must not crash.
+                return@launch
+            }
             state.update { if (it.draft == draft) it.copy(issues = issues.byField()) else it }
         }
     }

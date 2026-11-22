@@ -7,12 +7,11 @@ import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.preferencesOf
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStoreFile
 import com.aicontrolcenter.core.settings.FrameworkSettings
 import com.aicontrolcenter.core.settings.SettingsRepository
-import com.aicontrolcenter.data.DataJson
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -20,7 +19,6 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.retryWhen
-import kotlinx.serialization.SerializationException
 import java.io.IOException
 
 /**
@@ -28,15 +26,18 @@ import java.io.IOException
  * JSON string under one key, so a change to several fields is written atomically and a new
  * field needs no migration (a value stored before the field existed decodes with its default).
  *
- * Stored data that is damaged never crashes the app; it degrades to defaults:
- * - a preferences file that is not a valid file at all is replaced by an empty one;
- * - a value that is not valid settings JSON reads as [FrameworkSettings] defaults, and the
- *   next [update] overwrites it.
+ * Stored data that is damaged never crashes the app, and costs as little as possible:
+ * - a field that cannot be read takes its default while all other fields keep their values
+ *   (see [SettingsCodec]);
+ * - before the first [update] overwrites a value that could not be read completely, the
+ *   original text is copied to a second key ([UNREADABLE_COPY_KEY]), so it can still be
+ *   recovered or inspected;
+ * - a value or a whole preferences file that is not readable at all gives the defaults, with
+ *   local-only mode switched **on**, because the owner's choice is unknown.
  *
  * A file that merely cannot be read right now (an I/O error) is a different case and is *not*
- * papered over with defaults: the real settings may be intact, and the defaults would, among
- * other things, switch local-only mode off. [get] and [update] fail with [IOException], and
- * [settings] keeps retrying and emits once the file is readable again.
+ * papered over with defaults: the real settings may be intact. [get] and [update] fail with
+ * [IOException], and [settings] keeps retrying and emits once the file is readable again.
  */
 class DataStoreSettingsRepository internal constructor(
     private val store: DataStore<Preferences>,
@@ -49,11 +50,11 @@ class DataStoreSettingsRepository internal constructor(
             delay(retryDelayMillis(attempt))
             true
         }
-        .map { preferences -> decode(preferences[SETTINGS_KEY]) }
+        .map { preferences -> decode(preferences[SETTINGS_KEY]).settings }
         .distinctUntilChanged()
 
     /** @throws IOException if the settings file exists but cannot be read. */
-    override suspend fun get(): FrameworkSettings = decode(store.data.first()[SETTINGS_KEY])
+    override suspend fun get(): FrameworkSettings = decode(store.data.first()[SETTINGS_KEY]).settings
 
     /**
      * Atomic: DataStore runs one edit at a time and hands each the latest stored value, so
@@ -67,23 +68,24 @@ class DataStoreSettingsRepository internal constructor(
     override suspend fun update(transform: (FrameworkSettings) -> FrameworkSettings): FrameworkSettings {
         var updated: FrameworkSettings? = null
         store.edit { preferences ->
-            val next = transform(decode(preferences[SETTINGS_KEY]))
-            preferences[SETTINGS_KEY] = DataJson.encodeToString(FrameworkSettings.serializer(), next)
+            val stored = preferences[SETTINGS_KEY]
+            val decoded = decode(stored)
+            val next = transform(decoded.settings)
+            // Saving re-encodes what could be read, which would erase the rest for good.
+            if (stored != null && !decoded.complete) preferences[UNREADABLE_COPY_KEY] = stored
+            preferences[SETTINGS_KEY] = SettingsCodec.encode(next)
             updated = next
         }
         return checkNotNull(updated) { "DataStore finished an edit without running it." }
     }
 
-    private fun decode(stored: String?): FrameworkSettings {
-        if (stored == null) return FrameworkSettings()
-        return try {
-            DataJson.decodeFromString(FrameworkSettings.serializer(), stored)
-        } catch (failure: SerializationException) {
-            // The message of a parse failure can quote the stored text, so only its type is logged.
-            Log.w(TAG, "Stored settings are unreadable (${failure.javaClass.simpleName}); using defaults.")
-            FrameworkSettings()
+    private fun decode(stored: String?): SettingsCodec.Decoded =
+        SettingsCodec.decode(stored).also { decoded ->
+            if (!decoded.complete) {
+                // Field names only: the stored text itself is never logged.
+                Log.w(TAG, "Stored settings could not be read completely; defaults used for ${decoded.unreadableFields}.")
+            }
         }
-    }
 
     /** 1 s, 2 s, 4 s ... capped at 30 s between attempts to re-read an unreadable file. */
     private fun retryDelayMillis(attempt: Long): Long =
@@ -97,6 +99,9 @@ class DataStoreSettingsRepository internal constructor(
         private const val MAX_BACKOFF_STEPS = 5L
 
         internal val SETTINGS_KEY = stringPreferencesKey("framework_settings")
+
+        /** Holds the latest stored value that could not be read completely, exactly as it was. */
+        internal val UNREADABLE_COPY_KEY = stringPreferencesKey("framework_settings_unreadable")
 
         /**
          * Creates the repository over the preferences file [fileName] in app-private storage.
@@ -113,8 +118,8 @@ class DataStoreSettingsRepository internal constructor(
             val appContext = context.applicationContext
             return PreferenceDataStoreFactory.create(
                 corruptionHandler = ReplaceFileCorruptionHandler { corruption ->
-                    Log.w(TAG, "Settings file is corrupt and was reset to defaults.", corruption)
-                    emptyPreferences()
+                    Log.w(TAG, "Settings file is corrupt and was reset to defaults with local-only mode on.", corruption)
+                    preferencesOf(SETTINGS_KEY to SettingsCodec.encode(SettingsCodec.AFTER_DATA_LOSS))
                 },
                 scope = scope,
                 produceFile = { appContext.preferencesDataStoreFile(fileName) },

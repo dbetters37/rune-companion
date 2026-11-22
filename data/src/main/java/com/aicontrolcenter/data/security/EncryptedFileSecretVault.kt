@@ -25,8 +25,14 @@ import java.util.Base64
  * One instance must own [file]; two instances over the same file would not see each other's
  * writes.
  *
- * Failures of the cipher or the file surface as [SecretVaultException]. A secret that fails to
- * decrypt stays stored until it is overwritten or deleted, and other aliases are unaffected.
+ * Failures of the cipher or the file surface as [SecretVaultException], and a failure never
+ * costs a stored secret:
+ * - a secret that fails to decrypt stays stored until it is overwritten or deleted, and other
+ *   aliases are unaffected;
+ * - a vault file that cannot be read is an error on every call, never an empty vault, so a
+ *   later [put] cannot overwrite secrets that are still on disk;
+ * - a [put] or [delete] that did not reach the disk throws, and the vault then reads the file
+ *   again instead of trusting what it believed was stored.
  */
 class EncryptedFileSecretVault(
     file: File,
@@ -37,7 +43,10 @@ class EncryptedFileSecretVault(
     private val store = VaultFileStore(file)
     private val mutex = Mutex()
 
-    /** Alias to Base64 sealed value, as last read from or written to disk. Guarded by [mutex]. */
+    /**
+     * Alias to Base64 sealed value, as last successfully read from or written to disk; null
+     * until then and after any failed write. Guarded by [mutex].
+     */
     private var cached: Map<String, String>? = null
 
     override suspend fun put(alias: String, secret: String) = withContext(ioDispatcher) {
@@ -68,11 +77,17 @@ class EncryptedFileSecretVault(
         val current = load()
         val next = transform(current)
         if (next !== current) {
-            store.write(next)
+            try {
+                store.write(next)
+            } catch (failure: SecretVaultException) {
+                cached = null
+                throw failure
+            }
             cached = next
         }
     }
 
+    /** Only a completed read is remembered; a read that throws leaves the next call to try again. */
     private fun load(): Map<String, String> = cached ?: store.read().also { cached = it }
 
     private fun seal(alias: String, secret: String): String {

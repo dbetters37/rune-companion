@@ -110,11 +110,34 @@ class AndroidKeystoreVaultCipherTest {
     }
 
     @Test
+    fun decryptingNeverCreatesAKey() {
+        // Well-formed but sealed with a key this keystore never had.
+        val foreign = ByteArray(64).also { it[0] = 1 }
+        assertFailsWith<GeneralSecurityException> { cipher.decrypt(foreign, aad) }
+        assertFalse(keyStore.containsAlias(keyAlias))
+    }
+
+    @Test
+    fun onlyAnExplicitDiscardRemovesTheKey() {
+        val sealed = cipher.encrypt("secret".toByteArray(), aad)
+        // Failed reads of every kind leave the entry alone.
+        assertFailsWith<GeneralSecurityException> { cipher.decrypt(sealed, "provider/b".toByteArray()) }
+        assertFailsWith<GeneralSecurityException> { cipher.decrypt(ByteArray(5), aad) }
+        assertTrue(keyStore.containsAlias(keyAlias))
+
+        cipher.discardKey()
+        assertFalse(keyStore.containsAlias(keyAlias))
+        assertFailsWith<GeneralSecurityException> { cipher.decrypt(sealed, aad) }
+        cipher.discardKey() // nothing left to remove
+    }
+
+    @Test
     fun afterTheKeyIsLostOldValuesFailAndNewOnesWork() {
         val sealed = cipher.encrypt("secret".toByteArray(), aad)
         keyStore.deleteEntry(keyAlias)
 
         assertFailsWith<GeneralSecurityException> { cipher.decrypt(sealed, aad) }
+        assertFalse(keyStore.containsAlias(keyAlias), "a failed read must not create a key")
         val resealed = cipher.encrypt("secret again".toByteArray(), aad)
         assertContentEquals("secret again".toByteArray(), cipher.decrypt(resealed, aad))
     }

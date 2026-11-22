@@ -14,11 +14,12 @@ import com.aicontrolcenter.core.ProviderId
 import com.aicontrolcenter.core.registry.AiApp
 import com.aicontrolcenter.core.registry.AiAppRegistry
 import com.aicontrolcenter.core.registry.DiscoveryReport
-import com.aicontrolcenter.core.registry.DiscoverySource
 import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.registry.RegistrySnapshot
 import com.aicontrolcenter.core.registry.controlChannels
+import com.aicontrolcenter.core.registry.effectiveLocality
+import com.aicontrolcenter.core.settings.FrameworkSettings
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -41,6 +42,7 @@ data class ProviderRowUi(
     val name: String,
     val kindLabel: String,
     val address: String?,
+    /** Where prompts really go: the more remote of the stored value and what the address implies. */
     val locality: Locality,
     val status: StatusLabel,
     val modelCount: Int,
@@ -68,10 +70,10 @@ data class AiAppRowUi(
     val vendorAndVersion: String?,
     val status: StatusLabel,
     val sourceLabel: String,
-    /** Found by name only; the owner should not assume it really is an AI app. */
+    /** Found by name only and not confirmed; the owner should not assume it really is an AI app. */
     val unverified: Boolean,
     val capabilities: List<String>,
-    /** What may be done with the app, in words. Empty when nothing may. */
+    /** What may be done with the app right now, in words. Empty when nothing may. */
     val permitted: List<String>,
     val enabledInRegistry: Boolean,
 )
@@ -116,14 +118,14 @@ class ModelsViewModel(
             isLoading = false,
             providers = snapshot.providerRows(),
             models = snapshot.modelRows(),
-            apps = snapshot.apps.map { it.toRow() },
+            apps = snapshot.apps.map { it.toRow(snapshot.settings) },
             isScanning = local.isScanning,
             lastScan = local.lastScan,
             message = local.message,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ModelsUiState())
 
-    /** Scans the device and merges the result into the registry. */
+    /** Scans the device and merges the result into the registry. The outcome stays on screen as [ModelsUiState.lastScan]. */
     fun scanDevice() {
         if (local.value.isScanning) return
         local.update { it.copy(isScanning = true) }
@@ -138,7 +140,6 @@ class ModelsViewModel(
                             changed = report.updated.size,
                             missing = report.missing.map(AiApp::label),
                         ),
-                        message = UserMessage(report.describe(), ++messageCounter),
                     )
                 }
             } catch (cancelled: CancellationException) {
@@ -154,7 +155,25 @@ class ModelsViewModel(
         }
     }
 
+    /** Records the owner's word that an app found only by its name really is an AI application. */
+    fun confirm(id: AiAppId) {
+        viewModelScope.launch {
+            try {
+                aiAppRegistry.confirm(id)
+                show("Confirmed as an AI application.")
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (refused: IllegalArgumentException) {
+                show(refused.message ?: "That app is no longer registered.")
+            } catch (failure: Exception) {
+                show("Could not confirm the app: ${failure.message ?: "unknown error"}")
+            }
+        }
+    }
+
     fun messageShown() = local.update { it.copy(message = null) }
+
+    private fun show(text: String) = local.update { it.copy(message = UserMessage(text, ++messageCounter)) }
 }
 
 /** One sentence for a finished scan: how many apps are new, changed and gone. */
@@ -171,7 +190,7 @@ private fun RegistrySnapshot.providerRows(): List<ProviderRowUi> = providers.map
         name = provider.name,
         kindLabel = provider.kind.label,
         address = provider.baseUrl,
-        locality = provider.locality,
+        locality = provider.effectiveLocality,
         status = if (provider.enabled) provider.status.toStatusLabel() else StatusLabel("Disabled", StatusTone.DISABLED),
         modelCount = models.count { it.providerId == provider.id },
     )
@@ -185,28 +204,33 @@ private fun RegistrySnapshot.modelRows(): List<ModelRowUi> = models.map { model 
         name = model.displayName,
         wireName = model.modelName,
         providerName = provider?.name ?: "Unregistered provider",
-        locality = provider?.locality,
+        locality = provider?.effectiveLocality,
         status = if (model.enabled) model.status.toStatusLabel() else StatusLabel("Disabled", StatusTone.DISABLED),
         traits = buildList {
             if (capabilities.toolCalling) add("Tool calling")
             if (capabilities.vision) add("Vision")
             if (capabilities.jsonOutput) add("JSON output")
             if (capabilities.embeddings) add("Embeddings")
-            capabilities.contextWindow?.let { add("${it / 1000}k context") }
+            capabilities.contextWindow?.let { add(formatContextWindow(it)) }
         },
         agentsUsing = agents.count { it.profile.modelId == model.id },
     )
 }
 
-internal fun AiApp.toRow(): AiAppRowUi = AiAppRowUi(
+/** "8k context" for 8192, "512 context" below a thousand tokens. */
+internal fun formatContextWindow(tokens: Int): String =
+    if (tokens >= 1000) "${tokens / 1000}k context" else "$tokens context"
+
+/** [settings] decides what is permitted right now: accessibility needs both operator switches. */
+internal fun AiApp.toRow(settings: FrameworkSettings): AiAppRowUi = AiAppRowUi(
     id = id,
     label = label,
     packageName = packageName,
     vendorAndVersion = listOfNotNull(vendor, versionName?.let { "version $it" }).joinToString(" · ").ifEmpty { null },
     status = status.toStatusLabel(),
     sourceLabel = source.label,
-    unverified = source == DiscoverySource.HEURISTIC,
+    unverified = isUnverified,
     capabilities = capabilities.sortedBy { it.ordinal }.map { it.label },
-    permitted = controlChannels().sortedBy { it.ordinal }.map { it.label },
+    permitted = controlChannels(settings).sortedBy { it.ordinal }.map { it.label },
     enabledInRegistry = enabled,
 )

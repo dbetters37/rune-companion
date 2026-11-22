@@ -7,6 +7,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -14,10 +15,15 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import com.aicontrolcenter.app.ui.icons.AppIcons
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.filterNotNull
 
 /**
  * A one-off sentence for the owner (the result of an action, or why it failed). [id] makes two
@@ -43,12 +49,15 @@ fun ScreenScaffold(
     content: @Composable (PaddingValues) -> Unit,
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
-    LaunchedEffect(message) {
-        if (message != null) {
-            // Acknowledge first: the text is already on its way, and a recomposition that
-            // replaces this effect must not show it twice.
-            onMessageShown()
-            snackbarHostState.showSnackbar(message.text)
+    val latestMessage by rememberUpdatedState(message)
+    val latestOnMessageShown by rememberUpdatedState(onMessageShown)
+    // One long-lived collector instead of an effect keyed on the message: acknowledging sets the
+    // message back to null, and an effect keyed on it would cancel the snackbar it just showed.
+    LaunchedEffect(snackbarHostState) {
+        snapshotFlow { latestMessage }.filterNotNull().collectLatest { shown ->
+            // Acknowledge first, so a screen that is recreated does not show the text again.
+            latestOnMessageShown()
+            snackbarHostState.showSnackbar(shown.text)
         }
     }
     Scaffold(
@@ -70,7 +79,19 @@ fun ScreenScaffold(
             )
         },
         floatingActionButton = floatingActionButton,
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = {
+            SnackbarHost(snackbarHostState) { data ->
+                // A raised panel of the app's own palette instead of Material's inverted default,
+                // which is a white slab on the dark scheme.
+                Snackbar(
+                    snackbarData = data,
+                    shape = MaterialTheme.shapes.medium,
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    actionColor = MaterialTheme.colorScheme.primary,
+                )
+            }
+        },
         content = content,
     )
 }

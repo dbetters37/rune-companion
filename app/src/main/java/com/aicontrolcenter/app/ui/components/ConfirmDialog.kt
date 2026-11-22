@@ -8,6 +8,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.vector.ImageVector
+import com.aicontrolcenter.app.ui.theme.appColors
 
 /**
  * Asks before something consequential happens. [destructive] colours the confirming button as
@@ -23,10 +24,17 @@ fun ConfirmDialog(
     dismissLabel: String = "Cancel",
     destructive: Boolean = false,
     icon: ImageVector? = null,
+    /** Marks a decision with consequences that are easy to underestimate; tints the icon as a warning. */
+    cautionary: Boolean = false,
 ) {
+    val iconTint = when {
+        destructive -> MaterialTheme.colorScheme.error
+        cautionary -> appColors.attention
+        else -> MaterialTheme.colorScheme.secondary
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
-        icon = icon?.let { { Icon(it, contentDescription = null) } },
+        icon = icon?.let { { Icon(it, contentDescription = null, tint = iconTint) } },
         title = { Text(title) },
         text = { Text(message, style = MaterialTheme.typography.bodyMedium) },
         confirmButton = {

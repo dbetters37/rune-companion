@@ -132,7 +132,9 @@ fun ActivityEventRow(row: ActivityRowUi, modifier: Modifier = Modifier, onClick:
                 )
                 Text(row.time, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            val secondary = listOfNotNull(row.agentName, event.detail.takeIf { it.isNotBlank() }).joinToString(" · ")
+            // Registry events already name the agent in their detail; do not say it twice.
+            val agentName = row.agentName?.takeUnless { event.detail.startsWith(it) }
+            val secondary = listOfNotNull(agentName, event.detail.takeIf { it.isNotBlank() }).joinToString(" · ")
             if (secondary.isNotEmpty()) {
                 Text(
                     text = secondary,

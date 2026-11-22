@@ -48,6 +48,10 @@ class StoredColumnsTest {
         assertEquals("INSTALLED", app.status)
         assertEquals("prv_sample", app.linkedProviderId)
         assertTrue(app.accessibilityAuthorized)
+        assertEquals(500L, app.firstInstallTime)
+        assertEquals("ab".repeat(32), app.signingCertSha256)
+        assertTrue(app.verifiedByUser)
+        assertFalse(app.hidden)
 
         val event = Samples.event().toEntity()
         assertEquals("MODEL_CALL", event.type)

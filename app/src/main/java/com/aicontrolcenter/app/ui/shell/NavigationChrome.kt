@@ -1,5 +1,6 @@
 package com.aicontrolcenter.app.ui.shell
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -8,9 +9,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Badge
@@ -50,9 +51,11 @@ private fun BadgedIcon(icon: ImageVector, badge: Int) {
     BadgedBox(
         badge = {
             if (badge > 0) {
+                // Nudged outwards: at its default place the badge covers a third of a 24dp icon.
                 Badge(
                     containerColor = appColors.attention,
                     contentColor = MaterialTheme.colorScheme.onTertiary,
+                    modifier = Modifier.offset(x = 6.dp, y = (-4).dp),
                 ) { Text(if (badge > 99) "99+" else badge.toString()) }
             }
         },

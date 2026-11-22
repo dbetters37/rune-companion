@@ -1,3 +1,8 @@
 <resources>
-    <style name="Theme.AiControlCenter" parent="android:Theme.Material.NoActionBar" />
+    <!-- Window chrome only: it is what shows for the instant before Compose draws. Colours match the Compose theme's background. -->
+    <style name="Theme.AiControlCenter" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
 </resources>

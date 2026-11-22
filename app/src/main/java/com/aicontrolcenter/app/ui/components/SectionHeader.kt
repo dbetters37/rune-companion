@@ -9,6 +9,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -33,7 +34,11 @@ fun SectionHeader(
             text = title.uppercase(),
             style = OverlineTextStyle,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(1f).semantics { heading() },
+            // Spoken in its normal case: screen readers spell out or shout all-capitals text.
+            modifier = Modifier.weight(1f).semantics {
+                heading()
+                contentDescription = title
+            },
         )
         if (actionLabel != null && onAction != null) {
             TextButton(onClick = onAction) { Text(actionLabel) }

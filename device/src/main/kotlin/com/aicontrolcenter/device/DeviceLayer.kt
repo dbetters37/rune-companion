@@ -28,7 +28,8 @@ import kotlinx.coroutines.flow.Flow
  * main thread on [ioDispatcher].
  *
  * @param context any context; only the application context is retained.
- * @param catalog the known AI apps to look for. Replaceable for tests.
+ * @param catalog the known AI apps to look for, and whose documented prompt links may be
+ *   opened. Replaceable for tests.
  * @param startGate decides whether a hand-off may start an activity right now.
  */
 class DeviceLayer(
@@ -43,8 +44,11 @@ class DeviceLayer(
     /** Discovers AI apps and lists installed apps through PackageManager. */
     val scanner: AiAppScanner = AndroidAiAppScanner(appContext, catalog, ioDispatcher)
 
-    /** Opens registered apps and hands text to them. */
-    val launcher: AiAppLauncher = AndroidAiAppLauncher(appContext, startGate, ioDispatcher)
+    /**
+     * Opens registered apps and hands text to them. It records nothing itself: wrap it in the
+     * framework's `LoggingAiAppLauncher` so that every hand-off reaches the activity log.
+     */
+    val launcher: AiAppLauncher = AndroidAiAppLauncher(appContext, catalog, startGate, ioDispatcher)
 
     /**
      * Installs, removals, updates and enable/disable changes of other apps while it is

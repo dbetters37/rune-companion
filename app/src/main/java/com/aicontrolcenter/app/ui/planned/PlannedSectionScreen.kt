@@ -47,7 +47,7 @@ enum class PlannedSection(
             "Results, reviews and requested revisions",
             "Controls to pause or cancel a run",
         ),
-        dependsOn = "Tasks need agents that can run, which needs model providers. Both are later phases of this app.",
+        dependsOn = "Tasks need agents that can run, which needs model providers. Both are later stages of this build.",
     ),
     MEMORY(
         title = "Memory",
@@ -57,7 +57,7 @@ enum class PlannedSection(
             "Shared knowledge spaces and who may read or write them",
             "Search across memories, with editing and deletion",
         ),
-        dependsOn = "The memory system is a later phase. Each agent's memory policy can already be set in its editor.",
+        dependsOn = "The memory system is a later stage of this build. Each agent's memory policy can already be set in its editor.",
     ),
     TOOLS(
         title = "Tools",
@@ -67,7 +67,7 @@ enum class PlannedSection(
             "Which agents hold a grant for which tool",
             "Actions that always need your confirmation",
         ),
-        dependsOn = "Tools and their permission system are a later phase. No agent can act on this phone in this version.",
+        dependsOn = "Tools and their permission system are a later stage of this build. No agent can act on this phone in this version.",
     ),
     ;
 

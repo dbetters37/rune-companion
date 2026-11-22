@@ -4,11 +4,11 @@ import android.content.Context
 import androidx.datastore.preferences.preferencesDataStoreFile
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.activity.ActivityFilter
 import com.aicontrolcenter.core.agents.AgentStats
 import com.aicontrolcenter.core.security.SecretVaultException
 import com.aicontrolcenter.data.repository.RoomAgentRepository
+import com.aicontrolcenter.data.security.DatabaseKeyException
 import com.aicontrolcenter.data.security.SoftwareVaultCipher
 import com.aicontrolcenter.data.security.VaultCipher
 import com.aicontrolcenter.testkit.Samples
@@ -22,6 +22,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.io.File
+import java.security.GeneralSecurityException
 import java.util.Collections
 import java.util.concurrent.Executors
 import kotlin.test.assertEquals
@@ -39,8 +40,9 @@ class DataLayerTest {
     private val open = mutableListOf<DataLayer>()
     private val executors = mutableListOf<ExecutorCoroutineDispatcher>()
 
+    /** Unencrypted: the SQLCipher native library cannot be loaded on the JVM. */
     private fun dataLayer(vaultCipher: VaultCipher = cipher) =
-        DataLayer(context, vaultCipher = vaultCipher).also(open::add)
+        DataLayer(context, databaseEncryption = DatabaseEncryption.None, vaultCipher = vaultCipher).also(open::add)
 
     @After
     fun tearDown() {
@@ -139,11 +141,16 @@ class DataLayerTest {
                 return cipher.decrypt(sealed, associatedData)
             }
         }
-        val data = DataLayer(context, ioDispatcher = io, vaultCipher = recordingCipher).also(open::add)
+        val data = DataLayer(context, ioDispatcher = io, databaseEncryption = DatabaseEncryption.None, vaultCipher = recordingCipher)
+            .also(open::add)
 
         // The stats transform runs inside the database transaction, so the thread it runs on is
         // the thread doing the database work.
-        data.agents.updateStats(AgentId("agt_a")) { recordThread(); it.copy(toolCalls = 1) }
+        val agent = Samples.agent()
+        data.agents.upsert(agent)
+        var transformRan = false
+        data.agents.updateStats(agent.id) { recordThread(); transformRan = true; it.copy(toolCalls = 1) }
+        assertTrue(transformRan)
         data.secretVault.put("provider/a", "sk-alpha")
         assertEquals("sk-alpha", data.secretVault.get("provider/a"))
 
@@ -153,9 +160,32 @@ class DataLayerTest {
     @Test
     fun `without a device keystore the default vault fails with a vault error instead of crashing`() = runTest {
         // Robolectric has no AndroidKeyStore, which is what a broken keystore looks like to the app.
-        val data = DataLayer(context).also(open::add)
+        val data = DataLayer(context, databaseEncryption = DatabaseEncryption.None).also(open::add)
         assertFailsWith<SecretVaultException> { data.secretVault.put("provider/a", "sk-alpha") }
         assertNull(data.secretVault.get("provider/a"))
         assertEquals(emptySet(), data.secretVault.aliases())
+    }
+
+    @Test
+    fun `by default the database is encrypted, and without a usable keystore it is not opened at all`() = runTest {
+        val data = DataLayer(context, vaultCipher = cipher).also(open::add)
+
+        // Building the repositories touches neither the keystore nor a file.
+        val agents = data.agents
+        assertFalse(context.getDatabasePath("aicc.db").exists())
+
+        val failure = assertFailsWith<DatabaseKeyException> { agents.getAll() }
+        assertTrue(generateSequence<Throwable>(failure) { it.cause }.any { it is GeneralSecurityException })
+        assertFailsWith<DatabaseKeyException> { agents.upsert(Samples.agent()) }
+
+        // No unencrypted database was created as a fallback, and no key was left behind.
+        assertFalse(context.getDatabasePath("aicc.db").exists())
+        assertFalse(File(context.noBackupFilesDir, DataLayer.databaseKeyFile("aicc.db")).exists())
+    }
+
+    @Test
+    fun `the sealed database key has its own file outside of backups`() {
+        assertEquals("database-keys/aicc.db.key", DataLayer.databaseKeyFile("aicc.db"))
+        assertEquals("database-keys/other.db.key", DataLayer.databaseKeyFile("other.db"))
     }
 }

@@ -6,6 +6,8 @@ import com.aicontrolcenter.core.registry.AiAppRepository
 import com.aicontrolcenter.data.db.AiccDatabase
 import com.aicontrolcenter.data.db.dao.AiAppDao
 import com.aicontrolcenter.data.db.entity.AiAppEntity
+import com.aicontrolcenter.data.db.mapper.mapReadable
+import com.aicontrolcenter.data.db.mapper.readableOrNull
 import com.aicontrolcenter.data.db.mapper.toDomain
 import com.aicontrolcenter.data.db.mapper.toEntity
 import kotlinx.coroutines.CoroutineDispatcher
@@ -18,7 +20,8 @@ import kotlinx.coroutines.withContext
 
 /**
  * [AiAppRepository] on Room. It records what the registry decided about each app and nothing
- * more; what may be done with an app is derived from the stored fields by `controlChannels()`.
+ * more: hidden apps are stored and returned like the others, and what may be done with an app
+ * is derived from the stored fields (and the framework settings) by `controlChannels(settings)`.
  */
 class RoomAiAppRepository internal constructor(
     private val dao: AiAppDao,
@@ -29,18 +32,18 @@ class RoomAiAppRepository internal constructor(
         this(database.aiAppDao(), dispatcher)
 
     override fun observeAll(): Flow<List<AiApp>> =
-        dao.observeAll().map { rows -> rows.map(AiAppEntity::toDomain) }.distinctUntilChanged().flowOn(dispatcher)
+        dao.observeAll().map { rows -> rows.mapReadable(AiAppEntity::toDomain) }.distinctUntilChanged().flowOn(dispatcher)
 
     override suspend fun getAll(): List<AiApp> = withContext(dispatcher) {
-        dao.getAll().map(AiAppEntity::toDomain)
+        dao.getAll().mapReadable(AiAppEntity::toDomain)
     }
 
     override suspend fun get(id: AiAppId): AiApp? = withContext(dispatcher) {
-        dao.get(id.value)?.toDomain()
+        dao.get(id.value)?.readableOrNull(AiAppEntity::toDomain)
     }
 
     override suspend fun getByPackage(packageName: String): AiApp? = withContext(dispatcher) {
-        dao.getByPackage(packageName)?.toDomain()
+        dao.getByPackage(packageName).firstNotNullOfOrNull { it.readableOrNull(AiAppEntity::toDomain) }
     }
 
     override suspend fun upsert(app: AiApp) = withContext(dispatcher) {

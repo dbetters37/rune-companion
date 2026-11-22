@@ -7,6 +7,7 @@ import com.aicontrolcenter.data.db.ActivityQueryBuilder
 import com.aicontrolcenter.data.db.AiccDatabase
 import com.aicontrolcenter.data.db.dao.ActivityEventDao
 import com.aicontrolcenter.data.db.entity.ActivityEventEntity
+import com.aicontrolcenter.data.db.mapper.mapReadable
 import com.aicontrolcenter.data.db.mapper.toDomain
 import com.aicontrolcenter.data.db.mapper.toEntity
 import kotlinx.coroutines.CoroutineDispatcher
@@ -41,7 +42,7 @@ class RoomActivityLog internal constructor(
     override fun observe(filter: ActivityFilter, limit: Int): Flow<List<ActivityEvent>> {
         val query = ActivityQueryBuilder.build(filter, limit).toRoomRawQuery()
         return dao.observe(query)
-            .map { rows -> rows.map(ActivityEventEntity::toDomain) }
+            .map { rows -> rows.mapReadable(ActivityEventEntity::toDomain) }
             .distinctUntilChanged()
             .flowOn(dispatcher)
     }
@@ -49,7 +50,7 @@ class RoomActivityLog internal constructor(
     /** @throws IllegalArgumentException if [limit] is negative. */
     override suspend fun recent(filter: ActivityFilter, limit: Int): List<ActivityEvent> {
         val query = ActivityQueryBuilder.build(filter, limit).toRoomRawQuery()
-        return withContext(dispatcher) { dao.select(query).map(ActivityEventEntity::toDomain) }
+        return withContext(dispatcher) { dao.select(query).mapReadable(ActivityEventEntity::toDomain) }
     }
 
     override suspend fun prune(olderThan: Long): Int = dao.deleteOlderThan(olderThan)

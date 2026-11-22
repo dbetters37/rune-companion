@@ -64,7 +64,8 @@ class RegisterAppViewModel(private val registry: AiAppRegistry) : ViewModel() {
     fun setIncludeSystemApps(include: Boolean) = state.update { it.copy(includeSystemApps = include).filtered() }
 
     fun register(packageName: String) {
-        if (state.value.isRegistering) return
+        // A second tap before the screen has moved on to the new entry must not register again.
+        if (state.value.isRegistering || state.value.registeredId != null) return
         state.update { it.copy(isRegistering = true) }
         viewModelScope.launch {
             try {

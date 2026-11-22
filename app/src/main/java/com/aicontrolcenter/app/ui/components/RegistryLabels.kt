@@ -35,12 +35,24 @@ fun AgentAvailability.toStatusLabel(): StatusLabel = when (this) {
             StatusLabel("Ready", StatusTone.READY)
         }
     AgentAvailability.Disabled -> StatusLabel("Disabled", StatusTone.DISABLED, "Switched off by you.")
-    is AgentAvailability.Unavailable -> StatusLabel(reason.label, StatusTone.UNAVAILABLE, detail)
+    is AgentAvailability.Unavailable -> StatusLabel(reason.label, reason.tone, detail)
 }
+
+/**
+ * How alarming a reason is. A missing model is the normal state of an agent that has not been
+ * set up yet, so it is informational; every other reason means something that worked, or was
+ * meant to work, no longer does.
+ */
+val UnavailableReason.tone: StatusTone
+    get() = when (this) {
+        UnavailableReason.NO_MODEL_ASSIGNED -> StatusTone.INFO
+        UnavailableReason.BLOCKED_BY_LOCAL_ONLY_MODE -> StatusTone.ATTENTION
+        else -> StatusTone.UNAVAILABLE
+    }
 
 val UnavailableReason.label: String
     get() = when (this) {
-        UnavailableReason.NO_MODEL_ASSIGNED -> "No model assigned"
+        UnavailableReason.NO_MODEL_ASSIGNED -> "No model yet"
         UnavailableReason.MODEL_NOT_REGISTERED -> "Model not registered"
         UnavailableReason.MODEL_DISABLED -> "Model disabled"
         UnavailableReason.MODEL_UNAVAILABLE -> "Model unavailable"
@@ -85,7 +97,7 @@ val DiscoverySource.label: String
     get() = when (this) {
         DiscoverySource.CATALOG -> "Known AI app"
         DiscoverySource.INTENT_QUERY -> "Found by Android intent"
-        DiscoverySource.HEURISTIC -> "Unverified"
+        DiscoverySource.HEURISTIC -> "Found by name"
         DiscoverySource.MANUAL -> "Added by you"
     }
 
@@ -93,7 +105,7 @@ val DiscoverySource.explanation: String
     get() = when (this) {
         DiscoverySource.CATALOG -> "Matched the built-in catalog of known AI application packages."
         DiscoverySource.INTENT_QUERY -> "Android reports that it handles an AI-related action, such as the assistant action."
-        DiscoverySource.HEURISTIC -> "Not in the catalog: only its name suggests an AI app. Treat it as unverified."
+        DiscoverySource.HEURISTIC -> "Not in the catalog: only its name suggests an AI app."
         DiscoverySource.MANUAL -> "You added it from the list of installed apps."
     }
 
@@ -126,8 +138,8 @@ val ControlChannel.explanation: String
         ControlChannel.ROUND_TRIP_TEXT ->
             "Text can be sent through Android's process-text action and the processed text comes back."
         ControlChannel.ACCESSIBILITY ->
-            "You authorised operating this app's screen through the accessibility service. " +
-                "Nothing can use this until the operator service exists in a later version."
+            "Agents may operate this app's screen through the accessibility service, because you " +
+                "authorised it for this app and both operator switches are on."
         ControlChannel.LINKED_API ->
             "The vendor's models can be called through a linked API provider. That does not go through the app."
     }

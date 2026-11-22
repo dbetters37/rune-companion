@@ -81,7 +81,7 @@ class DatabasePersistenceTest {
 
     @Test
     fun `a supplied open helper factory opens the database`() = runTest {
-        // This is the hook an encrypting SQLite helper will use; here it only records the call.
+        // The hook the encrypting SQLCipher helper is plugged into; here it only records the call.
         val opened = mutableListOf<String?>()
         val platform = FrameworkSQLiteOpenHelperFactory()
         val recording = SupportSQLiteOpenHelper.Factory { configuration ->

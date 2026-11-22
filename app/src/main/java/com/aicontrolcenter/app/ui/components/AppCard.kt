@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -16,7 +17,8 @@ import com.aicontrolcenter.app.ui.theme.appColors
 
 /**
  * The app's container: a rounded surface outlined by a 1dp hairline instead of a shadow, which
- * keeps dense screens calm on a dark background. Pass [onClick] to make the whole card a
+ * keeps dense screens calm on a dark background. A card takes the full width it is offered, so
+ * stacked cards share their edges whatever they contain. Pass [onClick] to make the whole card a
  * single touch target.
  */
 @Composable
@@ -32,7 +34,7 @@ fun AppCard(
     val border = BorderStroke(1.dp, borderColor)
     if (onClick == null) {
         Surface(modifier = modifier, shape = shape, color = containerColor, border = border) {
-            Column(Modifier.padding(contentPadding), content = content)
+            Column(Modifier.fillMaxWidth().padding(contentPadding), content = content)
         }
     } else {
         Surface(
@@ -42,7 +44,7 @@ fun AppCard(
             color = containerColor,
             border = border,
         ) {
-            Column(Modifier.padding(contentPadding), content = content)
+            Column(Modifier.fillMaxWidth().padding(contentPadding), content = content)
         }
     }
 }

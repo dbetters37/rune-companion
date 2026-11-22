@@ -43,9 +43,10 @@ dependencies {
     api(libs.androidx.room.runtime)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
-    implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.room.ktx)
     implementation(libs.androidx.datastore.preferences)
+    // Full-database encryption. Not in the version catalog, which this module does not own.
+    implementation("net.zetetic:sqlcipher-android:4.20.0")
     ksp(libs.androidx.room.compiler)
 
     testImplementation(project(":testkit"))

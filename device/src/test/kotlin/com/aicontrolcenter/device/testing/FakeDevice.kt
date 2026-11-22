@@ -7,9 +7,13 @@ import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.content.pm.Signature
+import android.content.pm.SigningInfo
 import androidx.test.core.app.ApplicationProvider
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.shadow.api.Shadow
 import org.robolectric.shadows.ShadowPackageManager
+import org.robolectric.shadows.ShadowSigningInfo
 
 /**
  * Scripts what is "installed" on the Robolectric device. Apps are described the way their
@@ -22,16 +26,25 @@ internal class FakeDevice {
     val shadowPackageManager: ShadowPackageManager = shadowOf(packageManager)
     val ownPackage: String = application.packageName
 
+    /**
+     * @param firstInstalledAt what Android would report as the first install time; 0 = no record.
+     * @param signedBy the certificates of the current signers, each given as its raw bytes in
+     *   text form; empty = the platform reports no signing information.
+     */
     fun install(
         packageName: String,
         label: String = packageName,
         version: String? = "1.0",
         system: Boolean = false,
+        firstInstalledAt: Long = 0,
+        signedBy: List<String> = emptyList(),
         manifest: AppManifest.() -> Unit = {},
     ): AppManifest {
         val info = PackageInfo().apply {
             this.packageName = packageName
             versionName = version
+            firstInstallTime = firstInstalledAt
+            signingInfo = signingInfoOf(signedBy)
             applicationInfo = ApplicationInfo().apply {
                 this.packageName = packageName
                 nonLocalizedLabel = label
@@ -53,7 +66,24 @@ internal class FakeDevice {
         shadowPackageManager.getInternalMutablePackageInfo(packageName).versionName = version
     }
 
+    /** Replaces the signers of an installed package, as an update signed with other keys would. */
+    fun setSigners(packageName: String, signedBy: List<String>) {
+        shadowPackageManager.getInternalMutablePackageInfo(packageName).signingInfo = signingInfoOf(signedBy)
+    }
+
+    fun setFirstInstallTime(packageName: String, firstInstalledAt: Long) {
+        shadowPackageManager.getInternalMutablePackageInfo(packageName).firstInstallTime = firstInstalledAt
+    }
+
     fun uninstall(packageName: String) = shadowPackageManager.deletePackage(packageName)
+
+    private fun signingInfoOf(certificates: List<String>): SigningInfo? {
+        if (certificates.isEmpty()) return null
+        val signingInfo = Shadow.newInstanceOf(SigningInfo::class.java)
+        Shadow.extract<ShadowSigningInfo>(signingInfo)
+            .setSignatures(certificates.map { Signature(it.toByteArray()) }.toTypedArray())
+        return signingInfo
+    }
 
     /** Makes this app hold [permission], as if it were declared in the manifest and granted. */
     fun grantToSelf(permission: String) {

@@ -54,6 +54,7 @@ internal fun AiAppsTab(
     lastScan: ScanSummaryUi?,
     onScan: () -> Unit,
     onOpenApp: (AiAppId) -> Unit,
+    onConfirmApp: (AiAppId) -> Unit,
     onRegisterManually: () -> Unit,
     onOpenConcepts: () -> Unit,
 ) {
@@ -113,7 +114,7 @@ internal fun AiAppsTab(
             }
         }
         items(apps, key = { it.id.value }) { app ->
-            AiAppCard(app, onClick = { onOpenApp(app.id) })
+            AiAppCard(app, onClick = { onOpenApp(app.id) }, onConfirm = { onConfirmApp(app.id) })
         }
     }
 }
@@ -142,7 +143,7 @@ private fun ScanSummaryBanner(scan: ScanSummaryUi) {
 /** A registered app: what it is, how it was found and exactly what may be done with it. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun AiAppCard(app: AiAppRowUi, onClick: () -> Unit, modifier: Modifier = Modifier) {
+internal fun AiAppCard(app: AiAppRowUi, onClick: () -> Unit, onConfirm: () -> Unit, modifier: Modifier = Modifier) {
     AppCard(modifier = modifier.fillMaxWidth(), onClick = onClick) {
         Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
             AppMonogram(app.label)
@@ -173,11 +174,8 @@ internal fun AiAppCard(app: AiAppRowUi, onClick: () -> Unit, modifier: Modifier 
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    if (app.unverified) {
-                        StatusChip(app.sourceLabel, StatusTone.ATTENTION)
-                    } else {
-                        TintedChip(app.sourceLabel, MaterialTheme.colorScheme.secondary)
-                    }
+                    TintedChip(app.sourceLabel, MaterialTheme.colorScheme.secondary)
+                    if (app.unverified) StatusChip("Unverified", StatusTone.ATTENTION)
                     if (!app.enabledInRegistry) StatusChip("Disabled in registry", StatusTone.DISABLED)
                     app.capabilities.forEach { NeutralChip(it) }
                 }
@@ -191,6 +189,16 @@ internal fun AiAppCard(app: AiAppRowUi, onClick: () -> Unit, modifier: Modifier 
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 2.dp),
                 )
+                if (app.unverified) {
+                    OutlinedButton(
+                        onClick = onConfirm,
+                        modifier = Modifier.padding(top = Spacing.xs).heightIn(min = 48.dp),
+                        contentPadding = PaddingValues(horizontal = 16.dp),
+                    ) {
+                        Icon(AppIcons.Check, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+                        Text("Confirm it is an AI app", modifier = Modifier.padding(start = 8.dp), maxLines = 1)
+                    }
+                }
             }
             Icon(
                 AppIcons.ChevronRight,

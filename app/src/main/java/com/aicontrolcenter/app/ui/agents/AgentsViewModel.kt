@@ -5,15 +5,16 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aicontrolcenter.app.ui.components.StatusLabel
 import com.aicontrolcenter.app.ui.components.toStatusLabel
-import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.agents.AgentAvailability
 import com.aicontrolcenter.core.agents.AgentKind
 import com.aicontrolcenter.core.agents.UnavailableReason
+import com.aicontrolcenter.core.agents.label
 import com.aicontrolcenter.core.registry.AgentEntry
 import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.registry.RegistrySnapshot
+import com.aicontrolcenter.core.registry.effectiveLocality
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -25,15 +26,17 @@ import kotlinx.coroutines.flow.update
 enum class AgentStatusFilter(val label: String) {
     ALL("Any status"),
     READY("Ready"),
-    UNAVAILABLE("Unavailable"),
+
+    /** Enabled but unable to run, whatever the reason (including "no model yet"). */
+    UNAVAILABLE("Cannot run"),
     DISABLED("Disabled"),
     ;
 
-    fun matches(tone: StatusTone): Boolean = when (this) {
+    fun matches(availability: AgentAvailability): Boolean = when (this) {
         ALL -> true
-        READY -> tone == StatusTone.READY
-        UNAVAILABLE -> tone == StatusTone.UNAVAILABLE
-        DISABLED -> tone == StatusTone.DISABLED
+        READY -> availability is AgentAvailability.Ready
+        UNAVAILABLE -> availability is AgentAvailability.Unavailable
+        DISABLED -> availability is AgentAvailability.Disabled
     }
 }
 
@@ -91,12 +94,12 @@ class AgentsViewModel(
         AgentsUiState(
             isLoading = false,
             rows = snapshot.agents
-                .map { it.toRow(snapshot) }
-                .filter { row ->
-                    (needle.isEmpty() || row.name.contains(needle, ignoreCase = true)) &&
-                        (criteria.role == null || row.kind == criteria.role) &&
-                        criteria.status.matches(row.status.tone)
-                },
+                .filter { entry ->
+                    entry.matches(needle) &&
+                        (criteria.role == null || entry.profile.kind == criteria.role) &&
+                        criteria.status.matches(entry.availability)
+                }
+                .map { it.toRow(snapshot) },
             totalCount = snapshot.agents.size,
             query = criteria.query,
             roleFilter = criteria.role,
@@ -117,6 +120,11 @@ class AgentsViewModel(
     fun clearFilters() = criteria.update { Criteria("", null, AgentStatusFilter.ALL) }
 }
 
+/** Search looks at what the list shows about an agent: its name, role and description. */
+private fun AgentEntry.matches(needle: String): Boolean =
+    needle.isEmpty() || profile.name.contains(needle, ignoreCase = true) ||
+        profile.description.contains(needle, ignoreCase = true) || profile.kind.label.contains(needle, ignoreCase = true)
+
 internal fun AgentEntry.toRow(snapshot: RegistrySnapshot): AgentRowUi {
     val status = availability.toStatusLabel()
     val unavailable = availability as? AgentAvailability.Unavailable
@@ -136,5 +144,5 @@ internal fun AgentEntry.toRow(snapshot: RegistrySnapshot): AgentRowUi {
 internal fun RegistrySnapshot.modelRef(id: com.aicontrolcenter.core.ModelId): ModelRefUi {
     val model = modelsById[id] ?: return ModelRefUi("Unregistered model", null, null, registered = false)
     val provider = provider(model)
-    return ModelRefUi(model.displayName, provider?.name, provider?.locality)
+    return ModelRefUi(model.displayName, provider?.name, provider?.effectiveLocality)
 }

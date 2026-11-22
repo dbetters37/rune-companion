@@ -40,6 +40,7 @@ import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** Opens settings stores over real files and releases them after each test. */
@@ -146,25 +147,78 @@ class DataStoreSettingsRepositoryTest {
     }
 
     @Test
-    fun `a stored value that is not settings JSON reads as defaults and is replaced by the next update`() = runTest {
-        for (damaged in listOf("{\"localOnlyMode\": tru", "not json at all", "", "[1,2,3]", "{\"maxConcurrentTasks\":\"many\"}")) {
+    fun `one unreadable field takes its default while every other setting keeps its value`() = runTest {
+        val stored = """{"localOnlyMode":true,"maxConcurrentTasks":"many","directorAgentId":"agt_director",""" +
+            """"operatorEnabled":true,"onboardingCompleted":true,"seedVersion":3,"activityRetentionDays":7}"""
+        val (store, _) = stores.open(stores.newFileName())
+        store.edit { it[DataStoreSettingsRepository.SETTINGS_KEY] = stored }
+        val repository = DataStoreSettingsRepository(store)
+
+        val expected = FrameworkSettings(
+            localOnlyMode = true, directorAgentId = AgentId("agt_director"), operatorEnabled = true,
+            onboardingCompleted = true, seedVersion = 3, activityRetentionDays = 7,
+        )
+        assertEquals(expected, repository.get())
+        assertEquals(expected, repository.settings.first())
+        // Reading alone changes nothing on disk.
+        assertEquals(stored, store.data.first()[DataStoreSettingsRepository.SETTINGS_KEY])
+        assertNull(store.data.first()[DataStoreSettingsRepository.UNREADABLE_COPY_KEY])
+    }
+
+    @Test
+    fun `the original text of an incompletely readable value is kept when an update overwrites it`() = runTest {
+        val file = stores.newFileName()
+        val (store, job) = stores.open(file)
+        val stored = """{"localOnlyMode":true,"maxConcurrentTasks":"many","seedVersion":3}"""
+        store.edit { it[DataStoreSettingsRepository.SETTINGS_KEY] = stored }
+        val repository = DataStoreSettingsRepository(store)
+
+        // A transform that fails writes nothing, not even the copy.
+        assertFailsWith<IllegalArgumentException> { repository.update { throw IllegalArgumentException("rejected") } }
+        assertNull(store.data.first()[DataStoreSettingsRepository.UNREADABLE_COPY_KEY])
+
+        val updated = repository.update { it.copy(seedVersion = 4) }
+        assertEquals(FrameworkSettings(localOnlyMode = true, seedVersion = 4), updated)
+        assertEquals(stored, store.data.first()[DataStoreSettingsRepository.UNREADABLE_COPY_KEY])
+
+        // The value is whole again, so later updates leave the copy alone.
+        repository.update { it.copy(seedVersion = 5) }
+        assertEquals(stored, store.data.first()[DataStoreSettingsRepository.UNREADABLE_COPY_KEY])
+        job.cancelAndJoin()
+        assertEquals(FrameworkSettings(localOnlyMode = true, seedVersion = 5), stores.repository(file).get())
+    }
+
+    @Test
+    fun `updating readable settings keeps no copy`() = runTest {
+        val (store, _) = stores.open(stores.newFileName())
+        val repository = DataStoreSettingsRepository(store)
+        repository.update { customised }
+        repository.update { it.copy(seedVersion = 9) }
+        assertNull(store.data.first()[DataStoreSettingsRepository.UNREADABLE_COPY_KEY])
+    }
+
+    @Test
+    fun `a stored value that is not settings JSON at all gives defaults with local-only mode on, and is kept aside`() = runTest {
+        val afterLoss = FrameworkSettings(localOnlyMode = true)
+        for (damaged in listOf("{\"localOnlyMode\": tru", "not json at all", "", "[1,2,3]")) {
             val file = stores.newFileName()
             val (store, job) = stores.open(file)
             store.edit { it[DataStoreSettingsRepository.SETTINGS_KEY] = damaged }
             val repository = DataStoreSettingsRepository(store)
 
-            assertEquals(FrameworkSettings(), repository.get(), "get() for stored value '$damaged'")
-            assertEquals(FrameworkSettings(), repository.settings.first(), "settings for stored value '$damaged'")
+            assertEquals(afterLoss, repository.get(), "get() for stored value '$damaged'")
+            assertEquals(afterLoss, repository.settings.first(), "settings for stored value '$damaged'")
 
             val repaired = repository.update { it.copy(seedVersion = 4) }
-            assertEquals(FrameworkSettings(seedVersion = 4), repaired)
+            assertEquals(afterLoss.copy(seedVersion = 4), repaired)
+            assertEquals(damaged, store.data.first()[DataStoreSettingsRepository.UNREADABLE_COPY_KEY])
             job.cancelAndJoin()
-            assertEquals(FrameworkSettings(seedVersion = 4), stores.repository(file).get(), "after reopening '$damaged'")
+            assertEquals(afterLoss.copy(seedVersion = 4), stores.repository(file).get(), "after reopening '$damaged'")
         }
     }
 
     @Test
-    fun `a settings file that is not a preferences file at all is reset to defaults`() = runTest {
+    fun `a settings file that is not a preferences file at all is reset to defaults with local-only mode on`() = runTest {
         val garbage = ByteArray(64) { 0xFF.toByte() }
         fun damagedFile() = stores.newFileName().also { name ->
             stores.context.preferencesDataStoreFile(name).apply {
@@ -185,7 +239,9 @@ class DataStoreSettingsRepositoryTest {
 
         val repository = stores.repository(damagedFile())
 
-        assertEquals(FrameworkSettings(), repository.get())
+        // What the owner had chosen is unknown, so the privacy switch comes back on.
+        assertEquals(FrameworkSettings(localOnlyMode = true), repository.get())
+        assertEquals(FrameworkSettings(localOnlyMode = true), repository.settings.first())
         assertEquals(customised, repository.update { customised })
         assertEquals(customised, repository.get())
     }

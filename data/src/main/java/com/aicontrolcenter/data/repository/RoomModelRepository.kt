@@ -7,6 +7,8 @@ import com.aicontrolcenter.core.registry.ModelRepository
 import com.aicontrolcenter.data.db.AiccDatabase
 import com.aicontrolcenter.data.db.dao.ModelDao
 import com.aicontrolcenter.data.db.entity.ModelEntity
+import com.aicontrolcenter.data.db.mapper.mapReadable
+import com.aicontrolcenter.data.db.mapper.readableOrNull
 import com.aicontrolcenter.data.db.mapper.toDomain
 import com.aicontrolcenter.data.db.mapper.toEntity
 import kotlinx.coroutines.CoroutineDispatcher
@@ -27,18 +29,18 @@ class RoomModelRepository internal constructor(
         this(database.modelDao(), dispatcher)
 
     override fun observeAll(): Flow<List<ModelDescriptor>> =
-        dao.observeAll().map { rows -> rows.map(ModelEntity::toDomain) }.distinctUntilChanged().flowOn(dispatcher)
+        dao.observeAll().map { rows -> rows.mapReadable(ModelEntity::toDomain) }.distinctUntilChanged().flowOn(dispatcher)
 
     override suspend fun getAll(): List<ModelDescriptor> = withContext(dispatcher) {
-        dao.getAll().map(ModelEntity::toDomain)
+        dao.getAll().mapReadable(ModelEntity::toDomain)
     }
 
     override suspend fun get(id: ModelId): ModelDescriptor? = withContext(dispatcher) {
-        dao.get(id.value)?.toDomain()
+        dao.get(id.value)?.readableOrNull(ModelEntity::toDomain)
     }
 
     override suspend fun getByProvider(providerId: ProviderId): List<ModelDescriptor> = withContext(dispatcher) {
-        dao.getByProvider(providerId.value).map(ModelEntity::toDomain)
+        dao.getByProvider(providerId.value).mapReadable(ModelEntity::toDomain)
     }
 
     override suspend fun upsert(model: ModelDescriptor) = withContext(dispatcher) {

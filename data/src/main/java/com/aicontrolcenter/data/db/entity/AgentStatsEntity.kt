@@ -10,8 +10,9 @@ import androidx.room.PrimaryKey
  * copy configuration only.
  *
  * Not tied to `agents` by a foreign key: the runtime may report the outcome of a task for an
- * agent that is being deleted at that moment, and that write must not fail. The repository
- * removes both rows in one transaction instead.
+ * agent that is being deleted at that moment, and that write must be a quiet no-op rather than
+ * a constraint failure. The DAO keeps the two tables consistent instead: stats are written only
+ * for an existing agent and removed together with it, each inside one transaction.
  */
 @Entity(tableName = AgentStatsEntity.TABLE)
 internal data class AgentStatsEntity(

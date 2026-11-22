@@ -6,9 +6,25 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * AES-GCM sealing with whatever key [key] supplies. The production key comes from the
- * AndroidKeyStore ([AndroidKeystoreVaultCipher]); tests supply a software key, so this exact
- * framing code runs in both.
+ * Supplies the key of an [AesGcmVaultCipher]. Sealing and opening ask separately because they
+ * differ in one decisive way: a missing key may be created when something new is sealed, but
+ * never when something is opened, since a fresh key cannot open anything and creating it could
+ * replace the one that can.
+ */
+internal interface VaultKeySource {
+    /** The key to seal with, created first if there is none yet. */
+    @Throws(GeneralSecurityException::class)
+    fun keyForEncryption(): SecretKey
+
+    /** The existing key. Never creates, replaces or removes one. */
+    @Throws(GeneralSecurityException::class)
+    fun keyForDecryption(): SecretKey
+}
+
+/**
+ * AES-GCM sealing with whatever key [keys] supplies. The production key comes from the
+ * AndroidKeyStore ([KeystoreVaultKey]); tests supply a software key, so this exact framing
+ * code runs in both.
  *
  * Blob layout: `[format = 1][12-byte IV][ciphertext + 128-bit tag]`.
  *
@@ -17,11 +33,11 @@ import javax.crypto.spec.GCMParameterSpec
  * accepts for keys that require randomised encryption, and it rules out IV reuse by
  * construction.
  */
-internal class AesGcmVaultCipher(private val key: () -> SecretKey) : VaultCipher {
+internal class AesGcmVaultCipher(private val keys: VaultKeySource) : VaultCipher {
 
     override fun encrypt(plaintext: ByteArray, associatedData: ByteArray): ByteArray {
         val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.ENCRYPT_MODE, key())
+        cipher.init(Cipher.ENCRYPT_MODE, keys.keyForEncryption())
         val iv = cipher.iv
         if (iv == null || iv.size != IV_BYTES) {
             throw GeneralSecurityException("The cipher did not supply a $IV_BYTES-byte IV.")
@@ -40,7 +56,7 @@ internal class AesGcmVaultCipher(private val key: () -> SecretKey) : VaultCipher
             throw GeneralSecurityException("Not a sealed vault value in a known format.")
         }
         val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(TAG_BYTES * 8, sealed, 1, IV_BYTES))
+        cipher.init(Cipher.DECRYPT_MODE, keys.keyForDecryption(), GCMParameterSpec(TAG_BYTES * 8, sealed, 1, IV_BYTES))
         cipher.updateAAD(associatedData)
         return cipher.doFinal(sealed, HEADER_BYTES, sealed.size - HEADER_BYTES)
     }

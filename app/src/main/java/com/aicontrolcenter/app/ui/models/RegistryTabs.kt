@@ -53,12 +53,12 @@ internal fun ProvidersTab(providers: List<ProviderRowUi>) {
                     icon = AppIcons.Provider,
                     title = "No providers yet",
                     message = "A provider is a connection to something that serves models: a cloud API, a server on your " +
-                        "network, or a runtime on this phone. Connecting providers is the next phase of this app, so " +
+                        "network, or a runtime on this phone. Connecting providers is the next stage of this build, so " +
                         "there is nothing to add here yet.",
                 )
             }
         } else {
-            item { NotEditableYetNote("Providers can be viewed here. Adding and editing them arrives in the next phase of this app.") }
+            item { NotEditableYetNote("Providers can be viewed here. Adding and editing them arrives in the next stage of this build.") }
         }
         items(providers, key = { it.id.value }) { provider ->
             AppCard(Modifier.fillMaxWidth()) {
@@ -121,11 +121,11 @@ internal fun ModelsListTab(models: List<ModelRowUi>) {
                     icon = AppIcons.ModelChip,
                     title = "No models yet",
                     message = "A model is an LLM that agents think with. Models are listed from a provider or imported as " +
-                        "a file, and both arrive in the next phase of this app. Until then no agent can run.",
+                        "a file, and both arrive in the next stage of this build. Until then no agent can run.",
                 )
             }
         } else {
-            item { NotEditableYetNote("Models can be viewed here. Adding and importing them arrives in the next phase of this app.") }
+            item { NotEditableYetNote("Models can be viewed here. Adding and importing them arrives in the next stage of this build.") }
         }
         items(models, key = { it.id.value }) { model ->
             AppCard(Modifier.fillMaxWidth()) {

@@ -214,29 +214,128 @@ class EncryptedFileSecretVaultTest {
         assertFalse(file.exists())
     }
 
+    private fun setAsideFiles(): List<File> =
+        file.parentFile!!.listFiles { candidate -> candidate.name.startsWith("secrets.json.corrupt-") }!!.toList()
+
     @Test
     fun `a damaged vault file is set aside and the vault starts empty`() = runTest {
         vault().put("provider/a", "sk-alpha")
-        file.writeText("{\"version\":1,\"entries\":{\"provider/a\":\"AAAA")
+        val damaged = "{\"version\":1,\"entries\":{\"provider/a\":\"AAAA"
+        file.writeText(damaged)
 
         val reopened = vault()
         assertEquals(emptySet(), reopened.aliases())
         assertNull(reopened.get("provider/a"))
-        assertTrue(File(file.path + ".corrupt").isFile, "the damaged file should be kept aside")
+        assertEquals(listOf(damaged), setAsideFiles().map { it.readText() }, "the damaged file should be kept aside")
 
         reopened.put("provider/a", "sk-new")
         assertEquals("sk-new", vault().get("provider/a"))
     }
 
     @Test
+    fun `every damaged file is kept - a second incident does not overwrite the first copy`() = runTest {
+        val incidents = listOf("not json", "[1,2,3]", "{\"entries\":{}}", "{\"version\":\"1\",\"entries\":{}}", "{\"version\":0}", "")
+        for (damaged in incidents) {
+            file.writeText(damaged)
+            assertEquals(emptySet(), vault().aliases(), "content '$damaged'")
+            assertFalse(file.exists())
+        }
+        assertEquals(incidents.sorted(), setAsideFiles().map { it.readText() }.sorted())
+    }
+
+    @Test
+    fun `entries of the wrong shape under the current version count as damage, not as an empty vault`() = runTest {
+        file.writeText("""{"version":1,"entries":{"provider/a":{"ct":"AAAA"}}}""")
+        assertEquals(emptySet(), vault().aliases())
+        assertEquals(1, setAsideFiles().size)
+    }
+
+    @Test
     fun `a vault written by a newer format is refused and left untouched`() = runTest {
-        val newer = """{"version":2,"entries":{"provider/a":"AAAA"},"somethingNew":true}"""
-        file.writeText(newer)
+        // A newer format is expected to change the shape of the entries; neither a v1-shaped
+        // nor a differently shaped file may be mistaken for damage and moved away.
+        val newerFiles = listOf(
+            """{"version":2,"entries":{"provider/a":{"ct":"AAAA","iv":"BBBB"}}}""",
+            """{"version":2,"entries":{"provider/a":"AAAA"},"somethingNew":true}""",
+            """{"version":3,"secrets":[{"alias":"provider/a","sealed":"AAAA"}]}""",
+            """{"version":4294967297}""",
+        )
+        for (newer in newerFiles) {
+            file.writeText(newer)
+
+            val vault = vault()
+            val failure = assertFailsWith<SecretVaultException> { vault.aliases() }
+            assertTrue("cannot read" in failure.message.orEmpty(), failure.message)
+            assertFailsWith<SecretVaultException> { vault.get("provider/a") }
+            assertFailsWith<SecretVaultException> { vault.put("provider/b", "sk-beta") }
+            assertFailsWith<SecretVaultException> { vault.delete("provider/a") }
+            assertEquals(newer, file.readText())
+            assertEquals(listOf("secrets.json"), file.parentFile!!.list()!!.toList())
+        }
+    }
+
+    @Test
+    fun `a vault file that exists but cannot be opened is an error, never an empty vault`() = runTest {
+        vault().apply {
+            put("provider/a", "sk-alpha")
+            put("provider/b", "sk-beta")
+        }
+        // A directory in the file's place cannot be opened as a file, whoever runs the test.
+        val kept = File(file.path + ".kept")
+        assertTrue(file.renameTo(kept))
+        assertTrue(file.mkdir())
 
         val vault = vault()
         assertFailsWith<SecretVaultException> { vault.aliases() }
+        assertFailsWith<SecretVaultException> { vault.get("provider/a") }
+        assertFailsWith<SecretVaultException> { vault.contains("provider/a") }
+        assertFailsWith<SecretVaultException> { vault.put("provider/c", "sk-gamma") }
+        assertFailsWith<SecretVaultException> { vault.delete("provider/a") }
+
+        // Once the file can be opened again the same vault object sees every secret, and a new
+        // one is added to them instead of replacing them.
+        assertTrue(file.delete())
+        assertTrue(kept.renameTo(file))
+        assertEquals(setOf("provider/a", "provider/b"), vault.aliases())
+        vault.put("provider/c", "sk-gamma")
+        assertEquals(setOf("provider/a", "provider/b", "provider/c"), storedEntries().keys)
+        assertEquals("sk-alpha", vault().get("provider/a"))
+    }
+
+    @Test
+    fun `a write that cannot be committed fails the put and is not reported as stored`() = runTest {
+        val vault = vault()
+        vault.put("provider/a", "sk-alpha")
+
+        // The new content can be written next to the file, but the final rename cannot succeed
+        // while a non-empty directory occupies the file's name.
+        val kept = File(file.path + ".kept")
+        assertTrue(file.renameTo(kept))
+        assertTrue(file.mkdir())
+        File(file, "occupied").writeText("x")
+
         assertFailsWith<SecretVaultException> { vault.put("provider/b", "sk-beta") }
-        assertEquals(newer, file.readText())
+        assertFalse(File(file.path + ".tmp").exists(), "the side file of the failed write was left behind")
+        // The vault does not go on believing in a write that never happened.
+        assertFailsWith<SecretVaultException> { vault.contains("provider/b") }
+
+        assertTrue(file.deleteRecursively())
+        assertTrue(kept.renameTo(file))
+        assertEquals(setOf("provider/a"), vault.aliases())
+        assertNull(vault.get("provider/b"))
+        vault.put("provider/b", "sk-beta")
+        assertEquals(mapOf("provider/a" to "sk-alpha", "provider/b" to "sk-beta"), vault().run { aliases().associateWith { get(it) } })
+    }
+
+    @Test
+    fun `a side file left by an interrupted first write does not turn into vault content`() = runTest {
+        File(file.path + ".tmp").writeText("""{"version":1,"entries":{"provider/a":"AAAA"}}""")
+
+        val vault = vault()
+        assertEquals(emptySet(), vault.aliases())
+        vault.put("provider/b", "sk-beta")
+        assertEquals(setOf("provider/b"), vault().aliases())
+        assertEquals(listOf("secrets.json"), file.parentFile!!.list()!!.toList())
     }
 
     @Test
@@ -263,7 +362,7 @@ class EncryptedFileSecretVaultTest {
 
         // Occupy the name of the side file that an atomic write creates first, so the write
         // cannot even start. (Unlike file permissions, this also stops a root user.)
-        val blocker = File(file.path + ".new").apply { assertTrue(mkdir()) }
+        val blocker = File(file.path + ".tmp").apply { assertTrue(mkdir()) }
         assertFailsWith<SecretVaultException> { vault.put("provider/b", "sk-beta") }
         assertFailsWith<SecretVaultException> { vault.delete("provider/a") }
 
@@ -271,7 +370,9 @@ class EncryptedFileSecretVaultTest {
         assertEquals("sk-alpha", vault.get("provider/a"))
         assertEquals(setOf("provider/a"), storedEntries().keys)
 
-        // Once the obstacle is gone the same vault object works again.
+        // Once the obstacle is gone the same vault object works again. The failed writes did
+        // not remove what they found in their way.
+        assertTrue(blocker.isDirectory)
         assertTrue(blocker.delete())
         vault.put("provider/b", "sk-beta")
         assertEquals(setOf("provider/a", "provider/b"), vault().aliases())
@@ -282,6 +383,8 @@ class EncryptedFileSecretVaultTest {
         val notADirectory = folder.newFile("occupied")
         val vault = EncryptedFileSecretVault(File(notADirectory, "secrets.json"), cipher)
         assertFailsWith<SecretVaultException> { vault.put("provider/a", "sk-alpha") }
-        assertFalse(vault.contains("provider/a"))
+        // Nothing can be known about a vault whose location cannot even be looked at.
+        assertFailsWith<SecretVaultException> { vault.contains("provider/a") }
+        assertTrue(notADirectory.isFile)
     }
 }

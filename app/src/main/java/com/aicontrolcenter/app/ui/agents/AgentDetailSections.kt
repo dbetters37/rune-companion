@@ -130,19 +130,24 @@ internal fun ModelSection(agent: AgentDetailUi, onOpenModels: () -> Unit) {
         AppCard {
             val model = agent.model
             if (model == null) {
-                Text("No model assigned", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+                Text("No model yet", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
                 Text(
                     text = if (agent.modelsAvailable) {
-                        "This agent cannot run until a model is assigned. Edit the agent to choose one."
+                        "An agent needs a model to work. Edit this agent to choose one of your registered models."
                     } else {
-                        "This agent cannot run until a model is assigned, and no models are registered yet. " +
-                            "Connecting model providers is the next phase of this app."
+                        "An agent needs a model to work, and none is registered yet. " +
+                            "Connecting model providers is the next stage of this build."
                     },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = Spacing.xs),
                 )
-                OutlinedButton(onClick = onOpenModels, modifier = Modifier.padding(top = Spacing.md)) { Text("Open Models") }
+                if (agent.modelsAvailable) {
+                    OutlinedButton(
+                        onClick = onOpenModels,
+                        modifier = Modifier.padding(top = Spacing.md).heightIn(min = 48.dp),
+                    ) { Text("See registered models") }
+                }
             } else {
                 ModelRefRow(model, label = "Primary model")
                 agent.fallbackModels.forEachIndexed { index, fallback ->

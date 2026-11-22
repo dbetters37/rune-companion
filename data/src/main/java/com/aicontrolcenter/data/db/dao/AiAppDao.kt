@@ -17,8 +17,9 @@ internal interface AiAppDao {
     @Query("SELECT * FROM ai_apps WHERE id = :id")
     suspend fun get(id: String): AiAppEntity?
 
-    @Query("SELECT * FROM ai_apps WHERE package_name = :packageName ORDER BY first_seen_at ASC, id ASC LIMIT 1")
-    suspend fun getByPackage(packageName: String): AiAppEntity?
+    /** Normally one row; the registry service keeps packages unique. Oldest first if there are more. */
+    @Query("SELECT * FROM ai_apps WHERE package_name = :packageName ORDER BY first_seen_at ASC, id ASC")
+    suspend fun getByPackage(packageName: String): List<AiAppEntity>
 
     @Upsert
     suspend fun upsert(app: AiAppEntity)

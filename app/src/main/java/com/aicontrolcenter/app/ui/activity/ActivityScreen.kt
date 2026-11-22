@@ -18,6 +18,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -28,6 +29,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -151,7 +153,10 @@ private fun DayHeading(heading: String, count: Int) {
             heading.uppercase(),
             style = OverlineTextStyle,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(1f).semantics { heading() },
+            modifier = Modifier.weight(1f).semantics {
+                heading()
+                contentDescription = heading
+            },
         )
         Text(
             if (count == 1) "1 event" else "$count events",
@@ -169,6 +174,8 @@ private fun ActivityFilters(
     onEgressOnlyChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // An unselected chip must not look switched on: its icon is as quiet as its label.
+    val filterColors = FilterChipDefaults.filterChipColors(iconColor = MaterialTheme.colorScheme.onSurfaceVariant)
     Column(modifier = modifier) {
         ChipRow {
             FilterChip(
@@ -176,6 +183,7 @@ private fun ActivityFilters(
                 onClick = { onEgressOnlyChange(!filter.egressOnly) },
                 label = { Text("Left the device") },
                 leadingIcon = { Icon(AppIcons.Egress, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                colors = filterColors,
             )
             FilterChip(
                 selected = filter.minSeverity == Severity.WARNING,
@@ -195,6 +203,7 @@ private fun ActivityFilters(
                     onClick = { onToggleType(type) },
                     label = { Text(type.label) },
                     leadingIcon = { Icon(type.icon, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    colors = filterColors,
                 )
             }
         }

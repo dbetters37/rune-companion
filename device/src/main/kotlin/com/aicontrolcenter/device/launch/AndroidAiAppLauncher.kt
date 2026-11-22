@@ -14,9 +14,14 @@ import com.aicontrolcenter.core.registry.AiAppStatus
 import com.aicontrolcenter.core.registry.ControlChannel
 import com.aicontrolcenter.core.registry.LaunchResult
 import com.aicontrolcenter.core.registry.LaunchResult.NotPossible
-import com.aicontrolcenter.core.registry.controlChannels
+import com.aicontrolcenter.core.registry.authorisedChannels
+import com.aicontrolcenter.device.catalog.KnownAiApp
+import com.aicontrolcenter.device.catalog.KnownAiApps
 import com.aicontrolcenter.device.catalog.PromptLinkTemplate
+import com.aicontrolcenter.device.platform.INSTALL_IDENTITY_FLAGS
+import com.aicontrolcenter.device.platform.QueriedIntent
 import com.aicontrolcenter.device.platform.activitiesFor
+import com.aicontrolcenter.device.platform.installIdentity
 import com.aicontrolcenter.device.platform.packageInfoOrNull
 import com.aicontrolcenter.device.platform.startableBy
 import kotlinx.coroutines.CoroutineDispatcher
@@ -30,23 +35,31 @@ import kotlinx.coroutines.withContext
  *
  * Order of checks, each ending in a [NotPossible] with a sentence for the user rather than an
  * exception:
- *  1. the registry entry must permit the channel ([controlChannels]);
- *  2. the device is asked again, because the entry may be stale (app removed or changed since
- *     the last scan);
+ *  1. the registry entry must permit the channel ([authorisedChannels]);
+ *  2. the device is asked again, because the entry may be stale: the app may have been removed,
+ *     may have lost the activity, or (for text) may have been replaced by a different
+ *     installation under the same package name since the last scan;
  *  3. this app must be allowed to start activities right now ([ActivityStartGate]).
  *
  * Every intent names the target package, so a hand-off can never land in a different app (for
  * example a browser picking up a prompt link). Text goes by share intent when the app accepts
- * one, which is the dependable route; the prompt link is used only when sharing is unavailable.
+ * one, which is the dependable route; the prompt link is used only when sharing is unavailable,
+ * and only if it is still the link the [catalog] records as vendor-documented for that package.
+ *
+ * Nothing here writes to a log, and no reason sentence quotes the text being handed over.
+ *
+ * @param catalog the known AI apps; the source of truth for which prompt links may be opened.
  */
 class AndroidAiAppLauncher(
     context: Context,
+    catalog: List<KnownAiApp> = KnownAiApps.all,
     private val gate: ActivityStartGate = VisibleProcessGate,
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : AiAppLauncher {
 
     private val appContext: Context = context.applicationContext ?: context
     private val pm: PackageManager = appContext.packageManager
+    private val catalogByPackage: Map<String, KnownAiApp> = catalog.associateBy { it.packageName }
 
     override suspend fun launch(app: AiApp): LaunchResult {
         refusal(app, ControlChannel.LAUNCH)?.let { return it }
@@ -65,17 +78,22 @@ class AndroidAiAppLauncher(
         refusal(app, ControlChannel.INTENT_HANDOFF)?.let { return it }
         if (text.isBlank()) return NotPossible("There is no text to hand to ${app.displayName}.")
         return withContext(dispatcher) {
-            if (!isInstalled(app)) return@withContext notInstalledAnyMore(app)
-            val sharesText = AiAppCapability.SHARE_TEXT in app.capabilities
-            val shareTargets = if (sharesText) shareTargets(app.packageName) else emptyList()
-            val promptLink = app.promptDeepLink?.takeIf { AiAppCapability.PROMPT_DEEP_LINK in app.capabilities }
+            val installed = pm.packageInfoOrNull(app.packageName, INSTALL_IDENTITY_FLAGS)
+                ?: return@withContext notInstalledAnyMore(app)
+            // Opening an app sends it nothing, so only text is held back from a changed installation.
+            if (installed.installIdentity().differsFrom(app.firstInstallTime, app.signingCertSha256)) {
+                return@withContext NotPossible(
+                    "A different installation of ${app.displayName} is on this device than the one in the registry. " +
+                        "Scan for apps again and check it before handing text to it.",
+                )
+            }
+            val shareTargets =
+                if (AiAppCapability.SHARE_TEXT in app.capabilities) shareTargets(app.packageName) else emptyList()
             when {
                 shareTargets.isNotEmpty() -> share(app, text, shareTargets)
-                promptLink != null -> openPromptLink(app, promptLink, text)
-                sharesText -> NotPossible("${app.displayName} no longer accepts shared text. Scan for apps again to refresh it.")
-                AiAppCapability.SHARE_IMAGE in app.capabilities ->
-                    NotPossible("${app.displayName} accepts shared images but offers no way to receive text.")
-                else -> NotPossible("No prompt link is stored for ${app.displayName}, so text cannot be handed to it.")
+                AiAppCapability.PROMPT_DEEP_LINK in app.capabilities -> openPromptLink(app, text)
+                // The channel was granted, so without the link capability it came from SHARE_TEXT.
+                else -> NotPossible("${app.displayName} no longer accepts shared text. Scan for apps again to refresh it.")
             }
         }
     }
@@ -85,14 +103,17 @@ class AndroidAiAppLauncher(
         if (app.packageName == appContext.packageName) {
             return NotPossible("${app.displayName} is this app itself, so there is nothing to open or hand off.")
         }
-        if (channel in app.controlChannels()) return null
+        if (channel in app.authorisedChannels()) return null
         val name = app.displayName
         return NotPossible(
             when {
+                app.hidden -> "$name was removed from the registry. Register it again to use it."
                 !app.enabled -> "$name is switched off in the registry. Switch it on to use it."
                 app.status == AiAppStatus.NOT_INSTALLED -> "$name is not installed on this device."
                 app.status == AiAppStatus.DISABLED_BY_SYSTEM -> "$name is disabled in Android settings."
                 channel == ControlChannel.LAUNCH -> "$name has no launcher screen to open."
+                AiAppCapability.SHARE_IMAGE in app.capabilities ->
+                    "$name accepts shared images but offers no way to receive text."
                 else -> "$name does not accept text from other apps."
             },
         )
@@ -105,7 +126,7 @@ class AndroidAiAppLauncher(
                     "$MAX_SHARED_TEXT_CHARS). Shorten it or split it up.",
             )
         }
-        val intent = shareIntent().putExtra(Intent.EXTRA_TEXT, text)
+        val intent = QueriedIntent.SHARE_TEXT.intent().putExtra(Intent.EXTRA_TEXT, text)
         // One target: address it directly. Several: leave the choice to Android's chooser, which
         // setPackage limits to this app's own entry points.
         val onlyTarget = targets.singleOrNull()
@@ -113,9 +134,18 @@ class AndroidAiAppLauncher(
         return start(app, intent)
     }
 
-    private fun openPromptLink(app: AiApp, template: String, text: String): LaunchResult {
+    private fun openPromptLink(app: AiApp, text: String): LaunchResult {
+        val template = app.promptDeepLink
+            ?: return NotPossible("No prompt link is stored for ${app.displayName}, so text cannot be handed to it.")
         if (!PromptLinkTemplate.isUsable(template)) {
             return NotPossible("The prompt link stored for ${app.displayName} is not a valid https link.")
+        }
+        // The registry entry is stored data; only the catalog says which link the vendor documents.
+        if (catalogByPackage[app.packageName]?.promptLinks.orEmpty().none { it.verified && it.template == template }) {
+            return NotPossible(
+                "The prompt link stored for ${app.displayName} is not one its vendor documents. " +
+                    "Scan for apps again to refresh it.",
+            )
         }
         val url = PromptLinkTemplate.fill(template, text)
         if (url.length > MAX_PROMPT_LINK_CHARS) {
@@ -151,8 +181,9 @@ class AndroidAiAppLauncher(
         } catch (e: RuntimeException) {
             // startActivity is a call into the system server. Whatever else it rejects (a binder
             // overflow arrives wrapped in a bare RuntimeException) means the hand-off did not
-            // happen, which is an answer for the user and not a reason to crash.
-            if (e.cause is TransactionTooLargeException) {
+            // happen, which is an answer for the user and not a reason to crash. Only the class
+            // name is reported: the message of such an exception may describe the intent.
+            if (generateSequence<Throwable>(e) { it.cause }.take(MAX_CAUSE_DEPTH).any { it is TransactionTooLargeException }) {
                 NotPossible("The text is too large for Android to pass to ${app.displayName}. Shorten it.")
             } else {
                 NotPossible("Android could not open ${app.displayName} (${e.javaClass.simpleName}).")
@@ -160,10 +191,8 @@ class AndroidAiAppLauncher(
         }
     }
 
-    private fun shareIntent(): Intent = Intent(Intent.ACTION_SEND).setType("text/plain")
-
     private fun shareTargets(packageName: String): List<ComponentName> =
-        pm.activitiesFor(shareIntent().setPackage(packageName), PackageManager.MATCH_DEFAULT_ONLY.toLong())
+        pm.activitiesFor(QueriedIntent.SHARE_TEXT.intent(packageName), PackageManager.MATCH_DEFAULT_ONLY.toLong())
             .startableBy(pm, appContext.packageName)
             .map { ComponentName(it.packageName, it.name) }
 
@@ -184,5 +213,8 @@ class AndroidAiAppLauncher(
 
         /** Upper bound for a filled prompt link; long URLs are truncated or rejected by receivers. */
         const val MAX_PROMPT_LINK_CHARS = 8_000
+
+        /** How far a failure's cause chain is followed; guards against a chain that loops. */
+        private const val MAX_CAUSE_DEPTH = 8
     }
 }

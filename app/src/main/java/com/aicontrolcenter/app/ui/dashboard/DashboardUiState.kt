@@ -9,6 +9,8 @@ import com.aicontrolcenter.app.ui.dashboard.network.AgentNetwork
 import com.aicontrolcenter.app.ui.dashboard.network.NetworkNode
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.agents.AgentAvailability
+import com.aicontrolcenter.core.agents.UnavailableReason
 import com.aicontrolcenter.core.registry.RegistrySnapshot
 
 /** Everything the dashboard shows. Produced by [DashboardViewModel]; the screen only renders it. */
@@ -16,6 +18,8 @@ import com.aicontrolcenter.core.registry.RegistrySnapshot
 data class DashboardUiState(
     val isLoading: Boolean = true,
     val summary: EcosystemSummary = EcosystemSummary(),
+    /** Explains, once, why no agent can run while no model is registered. Null when it does not apply. */
+    val setupNotice: String? = null,
     val attention: List<AttentionItem> = emptyList(),
     val network: AgentNetwork = AgentNetwork(),
     val selectedNode: NetworkNode? = null,
@@ -29,6 +33,9 @@ data class DashboardUiState(
 data class EcosystemSummary(
     val agentCount: Int = 0,
     val readyAgents: Int = 0,
+    /** Agents that only lack a model: an unfinished setup, counted apart from faults. */
+    val agentsWithoutModel: Int = 0,
+    /** Agents that cannot run because something they depend on is broken, disabled or blocked. */
     val unavailableAgents: Int = 0,
     val disabledAgents: Int = 0,
     val director: DirectorSummary? = null,
@@ -46,12 +53,31 @@ data class DirectorSummary(
     val status: StatusLabel,
 ) {
     val canRun: Boolean get() = status.tone == StatusTone.READY
+
+    /** Nothing is wrong with the Director; it only has no model yet. */
+    val awaitingModel: Boolean get() = status.tone == StatusTone.INFO
+
+    /** Whether the Director can run, and in a few words why not. */
+    val runLabel: String
+        get() = when {
+            canRun -> "Can run"
+            awaitingModel -> "Cannot run yet: no model"
+            else -> "Cannot run: ${status.text.replaceFirstChar(Char::lowercase)}"
+        }
 }
 
-internal fun RegistrySnapshot.toSummary(): EcosystemSummary = EcosystemSummary(
+internal fun RegistrySnapshot.toSummary(): EcosystemSummary {
+    val withoutModel = agents.count {
+        (it.availability as? AgentAvailability.Unavailable)?.reason == UnavailableReason.NO_MODEL_ASSIGNED
+    }
+    return toSummary(withoutModel)
+}
+
+private fun RegistrySnapshot.toSummary(withoutModel: Int): EcosystemSummary = EcosystemSummary(
     agentCount = agents.size,
     readyAgents = readyAgents,
-    unavailableAgents = unavailableAgents,
+    agentsWithoutModel = withoutModel,
+    unavailableAgents = unavailableAgents - withoutModel,
     disabledAgents = disabledAgents,
     director = director?.let {
         DirectorSummary(it.profile.id, it.profile.name, it.profile.colorIndex, it.availability.toStatusLabel())

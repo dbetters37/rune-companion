@@ -6,6 +6,8 @@ import com.aicontrolcenter.core.registry.ProviderRepository
 import com.aicontrolcenter.data.db.AiccDatabase
 import com.aicontrolcenter.data.db.dao.ProviderDao
 import com.aicontrolcenter.data.db.entity.ProviderEntity
+import com.aicontrolcenter.data.db.mapper.mapReadable
+import com.aicontrolcenter.data.db.mapper.readableOrNull
 import com.aicontrolcenter.data.db.mapper.toDomain
 import com.aicontrolcenter.data.db.mapper.toEntity
 import kotlinx.coroutines.CoroutineDispatcher
@@ -26,14 +28,14 @@ class RoomProviderRepository internal constructor(
         this(database.providerDao(), dispatcher)
 
     override fun observeAll(): Flow<List<ModelProvider>> =
-        dao.observeAll().map { rows -> rows.map(ProviderEntity::toDomain) }.distinctUntilChanged().flowOn(dispatcher)
+        dao.observeAll().map { rows -> rows.mapReadable(ProviderEntity::toDomain) }.distinctUntilChanged().flowOn(dispatcher)
 
     override suspend fun getAll(): List<ModelProvider> = withContext(dispatcher) {
-        dao.getAll().map(ProviderEntity::toDomain)
+        dao.getAll().mapReadable(ProviderEntity::toDomain)
     }
 
     override suspend fun get(id: ProviderId): ModelProvider? = withContext(dispatcher) {
-        dao.get(id.value)?.toDomain()
+        dao.get(id.value)?.readableOrNull(ProviderEntity::toDomain)
     }
 
     override suspend fun upsert(provider: ModelProvider) = withContext(dispatcher) {

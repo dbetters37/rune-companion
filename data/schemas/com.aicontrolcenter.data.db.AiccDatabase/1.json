@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 1,
-    "identityHash": "b412d738239054031d2aa720e2e6ff77",
+    "identityHash": "771a2500805fc58d277bd82d0535d125",
     "entities": [
       {
         "tableName": "agents",
@@ -473,7 +473,7 @@
       },
       {
         "tableName": "ai_apps",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `package_name` TEXT NOT NULL, `label` TEXT NOT NULL, `vendor` TEXT, `version_name` TEXT, `source` TEXT NOT NULL, `capabilities_json` TEXT NOT NULL, `status` TEXT NOT NULL, `enabled` INTEGER NOT NULL, `accessibility_authorized` INTEGER NOT NULL, `linked_provider_id` TEXT, `prompt_deep_link` TEXT, `notes` TEXT NOT NULL, `first_seen_at` INTEGER NOT NULL, `last_seen_at` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `package_name` TEXT NOT NULL, `label` TEXT NOT NULL, `vendor` TEXT, `version_name` TEXT, `source` TEXT NOT NULL, `capabilities_json` TEXT NOT NULL, `status` TEXT NOT NULL, `enabled` INTEGER NOT NULL, `accessibility_authorized` INTEGER NOT NULL, `linked_provider_id` TEXT, `prompt_deep_link` TEXT, `notes` TEXT NOT NULL, `first_install_time` INTEGER, `signing_cert_sha256` TEXT, `verified_by_user` INTEGER NOT NULL, `hidden` INTEGER NOT NULL, `first_seen_at` INTEGER NOT NULL, `last_seen_at` INTEGER NOT NULL, PRIMARY KEY(`id`))",
         "fields": [
           {
             "fieldPath": "id",
@@ -547,6 +547,28 @@
             "fieldPath": "notes",
             "columnName": "notes",
             "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "firstInstallTime",
+            "columnName": "first_install_time",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "signingCertSha256",
+            "columnName": "signing_cert_sha256",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "verifiedByUser",
+            "columnName": "verified_by_user",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "hidden",
+            "columnName": "hidden",
+            "affinity": "INTEGER",
             "notNull": true
           },
           {
@@ -767,7 +789,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'b412d738239054031d2aa720e2e6ff77')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '771a2500805fc58d277bd82d0535d125')"
     ]
   }
 }

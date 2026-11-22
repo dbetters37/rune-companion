@@ -12,13 +12,25 @@ package com.aicontrolcenter.device.scan
  *  - never the words "chat", "assistant" or "bot" on their own, which would sweep in every
  *    messaging app;
  *  - "AI" only as a separate, upper-case word ("Pocket AI", "OpenAI"), so that "Mail", "AIMP",
- *    "Samurai" and the Italian word "ai" do not match.
+ *    "Samurai" and the Italian word "ai" do not match;
+ *  - never an app that names itself as a keyboard, a browser or a messaging or mail app, even
+ *    when it also advertises AI ("AI Keyboard", "Opera browser with AI"): those are tools with an
+ *    AI feature, not AI applications. The AI browsers this product knows are catalog entries.
  */
 object AiNameHeuristic {
 
-    /** True when either the visible [label] or the [packageName] carries one of the technical terms. */
+    /**
+     * True when the visible [label] or the [packageName] carries one of the technical terms and
+     * neither says the app is a keyboard, browser or messaging app.
+     */
     fun looksLikeAiApp(label: String, packageName: String): Boolean =
-        labelSuggestsAi(label) || packageSuggestsAi(packageName)
+        !isAnotherKindOfApp(label, packageName) && (labelSuggestsAi(label) || packageSuggestsAi(packageName))
+
+    /** True when the label or the package id names the app as a keyboard, browser, messaging or mail app. */
+    internal fun isAnotherKindOfApp(label: String, packageName: String): Boolean =
+        (WORD.findAll(label).map { it.value.lowercase() } + packageName.segments()).any { part ->
+            part in OTHER_KIND_WORDS || OTHER_KIND_TERMS.any { it in part }
+        }
 
     internal fun labelSuggestsAi(label: String): Boolean {
         if (DOT_AI_SUFFIX.containsMatchIn(label)) return true
@@ -29,9 +41,9 @@ object AiNameHeuristic {
     }
 
     internal fun packageSuggestsAi(packageName: String): Boolean =
-        packageName.lowercase().split('.', '_').any { segment ->
-            segment == "ai" || hasTechnicalTerm(segment)
-        }
+        packageName.segments().any { segment -> segment == "ai" || hasTechnicalTerm(segment) }
+
+    private fun String.segments(): List<String> = lowercase().split('.', '_')
 
     /** [word] is one lower-case word or package segment. */
     private fun hasTechnicalTerm(word: String): Boolean =
@@ -40,6 +52,15 @@ object AiNameHeuristic {
             word.startsWith("llm") || word.endsWith("llm")
 
     private val CONTAINED_TERMS = listOf("gpt", "chatbot", "openai", "ollama", "llamacpp")
+
+    /**
+     * Contained in a label word or package segment, these name another kind of app ("messag"
+     * covers messages and messaging).
+     */
+    private val OTHER_KIND_TERMS = listOf("keyboard", "inputmethod", "browser", "messenger", "messag", "mail")
+
+    /** The same, but too short to look for inside longer words: "ime" is in "time", "sms" in "prisms". */
+    private val OTHER_KIND_WORDS = setOf("ime", "sms", "mms")
 
     private val WORD = Regex("[\\p{L}\\p{N}]+")
 

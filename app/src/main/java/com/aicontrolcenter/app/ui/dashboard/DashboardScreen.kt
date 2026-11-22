@@ -21,8 +21,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.aicontrolcenter.app.di.LocalAppGraph
+import com.aicontrolcenter.app.ui.components.InfoBanner
 import com.aicontrolcenter.app.ui.components.ScreenScaffold
 import com.aicontrolcenter.app.ui.theme.Spacing
+import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.core.AgentId
 
 /** Where the dashboard can send the owner. Supplied by the navigation shell. */
@@ -82,6 +84,9 @@ fun DashboardScreen(
                     onOpenApps = navigation.onOpenApps,
                 )
             }
+            val notice: @Composable () -> Unit = {
+                state.setupNotice?.let { InfoBanner(text = it, tone = StatusTone.INFO) }
+            }
             val attention: @Composable () -> Unit = { AttentionSection(state.attention, navigation.onOpenAttention) }
             val network: @Composable () -> Unit = {
                 NetworkCard(
@@ -109,6 +114,7 @@ fun DashboardScreen(
                     horizontalArrangement = Arrangement.spacedBy(Spacing.lg),
                 ) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Spacing.md)) {
+                        notice()
                         summary()
                         attention()
                         actions()
@@ -123,6 +129,7 @@ fun DashboardScreen(
                     modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(contentPadding),
                     verticalArrangement = Arrangement.spacedBy(Spacing.md),
                 ) {
+                    notice()
                     summary()
                     attention()
                     network()

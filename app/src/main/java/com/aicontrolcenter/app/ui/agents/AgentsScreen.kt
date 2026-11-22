@@ -75,7 +75,8 @@ fun AgentsScreen(
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = onNewAgent,
-                icon = { Icon(AppIcons.Add, contentDescription = null) },
+                // Material clears the semantics of an extended FAB's text, so the icon carries the label.
+                icon = { Icon(AppIcons.Add, contentDescription = "New agent") },
                 text = { Text("New agent") },
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary,
@@ -132,7 +133,7 @@ private fun AgentFilters(
             onValueChange = onQueryChange,
             modifier = Modifier.fillMaxWidth().padding(horizontal = Spacing.screen),
             singleLine = true,
-            placeholder = { Text("Search agents by name") },
+            placeholder = { Text("Search agents") },
             leadingIcon = { Icon(AppIcons.Search, contentDescription = null) },
             trailingIcon = {
                 if (state.query.isNotEmpty()) {

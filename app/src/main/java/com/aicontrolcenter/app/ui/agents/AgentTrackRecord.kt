@@ -19,6 +19,7 @@ import com.aicontrolcenter.app.ui.components.AppCard
 import com.aicontrolcenter.app.ui.components.KeyValueRow
 import com.aicontrolcenter.app.ui.components.RowDivider
 import com.aicontrolcenter.app.ui.components.SectionHeader
+import com.aicontrolcenter.app.ui.components.formatCount
 import com.aicontrolcenter.app.ui.components.formatDuration
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.Insights
@@ -98,5 +99,5 @@ private fun TrackRecord(stats: AgentStats) {
     RowDivider(Modifier.padding(vertical = Spacing.sm))
     KeyValueRow("Model calls", "${stats.modelCalls} (${stats.modelErrors} failed)")
     KeyValueRow("Tool calls", "${stats.toolCalls} (${stats.toolErrors} failed)")
-    KeyValueRow("Tokens in / out", "${stats.inputTokens} / ${stats.outputTokens}")
+    KeyValueRow("Tokens in / out", "${formatCount(stats.inputTokens)} / ${formatCount(stats.outputTokens)}")
 }

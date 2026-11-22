@@ -1,6 +1,7 @@
 package com.aicontrolcenter.app.ui.shell
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -34,10 +35,14 @@ import com.aicontrolcenter.app.ui.theme.AppTheme
 /** Width from which the app uses a navigation rail instead of a bottom bar. */
 private val WideLayoutMinWidth = 600.dp
 
-/** The whole app for one [graph]: theme, composition root and navigation shell. */
+/**
+ * The whole app for one [graph]: theme, composition root and navigation shell.
+ *
+ * @param darkTheme follows the system unless a caller (a preview, a screenshot test) pins it.
+ */
 @Composable
-fun AiControlCenterRoot(graph: AppGraph) {
-    AppTheme {
+fun AiControlCenterRoot(graph: AppGraph, darkTheme: Boolean = isSystemInDarkTheme()) {
+    AppTheme(darkTheme) {
         CompositionLocalProvider(LocalAppGraph provides graph) { AppShell() }
     }
 }

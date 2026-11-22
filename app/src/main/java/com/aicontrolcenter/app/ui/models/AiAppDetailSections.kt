@@ -16,6 +16,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -31,6 +32,7 @@ import com.aicontrolcenter.app.ui.components.label
 import com.aicontrolcenter.app.ui.components.toStatusLabel
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.OpenInNew
+import com.aicontrolcenter.app.ui.icons.StatusDisabled
 import com.aicontrolcenter.app.ui.theme.MonoTextStyle
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
@@ -61,10 +63,10 @@ internal fun AppIdentityCard(app: AiApp) {
         ) {
             NeutralChip("AI application")
             StatusChip(status.text, status.tone)
-            if (app.source == DiscoverySource.HEURISTIC) {
-                StatusChip(app.source.label, StatusTone.ATTENTION)
-            } else {
-                TintedChip(app.source.label, MaterialTheme.colorScheme.secondary)
+            TintedChip(app.source.label, MaterialTheme.colorScheme.secondary)
+            when {
+                app.isUnverified -> StatusChip("Unverified", StatusTone.ATTENTION)
+                app.source == DiscoverySource.HEURISTIC -> StatusChip("Confirmed by you", StatusTone.READY)
             }
         }
         Text(
@@ -78,7 +80,14 @@ internal fun AppIdentityCard(app: AiApp) {
 
 /** The complete list of what may be done with the app, and the two actions available today. */
 @Composable
-internal fun PermittedSection(state: AiAppDetailUiState, onOpenApp: () -> Unit, onSendText: () -> Unit) {
+internal fun PermittedSection(
+    state: AiAppDetailUiState,
+    composingText: Boolean,
+    onOpenApp: () -> Unit,
+    onComposeText: () -> Unit,
+    onCancelText: () -> Unit,
+    onSendText: (String) -> Unit,
+) {
     val app = state.app ?: return
     Column {
         SectionHeader("What this framework may do with it")
@@ -115,39 +124,91 @@ internal fun PermittedSection(state: AiAppDetailUiState, onOpenApp: () -> Unit, 
                     }
                 }
             }
+            if (state.accessibilityAuthorisedButInactive) {
+                Row(
+                    modifier = Modifier.padding(top = if (state.channels.isEmpty()) Spacing.sm else Spacing.md),
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+                ) {
+                    Icon(
+                        AppIcons.StatusDisabled,
+                        contentDescription = "Not active",
+                        tint = appColors.disabled,
+                        modifier = Modifier.padding(top = 2.dp).size(18.dp),
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            "Operate its screen: authorised, not active",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            "You authorised it for this app, but nothing can use it: the operator service is not " +
+                                "built yet and the operator switches are off.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
             Text(
-                "Nothing beyond this list is possible. Being registered never means an app can be controlled.",
+                text = if (state.channels.isEmpty()) {
+                    "Being registered never means an app can be controlled."
+                } else {
+                    "Nothing beyond this list is possible. Being registered never means an app can be controlled."
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = Spacing.md),
             )
-            RowDivider(Modifier.padding(vertical = Spacing.md))
-            Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
-                Button(
-                    onClick = onOpenApp,
-                    enabled = state.canOpen && !state.isBusy,
-                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
-                ) {
-                    Icon(AppIcons.OpenInNew, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
-                    Text("Open app", modifier = Modifier.padding(start = 8.dp), maxLines = 1)
-                }
-                OutlinedButton(
-                    onClick = onSendText,
-                    enabled = state.canHandOffText && !state.isBusy,
-                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
-                ) {
-                    Icon(AppIcons.Send, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
-                    Text("Send text…", modifier = Modifier.padding(start = 8.dp), maxLines = 1)
+            if (state.canOpen || state.canHandOffText) {
+                RowDivider(Modifier.padding(vertical = Spacing.md))
+                if (composingText) {
+                    HandOffComposer(app.label, enabled = !state.isBusy, onCancel = onCancelText, onSend = onSendText)
+                } else {
+                    PermittedActions(state, onOpenApp, onComposeText)
                 }
             }
-            Text(
-                "Sending text is a hand-off: the reply stays in that app and is not visible here.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = Spacing.sm),
-            )
         }
     }
+}
+
+/** Buttons for exactly the hand-offs this app permits; an action that is not permitted is not offered. */
+@Composable
+private fun PermittedActions(state: AiAppDetailUiState, onOpenApp: () -> Unit, onComposeText: () -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
+        if (state.canOpen) {
+            Button(
+                onClick = onOpenApp,
+                enabled = !state.isBusy,
+                modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp),
+            ) {
+                Icon(AppIcons.OpenInNew, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+                Text("Open app", modifier = Modifier.padding(start = 8.dp), maxLines = 1)
+            }
+        }
+        if (state.canHandOffText) {
+            OutlinedButton(
+                onClick = onComposeText,
+                enabled = !state.isBusy,
+                modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp),
+            ) {
+                Icon(AppIcons.Send, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+                Text("Send text to app…", modifier = Modifier.padding(start = 8.dp), maxLines = 1)
+            }
+        }
+    }
+    Text(
+        text = if (state.canHandOffText) {
+            "Sending text is a hand-off: the text leaves this app's control, and the reply stays in that app."
+        } else {
+            "This app does not accept text from other apps, so there is nothing to send to it."
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = Spacing.sm),
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -194,10 +255,10 @@ internal fun RegistrySettingsSection(
             )
             RowDivider()
             SwitchRow(
-                title = "Accessibility operation authorised",
+                title = "Allow accessibility operation",
                 description = if (app.status == AiAppStatus.INSTALLED) {
-                    "Your permission to operate this app's screen. Off unless you turn it on. " +
-                        "Cannot be used until the operator service of a later version exists."
+                    "Your permission for agents to operate this app's screen. It has no effect until the " +
+                        "operator service exists and both operator switches are on."
                 } else {
                     "Only an installed app can be authorised."
                 },

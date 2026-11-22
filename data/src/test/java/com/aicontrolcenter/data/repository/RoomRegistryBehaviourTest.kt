@@ -15,6 +15,7 @@ import com.aicontrolcenter.data.testing.InMemoryDatabaseRule
 import com.aicontrolcenter.testkit.Samples
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Rule
@@ -75,6 +76,8 @@ class RoomRegistryBehaviourTest {
         val repo = RoomAgentRepository(db.database)
         val a = AgentId("agt_a")
         val b = AgentId("agt_b")
+        repo.upsert(Samples.agent(id = a.value))
+        repo.upsert(Samples.agent(id = b.value))
         repo.observeStats().test {
             assertEquals(emptyMap(), awaitItem())
             repo.updateStats(a) { it.copy(tasksAssigned = 1) }
@@ -84,6 +87,57 @@ class RoomRegistryBehaviourTest {
             repo.delete(a)
             assertEquals(mapOf(b to AgentStats(modelCalls = 3)), awaitItem())
             cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `stats for an agent that does not exist are not written and the transform is not run`() = runTest {
+        val repo = RoomAgentRepository(db.database)
+        val ghost = AgentId("agt_ghost")
+        var transformRuns = 0
+        repo.observeStats().test {
+            assertEquals(emptyMap(), awaitItem())
+            repo.updateStats(ghost) { transformRuns++; it.copy(tasksCompleted = 1) }
+            expectNoEvents()
+            cancelAndIgnoreRemainingEvents()
+        }
+        assertEquals(0, transformRuns)
+        assertEquals(AgentStats(), repo.getStats(ghost))
+
+        // Stats reported after an agent was deleted do not bring a row back either.
+        val agent = Samples.agent()
+        repo.upsert(agent)
+        repo.updateStats(agent.id) { it.copy(tasksCompleted = 1) }
+        repo.delete(agent.id)
+        repo.updateStats(agent.id) { it.copy(tasksCompleted = it.tasksCompleted + 1) }
+        assertEquals(emptyMap(), repo.observeStats().first())
+
+        // An agent created again under the same id starts from zero.
+        repo.upsert(agent)
+        assertEquals(AgentStats(), repo.getStats(agent.id))
+    }
+
+    @Test
+    fun `stats updates racing with the agent's deletion never leave stats behind`() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val database = AiccDatabase.create(context, name = "stats-delete-race.db")
+        try {
+            val repo = RoomAgentRepository(database)
+            repeat(20) { round ->
+                val agent = Samples.agent(id = "agt_$round")
+                repo.upsert(agent)
+                coroutineScope {
+                    repeat(4) {
+                        launch(Dispatchers.Default) {
+                            repeat(5) { repo.updateStats(agent.id) { it.copy(toolCalls = it.toolCalls + 1) } }
+                        }
+                    }
+                    launch(Dispatchers.Default) { repo.delete(agent.id) }
+                }
+            }
+            assertEquals(emptyMap(), repo.observeStats().first())
+        } finally {
+            database.close()
         }
     }
 
@@ -118,6 +172,7 @@ class RoomRegistryBehaviourTest {
     fun `a failing stats transform changes nothing and reaches the caller`() = runTest {
         val repo = RoomAgentRepository(db.database)
         val id = AgentId("agt_a")
+        repo.upsert(Samples.agent(id = id.value))
         repo.updateStats(id) { it.copy(toolCalls = 4) }
         val failure = assertFailsWith<IllegalStateException> {
             repo.updateStats(id) { error("transform failed") }
@@ -138,6 +193,7 @@ class RoomRegistryBehaviourTest {
         try {
             val repo = RoomAgentRepository(database)
             val id = AgentId("agt_busy")
+            repo.upsert(Samples.agent(id = id.value))
             val writers = 8
             val updatesPerWriter = 25
             coroutineScope {

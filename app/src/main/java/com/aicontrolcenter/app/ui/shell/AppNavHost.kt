@@ -45,11 +45,17 @@ fun NavHostController.navigateToSection(route: Any, restore: Boolean = true) {
     }
 }
 
+/**
+ * Opens an inner screen. Single-top, so a double tap on a card or button opens the screen once
+ * instead of stacking two copies of it.
+ */
+private fun NavHostController.open(route: Any) = navigate(route) { launchSingleTop = true }
+
 /** The navigation graph: every destination and how screens lead to each other. */
 @Composable
 fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) {
-    val openAgent: (AgentId) -> Unit = { navController.navigate(AgentDetailRoute(it.value)) }
-    val openApp: (AiAppId) -> Unit = { navController.navigate(AiAppDetailRoute(it.value)) }
+    val openAgent: (AgentId) -> Unit = { navController.open(AgentDetailRoute(it.value)) }
+    val openApp: (AiAppId) -> Unit = { navController.open(AiAppDetailRoute(it.value)) }
     val back: () -> Unit = { navController.popBackStack() }
 
     NavHost(
@@ -74,7 +80,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                                 navController.navigateToSection(AgentsRoute(AgentStatusFilter.UNAVAILABLE), restore = false)
                         }
                     },
-                    onNewAgent = { navController.navigate(AgentTemplatesRoute) },
+                    onNewAgent = { navController.open(AgentTemplatesRoute) },
                     onOpenAgents = { navController.navigateToSection(AgentsRoute()) },
                     onOpenModels = { navController.navigateToSection(ModelsRoute(ModelsTab.MODELS), restore = false) },
                     onOpenProviders = { navController.navigateToSection(ModelsRoute(ModelsTab.PROVIDERS), restore = false) },
@@ -87,13 +93,13 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
             AgentsScreenRoute(
                 initialStatusFilter = entry.toRoute<AgentsRoute>().status,
                 onOpenAgent = openAgent,
-                onNewAgent = { navController.navigate(AgentTemplatesRoute) },
+                onNewAgent = { navController.open(AgentTemplatesRoute) },
             )
         }
         composable<AgentTemplatesRoute> {
             AgentTemplatesScreenRoute(
                 onBack = back,
-                onPickTemplate = { templateId -> navController.navigate(AgentEditorRoute(templateId = templateId)) },
+                onPickTemplate = { templateId -> navController.open(AgentEditorRoute(templateId = templateId)) },
             )
         }
         composable<AgentEditorRoute> { entry ->
@@ -107,6 +113,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                         // Leave the creation flow behind: Back from the new agent returns to where it started.
                         navController.navigate(AgentDetailRoute(id.value)) {
                             popUpTo<AgentTemplatesRoute> { inclusive = true }
+                            launchSingleTop = true
                         }
                     } else {
                         navController.popBackStack()
@@ -118,7 +125,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
             AgentDetailScreenRoute(
                 agentId = AgentId(entry.toRoute<AgentDetailRoute>().agentId),
                 onBack = back,
-                onEdit = { navController.navigate(AgentEditorRoute(agentId = it.value)) },
+                onEdit = { navController.open(AgentEditorRoute(agentId = it.value)) },
                 onOpenAgent = openAgent,
                 onOpenModels = { navController.navigateToSection(ModelsRoute(ModelsTab.MODELS), restore = false) },
             )
@@ -127,8 +134,8 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
             ModelsScreenRoute(
                 initialTab = entry.toRoute<ModelsRoute>().tab,
                 onOpenApp = openApp,
-                onRegisterManually = { navController.navigate(RegisterAppRoute) },
-                onOpenConcepts = { navController.navigate(ConceptsRoute) },
+                onRegisterManually = { navController.open(RegisterAppRoute) },
+                onOpenConcepts = { navController.open(ConceptsRoute) },
             )
         }
         composable<AiAppDetailRoute> { entry ->
@@ -138,7 +145,10 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
             RegisterAppScreenRoute(
                 onBack = back,
                 onRegistered = { id ->
-                    navController.navigate(AiAppDetailRoute(id.value)) { popUpTo<RegisterAppRoute> { inclusive = true } }
+                    navController.navigate(AiAppDetailRoute(id.value)) {
+                        popUpTo<RegisterAppRoute> { inclusive = true }
+                        launchSingleTop = true
+                    }
                 },
             )
         }

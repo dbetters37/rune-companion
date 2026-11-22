@@ -36,6 +36,9 @@ class AndroidDeviceInspectorTest {
 
     private fun DeviceReport.feature(id: String): DeviceFeature = features.single { it.id == id }
 
+    private fun inspectorSeeing(advancedProtection: AdvancedProtectionReader) =
+        AndroidDeviceInspector(device.application, clock, Dispatchers.Unconfined, advancedProtection)
+
     private fun describeFlagship() {
         ShadowBuild.setManufacturer("Google")
         ShadowBuild.setModel("Pixel 9")
@@ -112,8 +115,46 @@ class AndroidDeviceInspectorTest {
         assertTrue("Vulkan 1.3" in report.feature(DeviceFeatureIds.VULKAN).detail)
         val aiCore = report.feature(DeviceFeatureIds.AICORE).detail
         assertTrue("present" in aiCore && "does not show" in aiCore, "presence must not be worded as usability: $aiCore")
-        assertTrue(report.feature(DeviceFeatureIds.TERMUX).detail.startsWith("Installed"))
+        val termux = report.feature(DeviceFeatureIds.TERMUX).detail
+        assertTrue(termux.startsWith("Installed") && "cannot be seen" in termux, "what runs inside Termux is not known: $termux")
         assertTrue(report.feature(DeviceFeatureIds.TERMUX_API).detail.startsWith("Installed"))
+    }
+
+    @Test
+    fun `advanced protection is not reported where android has no such mode`() = runTest {
+        // Android 15: the platform class does not exist yet, so the reader must not touch it.
+        assertNull(PlatformAdvancedProtectionReader(device.application).isEnabled())
+        assertTrue(inspector.inspect().features.none { it.id == DeviceFeatureIds.ADVANCED_PROTECTION })
+    }
+
+    @Test
+    fun `advanced protection switched off is the good case`() = runTest {
+        val feature = inspectorSeeing { false }.inspect().feature(DeviceFeatureIds.ADVANCED_PROTECTION)
+
+        assertEquals("advanced_protection", feature.id)
+        assertTrue(feature.available)
+        assertTrue(feature.detail.startsWith("Advanced Protection is off"), feature.detail)
+        assertTrue("accessibility services that are not assistive tools" in feature.detail && "sideloading" in feature.detail)
+    }
+
+    @Test
+    fun `advanced protection switched on is reported as a restriction`() = runTest {
+        val report = inspectorSeeing { true }.inspect()
+        val feature = report.feature(DeviceFeatureIds.ADVANCED_PROTECTION)
+
+        assertFalse(feature.available)
+        assertTrue(feature.detail.startsWith("Advanced Protection is on"), feature.detail)
+        assertTrue("accessibility services that are not assistive tools" in feature.detail && "sideloading" in feature.detail)
+        assertEquals(1, feature.detail.count { it == '.' }, "one sentence")
+        assertEquals(DeviceFeatureIds.ADVANCED_PROTECTION, report.features.last().id)
+        assertEquals(8, report.features.size)
+    }
+
+    @Test
+    fun `an advanced protection state android cannot give is left out, not guessed`() = runTest {
+        val report = inspectorSeeing { null }.inspect()
+        assertEquals(7, report.features.size)
+        assertTrue(report.features.none { it.id == DeviceFeatureIds.ADVANCED_PROTECTION })
     }
 
     @Test

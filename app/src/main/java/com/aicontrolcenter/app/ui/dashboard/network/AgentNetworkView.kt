@@ -1,6 +1,7 @@
 package com.aicontrolcenter.app.ui.dashboard.network
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -212,7 +213,8 @@ private fun NetworkNodeView(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
-            modifier = Modifier.height(LabelHeight),
+            // On the card's colour, so a line to the hub passes behind the name instead of through it.
+            modifier = Modifier.height(LabelHeight).background(backdrop, CircleShape).padding(horizontal = 6.dp),
         )
     }
 }

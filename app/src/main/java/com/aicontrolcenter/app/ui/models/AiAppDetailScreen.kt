@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -43,7 +42,6 @@ import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.Apps
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.core.AiAppId
-import com.aicontrolcenter.core.registry.AiApp
 
 /** What the app detail screen can ask for. */
 class AiAppDetailActions(
@@ -51,6 +49,7 @@ class AiAppDetailActions(
     val onOpenApp: () -> Unit,
     val onHandOffText: (String) -> Unit,
     val onSetEnabled: (Boolean) -> Unit,
+    val onConfirm: () -> Unit,
     val onSetAccessibilityAuthorized: (Boolean) -> Unit,
     val onSaveNotes: (String) -> Unit,
     val onRemove: () -> Unit,
@@ -61,7 +60,7 @@ class AiAppDetailActions(
 fun AiAppDetailRoute(appId: AiAppId, onBack: () -> Unit) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel {
-        AiAppDetailViewModel(appId, graph.aiAppRegistry, graph.aiAppLauncher, graph.activityRecorder)
+        AiAppDetailViewModel(appId, graph.aiAppRegistry, graph.aiAppLauncher, graph.settings)
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     LaunchedEffect(state.removed) { if (state.removed) onBack() }
@@ -72,6 +71,7 @@ fun AiAppDetailRoute(appId: AiAppId, onBack: () -> Unit) {
             onOpenApp = viewModel::openApp,
             onHandOffText = viewModel::handOffText,
             onSetEnabled = viewModel::setEnabled,
+            onConfirm = viewModel::confirm,
             onSetAccessibilityAuthorized = viewModel::setAccessibilityAuthorized,
             onSaveNotes = viewModel::saveNotes,
             onRemove = viewModel::remove,
@@ -80,12 +80,13 @@ fun AiAppDetailRoute(appId: AiAppId, onBack: () -> Unit) {
     )
 }
 
-private enum class AppDialog { SEND_TEXT, ACCESSIBILITY_WARNING, REMOVE }
+private enum class AppDialog { ACCESSIBILITY_WARNING, REMOVE }
 
 @Composable
 fun AiAppDetailScreen(state: AiAppDetailUiState, actions: AiAppDetailActions) {
     val app = state.app
     var dialog by rememberSaveable { mutableStateOf<AppDialog?>(null) }
+    var composingText by rememberSaveable { mutableStateOf(false) }
 
     ScreenScaffold(
         title = app?.label ?: "AI app",
@@ -115,10 +116,19 @@ fun AiAppDetailScreen(state: AiAppDetailUiState, actions: AiAppDetailActions) {
                 verticalArrangement = Arrangement.spacedBy(Spacing.md),
             ) {
                 AppIdentityCard(app)
+                if (app.isUnverified) {
+                    UnverifiedCard(app.label, enabled = !state.isBusy, onConfirm = actions.onConfirm)
+                }
                 PermittedSection(
                     state = state,
+                    composingText = composingText && state.canHandOffText,
                     onOpenApp = actions.onOpenApp,
-                    onSendText = { dialog = AppDialog.SEND_TEXT },
+                    onComposeText = { composingText = true },
+                    onCancelText = { composingText = false },
+                    onSendText = { text ->
+                        composingText = false
+                        actions.onHandOffText(text)
+                    },
                 )
                 CapabilitiesSection(app)
                 RegistrySettingsSection(
@@ -143,7 +153,7 @@ fun AiAppDetailScreen(state: AiAppDetailUiState, actions: AiAppDetailActions) {
                             Text("Remove from registry", modifier = Modifier.padding(start = 8.dp))
                         }
                         Text(
-                            "Removing only forgets the app here. It does not uninstall it or change it in any way.",
+                            "Removing takes the app off this list. It does not uninstall it or change it in any way.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = Spacing.sm),
@@ -156,24 +166,19 @@ fun AiAppDetailScreen(state: AiAppDetailUiState, actions: AiAppDetailActions) {
 
     if (app != null) {
         when (dialog) {
-            AppDialog.SEND_TEXT -> SendTextDialog(
-                app = app,
-                onSend = { text ->
-                    dialog = null
-                    actions.onHandOffText(text)
-                },
-                onDismiss = { dialog = null },
-            )
             AppDialog.ACCESSIBILITY_WARNING -> ConfirmDialog(
                 title = "Allow operating ${app.label}'s screen?",
-                message = "This records your permission for agents to operate ${app.label} through Android's " +
-                    "accessibility service: reading what the app shows, including your conversations in it, and " +
-                    "tapping and typing in it as if they were you.\n\n" +
-                    "Nothing can use this permission yet. It also needs the operator service of a later version of " +
-                    "this app, which you would have to switch on separately in Android settings.\n\n" +
-                    "You can revoke it here at any time, and it is withdrawn automatically if the app is uninstalled.",
+                message = "What it would allow: agents operating ${app.label} through Android's accessibility " +
+                    "service. That means reading everything the app shows, including your conversations in it, " +
+                    "and tapping and typing in it as if they were you.\n\n" +
+                    "What it does today: nothing. Operating an app also needs the operator service, which is not " +
+                    "built yet, and both operator switches in Settings, which do not exist yet either. Until all " +
+                    "of that is in place this only records your decision.\n\n" +
+                    "You can revoke it here at any time. It is withdrawn automatically if a different app appears " +
+                    "under this package name.",
                 confirmLabel = "Authorise",
                 icon = AppIcons.Accessibility,
+                cautionary = true,
                 onConfirm = {
                     dialog = null
                     actions.onSetAccessibilityAuthorized(true)
@@ -182,10 +187,11 @@ fun AiAppDetailScreen(state: AiAppDetailUiState, actions: AiAppDetailActions) {
             )
             AppDialog.REMOVE -> ConfirmDialog(
                 title = "Remove ${app.label} from the registry?",
-                message = "Its notes and settings here are forgotten. The app itself stays installed and untouched. " +
-                    "A later scan may find it again.",
+                message = "The app itself stays installed and untouched.\n\n" +
+                    "A scan will not bring it back. If you want it listed again, add it with \"Register manually\".",
                 confirmLabel = "Remove",
                 destructive = true,
+                icon = AppIcons.Delete,
                 onConfirm = {
                     dialog = null
                     actions.onRemove()
@@ -195,34 +201,6 @@ fun AiAppDetailScreen(state: AiAppDetailUiState, actions: AiAppDetailActions) {
             null -> Unit
         }
     }
-}
-
-@Composable
-private fun SendTextDialog(app: AiApp, onSend: (String) -> Unit, onDismiss: () -> Unit) {
-    var text by rememberSaveable { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Send text to ${app.label}") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(Spacing.md)) {
-                Text(
-                    "The text is handed to ${app.label}'s own screen. Whatever ${app.label} answers stays in that app: " +
-                        "AI Control Center cannot read the reply.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Text to hand over") },
-                    minLines = 3,
-                    maxLines = 6,
-                )
-            }
-        },
-        confirmButton = { TextButton(onClick = { onSend(text) }, enabled = text.isNotBlank()) { Text("Send") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
 }
 
 @Composable

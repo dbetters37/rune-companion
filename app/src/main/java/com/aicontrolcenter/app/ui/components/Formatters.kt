@@ -65,6 +65,9 @@ fun formatDuration(millis: Long): String {
     }
 }
 
+/** "182,400": a large count with thousands separators. */
+fun formatCount(count: Long): String = "%,d".format(Locale.ENGLISH, count)
+
 /** "1 agent" / "3 agents". */
 fun plural(count: Int, singular: String, plural: String = singular + "s"): String =
     "$count ${if (count == 1) singular else plural}"

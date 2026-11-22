@@ -77,7 +77,7 @@ internal fun NetworkCard(
     var viewSize by remember { mutableStateOf(IntSize.Zero) }
     AppCard(modifier = modifier, contentPadding = PaddingValues(0.dp)) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(start = Spacing.lg, end = Spacing.xs, top = Spacing.xs),
+            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = Spacing.lg, end = Spacing.xs, top = Spacing.xs),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
@@ -132,6 +132,7 @@ private fun NetworkLegend(hasHub: Boolean, modifier: Modifier = Modifier) {
             verticalArrangement = Arrangement.spacedBy(Spacing.xs),
         ) {
             LegendItem(StatusTone.READY, "Ready")
+            LegendItem(StatusTone.INFO, "No model yet")
             LegendItem(StatusTone.UNAVAILABLE, "Unavailable")
             LegendItem(StatusTone.DISABLED, "Disabled")
         }

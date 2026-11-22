@@ -2,11 +2,17 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!--
+        Normal (install-time) permission, Android 16+: lets the device report say whether
+        Advanced Protection mode is on. It is the only permission this module requests.
+    -->
+    <uses-permission android:name="android.permission.QUERY_ADVANCED_PROTECTION_MODE" />
+
+    <!--
         Package visibility (Android 11+). Everything the device layer asks PackageManager is
         covered by the entries below, so QUERY_ALL_PACKAGES is deliberately not requested.
 
-        The <package> list must match KnownAiApps plus CompanionPackages; QueriesManifestTest
-        fails when they drift apart.
+        The <intent> list must match QueriedIntent and the <package> list must match KnownAiApps
+        plus CompanionPackages; QueriesManifestTest fails when they drift apart.
     -->
     <queries>
         <!-- Every app with a launcher icon: the manual-registration picker and the name heuristic. -->

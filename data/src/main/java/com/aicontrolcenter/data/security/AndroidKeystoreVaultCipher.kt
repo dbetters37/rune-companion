@@ -1,41 +1,45 @@
 package com.aicontrolcenter.data.security
 
-import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyProperties
 import java.security.GeneralSecurityException
-import java.security.KeyStore
 import java.security.KeyStoreException
 import java.security.ProviderException
-import java.security.UnrecoverableKeyException
-import javax.crypto.KeyGenerator
-import javax.crypto.SecretKey
 
 /**
  * The production [VaultCipher]: AES-256-GCM with a key that is generated inside the
  * AndroidKeyStore and can never be exported from it. The app only ever holds a handle; the
- * key material stays in the device's secure hardware (StrongBox where the phone has it,
- * otherwise the trusted execution environment).
+ * key material stays in the device's trusted execution environment.
  *
  * The key does not require user authentication: agents must be able to use an API key while
- * the phone is locked and a long task is running. What protects the secrets is that the vault
- * file is useless without this device's keystore.
+ * the phone is locked and a long task is running. What protects the secrets is that the sealed
+ * data is useless without this device's keystore.
  *
- * If the key is ever lost (for example after a factory reset restored the app's files but not
- * the keystore), a new key is created on next use and the old ciphertexts fail to decrypt;
- * the vault reports that as a `SecretVaultException` and the secret has to be entered again.
- *
- * @param keyAlias name of the keystore entry. Changing it abandons everything sealed so far.
+ * A keystore problem is always reported as a [GeneralSecurityException] and never "repaired":
+ * decrypting creates, replaces or deletes nothing, so data that cannot be opened right now is
+ * still there when the keystore works again. Only when the entry is truly gone (for example
+ * the app's files were restored onto a device that never had the key) does the next
+ * [encrypt] create a new key, and the old sealed values then keep failing to open. See
+ * [KeystoreVaultKey] for the exact rules.
  */
-class AndroidKeystoreVaultCipher(private val keyAlias: String = DEFAULT_KEY_ALIAS) : VaultCipher {
+class AndroidKeystoreVaultCipher internal constructor(private val key: KeystoreVaultKey) : VaultCipher {
 
-    private val aesGcm = AesGcmVaultCipher(::key)
-    private val keyLock = Any()
+    /** @param keyAlias name of the keystore entry. Changing it abandons everything sealed so far. */
+    constructor(keyAlias: String = DEFAULT_KEY_ALIAS) : this(KeystoreVaultKey(keyAlias))
+
+    private val aesGcm = AesGcmVaultCipher(key)
 
     override fun encrypt(plaintext: ByteArray, associatedData: ByteArray): ByteArray =
         keystoreCall { aesGcm.encrypt(plaintext, associatedData) }
 
     override fun decrypt(sealed: ByteArray, associatedData: ByteArray): ByteArray =
         keystoreCall { aesGcm.decrypt(sealed, associatedData) }
+
+    /**
+     * Deletes the keystore entry, which makes everything sealed with it unreadable for good.
+     * This is the only way the key is ever removed and nothing in this module calls it: it is
+     * for an explicit "reset" that the owner has confirmed. The next [encrypt] creates a new key.
+     */
+    @Throws(GeneralSecurityException::class)
+    fun discardKey(): Unit = keystoreCall { key.discard() }
 
     /**
      * The keystore reports many failures (hardware busy, key blob invalidated, daemon died) as
@@ -49,50 +53,11 @@ class AndroidKeystoreVaultCipher(private val keyAlias: String = DEFAULT_KEY_ALIA
             throw KeyStoreException("The device keystore could not complete the operation.", failure)
         }
 
-    /**
-     * Looked up on every use: a cached handle would go stale if the entry were replaced.
-     *
-     * An entry that exists but can no longer be loaded is gone for good, and so is everything
-     * sealed with it. It is replaced by a new key so that the vault can store secrets again;
-     * the old ciphertexts then fail authentication, which is how the loss is reported.
-     */
-    private fun key(): SecretKey = synchronized(keyLock) {
-        val keyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
-        val existing = try {
-            keyStore.getKey(keyAlias, null) as? SecretKey
-        } catch (_: UnrecoverableKeyException) {
-            keyStore.deleteEntry(keyAlias)
-            null
-        }
-        existing ?: generateKey()
-    }
-
-    private fun generateKey(): SecretKey =
-        try {
-            generateKey(strongBox = true)
-        } catch (unavailable: ProviderException) {
-            // StrongBoxUnavailableException, or a vendor keystore signalling the same thing
-            // less precisely. A failure of the fallback itself is reported to the caller.
-            generateKey(strongBox = false)
-        }
-
-    private fun generateKey(strongBox: Boolean): SecretKey {
-        val spec = KeyGenParameterSpec.Builder(keyAlias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
-            .setKeySize(KEY_BITS)
-            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-            .setRandomizedEncryptionRequired(true)
-            .setUserAuthenticationRequired(false)
-            .setIsStrongBoxBacked(strongBox)
-            .build()
-        return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, KEYSTORE)
-            .apply { init(spec) }
-            .generateKey()
-    }
-
     companion object {
+        /** Keystore entry that seals the secret vault. */
         const val DEFAULT_KEY_ALIAS = "aicc.secret-vault.v1"
-        private const val KEYSTORE = "AndroidKeyStore"
-        private const val KEY_BITS = 256
+
+        /** Keystore entry that seals the database key; separate, so one can be reset without the other. */
+        const val DATABASE_KEY_ALIAS = "aicc.database-key.v1"
     }
 }

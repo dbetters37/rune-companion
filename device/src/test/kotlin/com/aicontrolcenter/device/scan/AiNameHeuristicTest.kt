@@ -24,7 +24,7 @@ class AiNameHeuristicTest {
         Case("Ollama Remote", "com.example.remote", true),
         // Neutral label, telling package id.
         Case("Nova", "ai.nova.app", true),
-        Case("Smart Keyboard", "com.example.gptkeyboard", true),
+        Case("Smart Notes", "com.example.gptnotes", true),
         Case("Notes", "com.example.ai.notes", true),
         Case("Runner", "com.example.mnnllm.android", true),
         Case("Helper", "com.openai.helper", true),
@@ -41,6 +41,22 @@ class AiNameHeuristicTest {
         Case("Gmail", "com.google.android.gm", false),
         Case("Mail", "com.example.mail", false),
         Case("Live Chat Support", "com.example.support", false),
+        Case("AI Messenger", "com.example.talk", false),
+        Case("Messages AI", "com.example.texting", false),
+        Case("Texting", "com.example.ai.sms", false),
+        Case("AI Mail", "com.example.inbox", false),
+        // Keyboards and browsers, including the ones that advertise an AI feature.
+        Case("Gboard", "com.google.android.inputmethod.latin", false),
+        Case("Microsoft SwiftKey AI Keyboard", "com.touchtype.swiftkey", false),
+        Case("AI Keyboard", "com.example.typing", false),
+        Case("Smart Keyboard", "com.example.gptkeyboard", false),
+        Case("Typing AI", "com.example.ai.ime", false),
+        Case("Chrome", "com.android.chrome", false),
+        Case("Firefox", "org.mozilla.firefox", false),
+        Case("Samsung Internet", "com.sec.android.app.sbrowser", false),
+        Case("Opera browser with AI", "com.opera.browser", false),
+        Case("AI Browser", "com.example.surf", false),
+        Case("Surf", "ai.example.browser", false),
         // Words that merely contain the letters.
         Case("AIMP", "com.aimp.player", false),
         Case("Air India", "com.example.airindia", false),
@@ -77,5 +93,17 @@ class AiNameHeuristicTest {
         // Segments are compared whole: "ai" inside a longer segment is not the "ai" segment.
         assertEquals(false, AiNameHeuristic.packageSuggestsAi("com.mail.air.thai"))
         assertEquals(false, AiNameHeuristic.packageSuggestsAi("com.example.email_client"))
+    }
+
+    @Test
+    fun `naming another kind of app overrides an AI term, in the label or in the package`() {
+        assertEquals(true, AiNameHeuristic.isAnotherKindOfApp("AI Keyboard", "com.example.typing"))
+        assertEquals(true, AiNameHeuristic.isAnotherKindOfApp("Typing AI", "com.example.ime"))
+        assertEquals(true, AiNameHeuristic.isAnotherKindOfApp("AI SMS", "com.example.texting"))
+        assertEquals(true, AiNameHeuristic.isAnotherKindOfApp("Inbox AI", "com.example.webmail"))
+        // Short markers count as whole words only: "ime" is also in "time", "sms" in "prisms".
+        assertEquals(false, AiNameHeuristic.isAnotherKindOfApp("Prime Time AI", "com.example.primetime"))
+        assertEquals(false, AiNameHeuristic.isAnotherKindOfApp("Prisms AI", "com.example.prisms"))
+        assertEquals(true, AiNameHeuristic.looksLikeAiApp("Prime Time AI", "com.example.primetime"))
     }
 }

@@ -15,7 +15,10 @@ import com.aicontrolcenter.device.catalog.KnownAiApp
 import com.aicontrolcenter.device.catalog.KnownAiApps
 import com.aicontrolcenter.device.catalog.PromptDeepLink
 import com.aicontrolcenter.device.catalog.PromptLinkTemplate
+import com.aicontrolcenter.device.platform.INSTALL_IDENTITY_FLAGS
+import com.aicontrolcenter.device.platform.QueriedIntent
 import com.aicontrolcenter.device.platform.activitiesFor
+import com.aicontrolcenter.device.platform.installIdentity
 import com.aicontrolcenter.device.platform.installedPackages
 import com.aicontrolcenter.device.platform.packageInfoOrNull
 import com.aicontrolcenter.device.platform.startableBy
@@ -40,7 +43,12 @@ import kotlin.coroutines.coroutineContext
  *
  * PROMPT_DEEP_LINK is stricter than "the catalog knows a link": the catalog link must be
  * vendor-documented and the installed app must actually resolve it, so the registry never
- * offers a link that would open nothing.
+ * offers a link that would open nothing. Together with SHARE_TEXT it is the only capability
+ * that makes the registry offer a text hand-off.
+ *
+ * Every report carries the install identity (first install time and signing certificate, see
+ * [installIdentity]) so the registry can tell when a different installation has taken over a
+ * package name.
  *
  * The control center itself is never reported, not by a scan, not in the installed-app list and
  * not by [inspect], so it cannot be registered as a hand-off target for itself.
@@ -62,7 +70,7 @@ class AndroidAiAppScanner(
         suspend fun consider(packageName: String, source: DiscoverySource) {
             coroutineContext.ensureActive()
             if (packageName == ownPackage || packageName in found) return
-            val info = pm.packageInfoOrNull(packageName) ?: return
+            val info = pm.packageInfoOrNull(packageName, INSTALL_IDENTITY_FLAGS) ?: return
             describe(info, source, surfaces)?.let { found[packageName] = it }
         }
 
@@ -84,7 +92,7 @@ class AndroidAiAppScanner(
      */
     override suspend fun inspect(packageName: String): DiscoveredApp? = withContext(dispatcher) {
         if (packageName == ownPackage) return@withContext null
-        val info = pm.packageInfoOrNull(packageName) ?: return@withContext null
+        val info = pm.packageInfoOrNull(packageName, INSTALL_IDENTITY_FLAGS) ?: return@withContext null
         val surfaces = IntentSurfaces.query(pm, callerPackage = ownPackage, onlyPackage = packageName)
         val app = describe(info, DiscoverySource.MANUAL, surfaces) ?: return@withContext null
         val source = when {
@@ -98,6 +106,7 @@ class AndroidAiAppScanner(
         app.copy(source = source)
     }
 
+    /** [info] must have been fetched with [INSTALL_IDENTITY_FLAGS]. */
     private fun describe(info: PackageInfo, source: DiscoverySource, surfaces: IntentSurfaces): DiscoveredApp? {
         val appInfo = info.applicationInfo ?: return null
         val packageName = info.packageName
@@ -112,6 +121,7 @@ class AndroidAiAppScanner(
             if (promptLink != null) add(AiAppCapability.PROMPT_DEEP_LINK)
             if (known?.hostsLocalModels == true) add(AiAppCapability.LOCAL_MODEL_HOST)
         }
+        val identity = info.installIdentity()
         return DiscoveredApp(
             packageName = packageName,
             label = appInfo.label(packageName),
@@ -121,6 +131,8 @@ class AndroidAiAppScanner(
             source = source,
             enabledInSystem = isEnabledInSystem(appInfo),
             promptDeepLink = promptLink?.template,
+            firstInstallTime = identity.firstInstallTime,
+            signingCertSha256 = identity.signingCertSha256,
         )
     }
 
@@ -148,8 +160,7 @@ class AndroidAiAppScanner(
 
     /** Every app with a launcher icon except this one, sorted by label. */
     private fun launchableApps(): List<InstalledAppInfo> {
-        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val applications = pm.activitiesFor(launcher)
+        val applications = pm.activitiesFor(QueriedIntent.LAUNCHER.intent())
             .mapNotNull { it.activityInfo?.applicationInfo }
             .filter { it.packageName != ownPackage }
             .distinctBy { it.packageName }

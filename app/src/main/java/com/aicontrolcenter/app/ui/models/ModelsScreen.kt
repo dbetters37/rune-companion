@@ -46,6 +46,7 @@ fun ModelsRoute(
         onSelectTab = { tab = it },
         onScan = viewModel::scanDevice,
         onOpenApp = onOpenApp,
+        onConfirmApp = viewModel::confirm,
         onRegisterManually = onRegisterManually,
         onOpenConcepts = onOpenConcepts,
         onMessageShown = viewModel::messageShown,
@@ -60,6 +61,7 @@ fun ModelsScreen(
     onSelectTab: (ModelsTab) -> Unit,
     onScan: () -> Unit,
     onOpenApp: (AiAppId) -> Unit,
+    onConfirmApp: (AiAppId) -> Unit,
     onRegisterManually: () -> Unit,
     onOpenConcepts: () -> Unit,
     onMessageShown: () -> Unit,
@@ -90,6 +92,8 @@ fun ModelsScreen(
                         selected = tab == selectedTab,
                         onClick = { onSelectTab(tab) },
                         text = { Text(if (state.isLoading) tab.title else "${tab.title} · $count", maxLines = 1) },
+                        selectedContentColor = MaterialTheme.colorScheme.primary,
+                        unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
@@ -105,6 +109,7 @@ fun ModelsScreen(
                         lastScan = state.lastScan,
                         onScan = onScan,
                         onOpenApp = onOpenApp,
+                        onConfirmApp = onConfirmApp,
                         onRegisterManually = onRegisterManually,
                         onOpenConcepts = onOpenConcepts,
                     )

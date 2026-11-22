@@ -2,6 +2,8 @@ package com.aicontrolcenter.app.ui.agents
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -30,6 +32,7 @@ import com.aicontrolcenter.core.agents.label
  * One agent in the list: who it is, what it is for, which model powers it and whether it
  * could run right now, with the framework's reason when it could not.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun AgentRowCard(row: AgentRowUi, onClick: () -> Unit, modifier: Modifier = Modifier) {
     AppCard(modifier = modifier.fillMaxWidth(), onClick = onClick) {
@@ -51,7 +54,7 @@ internal fun AgentRowCard(row: AgentRowUi, onClick: () -> Unit, modifier: Modifi
                         modifier = Modifier.weight(1f, fill = false),
                     )
                     if (row.isDesignatedDirector) {
-                        TintedChip("Director", MaterialTheme.colorScheme.primary, icon = AppIcons.Star)
+                        TintedChip("Designated", MaterialTheme.colorScheme.primary, icon = AppIcons.Star)
                     }
                 }
                 Text(
@@ -64,12 +67,20 @@ internal fun AgentRowCard(row: AgentRowUi, onClick: () -> Unit, modifier: Modifi
                         text = row.description,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                ModelLine(row.model)
-                StatusChip(row.status.text, row.status.tone, modifier = Modifier.padding(top = 2.dp))
+                // Model and status side by side; the status wraps below when a long model name needs the line.
+                FlowRow(
+                    modifier = Modifier.padding(top = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    itemVerticalAlignment = Alignment.CenterVertically,
+                ) {
+                    ModelLine(row.model)
+                    StatusChip(row.status.text, row.status.tone)
+                }
                 if (row.statusDetail != null) {
                     Text(
                         text = row.statusDetail,

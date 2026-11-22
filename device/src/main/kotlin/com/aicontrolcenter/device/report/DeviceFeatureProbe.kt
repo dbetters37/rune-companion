@@ -17,19 +17,29 @@ object DeviceFeatureIds {
 
     /** Available when Android does NOT class the phone as a low-RAM device. */
     const val STANDARD_MEMORY_CLASS = "standard_memory_class"
+
+    /**
+     * Available when Advanced Protection mode is OFF, so that "available" stays the good case
+     * for this product. Only listed when Android can say (Android 16 and newer).
+     */
+    const val ADVANCED_PROTECTION = "advanced_protection"
 }
 
 /**
  * Builds the feature list of a device report. Each entry states only what was observed: a
  * declared hardware feature or an installed package is reported as present, never as working.
+ * What happens inside another app (a model downloaded, a server set up) is not looked at.
  */
-internal class DeviceFeatureProbe(private val pm: PackageManager) {
+internal class DeviceFeatureProbe(
+    private val pm: PackageManager,
+    private val advancedProtection: AdvancedProtectionReader,
+) {
 
     /**
      * @param glEsVersion the packed `reqGlEsVersion` (major in the high 16 bits), 0 if unknown.
      * @param glEsVersionName the same version as text, or null if unknown.
      */
-    fun probe(glEsVersion: Int, glEsVersionName: String?, isLowRamDevice: Boolean): List<DeviceFeature> = listOf(
+    fun probe(glEsVersion: Int, glEsVersionName: String?, isLowRamDevice: Boolean): List<DeviceFeature> = listOfNotNull(
         abi64Bit(),
         openGlEs31(glEsVersion, glEsVersionName),
         vulkan(),
@@ -37,6 +47,7 @@ internal class DeviceFeatureProbe(private val pm: PackageManager) {
         termux(),
         termuxApi(),
         standardMemoryClass(isLowRamDevice),
+        advancedProtection(),
     )
 
     private fun abi64Bit(): DeviceFeature {
@@ -108,9 +119,9 @@ internal class DeviceFeatureProbe(private val pm: PackageManager) {
             title = "Termux",
             available = present,
             detail = if (present) {
-                "Installed; it can run local model servers such as Ollama or llama.cpp on this phone."
+                "Installed; whether a local model server such as Ollama or llama.cpp is set up inside it cannot be seen from here."
             } else {
-                "Not installed; with Termux the phone can run local model servers such as Ollama or llama.cpp."
+                "Not installed; Termux is one way to run a local model server such as Ollama or llama.cpp on a phone."
             },
         )
     }
@@ -122,7 +133,7 @@ internal class DeviceFeatureProbe(private val pm: PackageManager) {
             title = "Termux:API",
             available = present,
             detail = if (present) {
-                "Installed; scripts running in Termux can call Android features through it."
+                "Installed; it is the add-on through which scripts running in Termux call Android features."
             } else {
                 "Not installed; it is only needed if scripts running in Termux should call Android features."
             },
@@ -139,6 +150,22 @@ internal class DeviceFeatureProbe(private val pm: PackageManager) {
             "Android does not class this phone as a low-RAM device."
         },
     )
+
+    /** Absent, rather than guessed, when Android cannot say whether the mode is on. */
+    private fun advancedProtection(): DeviceFeature? {
+        val on = advancedProtection.isEnabled() ?: return null
+        val effect = "Android disables accessibility services that are not assistive tools and blocks sideloading"
+        return DeviceFeature(
+            id = DeviceFeatureIds.ADVANCED_PROTECTION,
+            title = "Advanced Protection is off",
+            available = !on,
+            detail = if (on) {
+                "Advanced Protection is on, and while it is on $effect."
+            } else {
+                "Advanced Protection is off; while it is on, $effect."
+            },
+        )
+    }
 
     private fun isInstalled(packageName: String): Boolean = pm.packageInfoOrNull(packageName) != null
 

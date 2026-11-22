@@ -50,8 +50,8 @@ internal fun ModelEditor(state: AgentEditorUiState, actions: AgentEditorActions)
                 if (state.models.isEmpty()) {
                     InfoBanner(
                         title = "No models are registered yet",
-                        text = "A model is reached through a provider, and connecting providers is the next phase of this " +
-                            "app. Until then an agent can be fully configured but cannot run. See the Models section.",
+                        text = "A model is reached through a provider, and connecting providers is the next stage of this " +
+                            "build. Until then an agent can be fully configured but cannot run.",
                     )
                 }
                 val selected = state.model(draft.modelId)

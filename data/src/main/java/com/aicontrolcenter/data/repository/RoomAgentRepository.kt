@@ -7,6 +7,8 @@ import com.aicontrolcenter.core.registry.AgentRepository
 import com.aicontrolcenter.data.db.AiccDatabase
 import com.aicontrolcenter.data.db.dao.AgentDao
 import com.aicontrolcenter.data.db.entity.AgentEntity
+import com.aicontrolcenter.data.db.mapper.mapReadable
+import com.aicontrolcenter.data.db.mapper.readableOrNull
 import com.aicontrolcenter.data.db.mapper.toDomain
 import com.aicontrolcenter.data.db.mapper.toEntity
 import kotlinx.coroutines.CoroutineDispatcher
@@ -21,7 +23,9 @@ import kotlinx.coroutines.withContext
  * [AgentRepository] on Room.
  *
  * Rows are converted to domain objects on [dispatcher], never on the caller's thread, so the
- * JSON columns are not parsed on the main thread when a screen collects a flow.
+ * JSON columns are not parsed on the main thread when a screen collects a flow. A row that
+ * cannot be converted is treated as absent (see `mapReadable`), here and in the other Room
+ * repositories.
  */
 class RoomAgentRepository internal constructor(
     private val dao: AgentDao,
@@ -32,17 +36,17 @@ class RoomAgentRepository internal constructor(
         this(database.agentDao(), dispatcher)
 
     override fun observeAll(): Flow<List<AgentProfile>> =
-        dao.observeAll().map { rows -> rows.map(AgentEntity::toDomain) }.distinctUntilChanged().flowOn(dispatcher)
+        dao.observeAll().map { rows -> rows.mapReadable(AgentEntity::toDomain) }.distinctUntilChanged().flowOn(dispatcher)
 
     override fun observe(id: AgentId): Flow<AgentProfile?> =
-        dao.observe(id.value).map { it?.toDomain() }.distinctUntilChanged().flowOn(dispatcher)
+        dao.observe(id.value).map { it?.readableOrNull(AgentEntity::toDomain) }.distinctUntilChanged().flowOn(dispatcher)
 
     override suspend fun getAll(): List<AgentProfile> = withContext(dispatcher) {
-        dao.getAll().map(AgentEntity::toDomain)
+        dao.getAll().mapReadable(AgentEntity::toDomain)
     }
 
     override suspend fun get(id: AgentId): AgentProfile? = withContext(dispatcher) {
-        dao.get(id.value)?.toDomain()
+        dao.get(id.value)?.readableOrNull(AgentEntity::toDomain)
     }
 
     override suspend fun upsert(agent: AgentProfile) = withContext(dispatcher) {
@@ -62,8 +66,10 @@ class RoomAgentRepository internal constructor(
     /**
      * Atomic: the current value is read and the result written inside one write transaction,
      * so concurrent updates are applied one after another and none is lost. [transform] runs
-     * inside that transaction and must be quick and free of side effects.
+     * inside that transaction and must be quick and free of side effects. For an id no agent
+     * has, nothing is written and [transform] is not called.
      */
-    override suspend fun updateStats(id: AgentId, transform: (AgentStats) -> AgentStats) =
+    override suspend fun updateStats(id: AgentId, transform: (AgentStats) -> AgentStats) {
         dao.updateStats(id.value) { stored -> transform(stored?.toDomain() ?: AgentStats()).toEntity(id) }
+    }
 }

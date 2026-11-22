@@ -33,6 +33,7 @@ val StatusTone.icon: ImageVector
         StatusTone.ATTENTION -> AppIcons.StatusAttention
         StatusTone.UNAVAILABLE -> AppIcons.StatusUnavailable
         StatusTone.DISABLED -> AppIcons.StatusDisabled
+        StatusTone.INFO -> AppIcons.Info
     }
 
 /** A status as a pill: tone glyph, label, and a faint wash of the tone's colour. */

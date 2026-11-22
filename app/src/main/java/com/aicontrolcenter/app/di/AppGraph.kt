@@ -14,6 +14,7 @@ import com.aicontrolcenter.core.settings.SettingsRepository
 import com.aicontrolcenter.framework.agents.DefaultAgentManager
 import com.aicontrolcenter.framework.registry.DefaultAiAppRegistry
 import com.aicontrolcenter.framework.registry.DefaultRegistryDirectory
+import com.aicontrolcenter.framework.registry.LoggingAiAppLauncher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 
@@ -36,11 +37,16 @@ class AppGraph(val ports: Ports, appScope: CoroutineScope) {
     val activityLog: ActivityLog = ports.activityLog
     val settings: SettingsRepository = ports.settings
     val secretVault: SecretVault = ports.secretVault
-    val aiAppLauncher: AiAppLauncher = ports.aiAppLauncher
     val deviceInspector: DeviceInspector = ports.deviceInspector
 
     // --- framework services ---
     val activityRecorder = ActivityRecorder(ports.activityLog, ports.idGenerator, ports.clock)
+
+    /**
+     * Hand-offs to other apps always go through the logging decorator, so every time text
+     * leaves this app's control there is an activity entry for it.
+     */
+    val aiAppLauncher: AiAppLauncher = LoggingAiAppLauncher(ports.aiAppLauncher, activityRecorder)
 
     val agentManager: AgentManager = DefaultAgentManager(
         agents = ports.agents,
