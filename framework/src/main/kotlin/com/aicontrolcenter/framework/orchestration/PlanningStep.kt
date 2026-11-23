@@ -65,7 +65,7 @@ internal class PlanningStep(private val ctx: OrchestrationContext) {
             ctx.account(rt, planning.id) { it.copy(usage = it.usage + result.usage) }
             problems = if (result.ok) {
                 when (val reading = PlanParser.read(result.text, limits.maxTasks, reviewOn)) {
-                    is PlanReading.Valid -> return store(rt, planning, directorId, reading.plan, reviewOn)
+                    is PlanReading.Valid -> return store(rt, planning, directorId, reading.plan, reviewOn, limits.maxTasks)
                     is PlanReading.Invalid -> reading.problems
                 }
             } else {
@@ -80,7 +80,7 @@ internal class PlanningStep(private val ctx: OrchestrationContext) {
         return failObjective(rt, StoredText.capChars("The Director could not produce a usable plan. ${problems.joinToString(" ")}", StoredText.MAX_REASON_CHARS))
     }
 
-    private suspend fun store(rt: ObjectiveRuntime, objective: TaskRecord, directorId: AgentId, plan: ObjectivePlan, reviewOn: Boolean): Boolean {
+    private suspend fun store(rt: ObjectiveRuntime, objective: TaskRecord, directorId: AgentId, plan: ObjectivePlan, reviewOn: Boolean, maxTasks: Int): Boolean {
         val team = ctx.directory.snapshot().agents
         val load = ctx.runtimes.loads().toMutableMap()
         val idsByKey = plan.tasks.associate { it.key to ctx.ids.taskId() }
@@ -124,9 +124,17 @@ internal class PlanningStep(private val ctx: OrchestrationContext) {
             works.forEachIndexed { index, task ->
                 append("\n${index + 1}. ${task.title} → ").append(task.assignee?.let { names[it] } ?: "nobody (${task.error})")
                 if (task.needsReview) append(" (reviewed)")
+                if (plan.tasks[index].key in plan.unreviewed) append(" (not reviewed: no task place left for its review)")
             }
         }
         ctx.journal.send(stored.rootId, stored, Participant.Agent(directorId), Participant.Owner, MessageType.STATUS, summary)
+        if (plan.unreviewed.isNotEmpty()) {
+            val skipped = works.filterIndexed { index, _ -> plan.tasks[index].key in plan.unreviewed }.joinToString(", ") { "\"${it.title}\"" }
+            val note = "Not every task marked for review will be reviewed: each review takes a task place of its own, and the objective allows " +
+                "$maxTasks tasks for ${works.size} planned. Reviews are kept in plan order; not reviewed: $skipped."
+            ctx.journal.send(stored.rootId, stored, Participant.System, Participant.Owner, MessageType.STATUS, note)
+            ctx.journal.warn(stored.rootId, stored, "Some tasks will not be reviewed", note, directorId)
+        }
         return true
     }
 

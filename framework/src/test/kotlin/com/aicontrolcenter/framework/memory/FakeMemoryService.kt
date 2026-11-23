@@ -110,9 +110,10 @@ class FakeMemoryService(
         content: String,
         kind: MemoryKind = MemoryKind.FACT,
         at: Long = clock.now(),
+        importance: Double = 0.5,
     ): MemoryRecord {
         val record = MemoryRecord(
-            id = ids.memoryId(), scope = scope, kind = kind, tier = MemoryTier.LONG_TERM, title = title, content = content,
+            id = ids.memoryId(), scope = scope, kind = kind, tier = MemoryTier.LONG_TERM, title = title, content = content, importance = importance,
             provenance = Provenance(ProvenanceOrigin.OWNER, recordedAt = at), createdAt = at, updatedAt = at,
         )
         repository.upsert(record)
@@ -181,13 +182,31 @@ class FakeMemoryService(
     /** Every promotion asked for: who asked, for which task and agent. */
     val promotions = CopyOnWriteArrayList<Triple<MemoryActor, TaskId, AgentId>>()
 
-    /** Copies the task's memories of at least [minImportance] into the agent's own long-term memory. Only the owner or the agent itself may. */
+    /**
+     * As the memory store promotes (MemorySharing.promote in :memory): each unexpired task memory
+     * of the task and agent with importance of at least [minImportance] is copied into the
+     * agent's own long-term memory (its provenance derived from the original), and the original
+     * expires at once, so promoting again keeps nothing twice. An agent with private memory
+     * switched off keeps nothing. Only the owner or the agent itself may promote.
+     */
     override suspend fun promoteTaskMemory(actor: MemoryActor, taskId: TaskId, agentId: AgentId, minImportance: Double): List<MemoryRecord> {
         if (actor is MemoryActor.Agent && actor.profile.id != agentId) throw MemoryPermissionException("${name(actor)} may not promote another agent's task memory.")
         promotions += Triple(actor, taskId, agentId)
+        val profile = agents.get(agentId) ?: throw MemoryValidationException("There is no agent with id ${agentId.value}.")
+        if (!profile.memory.privateMemoryEnabled) return emptyList()
         val now = clock.now()
-        return repository.list().filter { (it.scope as? MemoryScope.Task)?.let { s -> s.taskId == taskId && s.agentId == agentId } == true && it.importance >= minImportance }
-            .map { it.copy(id = ids.memoryId(), scope = MemoryScope.Agent(agentId), tier = MemoryTier.LONG_TERM, expiresAt = null, createdAt = now, updatedAt = now).also { copy -> repository.upsert(copy) } }
+        val important = repository.list().filter {
+            it.scope == MemoryScope.Task(taskId, agentId) && !it.isExpired(now) && it.importance >= minImportance
+        }
+        val copies = important.map {
+            it.copy(
+                id = ids.memoryId(), scope = MemoryScope.Agent(agentId), tier = MemoryTier.LONG_TERM, expiresAt = null,
+                provenance = it.provenance.copy(derivedFrom = it.provenance.derivedFrom + it.id), createdAt = now, updatedAt = now, revision = 1,
+            )
+        }
+        copies.forEach { repository.upsert(it) }
+        important.forEach { repository.upsert(it.copy(expiresAt = now, updatedAt = now, revision = it.revision + 1)) }
+        return copies
     }
 
     override fun observeSpaces(): Flow<List<KnowledgeSpace>> = repository.observeSpaces()

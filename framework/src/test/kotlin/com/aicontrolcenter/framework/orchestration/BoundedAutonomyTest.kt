@@ -1,16 +1,20 @@
 package com.aicontrolcenter.framework.orchestration
 
+import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.agents.DelegationPolicy
 import com.aicontrolcenter.core.llm.LlmException
+import com.aicontrolcenter.core.memory.MemoryKind
 import com.aicontrolcenter.core.memory.MemoryActor
 import com.aicontrolcenter.core.memory.MemoryDraft
 import com.aicontrolcenter.core.memory.MemoryRecord
+import com.aicontrolcenter.core.memory.MemoryScope
 import com.aicontrolcenter.core.memory.MemoryService
 import com.aicontrolcenter.core.tasks.AgentMessage
 import com.aicontrolcenter.core.tasks.MessageRepository
 import com.aicontrolcenter.core.tasks.MessageType
 import com.aicontrolcenter.core.tasks.ObjectiveOptions
+import com.aicontrolcenter.core.tasks.Participant
 import com.aicontrolcenter.core.tasks.ReviewDecision
 import com.aicontrolcenter.core.tasks.ReviewVerdict
 import com.aicontrolcenter.core.tasks.TaskKind
@@ -36,6 +40,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Test
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
@@ -46,6 +51,11 @@ import kotlin.test.assertTrue
  * owner commands never lost; delegated work never orphaned; agent text only as framed data.
  */
 class BoundedAutonomyTest {
+    private companion object {
+        /** The status note on knowledge saved in part: the summary [id] stored in the Director's own memory, task memories perhaps not kept. */
+        fun partly(id: String, why: String?) =
+            "${ObjectiveDriver.PARTLY_SAVED}: the summary was saved to the Director's own memory (memory $id), but the team's task memories may not all have been kept${why?.let { ": $it." } ?: "."}"
+    }
 
     /** Enforces the task store's 1 MiB of UTF-8 text per row, as RoomTaskRepository does. */
     private class CappedTasks(private val inner: InMemoryTaskRepository = InMemoryTaskRepository()) : TaskRepository by inner {
@@ -149,6 +159,281 @@ class BoundedAutonomyTest {
         assertEquals(0, team.work(objective.id).single().attempt)
     }
 
+    /** A memory store that never answers: the app dies (or the save times out) while knowledge is being saved. */
+    private class HangingMemory(private val inner: MemoryService) : MemoryService by inner {
+        val calls = AtomicInteger()
+
+        override suspend fun remember(actor: MemoryActor, draft: MemoryDraft): MemoryRecord {
+            calls.incrementAndGet()
+            awaitCancellation()
+        }
+    }
+
+    private fun TeamFixture.orchestratorWith(scope: CoroutineScope, memory: MemoryService) = DefaultOrchestrator(
+        tasks, messages, world.conversations, world.agents, world.directory, world.settings, world.runner, world.toolRegistry,
+        world.monitor, world.activity, world.ids, world.clock, scope, memory,
+    )
+
+    /**
+     * Starts an objective that saves knowledge into [memory], and lets the app die and restart
+     * (living [life] each time) until it ends; returns the restarts. With [taskMemory], its work
+     * left task memory worth keeping (seeded after the first life).
+     */
+    private suspend fun TestScope.dieWhileSaving(team: TeamFixture, memory: MemoryService, taskMemory: Boolean = false, life: TeamFixture.() -> Unit): Pair<TaskId, Int> {
+        team.script.plan = { _, _ -> ScriptStep.Reply(planJson(listOf(task("a", "Find apps", listOf("research"))))) }
+        var app = app()
+        val objective = team.orchestratorWith(app, memory).startObjective("Research note apps", ObjectiveOptions(saveKnowledge = true))
+        team.life()
+        if (taskMemory) team.taskMemories(objective.id)
+        var restarts = 0
+        while (!team.objective(objective.id).status.isFinished && restarts < 8) {
+            app.cancel()
+            team.world.clock.advance(30 * MINUTE_MS)
+            team.settle(MINUTE_MS)
+            app = app()
+            team.orchestratorWith(app, memory).recoverInterrupted()
+            team.life()
+            restarts++
+        }
+        return objective.id to restarts
+    }
+
+    @Test
+    fun `a crash while knowledge is saved counts as an attempt, and the objective then completes without it`() = runTest {
+        val team = TeamFixture(this) { copy(autoResumeInterruptedTasks = true) }.setUp()
+        val memory = HangingMemory(team.world.memory)
+        val (id, restarts) = dieWhileSaving(team, memory) { settle(MINUTE_MS) } // probe v1b
+        val ended = team.objective(id)
+        assertEquals(TaskStatus.COMPLETED, ended.status)
+        assertEquals("# Final\nAll done.", ended.result)
+        assertEquals("Completed: 1 of 1 tasks produced results. Knowledge was not saved: saving it was interrupted 2 time(s), and no attempts are left.", ended.statusDetail)
+        assertEquals(2, restarts)
+        assertEquals(2, memory.calls.get())
+    }
+
+    @Test
+    fun `the app dying again and again while knowledge is saved, its deadline passing, ends the objective after a bounded number of restarts`() = runTest {
+        val team = TeamFixture(this) { copy(autoResumeInterruptedTasks = true) }.setUp()
+        val memory = HangingMemory(team.world.memory)
+        val (id, restarts) = dieWhileSaving(team, memory) { alive(20) } // probe v1c: each life lasts 20 minutes
+        val ended = team.objective(id)
+        assertEquals(TaskStatus.COMPLETED, ended.status)
+        assertEquals("# Final\nAll done.", ended.result)
+        assertTrue(restarts <= 2 && memory.calls.get() <= 2, "restarts=$restarts, saves=${memory.calls.get()}")
+        assertTrue(ended.statusDetail!!.contains("Knowledge"), ended.statusDetail)
+    }
+
+    @Test
+    fun `an objective interrupted again and again while no task runs is restarted at most three times in a row, then ended from what exists`() = runTest {
+        val team = TeamFixture(this) { copy(autoResumeInterruptedTasks = true, maxTaskAttempts = 10) }.setUp()
+        val memory = HangingMemory(team.world.memory)
+        val (id, restarts) = dieWhileSaving(team, memory) { settle(MINUTE_MS) }
+        val ended = team.objective(id)
+        assertEquals(TaskStatus.COMPLETED, ended.status)
+        assertEquals("# Final\nAll done.", ended.result)
+        assertEquals(
+            "Completed: 1 of 1 tasks produced results. Ended early: the objective was interrupted 4 times in a row without progress. Knowledge was not saved.",
+            ended.statusDetail,
+        )
+        assertEquals(4, restarts, "three restarts, and the fourth interruption ends it")
+        assertEquals(4, memory.calls.get())
+        assertEquals(4, team.messagesOf(id, MessageType.STATUS).count { it.body.startsWith("Interrupted while no task was running") })
+    }
+
+    @Test
+    fun `a knowledge save that never answers ends within one task time limit`() = runTest {
+        val team = TeamFixture(this) { copy(taskTimeoutMinutes = 15) }.setUp()
+        val memory = HangingMemory(team.world.memory)
+        team.script.plan = { _, _ -> ScriptStep.Reply(planJson(listOf(task("a", "Find apps", listOf("research"))))) }
+        val objective = team.orchestratorWith(backgroundScope, memory).startObjective("Research note apps", ObjectiveOptions(saveKnowledge = true))
+        team.alive(16)
+        val ended = team.objective(objective.id)
+        assertEquals(TaskStatus.COMPLETED, ended.status)
+        assertEquals("Completed: 1 of 1 tasks produced results. Knowledge was not saved: saving it reached its time limit.", ended.statusDetail)
+    }
+
+    @Test
+    fun `a knowledge save that stores the summary and then never answers says the summary was saved`() = runTest {
+        val team = TeamFixture(this) { copy(taskTimeoutMinutes = 15) }.setUp()
+        val memory = DiesAfterSummary(team.world.memory)
+        team.script.plan = { _, _ -> ScriptStep.Reply(planJson(listOf(task("a", "Find apps", listOf("research"))))) }
+        val objective = team.orchestratorWith(backgroundScope, memory).startObjective("Research note apps", ObjectiveOptions(saveKnowledge = true))
+        team.alive(1)
+        team.taskMemories(objective.id)
+        team.alive(15)
+        val ended = team.objective(objective.id)
+        assertEquals(TaskStatus.COMPLETED, ended.status)
+        assertEquals("Completed: 1 of 1 tasks produced results. ${partly(team.summaryId(), "saving it reached its time limit")}", ended.statusDetail)
+        assertEquals(1, team.summaries())
+        assertTrue(team.world.log.all.any { it.title == "Knowledge saved in part" && it.rootTaskId == objective.id })
+    }
+
+    // W1: the save stores its summary, then the app dies before the save ends ("Done saving").
+
+    /** The summary is stored (after [hangs] calls that never answer), then keeping the task memories never answers: the app dies before the save ends. */
+    private class DiesAfterSummary(private val inner: MemoryService, private val hangs: Int = 0) : MemoryService by inner {
+        val remembers = AtomicInteger()
+
+        override suspend fun remember(actor: MemoryActor, draft: MemoryDraft): MemoryRecord {
+            if (remembers.incrementAndGet() <= hangs) awaitCancellation()
+            return inner.remember(actor, draft)
+        }
+
+        override suspend fun promoteTaskMemory(actor: MemoryActor, taskId: TaskId, agentId: AgentId, minImportance: Double): List<MemoryRecord> = awaitCancellation()
+    }
+
+    private suspend fun TeamFixture.summaries() = world.memory.repository.list().count { it.kind == MemoryKind.SUMMARY }
+
+    private suspend fun TeamFixture.summaryId() = world.memory.repository.list().single { it.kind == MemoryKind.SUMMARY }.id.value
+
+    /** Each completed WORK task of the objective gets task memory worth keeping, as if its agent had saved it while working. */
+    private suspend fun TeamFixture.taskMemories(id: TaskId) = work(id).filter { it.status == TaskStatus.COMPLETED }.forEach {
+        world.memory.seed(MemoryScope.Task(it.id, it.assignee!!), "Note of ${it.title}", "Worth keeping.", importance = 0.9)
+    }
+
+    /** The Director's messages saying where the summary was saved. */
+    private suspend fun TeamFixture.notices(id: TaskId) =
+        messagesOf(id, MessageType.STATUS).count { it.from is Participant.Agent && it.body.startsWith(KnowledgeKeeper.SAVED_SUMMARY) }
+
+    @Test
+    fun `the app dying after the summary is saved, before the save ends, saves one summary and says so (two attempts)`() = runTest {
+        val team = TeamFixture(this) { copy(autoResumeInterruptedTasks = true, maxTaskAttempts = 2) }.setUp()
+        val memory = DiesAfterSummary(team.world.memory)
+        val (id, restarts) = dieWhileSaving(team, memory, taskMemory = true) { settle(MINUTE_MS) } // probe W1, default attempts
+        val ended = team.objective(id)
+        assertEquals(TaskStatus.COMPLETED, ended.status)
+        assertEquals("# Final\nAll done.", ended.result)
+        assertEquals(
+            "Completed: 1 of 1 tasks produced results. ${partly(team.summaryId(), "saving it was interrupted 2 time(s), and no attempts are left")}",
+            ended.statusDetail,
+        )
+        assertEquals(2, restarts)
+        assertEquals(1, memory.remembers.get(), "the second attempt finds the stored summary")
+        assertEquals(1, team.summaries())
+        assertEquals(1, team.notices(id))
+        assertEquals(2, team.messagesOf(id, MessageType.STATUS).count { it.body.startsWith(ObjectiveDriver.KNOWLEDGE_SAVING) })
+    }
+
+    @Test
+    fun `the app dying after the summary is saved, before the save ends, saves one summary and is capped by restarts without progress (ten attempts)`() = runTest {
+        val team = TeamFixture(this) { copy(autoResumeInterruptedTasks = true, maxTaskAttempts = 10) }.setUp()
+        val memory = DiesAfterSummary(team.world.memory)
+        val (id, restarts) = dieWhileSaving(team, memory, taskMemory = true) { settle(MINUTE_MS) } // probe W1 with ten attempts
+        val ended = team.objective(id)
+        assertEquals(TaskStatus.COMPLETED, ended.status)
+        assertEquals("# Final\nAll done.", ended.result)
+        assertEquals(
+            "Completed: 1 of 1 tasks produced results. Ended early: the objective was interrupted 4 times in a row without progress. ${partly(team.summaryId(), null)}",
+            ended.statusDetail,
+        )
+        // Ended early, it logs what the status says, as a save that ran out of attempts does.
+        assertEquals(1, team.world.log.all.count { it.title == "Knowledge saved in part" && it.rootTaskId == id })
+        assertEquals(4, restarts, "three restarts, and the fourth interruption ends it")
+        assertEquals(1, memory.remembers.get())
+        assertEquals(1, team.summaries())
+        assertEquals(1, team.notices(id))
+        assertEquals(4, team.messagesOf(id, MessageType.STATUS).count { it.body.startsWith("Interrupted while no task was running") })
+    }
+
+    @Test
+    fun `the Director's message about the saved summary is not progress for the cap on restarts`() = runTest {
+        val team = TeamFixture(this) { copy(autoResumeInterruptedTasks = true, maxTaskAttempts = 10) }.setUp()
+        // The first attempt dies before the summary is stored; the second stores it, says so, and dies; and so on.
+        val memory = DiesAfterSummary(team.world.memory, hangs = 1)
+        val (id, restarts) = dieWhileSaving(team, memory, taskMemory = true) { settle(MINUTE_MS) }
+        val ended = team.objective(id)
+        assertEquals(TaskStatus.COMPLETED, ended.status)
+        assertEquals(
+            "Completed: 1 of 1 tasks produced results. Ended early: the objective was interrupted 4 times in a row without progress. ${partly(team.summaryId(), null)}",
+            ended.statusDetail,
+        )
+        assertEquals(4, restarts, "the message written while finishing does not reset the count")
+        assertEquals(2, memory.remembers.get())
+        assertEquals(1, team.summaries())
+        assertEquals(1, team.notices(id))
+    }
+
+    /** Saving never answers while [hold] is set. */
+    private class HeldMemory(private val inner: MemoryService) : MemoryService by inner {
+        @Volatile var hold = true
+        val calls = AtomicInteger()
+
+        override suspend fun remember(actor: MemoryActor, draft: MemoryDraft): MemoryRecord {
+            calls.incrementAndGet()
+            if (hold) awaitCancellation()
+            return inner.remember(actor, draft)
+        }
+    }
+
+    @Test
+    fun `pausing the objective while knowledge is saved does not use up an attempt to save it`() = runTest {
+        val team = TeamFixture(this) { copy(maxTaskAttempts = 2) }.setUp()
+        val memory = HeldMemory(team.world.memory)
+        team.script.plan = { _, _ -> ScriptStep.Reply(planJson(listOf(task("a", "Find apps", listOf("research"))))) }
+        val orchestrator = team.orchestratorWith(backgroundScope, memory)
+        val objective = orchestrator.startObjective("Research note apps", ObjectiveOptions(saveKnowledge = true))
+        team.settle(MINUTE_MS)
+        repeat(2) { paused ->
+            assertEquals(paused + 1, memory.calls.get(), "the save is under way")
+            orchestrator.pause(objective.id)
+            team.settle(MINUTE_MS)
+            assertEquals(TaskStatus.PAUSED, team.objective(objective.id).status)
+            if (paused == 1) memory.hold = false
+            orchestrator.resume(objective.id)
+            team.settle(MINUTE_MS)
+        }
+        val ended = team.objective(objective.id)
+        assertEquals(TaskStatus.COMPLETED, ended.status)
+        assertEquals("Completed: 1 of 1 tasks produced results.", ended.statusDetail)
+        assertEquals(3, memory.calls.get())
+        assertEquals(1, team.summaries())
+        val records = team.messagesOf(objective.id, MessageType.STATUS).map { it.body }
+        assertEquals(2, records.count { it.startsWith(ObjectiveDriver.KNOWLEDGE_STOPPED) })
+        assertEquals(3, records.count { it.startsWith("${ObjectiveDriver.KNOWLEDGE_SAVING} from final result 1 (attempt 1 of 2)") })
+    }
+
+    @Test
+    fun `cancelling the objective while knowledge is saved does not use up an attempt to save it`() = runTest {
+        val team = TeamFixture(this) { copy(maxTaskAttempts = 1) }.setUp()
+        val memory = HeldMemory(team.world.memory)
+        team.script.plan = { _, _ -> ScriptStep.Reply(planJson(listOf(task("a", "Find apps", listOf("research")), task("b", "Write notes", listOf("writing"))))) }
+        var refuse = true
+        team.script.work = { s -> if (s.agent == "Writer" && refuse) ScriptStep.Fail(LlmException.InvalidRequest("refused")) else ScriptStep.Reply("Found Alpha") }
+        val orchestrator = team.orchestratorWith(backgroundScope, memory)
+        val objective = orchestrator.startObjective("Research note apps", ObjectiveOptions(saveKnowledge = true))
+        team.settle(MINUTE_MS)
+        assertEquals(1, memory.calls.get(), "the save is under way")
+        orchestrator.cancel(objective.id)
+        team.settle(MINUTE_MS)
+        assertEquals(TaskStatus.CANCELLED, team.objective(objective.id).status)
+        refuse = false
+        memory.hold = false
+        orchestrator.retryTask(team.byTitle(objective.id, "Write notes").id)
+        team.settle(MINUTE_MS)
+        val ended = team.objective(objective.id)
+        assertEquals(TaskStatus.COMPLETED, ended.status)
+        assertEquals("Completed: 2 of 2 tasks produced results.", ended.statusDetail)
+        assertEquals(2, memory.calls.get())
+        assertEquals(1, team.summaries())
+        assertEquals(1, team.messagesOf(objective.id, MessageType.STATUS).count { it.body.startsWith(ObjectiveDriver.KNOWLEDGE_STOPPED) })
+    }
+
+    @Test
+    fun `finishing with no time left completes from what exists and does not save knowledge, saying so`() = runTest {
+        val team = TeamFixture(this) { copy(objectiveTimeoutMinutes = 20, taskTimeoutMinutes = 15) }.setUp()
+        team.script.plan = { _, _ -> ScriptStep.Reply(planJson(listOf(task("a", "Find apps", listOf("research"))))) }
+        team.script.work = { delay(10 * MINUTE_MS); ScriptStep.Reply("THE-RESULT") }
+        team.script.synthesis = { delay(12 * MINUTE_MS); ScriptStep.Reply("# Final\nLate but done.") }
+        val objective = team.start(options = ObjectiveOptions(saveKnowledge = true))
+        team.alive(40)
+        val ended = team.objective(objective.id)
+        assertEquals(TaskStatus.COMPLETED, ended.status)
+        assertEquals("# Final\nLate but done.", ended.result)
+        assertEquals("Completed: 1 of 1 tasks produced results. Knowledge was not saved: the objective had no time left.", ended.statusDetail)
+        assertTrue(team.world.memory.repository.list().none { it.kind == MemoryKind.SUMMARY })
+        assertTrue(team.world.log.all.any { it.title == "Knowledge not saved" && it.rootTaskId == objective.id && it.detail.contains("no time left") })
+    }
+
     // #2
 
     @Test
@@ -178,8 +463,30 @@ class BoundedAutonomyTest {
         val work = team.work(objective.id).single()
         assertEquals(TaskStatus.COMPLETED, work.status)
         assertEquals("THE-RESULT v1", work.result)
-        assertEquals("Used without further review: the objective reached its limit of 6 messages.", work.statusDetail)
+        assertEquals("${ObjectiveDriver.UNREVISED}: the objective reached its limit of 6 messages.", work.statusDetail)
         assertEquals(TaskStatus.COMPLETED, team.objective(objective.id).status)
+        // The synthesis brief says, inside the framed data, that the result lacks the changes asked for, and lists them.
+        val brief = team.script.seenBy(OrchestrationProtocol.SYNTHESIS).single().brief
+        assertTrue(brief.contains("THE-RESULT v1"))
+        val note = brief.substringAfter("label=\"${BriefWriter.UNADDRESSED_LABEL} 1\">\n").substringBefore("</${DataBlock.TAG}")
+        assertTrue(note.contains(BriefWriter.UNADDRESSED_NOTE) && note.contains("Add prices"), brief)
+        assertTrue(outsideBlocks(brief).none { it.contains("Add prices") || it.contains(BriefWriter.UNADDRESSED_NOTE) }, brief)
+    }
+
+    @Test
+    fun `a limit never uses a result its review rejected`() = runTest {
+        val team = TeamFixture(this) { copy(maxMessagesPerObjective = 6, maxTaskAttempts = 3) }.setUp()
+        team.script.plan = { _, _ -> ScriptStep.Reply(planJson(listOf(task("a", "Find apps", listOf("research"), needsReview = true)))) }
+        team.script.work = { ScriptStep.Reply("THE-RESULT v1") }
+        team.script.review = { ScriptStep.Reply(verdict("rejected", "Wrong subject entirely.", "Not about note apps")) }
+        val objective = team.start()
+        team.settle()
+        val work = team.work(objective.id).single()
+        assertEquals(TaskStatus.FAILED, work.status)
+        assertEquals("Rejected by review; stopped by a limit: the objective reached its limit of 6 messages.", work.error)
+        val brief = team.script.seenBy(OrchestrationProtocol.SYNTHESIS).single().brief
+        assertTrue(!brief.contains("THE-RESULT v1") && brief.contains("Find apps — failed: Rejected by review"), brief)
+        assertEquals(TaskStatus.FAILED, team.objective(objective.id).status)
     }
 
     // #3
@@ -240,7 +547,10 @@ class BoundedAutonomyTest {
     // #4
 
     private class SlowMemory(private val inner: MemoryService) : MemoryService by inner {
+        val saves = AtomicInteger()
+
         override suspend fun remember(actor: MemoryActor, draft: MemoryDraft): MemoryRecord {
+            saves.incrementAndGet()
             delay(30_000)
             return inner.remember(actor, draft)
         }
@@ -250,7 +560,8 @@ class BoundedAutonomyTest {
     fun `a task run again while the objective is finishing is run, and the objective finishes with it`() = runTest {
         val team = TeamFixture(this).setUp()
         val w = team.world
-        val orchestrator = DefaultOrchestrator(team.tasks, team.messages, w.conversations, w.agents, w.directory, w.settings, w.runner, w.toolRegistry, w.monitor, w.activity, w.ids, w.clock, backgroundScope, SlowMemory(w.memory))
+        val memory = SlowMemory(w.memory)
+        val orchestrator = DefaultOrchestrator(team.tasks, team.messages, w.conversations, w.agents, w.directory, w.settings, w.runner, w.toolRegistry, w.monitor, w.activity, w.ids, w.clock, backgroundScope, memory)
         team.script.plan = { _, _ -> ScriptStep.Reply(planJson(listOf(task("a", "Find apps", listOf("research")), task("b", "Write notes", listOf("writing"))))) }
         var refuse = true
         team.script.work = { s -> if (s.agent == "Writer" && refuse) ScriptStep.Fail(LlmException.InvalidRequest("refused")) else ScriptStep.Reply("Found Alpha") }
@@ -267,9 +578,13 @@ class BoundedAutonomyTest {
         assertEquals("Completed: 2 of 2 tasks produced results.", done.statusDetail)
         assertTrue(team.tree(objective.id).all { it.status.isFinished })
         assertTrue(orchestrator.running.value.isEmpty())
+        // It finished twice, with the same document: the summary was written once, and the task run again had its memory kept too.
+        assertEquals(1, memory.saves.get())
+        assertEquals(1, team.world.memory.repository.list().count { it.kind == MemoryKind.SUMMARY })
+        assertEquals(team.work(objective.id).map { it.id }.toSet(), team.world.memory.promotions.map { it.second }.toSet())
     }
 
-    /** Holds back the Director's "final result ready" message: the objective is finished, its job still writing its record. */
+    /** Holds back the Director's "final result ready" message: the objective's job is announcing its end, under its lock. */
     private class SlowMessages(private val inner: MessageRepository) : MessageRepository by inner {
         override suspend fun append(message: AgentMessage) {
             if (message.type == MessageType.COMPLETION && message.body.startsWith("Final result ready")) delay(30_000)
@@ -278,7 +593,7 @@ class BoundedAutonomyTest {
     }
 
     @Test
-    fun `a task run again while the finished objective's job still writes its record is not lost`() = runTest {
+    fun `a task run again while the objective's job announces its end is not lost`() = runTest {
         val team = TeamFixture(this).setUp()
         val w = team.world
         val orchestrator = DefaultOrchestrator(team.tasks, SlowMessages(team.messages), w.conversations, w.agents, w.directory, w.settings, w.runner, w.toolRegistry, w.monitor, w.activity, w.ids, w.clock, backgroundScope, w.memory)
@@ -287,7 +602,7 @@ class BoundedAutonomyTest {
         team.script.work = { s -> if (s.agent == "Writer" && refuse) ScriptStep.Fail(LlmException.InvalidRequest("refused")) else ScriptStep.Reply("Found Alpha") }
         val objective = orchestrator.startObjective("Research note apps")
         team.settle(10_000)
-        assertEquals(TaskStatus.COMPLETED, team.objective(objective.id).status)
+        assertEquals(TaskStatus.RUNNING, team.objective(objective.id).status, "the end is announced before it is stored")
         assertEquals(setOf(objective.id), orchestrator.running.value, "its job is still writing")
         refuse = false
         orchestrator.retryTask(team.byTitle(objective.id, "Write notes").id)
@@ -295,6 +610,7 @@ class BoundedAutonomyTest {
         assertEquals("Completed: 2 of 2 tasks produced results.", team.objective(objective.id).statusDetail)
         assertTrue(team.tree(objective.id).all { it.status.isFinished })
         assertTrue(orchestrator.running.value.isEmpty())
+        assertEquals(2, team.messagesOf(objective.id, MessageType.COMPLETION).count { it.body.startsWith("Final result ready") }, "each ending announced once")
     }
 
     // #5
@@ -455,21 +771,40 @@ class BoundedAutonomyTest {
     // #10
 
     @Test
-    fun `reviews keep their task places, a plan must leave room for them, and then every review happens`() = runTest {
+    fun `reviews keep their task places in plan order, and a plan with more reviews than places runs with fewer`() = runTest {
+        // Probe p8: three tasks, all marked for review, three places. The plan is used; no review fits.
         val team = TeamFixture(this).setUp()
-        team.script.plan = { _, attempt ->
-            val reviewedAll = (1..3).map { task("t$it", "Part $it", listOf("research"), needsReview = true) }
-            val fits = listOf(task("t1", "Part 1", listOf("research"), needsReview = true), task("t2", "Part 2", listOf("research")))
-            ScriptStep.Reply(planJson(if (attempt == 0) reviewedAll else fits))
-        }
+        team.script.plan = { _, _ -> ScriptStep.Reply(planJson((1..3).map { task("t$it", "Part $it", listOf("research"), needsReview = true) })) }
         val objective = team.start(options = ObjectiveOptions(maxTasks = 3))
         team.settle()
         val plans = team.script.seenBy(OrchestrationProtocol.PLAN)
-        assertTrue(plans[0].brief.contains(BriefWriter.REVIEW_ROOM))
-        assertTrue(plans[1].brief.contains("needs 6 of the 3 places"), plans[1].brief)
-        assertEquals(1, team.reviews(objective.id).size)
-        assertEquals(1, team.script.seenBy(OrchestrationProtocol.REVIEW).size)
-        assertTrue(team.work(objective.id).none { it.statusDetail.orEmpty().contains("not reviewed") })
+        assertEquals(1, plans.size, "the plan is not sent back")
+        assertTrue(plans[0].brief.contains(BriefWriter.REVIEW_ROOM) && plans[0].brief.contains(BriefWriter.REVIEW_ORDER))
         assertEquals(TaskStatus.COMPLETED, team.objective(objective.id).status)
+        assertEquals("Completed: 3 of 3 tasks produced results.", team.objective(objective.id).statusDetail)
+        assertTrue(team.reviews(objective.id).isEmpty())
+        val note = team.messagesOf(objective.id, MessageType.STATUS).single { it.body.startsWith("Not every task marked for review") }
+        assertTrue(note.body.endsWith("not reviewed: \"Part 1\", \"Part 2\", \"Part 3\"."), note.body)
+        assertTrue(team.world.log.all.any { it.title == "Some tasks will not be reviewed" && it.rootTaskId == objective.id && it.detail.contains("\"Part 3\"") })
+
+        // The earliest tasks keep their review while places are left.
+        team.script.plan = { _, _ -> ScriptStep.Reply(planJson((1..2).map { task("t$it", "Step $it", listOf("research"), needsReview = true) })) }
+        val second = team.start(options = ObjectiveOptions(maxTasks = 3))
+        team.settle()
+        assertEquals(TaskStatus.COMPLETED, team.objective(second.id).status)
+        assertEquals(listOf("Review: Step 1"), team.reviews(second.id).map { it.title })
+        assertEquals(listOf(true, false), team.work(second.id).map { it.needsReview })
+        assertTrue(team.messagesOf(second.id, MessageType.STATUS).single { it.body.startsWith("Not every task") }.body.endsWith("not reviewed: \"Step 2\"."))
+
+        // One place: the single task is not reviewed, and the objective still runs.
+        team.script.plan = { _, _ -> ScriptStep.Reply(planJson(listOf(task("t1", "Only part", listOf("research"), needsReview = true)))) }
+        val third = team.start(options = ObjectiveOptions(maxTasks = 1))
+        team.settle()
+        assertEquals(TaskStatus.COMPLETED, team.objective(third.id).status)
+        assertTrue(team.reviews(third.id).isEmpty())
+
+        val reading = assertIs<PlanReading.Valid>(PlanParser.read(planJson((1..3).map { task("t$it", "Part $it", needsReview = true) }), 4, reviewsOn = true)).plan
+        assertEquals(listOf(true, false, false), reading.tasks.map { it.needsReview })
+        assertEquals(listOf("t2", "t3"), reading.unreviewed)
     }
 }

@@ -22,6 +22,8 @@ internal data class ObjectivePlan(
     val interpretation: String,
     val tasks: List<PlannedTask>,
     val finalInstructions: String,
+    /** Keys of tasks the Director marked for review that will not be reviewed: no task place was left for their review. */
+    val unreviewed: List<String> = emptyList(),
 )
 
 internal sealed interface PlanReading {
@@ -52,7 +54,9 @@ internal object PlanParser {
 
     /**
      * [reviewsOn]: the owner wants reviews, so each task marked for review needs a second task
-     * place for its review, and the plan must leave room for them all.
+     * place for its review. Reviews are kept in plan order while places are left; a later task
+     * marked for review that does not fit is not reviewed (it is listed in
+     * [ObjectivePlan.unreviewed]), which is not an error.
      */
     fun read(text: String, maxTasks: Int, reviewsOn: Boolean = false): PlanReading {
         val root = JsonReply.firstObject(text) ?: return PlanReading.Invalid(listOf("The answer contained no JSON object."))
@@ -97,18 +101,23 @@ internal object PlanParser {
             )
         }
         problems += dependencyProblems(tasks)
-        val reviewed = if (reviewsOn) tasks.count { it.needsReview } else 0
-        if (problems.isEmpty() && tasks.size + reviewed > maxTasks) {
-            problems += "The plan has ${tasks.size} tasks and marks $reviewed for review; each review takes a task place of its own, so it needs " +
-                "${tasks.size + reviewed} of the $maxTasks places. Combine tasks or mark fewer for review."
-        }
         if (problems.isNotEmpty()) return PlanReading.Invalid(capped(problems))
+        var room = maxTasks - tasks.size
+        val unreviewed = ArrayList<String>()
+        val fitted = tasks.map { task ->
+            when {
+                !reviewsOn || !task.needsReview -> task
+                room > 0 -> task.also { room-- }
+                else -> task.copy(needsReview = false).also { unreviewed += it.key }
+            }
+        }
         return PlanReading.Valid(
             ObjectivePlan(
                 interpretation = body.field("interpretation").text().orEmpty().take(MAX_INSTRUCTIONS),
-                tasks = tasks,
+                tasks = fitted,
                 finalInstructions = body.field("final_instructions", "finalInstructions").text()?.take(MAX_INSTRUCTIONS)
                     ?: DEFAULT_FINAL_INSTRUCTIONS,
+                unreviewed = unreviewed,
             ),
         )
     }

@@ -35,7 +35,11 @@ internal class SynthesisStep(private val ctx: OrchestrationContext) {
         ctx.journal.taskChanged(started, "Synthesis started")
         val planned = plannedWork(ctx.tasks.getTree(objective.id))
         val names = ctx.agents.getAll().associate { it.id to it.name }
-        val completed = planned.filter { it.status == TaskStatus.COMPLETED }.map { SourceResult(it, it.assignee?.let(names::get) ?: "a former team member") }
+        val completed = planned.filter { it.status == TaskStatus.COMPLETED }.map {
+            // A limit made the objective use it without the changes its latest review asked for: the brief shows that review with it.
+            val unaddressed = it.reviews.lastOrNull()?.takeIf { _ -> it.statusDetail.orEmpty().startsWith(ObjectiveDriver.UNREVISED) }
+            SourceResult(it, it.assignee?.let(names::get) ?: "a former team member", unaddressed)
+        }
         val missing = planned.filter { it.status != TaskStatus.COMPLETED }.map { it.title to FinalDocument.whyNot(it) }
         val brief = ctx.briefs.synthesis(SynthesisBrief(objective, started, completed, missing), ctx.steps.briefBudget(ready))
         ctx.runtimes.started(directorId, started.id)

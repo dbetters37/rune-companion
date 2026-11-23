@@ -2,7 +2,9 @@ package com.aicontrolcenter.framework.orchestration
 
 import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.activity.Severity
+import com.aicontrolcenter.core.tasks.AgentMessage
 import com.aicontrolcenter.core.tasks.MessageType
+import com.aicontrolcenter.core.tasks.ReviewDecision
 import com.aicontrolcenter.core.tasks.Participant
 import com.aicontrolcenter.core.tasks.TaskKind
 import com.aicontrolcenter.core.tasks.TaskRecord
@@ -10,12 +12,15 @@ import com.aicontrolcenter.core.tasks.TaskStatus
 import com.aicontrolcenter.framework.llm.rethrowIfCancelled
 import com.aicontrolcenter.framework.orchestration.OrchestrationContext.Companion.WORKING
 import com.aicontrolcenter.framework.orchestration.OrchestrationContext.Companion.isScheduled
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -30,9 +35,10 @@ import kotlinx.coroutines.withTimeoutOrNull
  *
  * The objective's deadline bounds the work: when it passes, unfinished work is cancelled and
  * the Director writes the final document from what exists (allowed one task time limit of its
- * own for that, so the owner always gets a result). A result that is already there is never
+ * own for that, so the owner always gets a result). A result that is already there is not
  * thrown away by a limit: it is used as it is, and its status line says it was not (further)
- * reviewed and why.
+ * reviewed, or not revised, and why; only a result its review rejected is not used.
+ * Finishing respects the deadline too: with no time left, knowledge is not saved.
  *
  * While it runs, the driver writes a heartbeat onto the objective every [HEARTBEAT_MS], so that
  * after a crash the time the objective had left can be read from its last stored write.
@@ -155,7 +161,7 @@ internal class ObjectiveDriver(
             stoppedByLimit(byId, scheduled.filter { it.status == TaskStatus.QUEUED }, limit, "Not started: $limit.", now).forEach(::put)
             ctx.tasks.upsertAll(changed)
             changed.filter { it.status.isFinished }.forEach { journalStopped(it) }
-            ctx.journal.limitReached(rt.rootId, null, "$limit; tasks not yet started were cancelled, and results waiting for a review or a revision are used as they are.")
+            ctx.journal.limitReached(rt.rootId, null, "$limit; tasks not yet started were cancelled, results waiting for a review or a revision are used as they are, and results their review rejected are not used.")
             return true.also { rt.poke() }
         }
         val slots = settings.maxConcurrentTasks.coerceAtLeast(1) - active
@@ -242,30 +248,52 @@ internal class ObjectiveDriver(
     }
 
     /**
-     * What a limit makes of [open] tasks: planned work that already holds a result (waiting for
-     * its review, or queued for a revision or a new attempt) is used as it is; the rest is
-     * cancelled with [cancelled] as the reason. The result a cancelled review was checking is
-     * used as it is too. Returns the changed tasks, to be stored together.
+     * What a limit makes of [open] tasks. Planned work that holds a result is settled by what is
+     * known of that result:
+     *  - its latest verdict judged it and REJECTED it: it is not used, it FAILED;
+     *  - its latest verdict judged it and asked for changes not yet made: it is used without
+     *    them, which its status line says ([UNREVISED]) and the synthesis brief shows;
+     *  - otherwise (no verdict on it yet): it is used as it is.
+     * The rest is cancelled with [cancelled] as the reason. The result a cancelled review was
+     * checking is settled the same way. Returns the changed tasks, to be stored together.
      */
     private fun stoppedByLimit(byId: Map<TaskId, TaskRecord>, open: List<TaskRecord>, limit: String, cancelled: String, now: Long): List<TaskRecord> {
         val changes = LinkedHashMap<TaskId, TaskRecord>()
-        fun used(task: TaskRecord) = task.copy(
-            status = TaskStatus.COMPLETED, finishedAt = now, updatedAt = now, error = null,
-            statusDetail = "${if (task.reviews.isEmpty()) "Used without review" else "Used without further review"}: $limit.",
-        )
+        fun settled(task: TaskRecord): TaskRecord {
+            val verdict = task.reviews.lastOrNull()
+            // A result waiting for its first review of this round has no verdict on it yet; one waiting for the Director's arbitration has.
+            val judged = verdict != null && (task.status != TaskStatus.IN_REVIEW || byId.values.any {
+                it.kind == TaskKind.REVIEW && it.parentId == task.id && !it.status.isFinished && ReviewKind.of(it) == ReviewKind.ARBITRATION
+            })
+            return when {
+                judged && verdict!!.decision == ReviewDecision.REJECTED -> "Rejected by review; stopped by a limit: $limit.".let {
+                    task.copy(status = TaskStatus.FAILED, finishedAt = now, updatedAt = now, error = it, statusDetail = it)
+                }
+                judged && verdict!!.decision == ReviewDecision.REVISE ->
+                    task.copy(status = TaskStatus.COMPLETED, finishedAt = now, updatedAt = now, error = null, statusDetail = "$UNREVISED: $limit.")
+                else -> task.copy(
+                    status = TaskStatus.COMPLETED, finishedAt = now, updatedAt = now, error = null,
+                    statusDetail = "${if (task.reviews.isEmpty()) "Used without review" else "Used without further review"}: $limit.",
+                )
+            }
+        }
         for (task in open) {
-            changes[task.id] = if (task.kind == TaskKind.WORK && task.delegationChain.isEmpty() && task.result != null) used(task)
+            changes[task.id] = if (task.kind == TaskKind.WORK && task.delegationChain.isEmpty() && task.result != null) settled(task)
             else task.copy(status = TaskStatus.CANCELLED, error = cancelled, statusDetail = cancelled, finishedAt = now, updatedAt = now)
         }
         for (review in open.filter { it.kind == TaskKind.REVIEW }) {
             val reviewed = review.parentId?.let { changes[it] ?: byId[it] } ?: continue
-            if (reviewed.status == TaskStatus.IN_REVIEW && reviewed.result != null) changes[reviewed.id] = used(reviewed)
+            if (reviewed.status == TaskStatus.IN_REVIEW && reviewed.result != null) changes[reviewed.id] = settled(reviewed)
         }
         return changes.values.toList()
     }
 
     private suspend fun journalStopped(task: TaskRecord) {
-        if (task.status == TaskStatus.COMPLETED) ctx.journal.taskChanged(task, "Task completed") else ctx.journal.taskChanged(task, "Task cancelled", Severity.WARNING)
+        when (task.status) {
+            TaskStatus.COMPLETED -> ctx.journal.taskChanged(task, "Task completed")
+            TaskStatus.FAILED -> ctx.journal.taskChanged(task, "Task failed", Severity.WARNING)
+            else -> ctx.journal.taskChanged(task, "Task cancelled", Severity.WARNING)
+        }
         if (task.startedAt != null && task.assignee != null) ctx.journal.countFinished(task)
     }
 
@@ -273,38 +301,213 @@ internal class ObjectiveDriver(
      * Ends the objective: COMPLETED with the document, or FAILED when no task produced a usable
      * result. The document is made from what is stored, and the final status is written under
      * the lock only when that is still all there is: returns false, ending nothing, when a task
-     * was queued again meanwhile (the driver then goes on), true otherwise.
+     * was queued again meanwhile (the driver then goes on), true otherwise. Saving knowledge is
+     * a bounded step of its own ([saveKnowledge]); the ending is announced right before the final
+     * status is written ([announce]).
      */
     private suspend fun finish(rt: ObjectiveRuntime): Boolean {
         val objective = ctx.tasks.get(rt.rootId)?.takeIf { it.status == TaskStatus.RUNNING } ?: return true
         val tree = ctx.tasks.getTree(rt.rootId)
         if (!readyToFinish(tree)) return false
-        val planned = SynthesisStep.plannedWork(tree)
-        val synthesisTask = tree.firstOrNull { it.kind == TaskKind.SYNTHESIS }
-        val anyCompleted = planned.any { it.status == TaskStatus.COMPLETED }
-        val names = ctx.agents.getAll().associate { it.id to it.name }
-        val written = synthesisTask?.takeIf { it.status == TaskStatus.COMPLETED }?.result?.takeIf { it.isNotBlank() }
-        val document = written ?: FinalDocument.assemble(objective, planned, names, synthesisTask?.let { FinalDocument.whyNot(it).trimEnd('.') } ?: "there was no synthesis task")
-        if (written != null && anyCompleted && objective.options?.saveKnowledge == true) knowledge.save(objective, document)
+        val outcome = outcomeOf(objective, tree)
+        val note = outcome.round?.takeIf { outcome.completed > 0 && objective.options?.saveKnowledge == true }?.let { saveKnowledge(objective, outcome.document, it) }
         val snapshot = tree.associate { it.id to it.status }
         var again = false
-        val done = rt.lock.withLockNonCancellable {
-            val current = ctx.tasks.get(rt.rootId)?.takeIf { it.status == TaskStatus.RUNNING } ?: return@withLockNonCancellable null
+        rt.lock.withLockNonCancellable {
+            val current = ctx.tasks.get(rt.rootId)?.takeIf { it.status == TaskStatus.RUNNING } ?: return@withLockNonCancellable
             val fresh = ctx.tasks.getTree(rt.rootId)
             if (!readyToFinish(fresh) || fresh.any { snapshot[it.id] != it.status }) {
                 again = true
-                return@withLockNonCancellable null
+                return@withLockNonCancellable
             }
-            val now = ctx.clock.now()
-            val ended = if (anyCompleted) {
-                current.copy(status = TaskStatus.COMPLETED, result = document, error = null, finishedAt = now, updatedAt = now, statusDetail = "Completed: ${planned.count { t -> t.status == TaskStatus.COMPLETED }} of ${planned.size} tasks produced results.")
-            } else {
-                current.copy(status = TaskStatus.FAILED, result = document, error = "No task produced a usable result.", finishedAt = now, updatedAt = now, statusDetail = "Failed: no task produced a usable result.")
-            }
-            ended.also { ctx.tasks.upsert(it) }
+            val ended = ended(current, outcome, note)
+            announce(ended)
+            ctx.tasks.upsert(ended)
         }
-        if (again) return false
-        done ?: return true
+        return !again
+    }
+
+    /**
+     * Saves what the objective taught the team from its final document, written by the
+     * synthesis at attempt [round]: each final result is a round of its own, so a task run again
+     * (on a finished objective, or while it finishes) has what is new saved, and a finish with
+     * the result a round already saved does nothing new. A round is a bounded step:
+     *  - When it ends, that is recorded right after ([KNOWLEDGE_DONE], a STATUS message from the
+     *    system, with the note it ended with); with that record there, the round is not saved
+     *    again, and its note is the one used, however often the objective finishes with that result.
+     *  - Each attempt is recorded before it starts ([KNOWLEDGE_SAVING]), so an attempt the app
+     *    stopped counts; with the task attempt limit used up in the round, it is skipped. An
+     *    attempt the owner stopped (pausing or cancelling the objective) is recorded as such
+     *    ([KNOWLEDGE_STOPPED]) and does not count.
+     *  - An attempt repeats nothing already stored ([KnowledgeKeeper]).
+     *  - It runs within the objective's time left (and one task's time limit); with no time
+     *    left, it is skipped.
+     * Returns the note for the objective's status when knowledge was not (fully) saved, else
+     * null. The note says what is stored ([unsavedNote]).
+     */
+    private suspend fun saveKnowledge(objective: TaskRecord, document: String, round: Int): String? {
+        val records = ctx.messages.list(objective.id).filter { it.from == Participant.System && it.type == MessageType.STATUS }
+        records.lastOrNull { isRecord(it.body, KNOWLEDGE_DONE, round) }?.let { return noteOf(it.body, round) }
+        val limits = ctx.limits(objective, ctx.settings.get())
+        val attempts = records.filter { isRecord(it.body, KNOWLEDGE_SAVING, round) }
+        val tried = attempts.size - records.count { isRecord(it.body, KNOWLEDGE_STOPPED, round) }
+        val left = (objective.deadlineAt ?: Long.MAX_VALUE) - ctx.clock.now()
+        val skipped = when {
+            left <= 0 -> "the objective had no time left"
+            tried >= limits.maxTaskAttempts -> "saving it was interrupted $tried time(s), and no attempts are left"
+            else -> null
+        }
+        if (skipped != null) return unsavedNote(objective, document, skipped)
+        val mark = ctx.journal.send(objective.id, objective, Participant.System, Participant.Owner, MessageType.STATUS, "$KNOWLEDGE_SAVING ${resultOf(round)} (attempt ${tried + 1} of ${limits.maxTaskAttempts}).")
+        val since = attempts.firstOrNull()?.at ?: mark.at
+        val ended = try {
+            withTimeoutOrNull(minOf(left, limits.taskTimeoutMs)) { knowledge.save(objective, document, changed = document != objective.result, since = since) }
+        } catch (e: CancellationException) {
+            withContext(NonCancellable) { recordIfStoppedByOwner(objective, round) }
+            throw e
+        }
+        val note = if (ended == null) unsavedNote(objective, document, "saving it reached its time limit") else null
+        ctx.journal.send(objective.id, objective, Participant.System, Participant.Owner, MessageType.STATUS, "$KNOWLEDGE_DONE ${resultOf(round)}${note?.let { ": $it" } ?: "."}")
+        return note
+    }
+
+    /**
+     * After a save was stopped: when the owner stopped it (the objective is stored as paused or
+     * cancelled, which the owner's command writes before it stops the job), records that the
+     * attempt does not count. The app dying or closing leaves the objective running: that counts.
+     */
+    private suspend fun recordIfStoppedByOwner(objective: TaskRecord, round: Int) {
+        try {
+            val status = ctx.tasks.get(objective.id)?.status
+            if (status == TaskStatus.PAUSED || status == TaskStatus.CANCELLED) {
+                ctx.journal.send(objective.id, objective, Participant.System, Participant.Owner, MessageType.STATUS, "$KNOWLEDGE_STOPPED ${resultOf(round)} by the owner; that attempt does not count.")
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e // a store that fails here only leaves the attempt counted
+        }
+    }
+
+    /**
+     * The note on knowledge that was not saved in full for [document], stopped by [why], from
+     * what is stored; also logged as a warning. Null when all of it is stored all the same.
+     */
+    private suspend fun unsavedNote(objective: TaskRecord, document: String, why: String): String? {
+        val note = noteOn(knowledge.stored(objective, document), why) ?: return null
+        note.warning?.let { ctx.journal.warn(objective.id, objective, it, note.text) }
+        return note.text
+    }
+
+    /** A note for the objective's status, and the title of the warning to log it under (null: nothing went wrong). */
+    private class Note(val text: String, val warning: String?)
+
+    /**
+     * What [stored] says about the knowledge, after saving stopped because of [why] (null: the
+     * objective ended early, which its status says): nothing when everything is stored and the
+     * owner was told where the summary is. Otherwise the note names the summary memory and where
+     * it is, and says the task memories may not all have been kept unless the store shows they were.
+     */
+    private fun noteOn(stored: KnowledgeKeeper.Stored, why: String?): Note? {
+        val tail = why?.let { ": $it." } ?: "."
+        val summary = stored.summary ?: return Note("$NOT_SAVED$tail", "Knowledge not saved")
+        val named = "${stored.place} (memory ${summary.id.value})"
+        return when {
+            stored.current && stored.kept == true -> if (stored.told) null else Note("$SAVED: the summary is in $named.", null)
+            stored.current -> Note("$PARTLY_SAVED: the summary was saved to $named, but the team's task memories may not all have been kept$tail", PART_TITLE)
+            stored.kept == true -> Note("$PARTLY_SAVED: the team's task memories were kept, but the summary in $named was not updated to this result$tail", PART_TITLE)
+            else -> Note("$PARTLY_SAVED: the summary in $named was not updated to this result, and the team's task memories may not all have been kept$tail", PART_TITLE)
+        }
+    }
+
+    /**
+     * Ends the objective from what is stored, running nothing more: for an objective the app
+     * stopped again and again with no progress in between (see [DefaultOrchestrator]'s recovery).
+     * Open work is settled as a limit settles it, with [why] as the reason; the document is the
+     * Director's when it was written, else assembled; knowledge is not saved, and the status
+     * says what of it is stored ([knowledgeAtEnd], read before the lock is taken).
+     */
+    suspend fun conclude(rt: ObjectiveRuntime, why: String) {
+        val before = ctx.tasks.get(rt.rootId)?.takeIf { !it.status.isFinished } ?: return
+        val beforeTree = ctx.tasks.getTree(rt.rootId)
+        var note = knowledgeAtEnd(before, beforeTree)
+        val stopped = rt.lock.withLockNonCancellable {
+            val objective = ctx.tasks.get(rt.rootId)?.takeIf { !it.status.isFinished } ?: return@withLockNonCancellable null
+            val now = ctx.clock.now()
+            val tree = ctx.tasks.getTree(rt.rootId)
+            // A command of the owner's changed the result meanwhile (it rarely can): read what is stored for it.
+            if (resultKey(tree) != resultKey(beforeTree)) note = knowledgeAtEnd(objective, tree)
+            val open = tree.filter { it.id != rt.rootId && !it.status.isFinished }
+            val stopped = stoppedByLimit(tree.associateBy { it.id }, open.filter { it.kind != TaskKind.SYNTHESIS }, why, "Stopped: $why.", now) +
+                open.filter { it.kind == TaskKind.SYNTHESIS }.map { it.copy(status = TaskStatus.CANCELLED, error = "Stopped: $why.", statusDetail = "Stopped: $why.", finishedAt = now, updatedAt = now) }
+            val byId = stopped.associateBy { it.id }
+            val after = tree.map { byId[it.id] ?: it }
+            val ended = ended(objective, outcomeOf(objective, after), "Ended early: $why.${note?.let { " ${it.text}" }.orEmpty()}")
+            announce(ended)
+            ctx.tasks.upsertAll(stopped + ended)
+            stopped
+        } ?: return
+        stopped.forEach { journalStopped(it) }
+        note?.let { n -> n.warning?.let { ctx.journal.warn(rt.rootId, before, it, n.text) } }
+    }
+
+    /**
+     * The note on knowledge for an objective ended without saving it ([conclude]): none unless
+     * the owner allowed saving and there is a final document the Director wrote; else the note
+     * the round for that document ended with, when it ended; else what is stored.
+     */
+    private suspend fun knowledgeAtEnd(objective: TaskRecord, tree: List<TaskRecord>): Note? {
+        if (objective.options?.saveKnowledge != true) return null
+        val outcome = outcomeOf(objective, tree)
+        val round = outcome.round?.takeIf { outcome.completed > 0 } ?: return null
+        val done = ctx.messages.list(objective.id).lastOrNull { it.from == Participant.System && it.type == MessageType.STATUS && isRecord(it.body, KNOWLEDGE_DONE, round) }
+        // The warning was logged when that round ended.
+        if (done != null) return noteOf(done.body, round)?.let { Note(it, null) }
+        return noteOn(knowledge.stored(objective, outcome.document), null)
+    }
+
+    /** What decides the knowledge note: the synthesis, its attempt and whether it completed. */
+    private fun resultKey(tree: List<TaskRecord>) = tree.firstOrNull { it.kind == TaskKind.SYNTHESIS }?.let { it.attempt to it.status }
+
+    /** The planned work, the final document made from what is stored, whether the Director wrote it, and if so at which attempt (the knowledge round). */
+    private class Outcome(val planned: List<TaskRecord>, val document: String, val round: Int?) {
+        val completed = planned.count { it.status == TaskStatus.COMPLETED }
+    }
+
+    private suspend fun outcomeOf(objective: TaskRecord, tree: List<TaskRecord>): Outcome {
+        val planned = SynthesisStep.plannedWork(tree)
+        val synthesisTask = tree.firstOrNull { it.kind == TaskKind.SYNTHESIS }
+        val written = synthesisTask?.takeIf { it.status == TaskStatus.COMPLETED && !it.result.isNullOrBlank() }
+        val names = ctx.agents.getAll().associate { it.id to it.name }
+        val document = written?.result ?: FinalDocument.assemble(objective, planned, names, synthesisTask?.let { FinalDocument.whyNot(it).trimEnd('.') } ?: "there was no synthesis task")
+        return Outcome(planned, document, written?.attempt)
+    }
+
+    /** [current] ended with [outcome]; [note] (on knowledge, or why it ended early) follows its status sentence. */
+    private fun ended(current: TaskRecord, outcome: Outcome, note: String?): TaskRecord {
+        val now = ctx.clock.now()
+        val tail = note?.let { " $it" }.orEmpty()
+        return if (outcome.completed > 0) {
+            current.copy(
+                status = TaskStatus.COMPLETED, result = outcome.document, error = null, finishedAt = now, updatedAt = now,
+                statusDetail = "Completed: ${outcome.completed} of ${outcome.planned.size} tasks produced results.$tail",
+            )
+        } else {
+            current.copy(
+                status = TaskStatus.FAILED, result = outcome.document, error = "No task produced a usable result.", finishedAt = now, updatedAt = now,
+                statusDetail = "Failed: no task produced a usable result.$tail",
+            )
+        }
+    }
+
+    /**
+     * Tells the owner the objective ended ("Final result ready", or why it failed) and logs it,
+     * once for each ending. It runs under the objective's lock right before the final status is
+     * stored: the app dying before that store leaves the objective unfinished, so the restart
+     * finishes it again and finds the ending announced ([announced]); dying after it leaves
+     * nothing to announce. The log entry is written first, so a death between the two repeats
+     * it rather than losing it.
+     */
+    private suspend fun announce(done: TaskRecord) {
+        if (announced(done.rootId)) return
         val director = done.assignee?.let { Participant.Agent(it) } ?: Participant.System
         if (done.status == TaskStatus.COMPLETED) {
             ctx.journal.taskChanged(done, "Objective completed")
@@ -313,7 +516,12 @@ internal class ObjectiveDriver(
             ctx.journal.taskChanged(done, "Objective failed", Severity.WARNING)
             ctx.journal.send(done.rootId, done, director, Participant.Owner, MessageType.FAILURE, "${done.title}: ${done.error}")
         }
-        return true
+    }
+
+    /** The objective's ending was announced since it last started or the owner last ran one of its tasks again (that message is stored before it reopens). */
+    private suspend fun announced(rootId: TaskId): Boolean {
+        val messages = ctx.messages.list(rootId)
+        return messages.indexOfLast { isAnnouncement(it) } > messages.indexOfLast { isRunAgain(it) }
     }
 
     private suspend fun internalFailure(rt: ObjectiveRuntime, e: Exception) {
@@ -338,5 +546,54 @@ internal class ObjectiveDriver(
 
         /** How often a running objective stores that it is still running. */
         const val HEARTBEAT_MS = 60_000L
+
+        /** Opens the status line of a result a limit made the objective use without the changes its review asked for. */
+        const val UNREVISED = "Used without the changes its review asked for"
+
+        /** Opens the record (a STATUS message from the system) written before each attempt to save knowledge from a final result. */
+        const val KNOWLEDGE_SAVING = "Saving what the team learned"
+
+        /** Opens the record written when saving knowledge from a final result has ended: it is not saved again from that result. */
+        const val KNOWLEDGE_DONE = "Done saving what the team learned"
+
+        /** Opens the record written when the owner stopped an attempt to save knowledge: that attempt does not count. */
+        const val KNOWLEDGE_STOPPED = "Stopped saving what the team learned"
+
+        /** Opens the objective's status note when part of its knowledge is stored: the note names the summary memory. */
+        const val PARTLY_SAVED = "Knowledge was saved in part"
+
+        /** Opens the objective's status note when no summary is stored. */
+        const val NOT_SAVED = "Knowledge was not saved"
+
+        /** Opens the objective's status note when all of its knowledge is stored but the owner was not told where the summary is. */
+        const val SAVED = "Knowledge was saved"
+
+        private const val PART_TITLE = "Knowledge saved in part"
+
+        /** Names the final result a knowledge record is about: the synthesis attempt that wrote it, counted from 1. */
+        fun resultOf(round: Int) = "from final result ${round + 1}"
+
+        /** [body] is a knowledge record opened by [kind] (one of the openers above) about the final result of [round]. */
+        fun isRecord(body: String, kind: String, round: Int): Boolean {
+            val head = "$kind ${resultOf(round)}"
+            return body.startsWith(head) && body.getOrNull(head.length).let { it == ' ' || it == '.' || it == ':' }
+        }
+
+        /** The note a [KNOWLEDGE_DONE] record of [round] ended with; null when there is none (all was saved). */
+        private fun noteOf(body: String, round: Int): String? =
+            body.removePrefix("$KNOWLEDGE_DONE ${resultOf(round)}").takeIf { it.startsWith(": ") }?.substring(2)?.trim()?.takeIf { it.isNotEmpty() }
+
+        /** The owner's message asking for a task to run again: stored before the objective reopens, it starts a new ending to announce. */
+        fun runAgain(title: String) = "Run \"$title\" again."
+
+        fun isRunAgain(message: AgentMessage): Boolean =
+            message.from == Participant.Owner && message.type == MessageType.STATUS && message.body.startsWith("Run \"") && message.body.endsWith("\" again.")
+
+        /**
+         * [message] announces how the objective ended ([announce]): like the Director's notice about
+         * the summary ([KnowledgeKeeper.isNotice]), not progress for the cap on restarts.
+         */
+        fun isAnnouncement(message: AgentMessage): Boolean =
+            message.taskId == message.rootId && message.from != Participant.Owner && (message.type == MessageType.COMPLETION || message.type == MessageType.FAILURE)
     }
 }

@@ -50,7 +50,10 @@ import kotlinx.coroutines.launch
  *    INTERRUPTED) keeps the time it had left as the difference between its deadline and the
  *    moment it was stored as stopped (its updatedAt); resuming gives it exactly that again. After
  *    a crash, that moment is the objective's last stored write (the driver stores a heartbeat),
- *    and every task that was running counts the interrupted run as one of its attempts.
+ *    and every task that was running counts the interrupted run as one of its attempts. A crash
+ *    while no task runs (while knowledge is saved, say) counts too: the objective is restarted
+ *    at most [MAX_RESTARTS_WITHOUT_PROGRESS] times in a row without progress, then ended from
+ *    what exists.
  *  - Agents run through [AgentRunner] with briefs written by [BriefWriter], so every protection
  *    of a run (per-task model and tool call limits, time limit, tool authorisation, content as
  *    data) applies to orchestrated work exactly as to a chat.
@@ -292,12 +295,13 @@ class DefaultOrchestrator(
                     error = null, finishedAt = null, deadlineAt = now + limits.objectiveTimeoutMs, statusDetail = "Reopened by the owner.", updatedAt = now,
                 )
             } else objective
+            // Stored before the objective reopens: its next ending is announced again, also after a crash right after this ([ObjectiveDriver.announce]).
+            journal.send(task.rootId, current, Participant.Owner, director(objectiveNow), MessageType.STATUS, ObjectiveDriver.runAgain(current.title))
             ctx.tasks.upsertAll(changes + objectiveNow)
             changes.mapNotNull { rt.taskJobs[it.id] }.forEach { it.cancel() }
             objectiveNow
         } ?: return
         journal.ownerAction(task.rootId, task, "Task run again", task.title)
-        journal.send(task.rootId, task, Participant.Owner, director(reopened), MessageType.STATUS, "Run \"${task.title}\" again.")
         if (reopened.status == TaskStatus.RUNNING) {
             launch(task.rootId)
             rt.poke()
@@ -326,6 +330,7 @@ class DefaultOrchestrator(
         for (rootId in roots) {
             val rt = runtimes.of(rootId)
             var planningFailed = false
+            var endEarly: String? = null
             val objective = rt.lock.withLockNonCancellable {
                 val objective = ctx.tasks.get(rootId) ?: return@withLockNonCancellable null
                 val now = clock.now()
@@ -344,9 +349,19 @@ class DefaultOrchestrator(
                         val reason = "Planning was interrupted $attempt time(s): the app stopped while the Director was planning, and no attempts are left."
                         objective.copy(status = TaskStatus.FAILED, attempt = attempt, error = reason, statusDetail = reason, finishedAt = now, updatedAt = now)
                     } else {
+                        // Nothing but the objective itself was running (finishing, say, or between two steps): no task's attempt
+                        // counts this one, so the interruptions in a row with no progress between them are counted, and capped.
+                        val idle = objective.status in WORKING && !planning && interrupted.isEmpty()
+                        val inARow = if (idle) idleInterruptions(rootId) + 1 else 0
+                        if (inARow > MAX_RESTARTS_WITHOUT_PROGRESS) endEarly = "the objective was interrupted $inARow times in a row without progress"
+                        val then = when {
+                            endEarly != null -> "Ending it from what exists."
+                            autoResume -> "Resuming."
+                            else -> "Resume it to continue."
+                        }
                         objective.copy(
                             status = TaskStatus.INTERRUPTED, attempt = attempt, deadlineAt = now + remaining, updatedAt = now,
-                            statusDetail = if (autoResume) "$INTERRUPTED Resuming." else "$INTERRUPTED Resume it to continue.",
+                            statusDetail = if (idle) "$IDLE_INTERRUPTION ($inARow in a row without progress). $then" else "$INTERRUPTED $then",
                         )
                     }
                 }
@@ -369,9 +384,25 @@ class DefaultOrchestrator(
             affected += rootId
             journal.taskChanged(objective, "Objective interrupted", Severity.WARNING)
             journal.send(rootId, objective, Participant.System, Participant.Owner, MessageType.STATUS, objective.statusDetail.orEmpty())
-            if (autoResume) resume(rootId, byOwner = false)
+            val why = endEarly
+            if (why != null) driver.conclude(rt, why) else if (autoResume) resume(rootId, byOwner = false)
         }
         return affected
+    }
+
+    /**
+     * How often the objective was interrupted while nothing but itself was running
+     * ([IDLE_INTERRUPTION], recorded as a STATUS message from the system) since the last thing
+     * an agent did: an agent's message is progress, except those the objective's finishing
+     * step writes (the Director's notice about the summary, [KnowledgeKeeper.isNotice], and the
+     * announcement of the ending, [ObjectiveDriver.isAnnouncement]), so that dying again and
+     * again while finishing is capped here too. A recovery always comes after the last message of the run it follows,
+     * so "since" compares their times strictly.
+     */
+    private suspend fun idleInterruptions(rootId: TaskId): Int {
+        val messages = ctx.messages.list(rootId)
+        val progressAt = messages.filter { it.from is Participant.Agent && !KnowledgeKeeper.isNotice(it) && !ObjectiveDriver.isAnnouncement(it) }.maxOfOrNull { it.at } ?: Long.MIN_VALUE
+        return messages.count { it.from == Participant.System && it.type == MessageType.STATUS && it.body.startsWith(IDLE_INTERRUPTION) && it.at > progressAt }
     }
 
     /**
@@ -456,6 +487,10 @@ class DefaultOrchestrator(
         const val TASK_GONE = "That task no longer exists."
         const val CANCELLED_BY_OWNER = "Cancelled by the owner."
         const val INTERRUPTED = "Interrupted: the app stopped while this was running."
+        const val IDLE_INTERRUPTION = "Interrupted while no task was running"
+
+        /** An objective interrupted again and again while no task ran, with no progress between, is restarted at most this many times in a row. */
+        const val MAX_RESTARTS_WITHOUT_PROGRESS = 3
         val INTERRUPTIONS = Regex("^Interrupted (\\d+) time")
         val RESUMABLE = setOf(TaskStatus.PAUSED, TaskStatus.INTERRUPTED)
         val RETRYABLE = setOf(TaskStatus.FAILED, TaskStatus.TIMED_OUT, TaskStatus.CANCELLED)

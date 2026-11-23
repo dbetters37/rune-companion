@@ -13,8 +13,11 @@ internal data class RosterEntry(
     val canRun: Boolean,
 )
 
-/** A finished task whose result another step builds on. */
-internal data class SourceResult(val task: TaskRecord, val authorName: String)
+/**
+ * A finished task whose result another step builds on. [unaddressed]: the verdict whose
+ * requested changes the result was used without (a limit stopped the revision).
+ */
+internal data class SourceResult(val task: TaskRecord, val authorName: String, val unaddressed: ReviewVerdict? = null)
 
 /** What a revision or a new attempt after review must address. */
 internal data class ReviewFeedback(val verdict: ReviewVerdict, val reviewerName: String, val previousResult: String?)
@@ -93,7 +96,7 @@ internal class BriefWriter {
                 line("- Every task needs a unique short \"key\", a \"title\", self-contained \"instructions\" and concrete \"completion_criteria\".")
                 line("- Give each task the \"skills\" it needs, using the team's skill words where they fit. Name an \"assignee\" only when one agent is clearly right; otherwise leave it out and the best fit is chosen.")
                 line("- Do not assign tasks to yourself. Use \"depends_on\" (a list of keys) when a task needs another task's result; dependencies must not form a cycle.")
-                if (reviewResults) line("- Set \"needs_review\": true for results that matter most; a different agent will check them against the criteria. The number of tasks plus the number marked for review must not exceed $maxTasks.")
+                if (reviewResults) line("- Set \"needs_review\": true for results that matter most; a different agent will check them against the criteria. $REVIEW_ORDER: when the tasks plus the tasks marked for review come to more than $maxTasks, only the earliest tasks marked for review, in plan order, are reviewed, and the rest are used without review.")
                 else line("- The owner switched reviews off for this objective; set \"needs_review\" to false.")
                 line("- \"final_instructions\" tell you later how to combine the results into the final document.")
                 line()
@@ -228,7 +231,7 @@ internal class BriefWriter {
     fun synthesis(brief: SynthesisBrief, budget: Int = UNLIMITED): String {
         val notCompleted = brief.notCompleted.joinToString("\n") { (title, why) -> "$title — $why" }
         val pieces = listOf(quoted(brief.objective), TextBudget.Piece(brief.synthesis.instructions)) +
-            brief.completed.map { TextBudget.Piece(it.task.result.orEmpty()) } +
+            brief.completed.flatMap { listOfNotNull(TextBudget.Piece(it.task.result.orEmpty()), it.unaddressed?.let { v -> TextBudget.Piece(unaddressedText(v)) }) } +
             listOfNotNull(notCompleted.takeIf { brief.notCompleted.isNotEmpty() }?.let { TextBudget.Piece(it) })
         return TextBudget.fit(budget, pieces) { texts ->
             val next = texts.iterator()
@@ -243,8 +246,12 @@ internal class BriefWriter {
                 line()
                 line(H_COMPLETED)
                 if (brief.completed.isEmpty()) line("No task produced a result.")
+                if (brief.completed.any { it.unaddressed != null }) {
+                    line("A result followed by the changes its review asked for was used without them: do not present those issues as resolved.")
+                }
                 brief.completed.forEachIndexed { index, source ->
                     line(DataBlock.frame(next.next(), "$RESULT_LABEL ${index + 1}: ${source.task.title} (by ${source.authorName})"))
+                    if (source.unaddressed != null) line(DataBlock.frame(next.next(), "$UNADDRESSED_LABEL ${index + 1}"))
                 }
                 line()
                 line(H_NOT_COMPLETED)
@@ -285,6 +292,9 @@ internal class BriefWriter {
         task.completionCriteria.forEach { line("- $it") }
     }.trimEnd()
 
+    private fun unaddressedText(verdict: ReviewVerdict): String =
+        "$UNADDRESSED_NOTE\n" + reviewText(verdict)
+
     private fun reviewText(verdict: ReviewVerdict): String = buildString {
         line("Decision: ${verdict.decision.name.lowercase()}")
         line("Summary: ${verdict.summary}")
@@ -316,9 +326,16 @@ internal class BriefWriter {
         const val FACT_TITLE = "Title: "
         const val RESULT_LABEL = "Result of task"
         const val NOT_COMPLETED_LABEL = "Tasks that were not completed"
+        const val UNADDRESSED_LABEL = "Changes the review asked for, not made in result"
+
+        /** Opens the framed review that follows a result used without the changes it asked for. */
+        const val UNADDRESSED_NOTE = "This result was used without the changes its review asked for: a limit stopped the revision. The review:"
         const val QUESTION_LABEL = "Question from"
         /** How the planning brief says that reviews take task places too. */
         const val REVIEW_ROOM = "counting one more for each task you mark for review"
+
+        /** How the planning brief says which reviews are kept when they do not all fit. */
+        const val REVIEW_ORDER = "Reviews are kept in plan order"
         const val PREVIOUS_FAILURE_LABEL = "Why the previous attempt did not succeed"
 
         /** No budget: the brief is written whole. */
