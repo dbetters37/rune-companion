@@ -11,6 +11,8 @@ import com.aicontrolcenter.core.registry.ModelRepository
 import com.aicontrolcenter.core.registry.ProviderRepository
 import com.aicontrolcenter.core.security.SecretVault
 import com.aicontrolcenter.core.settings.SettingsRepository
+import com.aicontrolcenter.core.tasks.MessageRepository
+import com.aicontrolcenter.core.tasks.TaskRepository
 import com.aicontrolcenter.data.db.AiccDatabase
 import com.aicontrolcenter.data.db.DeferredOpenHelperFactory
 import com.aicontrolcenter.data.db.SqlCipher
@@ -19,8 +21,10 @@ import com.aicontrolcenter.data.repository.RoomAgentRepository
 import com.aicontrolcenter.data.repository.RoomAiAppRepository
 import com.aicontrolcenter.data.repository.RoomConversationRepository
 import com.aicontrolcenter.data.repository.RoomMemoryRepository
+import com.aicontrolcenter.data.repository.RoomMessageRepository
 import com.aicontrolcenter.data.repository.RoomModelRepository
 import com.aicontrolcenter.data.repository.RoomProviderRepository
+import com.aicontrolcenter.data.repository.RoomTaskRepository
 import com.aicontrolcenter.data.security.AndroidKeystoreVaultCipher
 import com.aicontrolcenter.data.security.DatabaseKeyStore
 import com.aicontrolcenter.data.security.EncryptedFileSecretVault
@@ -87,6 +91,12 @@ class DataLayer(
     val activityLog: ActivityLog by lazy { RoomActivityLog(database, ioDispatcher) }
     val conversations: ConversationRepository by lazy { RoomConversationRepository(database, ioDispatcher) }
     val memories: MemoryRepository by lazy { RoomMemoryRepository(database, ioDispatcher) }
+
+    /** The tasks of the owner's objectives; the orchestrator's crash-safe record of its work. */
+    val tasks: TaskRepository by lazy { RoomTaskRepository(database, ioDispatcher) }
+
+    /** Every message exchanged while working on an objective. */
+    val messages: MessageRepository by lazy { RoomMessageRepository(database, ioDispatcher) }
 
     val settings: SettingsRepository by lazy {
         DataStoreSettingsRepository.create(appContext, CoroutineScope(settingsJob + ioDispatcher), settingsFileName)

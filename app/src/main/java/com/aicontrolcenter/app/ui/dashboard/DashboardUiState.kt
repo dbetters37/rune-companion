@@ -9,6 +9,7 @@ import com.aicontrolcenter.app.ui.dashboard.network.AgentNetwork
 import com.aicontrolcenter.app.ui.dashboard.network.NetworkNode
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.agents.AgentAvailability
 import com.aicontrolcenter.core.agents.UnavailableReason
 import com.aicontrolcenter.core.registry.ConnectionStatus
@@ -56,6 +57,12 @@ data class WorkingAgentUi(
     val colorIndex: Int,
     /** "Waiting for the model", "Running tool: Current time". */
     val detail: String,
+    /** The objective's task it works on, when it is part of one. */
+    val taskId: TaskId? = null,
+    val taskTitle: String? = null,
+    val objectiveTitle: String? = null,
+    /** Waiting for a teammate rather than working itself. */
+    val waiting: Boolean = false,
 )
 
 /** The headline numbers of the registry. Agents, models and AI apps are counted separately. */

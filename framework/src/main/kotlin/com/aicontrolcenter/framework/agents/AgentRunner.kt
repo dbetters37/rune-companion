@@ -62,6 +62,12 @@ import kotlinx.coroutines.withTimeoutOrNull
  *  - Every tool call runs with an [AgentTurnInfo] in its coroutine context, so tools that record
  *    provenance know the model and conversation of the turn.
  *
+ * A request can narrow a run, never widen it: [AgentRunRequest.limits] lowers the model call,
+ * tool call and time limits for one run (a teammate's short answer, a task with little time
+ * left before its deadline); [AgentRunRequest.extraToolIds] adds tools the framework decided
+ * on (the team tools inside an objective's task), authorised like the agent's own; the
+ * delegation chain is handed to every tool call; JSON output is requested when asked for.
+ *
  * [estimatePromptTokens] does not count recalled memories, which are only known once the turn
  * runs; [AutoRecall] caps their size instead.
  */
@@ -83,11 +89,17 @@ class AgentRunner(
     suspend fun run(request: AgentRunRequest, listener: AgentRunListener = AgentRunListener.NONE): AgentRunResult {
         val limits = settings.get()
         val run = Run(request, listener, limits)
-        monitor.runStarted(request.agent.id, "Preparing", request.taskId)
+        monitor.runStarted(request.agent.id, request.activityLabel ?: "Preparing", request.taskId)
         try {
             val timeoutMinutes = limits.taskTimeoutMinutes.coerceAtLeast(1)
-            val ending = withTimeoutOrNull(timeoutMinutes * 60_000L) { run.loop() }
-                ?: Ending(RunEnd.TIMED_OUT, "Stopped: the turn ran longer than $timeoutMinutes minutes, the time limit for one task.")
+            val frameworkTimeoutMs = timeoutMinutes * 60_000L
+            val timeoutMs = request.limits.timeoutMs?.coerceIn(1, frameworkTimeoutMs) ?: frameworkTimeoutMs
+            val ending = withTimeoutOrNull(timeoutMs) { run.loop() }
+                ?: Ending(
+                    RunEnd.TIMED_OUT,
+                    if (timeoutMs == frameworkTimeoutMs) "Stopped: the turn ran longer than $timeoutMinutes minutes, the time limit for one task."
+                    else "Stopped: the turn reached its time limit of ${describeDuration(timeoutMs)}.",
+                )
             run.closeOpenWork(ending.notice ?: "the turn ended")
             return run.result(ending)
         } finally {
@@ -120,7 +132,7 @@ class AgentRunner(
 
     /** The agent's enabled tools that exist, in a fixed order so that the request prefix is the same on every call. */
     private fun offeredTools(request: AgentRunRequest): List<ToolSpec> =
-        request.agent.toolIds.mapNotNull { tools.byId(it)?.spec }.sortedBy { it.functionName }
+        (request.agent.toolIds + request.extraToolIds).mapNotNull { tools.byId(it)?.spec }.sortedBy { it.functionName }
 
     private fun definition(spec: ToolSpec) = ToolDefinition(spec.functionName, spec.description, spec.parameters)
 
@@ -143,8 +155,8 @@ class AgentRunner(
         }
         private val produced = ArrayList<ChatMessage>()
         private var callContext = CallContext(agent.id, request.taskId, request.rootTaskId, request.purpose)
-        private val maxModelCalls = limits.maxModelCallsPerTask.coerceAtLeast(1)
-        private val maxToolCalls = limits.maxToolCallsPerTask.coerceAtLeast(0)
+        private val maxModelCalls = limits.maxModelCallsPerTask.coerceAtLeast(1).let { cap -> request.limits.maxModelCalls?.coerceIn(1, cap) ?: cap }
+        private val maxToolCalls = limits.maxToolCallsPerTask.coerceAtLeast(0).let { cap -> request.limits.maxToolCalls?.coerceIn(0, cap) ?: cap }
 
         private var modelCalls = 0
         private var modelErrors = 0
@@ -202,6 +214,7 @@ class AgentRunner(
             val chatRequest = ChatRequest(
                 messages = transcript.toList(), tools = definitions,
                 temperature = agent.generation.temperature, maxOutputTokens = agent.generation.maxOutputTokens,
+                jsonOutput = request.jsonOutput,
             )
             var completed: ChatResponse? = null
             var reasoning = false
@@ -269,7 +282,8 @@ class AgentRunner(
             val now = agents.get(agent.id)
                 ?: return Outcome.Stop(Ending(RunEnd.STOPPED_BY_OWNER, "Stopped: ${agent.name} was deleted while it was working."))
             if (!now.enabled) return Outcome.Stop(Ending(RunEnd.STOPPED_BY_OWNER, "Stopped: ${now.name} was switched off while it was working."))
-            return Outcome.Go(now)
+            // Tools the framework offers for this run are authorised as the agent's own; everything else is as stored now.
+            return Outcome.Go(if (request.extraToolIds.isEmpty()) now else now.copy(toolIds = now.toolIds + request.extraToolIds))
         }
 
         /** Runs the calls in order. Returns an ending when the tool budget ran out, or the agent was stopped, before all of them ran. */
@@ -288,7 +302,7 @@ class AgentRunner(
                 toolCalls++
                 executing = call
                 val execution = withContext(AgentTurnInfo(request.modelId, modelName, request.conversationId)) {
-                    executor.execute(call, ToolContext(profile, request.taskId, request.rootTaskId))
+                    executor.execute(call, ToolContext(profile, request.taskId, request.rootTaskId, request.delegationChain))
                 }
                 executing = null
                 if (!execution.outcome.ok) toolErrors++
@@ -336,7 +350,8 @@ class AgentRunner(
             listener.onMessage(stored, modelName.takeIf { stored.role == ChatRole.ASSISTANT }, usage)
         }
 
-        private fun report(detail: String) = monitor.report(agent.id, AgentActivity.WORKING, detail, request.taskId)
+        private fun report(detail: String) =
+            monitor.report(agent.id, AgentActivity.WORKING, request.activityLabel?.let { "$it · $detail" } ?: detail, request.taskId)
 
         fun result(ending: Ending) = AgentRunResult(
             ending.end, lastText, ending.notice, ending.error, produced.toList(), usage, modelCalls, toolCalls, modelName,
@@ -352,6 +367,15 @@ class AgentRunner(
                     lastActiveAt = now,
                 )
             }
+        }
+    }
+
+    /** "90 seconds", "1 minute", "15 minutes": a time limit in words. */
+    private fun describeDuration(ms: Long): String {
+        val seconds = (ms + 999) / 1000
+        return when {
+            seconds < 120 -> if (seconds == 1L) "1 second" else "$seconds seconds"
+            else -> "${seconds / 60} minutes"
         }
     }
 

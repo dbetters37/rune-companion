@@ -53,6 +53,8 @@ import com.aicontrolcenter.app.ui.icons.Forum
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.TaskId
+import com.aicontrolcenter.core.tasks.TaskKind
 import com.aicontrolcenter.core.agents.label
 
 /** What the detail screen can ask for. */
@@ -67,6 +69,8 @@ class AgentDetailActions(
     val onOpenModels: () -> Unit,
     val onMessageShown: () -> Unit,
     val onOpenMemories: () -> Unit = {},
+    /** Opens one of its tasks (or, for the Director, an objective). */
+    val onOpenTask: (AgentTaskUi) -> Unit = {},
 )
 
 @Composable
@@ -78,6 +82,8 @@ fun AgentDetailRoute(
     onOpenModels: () -> Unit,
     onChat: (AgentId) -> Unit,
     onOpenMemories: (AgentId) -> Unit = {},
+    onOpenTask: (TaskId) -> Unit = {},
+    onOpenObjective: (TaskId) -> Unit = {},
 ) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel {
@@ -88,6 +94,8 @@ fun AgentDetailRoute(
             graph.activityMonitor,
             graph.toolRegistry.all().map { it.spec },
             graph.memoryService,
+            graph.tasks,
+            graph.clock,
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -111,6 +119,7 @@ fun AgentDetailRoute(
             onOpenModels = onOpenModels,
             onMessageShown = viewModel::messageShown,
             onOpenMemories = { onOpenMemories(agentId) },
+            onOpenTask = { task -> if (task.kind == TaskKind.OBJECTIVE) onOpenObjective(task.id) else onOpenTask(task.id) },
         ),
     )
 }
@@ -160,6 +169,7 @@ fun AgentDetailScreen(state: AgentDetailUiState, actions: AgentDetailActions) {
                 ToolsSection(agent)
                 PolicySections(agent, actions.onOpenMemories)
                 TrackRecordSection(agent)
+                RecentTasksSection(agent, actions.onOpenTask)
                 ManageSection(
                     agent = agent,
                     isBusy = state.isBusy,

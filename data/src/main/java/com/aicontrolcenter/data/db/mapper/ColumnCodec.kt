@@ -1,8 +1,12 @@
 package com.aicontrolcenter.data.db.mapper
 
+import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ModelId
+import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.ToolId
 import com.aicontrolcenter.core.registry.AiAppCapability
+import com.aicontrolcenter.core.tasks.ReviewVerdict
+import com.aicontrolcenter.core.tasks.TaskRequester
 import com.aicontrolcenter.data.DataJson
 import com.aicontrolcenter.data.StoredDataException
 import kotlinx.serialization.DeserializationStrategy
@@ -23,6 +27,12 @@ internal object ColumnSerializers {
     val modelIdList: KSerializer<List<ModelId>> = ListSerializer(ModelId.serializer())
     val toolIdSet: KSerializer<Set<ToolId>> = SetSerializer(ToolId.serializer())
     val appCapabilitySet: KSerializer<Set<AiAppCapability>> = SetSerializer(serializer<AiAppCapability>())
+    val taskIdList: KSerializer<List<TaskId>> = ListSerializer(TaskId.serializer())
+    val agentIdList: KSerializer<List<AgentId>> = ListSerializer(AgentId.serializer())
+    val reviewList: KSerializer<List<ReviewVerdict>> = ListSerializer(ReviewVerdict.serializer())
+
+    /** Polymorphic: `{"type":"owner"}` or `{"type":"agent","agentId":...}`. */
+    val taskRequester: KSerializer<TaskRequester> = serializer<TaskRequester>()
 }
 
 internal fun <T> encodeColumn(serializer: SerializationStrategy<T>, value: T): String =

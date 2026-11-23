@@ -4,6 +4,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlin.coroutines.CoroutineContext
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.IdGenerator
+import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.activity.ActivityLog
 import com.aicontrolcenter.core.activity.ActivityRecorder
 import com.aicontrolcenter.core.agents.AgentActivityMonitor
@@ -20,6 +21,9 @@ import com.aicontrolcenter.core.registry.AiAppRegistry
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.security.SecretVault
 import com.aicontrolcenter.core.settings.SettingsRepository
+import com.aicontrolcenter.core.tasks.MessageRepository
+import com.aicontrolcenter.core.tasks.Orchestrator
+import com.aicontrolcenter.core.tasks.TaskRepository
 import com.aicontrolcenter.core.tools.ToolRegistry
 import com.aicontrolcenter.framework.agents.AgentRunner
 import com.aicontrolcenter.framework.agents.DefaultAgentActivityMonitor
@@ -33,6 +37,8 @@ import com.aicontrolcenter.framework.memory.AgentMemoryCleanup
 import com.aicontrolcenter.framework.memory.AutoRecall
 import com.aicontrolcenter.framework.memory.MemorySeeder
 import com.aicontrolcenter.framework.memory.MemoryTools
+import com.aicontrolcenter.framework.orchestration.DefaultOrchestrator
+import com.aicontrolcenter.framework.orchestration.TeamTools
 import com.aicontrolcenter.framework.registry.DefaultAiAppRegistry
 import com.aicontrolcenter.framework.registry.DefaultRegistryDirectory
 import com.aicontrolcenter.framework.registry.LoggingAiAppLauncher
@@ -45,10 +51,15 @@ import com.aicontrolcenter.memory.DefaultMemoryService
 import com.aicontrolcenter.memory.HashingEmbedder
 import com.aicontrolcenter.memory.MemoryConfig
 import com.aicontrolcenter.app.BuildConfig
+import com.aicontrolcenter.app.work.InMemoryNotificationAccess
+import com.aicontrolcenter.app.work.NotificationAccess
 import com.aicontrolcenter.providers.HttpProviderAdapters
 import com.aicontrolcenter.providers.anthropic.AnthropicAdapterFactory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * The adapters that connect real providers: the built-in simulator, the HTTP protocols
@@ -83,6 +94,11 @@ class AppGraph(
      * pass [kotlin.coroutines.EmptyCoroutineContext] so that work stays on their test dispatcher.
      */
     backgroundContext: CoroutineContext = Dispatchers.Default,
+    /**
+     * Whether progress notifications can be shown. Android's answer in the app; an always-allowed
+     * stand-in elsewhere, which a test replaces to script a refusal.
+     */
+    val notifications: NotificationAccess = InMemoryNotificationAccess(),
 ) {
     val clock: Clock = ports.clock
     val idGenerator: IdGenerator = ports.idGenerator
@@ -172,6 +188,7 @@ class AppGraph(
     /** The capabilities tools need. Declared before the tools, which register theirs into it. */
     val capabilities = CapabilityRegistry()
 
+    /** Every tool agents can be given. The team tools are added below, once the orchestrator exists. */
     val toolRegistry: ToolRegistry = DefaultToolRegistry().also {
         BuiltInTools.registerAll(it, ports.clock, registryDirectory)
         MemoryTools.registerAll(it, memoryService, capabilities, ports.agents, ports.clock)
@@ -201,6 +218,43 @@ class AppGraph(
         // Relevant memories are added to the prompt before each turn, per the agent's memory policy.
         recall = AutoRecall(memoryService, activityRecorder, lookupContext = backgroundContext),
     )
+
+    // --- the Director and its team ---
+
+    /** Objectives and their tasks; screens observe them, only the orchestrator changes them. */
+    val tasks: TaskRepository = ports.tasks
+
+    /** What agents said to each other about each objective. */
+    val messages: MessageRepository = ports.messages
+
+    /**
+     * Runs the owner's objectives: the Director plans, agents work, reviewers check, the Director
+     * writes the result. It shares the runner and the activity monitor with chat, so every limit,
+     * permission check and "working now" indicator applies to orchestrated work exactly as to a
+     * conversation. Objectives run in [appScope], so they outlive the screen that started them.
+     */
+    private val defaultOrchestrator = DefaultOrchestrator(
+        tasks = ports.tasks,
+        messages = ports.messages,
+        conversations = ports.conversations,
+        agents = ports.agents,
+        directory = registryDirectory,
+        settings = ports.settings,
+        runner = agentRunner,
+        toolRegistry = toolRegistry,
+        monitor = monitor,
+        activity = activityRecorder,
+        ids = ports.idGenerator,
+        clock = ports.clock,
+        scope = appScope,
+        // The Director may save what an objective taught the team, when the owner allows it.
+        memory = memoryService,
+    ).also {
+        // Once, before any agent runs: asking a teammate and delegating are tools like any other.
+        TeamTools.registerAll(toolRegistry, capabilities, it)
+    }
+
+    val orchestrator: Orchestrator = defaultOrchestrator
 
     private val defaultAgentChat = DefaultAgentChat(
         conversations = ports.conversations,
@@ -244,7 +298,16 @@ class AppGraph(
         activityRecorder = activityRecorder,
         packageChanges = ports.packageChanges,
         clock = ports.clock,
+        orchestrator = orchestrator,
     )
+
+    private val foreground = MutableStateFlow(false)
+
+    /**
+     * True while the app is on screen. Android lets a foreground service be started only then, so
+     * the service that keeps objectives alive in the background is started from this state.
+     */
+    val isInForeground: StateFlow<Boolean> = foreground.asStateFlow()
 
     /**
      * Registers the built-in simulator, runs first-run seeding and the initial registry
@@ -253,9 +316,38 @@ class AppGraph(
      */
     fun start(): Job = startup.start()
 
+    private val objectiveRequests = MutableStateFlow<TaskId?>(null)
+
+    /** An objective the owner asked to see from outside the app (the notification); the shell opens it. */
+    val objectiveToOpen: StateFlow<TaskId?> = objectiveRequests.asStateFlow()
+
+    fun requestObjective(id: TaskId) {
+        objectiveRequests.value = id
+    }
+
+    /** The shell has opened [objectiveToOpen]. */
+    fun objectiveOpened() {
+        objectiveRequests.value = null
+    }
+
+    /**
+     * Waits for the one-off start-up work (seeding, recovery of interrupted objectives) if it has
+     * been started; returns at once otherwise. New objectives wait for it, so recovery never
+     * mistakes a just-started objective for one the app was killed in the middle of.
+     */
+    suspend fun awaitStartup() = startup.awaitInitial()
+
     /** Call when the app returns to the foreground: package broadcasts are best effort, and provider status goes stale. */
-    fun onAppForegrounded() = startup.onAppForegrounded()
+    fun onAppForegrounded() {
+        foreground.value = true
+        // The owner may have switched notifications on or off in the settings meanwhile.
+        notifications.refresh()
+        startup.onAppForegrounded()
+    }
 
     /** Call when the app leaves the foreground; periodic memory upkeep pauses until it returns. */
-    fun onAppBackgrounded() = startup.onAppBackgrounded()
+    fun onAppBackgrounded() {
+        foreground.value = false
+        startup.onAppBackgrounded()
+    }
 }

@@ -27,6 +27,7 @@ import com.aicontrolcenter.data.db.mapper.readableOrNull
 import com.aicontrolcenter.data.db.mapper.toColumns
 import com.aicontrolcenter.data.db.mapper.toDomain
 import com.aicontrolcenter.data.db.mapper.toEntity
+import com.aicontrolcenter.data.db.mapper.utf8Length
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -245,22 +246,5 @@ class RoomMemoryRepository internal constructor(
 
         private fun MemoryEntity.storedTextBytes(): Long =
             listOf(id, title, content, tagsJson, provenanceJson, historyJson).sumOf { it.utf8Length() }
-
-        /** UTF-8 length without encoding the text; unpaired surrogates count as the 3 bytes SQLite stores. */
-        private fun String.utf8Length(): Long {
-            var bytes = 0L
-            var i = 0
-            while (i < length) {
-                val c = this[i]
-                bytes += when {
-                    c.code < 0x80 -> 1
-                    c.code < 0x800 -> 2
-                    c.isHighSurrogate() && i + 1 < length && this[i + 1].isLowSurrogate() -> { i++; 4 }
-                    else -> 3
-                }
-                i++
-            }
-            return bytes
-        }
     }
 }

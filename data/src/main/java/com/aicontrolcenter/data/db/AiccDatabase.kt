@@ -7,13 +7,16 @@ import androidx.room.RoomDatabase
 import androidx.sqlite.db.SupportSQLiteOpenHelper
 import com.aicontrolcenter.data.db.dao.ActivityEventDao
 import com.aicontrolcenter.data.db.dao.AgentDao
+import com.aicontrolcenter.data.db.dao.AgentMessageDao
 import com.aicontrolcenter.data.db.dao.AiAppDao
 import com.aicontrolcenter.data.db.dao.ConversationDao
 import com.aicontrolcenter.data.db.dao.MemoryDao
 import com.aicontrolcenter.data.db.dao.ModelDao
 import com.aicontrolcenter.data.db.dao.ProviderDao
+import com.aicontrolcenter.data.db.dao.TaskDao
 import com.aicontrolcenter.data.db.entity.ActivityEventEntity
 import com.aicontrolcenter.data.db.entity.AgentEntity
+import com.aicontrolcenter.data.db.entity.AgentMessageEntity
 import com.aicontrolcenter.data.db.entity.AgentStatsEntity
 import com.aicontrolcenter.data.db.entity.AiAppEntity
 import com.aicontrolcenter.data.db.entity.ConversationEntity
@@ -24,12 +27,14 @@ import com.aicontrolcenter.data.db.entity.MemoryEntity
 import com.aicontrolcenter.data.db.entity.MemoryLinkEntity
 import com.aicontrolcenter.data.db.entity.ModelEntity
 import com.aicontrolcenter.data.db.entity.ProviderEntity
+import com.aicontrolcenter.data.db.entity.TaskEntity
 import kotlinx.coroutines.CoroutineDispatcher
 
 /**
  * The app's single SQLite database: the registry (agents and their stats, providers, models,
- * AI applications), the activity log, the conversations with agents, and memory (knowledge
- * spaces, memories, the links between them and their embedding vectors).
+ * AI applications), the activity log, the conversations with agents, memory (knowledge
+ * spaces, memories, the links between them and their embedding vectors), and orchestration
+ * (the tasks of the owner's objectives and the messages agents exchange while working on them).
  *
  * The schema is exported to `data/schemas` and versioned with the code. There is no destructive
  * fallback: opening a database whose version has no migration path fails loudly instead of
@@ -51,6 +56,8 @@ import kotlinx.coroutines.CoroutineDispatcher
         MemoryEntity::class,
         MemoryLinkEntity::class,
         MemoryEmbeddingEntity::class,
+        TaskEntity::class,
+        AgentMessageEntity::class,
     ],
     version = AiccDatabase.VERSION,
     exportSchema = true,
@@ -63,10 +70,15 @@ abstract class AiccDatabase : RoomDatabase() {
     internal abstract fun activityEventDao(): ActivityEventDao
     internal abstract fun conversationDao(): ConversationDao
     internal abstract fun memoryDao(): MemoryDao
+    internal abstract fun taskDao(): TaskDao
+    internal abstract fun agentMessageDao(): AgentMessageDao
 
     companion object {
-        /** Version 1 was the first release; 2 added conversations, 3 memory. See [AiccMigrations]. */
-        const val VERSION = 3
+        /**
+         * Version 1 was the first release; 2 added conversations, 3 memory, 4 tasks and agent
+         * messages. See [AiccMigrations].
+         */
+        const val VERSION = 4
         const val DEFAULT_NAME = "aicc.db"
 
         /**

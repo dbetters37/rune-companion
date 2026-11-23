@@ -3,6 +3,8 @@ package com.aicontrolcenter.app
 import android.app.Application
 import com.aicontrolcenter.app.di.AppGraph
 import com.aicontrolcenter.app.di.createProductionPorts
+import com.aicontrolcenter.app.work.AndroidNotificationAccess
+import com.aicontrolcenter.app.work.ObjectiveWorkController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -22,10 +24,16 @@ class AiControlCenterApp : Application() {
     @Volatile
     private var installedGraph: AppGraph? = null
 
-    /** The composition root; created from the production ports unless one was installed. */
+    /**
+     * The composition root; created from the production ports unless one was installed. The
+     * production graph also gets the controller that keeps objectives running in the background.
+     */
     val graph: AppGraph
         get() = installedGraph ?: synchronized(this) {
-            installedGraph ?: AppGraph(createProductionPorts(this), appScope).also { installedGraph = it }
+            installedGraph ?: AppGraph(createProductionPorts(this), appScope, notifications = AndroidNotificationAccess(this)).also {
+                installedGraph = it
+                ObjectiveWorkController(this, it, appScope).start()
+            }
         }
 
     /** Replaces the composition root. Meant for tests and must happen before the first screen is shown. */

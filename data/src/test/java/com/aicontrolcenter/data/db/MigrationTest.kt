@@ -17,6 +17,11 @@ import com.aicontrolcenter.core.llm.ChatMessage
 import com.aicontrolcenter.core.memory.KnowledgeSpace
 import com.aicontrolcenter.core.memory.MemoryRepository
 import com.aicontrolcenter.core.memory.MemoryScope
+import com.aicontrolcenter.core.tasks.MessageRepository
+import com.aicontrolcenter.core.tasks.MessageType
+import com.aicontrolcenter.core.tasks.TaskKind
+import com.aicontrolcenter.core.tasks.TaskRepository
+import com.aicontrolcenter.core.tasks.TaskStatus
 import com.aicontrolcenter.data.DataLayer
 import com.aicontrolcenter.data.DatabaseEncryption
 import com.aicontrolcenter.data.db.entity.ConversationEntryEntity
@@ -25,13 +30,17 @@ import com.aicontrolcenter.data.repository.RoomAgentRepository
 import com.aicontrolcenter.data.repository.RoomAiAppRepository
 import com.aicontrolcenter.data.repository.RoomConversationRepository
 import com.aicontrolcenter.data.repository.RoomMemoryRepository
+import com.aicontrolcenter.data.repository.RoomMessageRepository
 import com.aicontrolcenter.data.repository.RoomModelRepository
 import com.aicontrolcenter.data.repository.RoomProviderRepository
+import com.aicontrolcenter.data.repository.RoomTaskRepository
 import com.aicontrolcenter.data.security.SoftwareVaultCipher
 import com.aicontrolcenter.data.testing.VersionOneData
+import com.aicontrolcenter.data.testing.VersionThreeData
 import com.aicontrolcenter.data.testing.VersionTwoData
 import com.aicontrolcenter.testkit.Samples
 import com.aicontrolcenter.testkit.contract.MemorySamples
+import com.aicontrolcenter.testkit.contract.TaskSamples
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Rule
@@ -44,10 +53,10 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
- * Upgrades of a database that already holds the owner's data. Versions 1 and 2 are on real
+ * Upgrades of a database that already holds the owner's data. Versions 1 to 3 are on real
  * phones, so every test starts from a database created from the exported schema of one of them
- * (never from today's entity classes) and filled with [VersionOneData] and, for version 2,
- * [VersionTwoData].
+ * (never from today's entity classes) and filled with [VersionOneData] and, for the later
+ * versions, [VersionTwoData] and [VersionThreeData].
  *
  * Runs on plain SQLite: the SQLCipher native library only exists on a device. Encryption does
  * not change the SQL that a migration executes.
@@ -70,6 +79,51 @@ class MigrationTest {
             VersionOneData.insertInto(it)
             VersionTwoData.insertInto(it)
         }
+    }
+
+    /** What release 0.3.0 holds: data in every table of schema version 3. */
+    private fun createVersionThreeDatabase() {
+        helper.createDatabase(NAME, 3).use {
+            VersionOneData.insertInto(it)
+            VersionTwoData.insertInto(it)
+            VersionThreeData.insertInto(it)
+        }
+    }
+
+    private suspend fun assertVersionThreeDataIsThere(database: AiccDatabase) {
+        assertVersionTwoDataIsThere(database)
+        val memories = RoomMemoryRepository(database)
+        assertEquals(VersionThreeData.memories, memories.list())
+        assertEquals(listOf(VersionThreeData.space), memories.observeSpaces().first())
+        assertEquals(listOf(VersionThreeData.link), memories.links())
+        assertContentEquals(
+            VersionThreeData.embedding,
+            memories.embeddings(VersionThreeData.EMBEDDER).getValue(VersionThreeData.embeddingOf),
+        )
+    }
+
+    /** Stores, reads, updates and removes an objective with its tasks and messages. */
+    private suspend fun assertTasksAndMessagesCanBeStored(tasks: TaskRepository, messages: MessageRepository) {
+        assertEquals(emptyList(), tasks.observeObjectives().first())
+        val root = TaskSamples.objective()
+        val work = TaskSamples.work("tsk_1", at = 2_000, status = TaskStatus.RUNNING)
+        val review = TaskSamples.work("tsk_2", at = 3_000, kind = TaskKind.REVIEW)
+        tasks.upsertAll(listOf(review, work, root))
+        val assignment = TaskSamples.message("msg_1", at = 2_000)
+        val findings = TaskSamples.message("msg_2", at = 2_500, type = MessageType.FINDINGS)
+        messages.append(findings)
+        messages.append(assignment)
+
+        assertEquals(listOf(root), tasks.observeObjectives().first())
+        assertEquals(listOf(root, work, review), tasks.getTree(root.id))
+        assertEquals(listOf(root, work), tasks.withStatus(setOf(TaskStatus.RUNNING)))
+        assertEquals(TaskStatus.COMPLETED, tasks.update(work.id) { it.copy(status = TaskStatus.COMPLETED) }?.status)
+        assertEquals(listOf(assignment, findings), messages.list(root.id))
+
+        tasks.deleteTree(root.id)
+        messages.deleteFor(root.id)
+        assertEquals(emptyList(), tasks.getTree(root.id))
+        assertEquals(0, messages.count(root.id))
     }
 
     private suspend fun assertVersionTwoDataIsThere(database: AiccDatabase) {
@@ -131,7 +185,7 @@ class MigrationTest {
     }
 
     @Test
-    fun `the app opening a version 1 database upgrades it in place and can store conversations in it`() = runTest {
+    fun `the app opening a version 1 database upgrades it in place and can store conversations, tasks and messages in it`() = runTest {
         createVersionOneDatabase()
 
         // The way the app opens it, except for encryption: Room finds and runs the migration itself.
@@ -148,6 +202,7 @@ class MigrationTest {
             val stored = data.conversations.appendEntry(ConversationEntry(conversation.id, seq = 0, ChatMessage.user("Hello"), at = 510))
             assertEquals(listOf(conversation), data.conversations.observeConversations(VersionOneData.agent.id).first())
             assertEquals(listOf(stored), data.conversations.getEntries(conversation.id))
+            assertTasksAndMessagesCanBeStored(data.tasks, data.messages)
         } finally {
             data.close()
         }
@@ -201,11 +256,107 @@ class MigrationTest {
         )
         try {
             assertVersionTwoDataIsThere(data.database)
-            assertEquals(3, data.database.openHelper.readableDatabase.version)
+            assertEquals(AiccDatabase.VERSION, data.database.openHelper.readableDatabase.version)
             assertMemoryCanBeStored(data.memories)
             assertEquals(1, data.memories.deleteScope(MemoryScope.Task(MemorySamples.task.taskId, MemorySamples.task.agentId)))
         } finally {
             data.close()
+        }
+    }
+
+    @Test
+    fun `a version 3 database with data in every table migrates to the exported schema 4 and keeps its data`() = runTest {
+        createVersionThreeDatabase()
+
+        // Fails if the migrated tables or indexes differ from the exported schema 4.
+        helper.runMigrationsAndValidate(NAME, 4, true, *AiccMigrations.all).close()
+
+        val migrated = AiccDatabase.create(context, NAME)
+        try {
+            assertVersionThreeDataIsThere(migrated)
+            assertEquals(0, migrated.count("tasks"))
+            assertEquals(0, migrated.count("agent_messages"))
+            assertTasksAndMessagesCanBeStored(RoomTaskRepository(migrated), RoomMessageRepository(migrated))
+        } finally {
+            migrated.close()
+        }
+    }
+
+    @Test
+    fun `a version 1 database migrates through every release to the exported schema 4 and keeps the data of each`() = runTest {
+        createVersionOneDatabase()
+        // Each release upgraded the database and then stored data of its own in it.
+        helper.runMigrationsAndValidate(NAME, 2, true, *AiccMigrations.all).use { VersionTwoData.insertInto(it) }
+        helper.runMigrationsAndValidate(NAME, 3, true, *AiccMigrations.all).use { VersionThreeData.insertInto(it) }
+
+        helper.runMigrationsAndValidate(NAME, 4, true, *AiccMigrations.all).close()
+
+        val migrated = AiccDatabase.create(context, NAME)
+        try {
+            assertVersionThreeDataIsThere(migrated)
+            assertTasksAndMessagesCanBeStored(RoomTaskRepository(migrated), RoomMessageRepository(migrated))
+        } finally {
+            migrated.close()
+        }
+    }
+
+    @Test
+    fun `a version 1 database with data migrates straight to the exported schema 4`() = runTest {
+        createVersionOneDatabase()
+
+        // One upgrade over three versions, as on a phone that skipped releases 0.2.0 and 0.3.0.
+        helper.runMigrationsAndValidate(NAME, 4, true, *AiccMigrations.all).close()
+
+        val migrated = AiccDatabase.create(context, NAME)
+        try {
+            assertVersionOneDataIsThere(migrated)
+            assertTasksAndMessagesCanBeStored(RoomTaskRepository(migrated), RoomMessageRepository(migrated))
+        } finally {
+            migrated.close()
+        }
+    }
+
+    @Test
+    fun `the app opening a version 3 database upgrades it in place and can store tasks and messages in it`() = runTest {
+        createVersionThreeDatabase()
+
+        val data = DataLayer(
+            context, databaseName = NAME, databaseEncryption = DatabaseEncryption.None, vaultCipher = SoftwareVaultCipher(),
+        )
+        try {
+            assertVersionThreeDataIsThere(data.database)
+            assertEquals(4, data.database.openHelper.readableDatabase.version)
+            assertTasksAndMessagesCanBeStored(data.tasks, data.messages)
+            // The data of the earlier releases is untouched by everything done with tasks.
+            assertVersionThreeDataIsThere(data.database)
+        } finally {
+            data.close()
+        }
+    }
+
+    @Test
+    fun `the task tables added by the migration have their indexes and take tasks in any order`() = runTest {
+        createVersionThreeDatabase()
+        helper.runMigrationsAndValidate(NAME, 4, true, *AiccMigrations.all).close()
+        val migrated = AiccDatabase.create(context, NAME)
+        try {
+            val indexes = migrated.openHelper.readableDatabase
+                .query(SimpleSQLiteQuery("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name IN ('tasks', 'agent_messages')"))
+                .use { cursor -> buildSet { while (cursor.moveToNext()) add(cursor.getString(0)) } }
+            assertEquals(
+                setOf(
+                    "index_tasks_kind_created_at_id", "index_tasks_root_id_created_at_id", "index_tasks_status_created_at_id",
+                    "index_agent_messages_root_id_at_id", "index_agent_messages_at_id",
+                ),
+                indexes.filterNot { it.startsWith("sqlite_autoindex") }.toSet(),
+            )
+            // No foreign keys: a child may be stored before its objective, and a message before its task.
+            val tasks = RoomTaskRepository(migrated)
+            tasks.upsert(TaskSamples.work("tsk_child"))
+            RoomMessageRepository(migrated).append(TaskSamples.message("msg_early"))
+            assertEquals(listOf("tsk_child"), tasks.getTree(TaskSamples.objective().id).map { it.id.value })
+        } finally {
+            migrated.close()
         }
     }
 

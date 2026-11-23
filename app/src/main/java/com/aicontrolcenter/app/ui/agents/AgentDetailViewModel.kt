@@ -30,6 +30,18 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import com.aicontrolcenter.app.ui.components.formatCompactTimestamp
+import com.aicontrolcenter.app.ui.tasks.toStatusLabel
+import com.aicontrolcenter.core.Clock
+import com.aicontrolcenter.core.TaskId
+import com.aicontrolcenter.core.WallClock
+import com.aicontrolcenter.core.tasks.TaskKind
+import com.aicontrolcenter.core.tasks.TaskRecord
+import com.aicontrolcenter.core.tasks.TaskRepository
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flatMapLatest
+import java.time.ZoneId
 
 /** One agent with everything its detail screen shows, already resolved against the registry. */
 @Immutable
@@ -52,6 +64,8 @@ data class AgentDetailUi(
     /** Names of the shared spaces its policy lets it read, and write. Spaces that no longer exist are left out. */
     val readableSpaces: List<String> = emptyList(),
     val writableSpaces: List<String> = emptyList(),
+    /** The newest tasks given to it in objectives (for the Director, also the objectives themselves). */
+    val recentTasks: List<AgentTaskUi> = emptyList(),
 ) {
     /** Only an agent with the Director role can be designated, and only if it is not already. */
     val canDesignateAsDirector: Boolean get() = profile.kind == AgentKind.DIRECTOR && !isDesignatedDirector
@@ -67,6 +81,18 @@ data class AgentDetailUi(
 
     val hasHistory: Boolean get() = stats != AgentStats()
 }
+
+/** A task an agent was given, as a row on its page. */
+@Immutable
+data class AgentTaskUi(
+    val id: TaskId,
+    val title: String,
+    /** The objective it belongs to; null for an objective itself. */
+    val objectiveTitle: String?,
+    val kind: TaskKind,
+    val status: StatusLabel,
+    val time: String,
+)
 
 @Immutable
 data class AgentDetailUiState(
@@ -89,6 +115,9 @@ class AgentDetailViewModel(
     monitor: AgentActivityMonitor? = null,
     tools: List<ToolSpec> = emptyList(),
     memory: MemoryService? = null,
+    tasks: TaskRepository? = null,
+    private val clock: Clock = WallClock,
+    private val zone: ZoneId = ZoneId.systemDefault(),
 ) : ViewModel() {
     private val toolTitles: Map<ToolId, String> = tools.associate { it.id to it.title }
 
@@ -105,13 +134,26 @@ class AgentDetailViewModel(
     private val privateCount = memory?.observe(MemoryActor.Owner, MemoryFilter(scopes = setOf(MemoryScope.Agent(agentId))))?.map { it.size }
         ?: flowOf(null)
 
+    /** Its tasks across the newest objectives, newest change first. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val recentTasks: Flow<List<Pair<TaskRecord, String?>>> = tasks?.let { repository ->
+        repository.observeObjectives().flatMapLatest { objectives ->
+            val shown = objectives.take(RECENT_OBJECTIVES)
+            if (shown.isEmpty()) flowOf(emptyList()) else combine(shown.map { repository.observeTree(it.id) }) { trees -> trees.flatMap { it } }
+        }.map { all ->
+            val titles = all.filter { it.kind == TaskKind.OBJECTIVE }.associate { it.id to it.title }
+            all.filter { it.assignee == agentId }.sortedByDescending { it.updatedAt }.take(RECENT_TASKS)
+                .map { task -> task to titles[task.rootId]?.takeIf { task.kind != TaskKind.OBJECTIVE } }
+        }
+    } ?: flowOf(emptyList())
+
     val uiState: StateFlow<AgentDetailUiState> = combine(
         directory.observe(),
         monitor?.states ?: flowOf(emptyMap()),
         local,
-        privateCount,
+        combine(privateCount, recentTasks) { count, recent -> count to recent },
         memory?.observeSpaces() ?: flowOf(emptyList()),
-    ) { snapshot, working, local, privateCount, spaces ->
+    ) { snapshot, working, local, (privateCount, recent), spaces ->
         val entry = snapshot.agentsById[agentId]
         val spaceNames = spaces.associate { it.id to it.name }
         AgentDetailUiState(
@@ -130,6 +172,16 @@ class AgentDetailViewModel(
                     privateMemoryCount = privateCount,
                     readableSpaces = it.profile.memory.readableSpaces.mapNotNull(spaceNames::get).sorted(),
                     writableSpaces = it.profile.memory.writableSpaces.mapNotNull(spaceNames::get).sorted(),
+                    recentTasks = recent.map { (task, objectiveTitle) ->
+                        AgentTaskUi(
+                            id = task.id,
+                            title = task.title,
+                            objectiveTitle = objectiveTitle,
+                            kind = task.kind,
+                            status = task.status.toStatusLabel(task.kind),
+                            time = formatCompactTimestamp(task.updatedAt, clock.now(), zone),
+                        )
+                    },
                 )
             },
             deleted = local.deleted,
@@ -185,4 +237,9 @@ class AgentDetailViewModel(
     }
 
     private fun message(text: String) = UserMessage(text, ++messageCounter)
+
+    private companion object {
+        const val RECENT_OBJECTIVES = 20
+        const val RECENT_TASKS = 6
+    }
 }

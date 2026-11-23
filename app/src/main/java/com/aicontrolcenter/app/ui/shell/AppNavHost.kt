@@ -39,6 +39,10 @@ import com.aicontrolcenter.app.ui.memory.MemoryTab
 import com.aicontrolcenter.app.ui.memory.ScopeFilter
 import com.aicontrolcenter.app.ui.memory.SpaceDetailRoute as SpaceDetailScreenRoute
 import com.aicontrolcenter.app.ui.planned.PlannedSection
+import com.aicontrolcenter.app.ui.tasks.NewObjectiveRoute as NewObjectiveScreenRoute
+import com.aicontrolcenter.app.ui.tasks.ObjectiveRoute as ObjectiveScreenRoute
+import com.aicontrolcenter.app.ui.tasks.ObjectivesRoute
+import com.aicontrolcenter.app.ui.tasks.TaskDetailRoute
 import com.aicontrolcenter.app.ui.planned.PlannedSectionScreen
 import com.aicontrolcenter.app.ui.settings.SettingsRoute as SettingsScreenRoute
 import com.aicontrolcenter.core.AgentId
@@ -46,6 +50,7 @@ import com.aicontrolcenter.core.AiAppId
 import com.aicontrolcenter.core.ConversationId
 import com.aicontrolcenter.core.MemoryId
 import com.aicontrolcenter.core.SpaceId
+import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.memory.MemoryScope
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.ProviderId
@@ -83,6 +88,8 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
     val back: () -> Unit = { navController.popBackStack() }
     val openMemory: (MemoryId) -> Unit = { navController.open(MemoryDetailRoute(it.value)) }
     val openSpace: (SpaceId) -> Unit = { navController.open(SpaceDetailRoute(it.value)) }
+    val openObjective: (TaskId) -> Unit = { navController.open(ObjectiveRoute(it.value)) }
+    val openTask: (TaskId) -> Unit = { navController.open(TaskRoute(it.value)) }
     // A filter chosen elsewhere must win over the explorer the owner left, so the section is not restored.
     val openAgentMemories: (AgentId) -> Unit = { navController.navigateToSection(MemoryRoute(agentId = it.value), restore = false) }
     val openSpaceMemories: (SpaceId) -> Unit = { navController.navigateToSection(MemoryRoute(spaceId = it.value), restore = false) }
@@ -119,6 +126,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                     onAddProvider = addProvider,
                     onOpenProvider = openProvider,
                     onOpenMemory = { navController.navigateToSection(MemoryRoute(MemoryTab.EXPLORER), restore = false) },
+                    onOpenTask = openTask,
                 ),
             )
         }
@@ -164,6 +172,8 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                 onOpenModels = { navController.navigateToSection(ModelsRoute(ModelsTab.MODELS), restore = false) },
                 onChat = { navController.open(ConversationsRoute(it.value)) },
                 onOpenMemories = openAgentMemories,
+                onOpenTask = openTask,
+                onOpenObjective = openObjective,
             )
         }
         composable<ConversationsRoute> { entry ->
@@ -244,7 +254,27 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
             )
         }
         composable<ConceptsRoute> { ConceptsScreen(onBack = back) }
-        composable<TasksRoute> { PlannedSectionScreen(PlannedSection.TASKS) }
+        composable<TasksRoute> {
+            ObjectivesRoute(onOpenObjective = openObjective, onNewObjective = { navController.open(NewObjectiveRoute) })
+        }
+        composable<NewObjectiveRoute> {
+            NewObjectiveScreenRoute(
+                onBack = back,
+                onStarted = { id ->
+                    // Leave the form behind: Back from the new objective returns to the list.
+                    navController.navigate(ObjectiveRoute(id.value)) {
+                        popUpTo<NewObjectiveRoute> { inclusive = true }
+                        launchSingleTop = true
+                    }
+                },
+            )
+        }
+        composable<ObjectiveRoute> { entry ->
+            ObjectiveScreenRoute(objectiveId = TaskId(entry.toRoute<ObjectiveRoute>().objectiveId), onBack = back, onOpenTask = openTask)
+        }
+        composable<TaskRoute> { entry ->
+            TaskDetailRoute(taskId = TaskId(entry.toRoute<TaskRoute>().taskId), onBack = back, onOpenTask = openTask, onOpenObjective = openObjective)
+        }
         composable<MemoryRoute> { entry ->
             val route = entry.toRoute<MemoryRoute>()
             MemorySectionRoute(

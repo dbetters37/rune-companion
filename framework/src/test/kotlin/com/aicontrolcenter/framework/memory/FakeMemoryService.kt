@@ -44,7 +44,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  * the real engine in :memory. Access follows the memory policy as the contract describes it;
  * recall is a plain word match (any word of three or more letters), ranked by how many words
  * matched. It does not look at the clock, so tests that count clock ticks are unaffected.
- * What the framework does not use (links, graph, promotion, maintenance) is not implemented.
+ * What the framework does not use (links, graph, maintenance) is not implemented.
  */
 class FakeMemoryService(
     private val agents: AgentRepository,
@@ -178,7 +178,17 @@ class FakeMemoryService(
         return copy
     }
 
-    override suspend fun promoteTaskMemory(actor: MemoryActor, taskId: TaskId, agentId: AgentId, minImportance: Double): List<MemoryRecord> = unused()
+    /** Every promotion asked for: who asked, for which task and agent. */
+    val promotions = CopyOnWriteArrayList<Triple<MemoryActor, TaskId, AgentId>>()
+
+    /** Copies the task's memories of at least [minImportance] into the agent's own long-term memory. Only the owner or the agent itself may. */
+    override suspend fun promoteTaskMemory(actor: MemoryActor, taskId: TaskId, agentId: AgentId, minImportance: Double): List<MemoryRecord> {
+        if (actor is MemoryActor.Agent && actor.profile.id != agentId) throw MemoryPermissionException("${name(actor)} may not promote another agent's task memory.")
+        promotions += Triple(actor, taskId, agentId)
+        val now = clock.now()
+        return repository.list().filter { (it.scope as? MemoryScope.Task)?.let { s -> s.taskId == taskId && s.agentId == agentId } == true && it.importance >= minImportance }
+            .map { it.copy(id = ids.memoryId(), scope = MemoryScope.Agent(agentId), tier = MemoryTier.LONG_TERM, expiresAt = null, createdAt = now, updatedAt = now).also { copy -> repository.upsert(copy) } }
+    }
 
     override fun observeSpaces(): Flow<List<KnowledgeSpace>> = repository.observeSpaces()
 

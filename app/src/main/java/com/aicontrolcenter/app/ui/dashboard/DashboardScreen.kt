@@ -32,6 +32,7 @@ import com.aicontrolcenter.app.ui.components.ScreenScaffold
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.TaskId
 
 /** Where the dashboard can send the owner. Supplied by the navigation shell. */
 data class DashboardNavigation(
@@ -46,6 +47,8 @@ data class DashboardNavigation(
     val onAddProvider: () -> Unit,
     val onOpenProvider: (com.aicontrolcenter.core.ProviderId) -> Unit,
     val onOpenMemory: () -> Unit = {},
+    /** Opens a task an agent is working on. */
+    val onOpenTask: (TaskId) -> Unit = {},
 )
 
 @Composable
@@ -60,6 +63,9 @@ fun DashboardRoute(navigation: DashboardNavigation) {
             monitor = graph.activityMonitor,
             agentManager = graph.agentManager,
             memory = graph.memoryService,
+            orchestrator = graph.orchestrator,
+            tasks = graph.tasks,
+            messages = graph.messages,
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -117,7 +123,7 @@ fun DashboardScreen(
                     )
                 }
             }
-            val working: @Composable () -> Unit = { WorkingNowSection(state.working, navigation.onOpenAgent) }
+            val working: @Composable () -> Unit = { WorkingNowSection(state.working, navigation.onOpenAgent, navigation.onOpenTask) }
             val attention: @Composable () -> Unit = { AttentionSection(state.attention, navigation.onOpenAttention) }
             val network: @Composable () -> Unit = {
                 NetworkCard(

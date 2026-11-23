@@ -16,6 +16,8 @@ import com.aicontrolcenter.core.registry.ModelRepository
 import com.aicontrolcenter.core.registry.ProviderRepository
 import com.aicontrolcenter.core.security.SecretVault
 import com.aicontrolcenter.core.settings.SettingsRepository
+import com.aicontrolcenter.core.tasks.MessageRepository
+import com.aicontrolcenter.core.tasks.TaskRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 
@@ -40,6 +42,14 @@ data class Ports(
      * checks who may see what.
      */
     val memories: MemoryRepository,
+    /**
+     * Objectives and the tasks the Director splits them into, with statuses, results and
+     * reviews. The orchestrator writes every change here before acting on it, so this store is
+     * what recovery after a crash starts from.
+     */
+    val tasks: TaskRepository,
+    /** Every message agents (and the owner and the orchestrator) exchanged about an objective. */
+    val messages: MessageRepository,
     val activityLog: ActivityLog,
     val settings: SettingsRepository,
     val secretVault: SecretVault,

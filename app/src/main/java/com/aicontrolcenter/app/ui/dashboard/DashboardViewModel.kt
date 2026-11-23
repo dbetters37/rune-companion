@@ -5,7 +5,19 @@ import androidx.lifecycle.viewModelScope
 import com.aicontrolcenter.app.ui.components.ActivityRowUi
 import com.aicontrolcenter.app.ui.components.UserMessage
 import com.aicontrolcenter.app.ui.components.formatCompactTimestamp
+import com.aicontrolcenter.app.ui.dashboard.network.AgentTraffic
 import com.aicontrolcenter.app.ui.dashboard.network.toAgentNetwork
+import com.aicontrolcenter.core.TaskId
+import com.aicontrolcenter.core.agents.AgentActivity
+import com.aicontrolcenter.core.agents.AgentProfile
+import com.aicontrolcenter.core.agents.AgentRuntimeState
+import com.aicontrolcenter.core.tasks.MessageRepository
+import com.aicontrolcenter.core.tasks.Orchestrator
+import com.aicontrolcenter.core.tasks.Participant
+import com.aicontrolcenter.core.tasks.TaskRecord
+import com.aicontrolcenter.core.tasks.TaskRepository
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.flatMapLatest
 import com.aicontrolcenter.app.ui.models.describe
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.app.ui.agents.assignModelToAgentsWithoutOne
@@ -44,6 +56,10 @@ class DashboardViewModel(
     monitor: AgentActivityMonitor? = null,
     private val agentManager: AgentManager? = null,
     memory: MemoryService? = null,
+    /** With [tasks] and [messages]: what the team is doing on objectives. Null in tests of the registry alone. */
+    orchestrator: Orchestrator? = null,
+    tasks: TaskRepository? = null,
+    messages: MessageRepository? = null,
 ) : ViewModel() {
 
     private data class Local(
@@ -60,23 +76,43 @@ class DashboardViewModel(
         combine(service.observe(MemoryActor.Owner), service.observeSpaces()) { memories, spaces -> MemorySummaryUi(memories.size, spaces.size) }
     } ?: flowOf(null)
 
+    /** The tasks of running objectives, and the newest agent-to-agent messages among them. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val orchestration: Flow<Orchestration> = if (orchestrator == null || tasks == null || messages == null) {
+        flowOf(Orchestration())
+    } else {
+        val trees = orchestrator.running.flatMapLatest { ids ->
+            if (ids.isEmpty()) flowOf(emptyList()) else combine(ids.map { tasks.observeTree(it) }) { all -> all.flatMap { it } }
+        }
+        combine(orchestrator.running, trees, messages.observeRecent(RECENT_MESSAGE_LIMIT)) { running, tasks, recent ->
+            Orchestration(
+                tasks = tasks.associateBy { it.id },
+                traffic = recent.filter { it.rootId in running }.mapNotNull { message ->
+                    val from = (message.from as? Participant.Agent)?.agentId ?: return@mapNotNull null
+                    val to = (message.to as? Participant.Agent)?.agentId ?: return@mapNotNull null
+                    AgentTraffic(from, to, message.id.value)
+                },
+            )
+        }
+    }
+
+    private data class Orchestration(val tasks: Map<TaskId, TaskRecord> = emptyMap(), val traffic: List<AgentTraffic> = emptyList())
+
     val uiState: StateFlow<DashboardUiState> = combine(
         directory.observe(),
         activityLog.observe(limit = RECENT_ACTIVITY_LIMIT),
         monitor?.states ?: flowOf(emptyMap()),
         local,
-        memorySummary,
-    ) { snapshot, events, working, local, memorySummary ->
-        val network = snapshot.toAgentNetwork(working)
+        combine(memorySummary, orchestration) { memory, orchestration -> memory to orchestration },
+    ) { snapshot, events, working, local, (memorySummary, orchestration) ->
+        val network = snapshot.toAgentNetwork(working, orchestration.traffic)
         val now = clock.now()
         DashboardUiState(
             isLoading = false,
             summary = snapshot.toSummary(),
             quickStart = snapshot.quickStart(),
             working = snapshot.agents.mapNotNull { entry ->
-                working[entry.profile.id]?.let {
-                    WorkingAgentUi(entry.profile.id, entry.profile.name, entry.profile.colorIndex, it.detail ?: "Working")
-                }
+                working[entry.profile.id]?.let { state -> workingAgent(entry.profile, state, orchestration.tasks) }
             },
             attention = snapshot.attentionItems(),
             network = network,
@@ -94,6 +130,41 @@ class DashboardViewModel(
             memory = memorySummary,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), DashboardUiState())
+
+    /**
+     * An agent at work. When it works on an objective's task, the row names the task and the
+     * step alone (the monitor's detail repeats the title as "Task: <title> · <step>").
+     */
+    private fun workingAgent(profile: AgentProfile, state: AgentRuntimeState, tasks: Map<TaskId, TaskRecord>): WorkingAgentUi {
+        val task = state.currentTaskId?.let(tasks::get)
+        val detail = state.detail ?: "Working"
+        val step = task?.let { stepOf(detail, it.title) } ?: detail
+        return WorkingAgentUi(
+            agentId = profile.id,
+            name = profile.name,
+            colorIndex = profile.colorIndex,
+            detail = step,
+            taskId = task?.id,
+            taskTitle = task?.title,
+            objectiveTitle = task?.let { tasks[it.rootId]?.title },
+            waiting = state.activity == AgentActivity.WAITING_FOR_AGENT,
+        )
+    }
+
+    /**
+     * The step alone from the monitor's "Task: <title> · <step>" (or "Task: <title> (helping Analyst) · <step>"
+     * while answering a teammate), as "Writing a reply" or "Helping Analyst · Writing a reply".
+     */
+    private fun stepOf(detail: String, title: String): String? {
+        var rest = detail.removePrefix("Task: $title").trim()
+        if (rest == detail.trim()) return null
+        if (rest.startsWith("(") && ")" in rest) {
+            val aside = rest.substringBefore(")").removePrefix("(").trim().replaceFirstChar(Char::uppercase)
+            val after = rest.substringAfter(")").trim().removePrefix("·").trim()
+            rest = if (after.isEmpty()) aside else "$aside · $after"
+        }
+        return rest.removePrefix("·").trim().ifBlank { null }
+    }
 
     /** Selects a node of the network, or clears the selection with null. Tapping the selected node clears it. */
     fun selectNode(id: String?) {
@@ -156,6 +227,9 @@ class DashboardViewModel(
 
     companion object {
         const val RECENT_ACTIVITY_LIMIT = 5
+
+        /** Messages looked at for the network's edges and pulses. */
+        const val RECENT_MESSAGE_LIMIT = 60
         private const val STOP_TIMEOUT_MS = 5_000L
     }
 }

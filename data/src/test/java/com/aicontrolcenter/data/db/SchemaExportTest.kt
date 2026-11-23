@@ -47,7 +47,7 @@ class SchemaExportTest {
         }.toSet()
 
     @Test
-    fun `the current schema is exported and lists all twelve tables`() {
+    fun `the current schema is exported and lists all fourteen tables`() {
         val current = schema(AiccDatabase.VERSION)
         assertEquals(AiccDatabase.VERSION, current.getValue("version").jsonPrimitive.int)
         assertEquals(
@@ -55,6 +55,7 @@ class SchemaExportTest {
                 "agents", "agent_stats", "providers", "models", "ai_apps", "activity_events",
                 "conversations", "conversation_entries",
                 "knowledge_spaces", "memories", "memory_links", "memory_embeddings",
+                "tasks", "agent_messages",
             ),
             current.tables().keys,
         )
@@ -92,6 +93,27 @@ class SchemaExportTest {
         assertEquals(setOf(listOf("from_id"), listOf("to_id")), tables.getValue("memory_links").indexColumns())
         assertEquals(setOf(listOf("embedder_id")), tables.getValue("memory_embeddings").indexColumns())
         assertEquals(setOf(listOf("created_at", "id")), tables.getValue("knowledge_spaces").indexColumns())
+        assertEquals(
+            setOf(listOf("kind", "created_at", "id"), listOf("root_id", "created_at", "id"), listOf("status", "created_at", "id")),
+            tables.getValue("tasks").indexColumns(),
+        )
+        assertEquals(setOf(listOf("root_id", "at", "id"), listOf("at", "id")), tables.getValue("agent_messages").indexColumns())
+    }
+
+    @Test
+    fun `objectives are listed from an index in exactly the listing order, and tasks and messages stand alone`() {
+        val tables = schema(AiccDatabase.VERSION).tables()
+        val index = tables.getValue("tasks").getValue("indices").jsonArray.map { it.jsonObject }
+            .single { it.getValue("name").jsonPrimitive.content == "index_tasks_kind_created_at_id" }
+        assertEquals(listOf("ASC", "DESC", "ASC"), index.getValue("orders").jsonArray.map { it.jsonPrimitive.content })
+        // Tasks of a plan are written in any order and messages may outlive their tasks; see TaskEntity.
+        for (table in listOf("tasks", "agent_messages")) {
+            assertTrue(tables.getValue(table)["foreignKeys"]?.jsonArray.isNullOrEmpty(), table)
+            assertEquals(
+                listOf("id"),
+                tables.getValue(table).getValue("primaryKey").jsonObject.getValue("columnNames").jsonArray.map { it.jsonPrimitive.content },
+            )
+        }
     }
 
     @Test
@@ -112,18 +134,29 @@ class SchemaExportTest {
         assertEquals(true, history.getValue("notNull").jsonPrimitive.content.toBoolean())
     }
 
-    @Test
-    fun `the migration to version 3 runs exactly the exported statements of the tables it adds`() {
-        // Version 3 is created by Room on new installations and by Migration2To3 on upgraded
-        // phones; both must produce the very same tables and indexes, in parents-first order.
-        val added = listOf("knowledge_spaces", "memories", "memory_links", "memory_embeddings")
-        val entities = schema(3).getValue("entities").jsonArray.map { it.jsonObject }.associateBy { it.getValue("tableName").jsonPrimitive.content }
-        val exported = added.flatMap { table ->
+    /** The exported `createSql` of [tables] in schema [version], each table followed by its indexes. */
+    private fun exportedStatements(version: Int, tables: List<String>): List<String> {
+        val entities = schema(version).tables()
+        return tables.flatMap { table ->
             val entity = entities.getValue(table)
             val indexes = (entity["indices"]?.jsonArray ?: emptyList()).map { it.jsonObject.getValue("createSql").jsonPrimitive.content }
             (listOf(entity.getValue("createSql").jsonPrimitive.content) + indexes).map { it.replace("\${TABLE_NAME}", table) }
         }
-        assertEquals(exported, Migration2To3.statements)
+    }
+
+    @Test
+    fun `the migration to version 3 runs exactly the exported statements of the tables it adds`() {
+        // Version 3 is created by Room on new installations and by Migration2To3 on upgraded
+        // phones; both must produce the very same tables and indexes, in parents-first order.
+        assertEquals(
+            exportedStatements(3, listOf("knowledge_spaces", "memories", "memory_links", "memory_embeddings")),
+            Migration2To3.statements,
+        )
+    }
+
+    @Test
+    fun `the migration to version 4 runs exactly the exported statements of the tables it adds`() {
+        assertEquals(exportedStatements(4, listOf("tasks", "agent_messages")), Migration3To4.statements)
     }
 
     @Test
@@ -179,6 +212,20 @@ class SchemaExportTest {
         assertEquals("21e1ac3cc1536e3d16cd97afc3452ea5", released.getValue("identityHash").jsonPrimitive.content)
         assertEquals(
             setOf("agents", "agent_stats", "providers", "models", "ai_apps", "activity_events", "conversations", "conversation_entries"),
+            released.tables().keys,
+        )
+    }
+
+    @Test
+    fun `the schema of the released version 3 is still the one that was released`() {
+        // Release 0.3.0 created and migrated databases to exactly this schema.
+        val released = schema(3)
+        assertEquals("a70d0fe70a66569c529ece795df8d1a9", released.getValue("identityHash").jsonPrimitive.content)
+        assertEquals(
+            setOf(
+                "agents", "agent_stats", "providers", "models", "ai_apps", "activity_events", "conversations", "conversation_entries",
+                "knowledge_spaces", "memories", "memory_links", "memory_embeddings",
+            ),
             released.tables().keys,
         )
     }

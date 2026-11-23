@@ -8,6 +8,7 @@ import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasScrollToNodeAction
+import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.hasAnyAncestor
@@ -105,6 +106,12 @@ class AppRobot(private val compose: ComposeContentTestRule) {
 
     fun type(fieldLabel: String, value: String) = apply {
         compose.onNodeWithText(fieldLabel).performScrollToIfPossible().performTextReplacement(value)
+        compose.waitForIdle()
+    }
+
+    /** Types into the field that screen readers know as [description] (a field whose hint is an example, not a label). */
+    fun typeIn(description: String, value: String) = apply {
+        compose.onNode(hasContentDescription(description) and hasSetTextAction()).performScrollToIfPossible().performTextReplacement(value)
         compose.waitForIdle()
     }
 

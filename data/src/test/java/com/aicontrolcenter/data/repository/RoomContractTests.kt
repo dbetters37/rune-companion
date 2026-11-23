@@ -8,14 +8,18 @@ import com.aicontrolcenter.core.registry.AgentRepository
 import com.aicontrolcenter.core.registry.AiAppRepository
 import com.aicontrolcenter.core.registry.ModelRepository
 import com.aicontrolcenter.core.registry.ProviderRepository
+import com.aicontrolcenter.core.tasks.MessageRepository
+import com.aicontrolcenter.core.tasks.TaskRepository
 import com.aicontrolcenter.data.testing.InMemoryDatabaseRule
 import com.aicontrolcenter.testkit.contract.ActivityLogContract
 import com.aicontrolcenter.testkit.contract.AgentRepositoryContract
 import com.aicontrolcenter.testkit.contract.AiAppRepositoryContract
 import com.aicontrolcenter.testkit.contract.ConversationRepositoryContract
 import com.aicontrolcenter.testkit.contract.MemoryRepositoryContract
+import com.aicontrolcenter.testkit.contract.MessageRepositoryContract
 import com.aicontrolcenter.testkit.contract.ModelRepositoryContract
 import com.aicontrolcenter.testkit.contract.ProviderRepositoryContract
+import com.aicontrolcenter.testkit.contract.TaskRepositoryContract
 import org.junit.Rule
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
@@ -72,4 +76,18 @@ class RoomConversationRepositoryContractTest : ConversationRepositoryContract() 
 class RoomMemoryRepositoryContractTest : MemoryRepositoryContract() {
     @get:Rule val db = InMemoryDatabaseRule()
     override fun createRepository(): MemoryRepository = RoomMemoryRepository(db.database)
+}
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [35])
+class RoomTaskRepositoryContractTest : TaskRepositoryContract() {
+    @get:Rule val db = InMemoryDatabaseRule()
+    override fun createRepository(): TaskRepository = RoomTaskRepository(db.database)
+}
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [35])
+class RoomMessageRepositoryContractTest : MessageRepositoryContract() {
+    @get:Rule val db = InMemoryDatabaseRule()
+    override fun createRepository(): MessageRepository = RoomMessageRepository(db.database)
 }

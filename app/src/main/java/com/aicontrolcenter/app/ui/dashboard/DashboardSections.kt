@@ -19,12 +19,14 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.text.style.TextAlign
 import com.aicontrolcenter.app.ui.components.AgentAvatar
 import com.aicontrolcenter.app.ui.icons.Sparkle
 import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.app.ui.components.ActivityEventRow
 import com.aicontrolcenter.app.ui.components.ActivityRowUi
 import com.aicontrolcenter.app.ui.components.AppCard
@@ -226,9 +228,17 @@ internal fun QuickStartCard(
     }
 }
 
-/** Agents running a turn right now, and what each is doing. */
+/**
+ * Agents at work right now: each with the objective's task it is on (or its chat), and the step.
+ * A row opens the task when there is one, otherwise the agent.
+ */
 @Composable
-internal fun WorkingNowSection(working: List<WorkingAgentUi>, onOpenAgent: (AgentId) -> Unit, modifier: Modifier = Modifier) {
+internal fun WorkingNowSection(
+    working: List<WorkingAgentUi>,
+    onOpenAgent: (AgentId) -> Unit,
+    onOpenTask: (TaskId) -> Unit = {},
+    modifier: Modifier = Modifier,
+) {
     Column(modifier = modifier) {
         SectionHeader(if (working.isEmpty()) "Working now" else "Working now · ${working.size}")
         AppCard(contentPadding = PaddingValues(0.dp)) {
@@ -242,21 +252,28 @@ internal fun WorkingNowSection(working: List<WorkingAgentUi>, onOpenAgent: (Agen
             }
             working.forEachIndexed { index, agent ->
                 if (index > 0) RowDivider()
+                val taskId = agent.taskId
+                val tone = if (agent.waiting) StatusTone.WAITING else StatusTone.WORKING
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable(onClickLabel = "Open ${agent.name}") { onOpenAgent(agent.agentId) }
+                        .clickable(onClickLabel = if (taskId != null) "Open ${agent.taskTitle}" else "Open ${agent.name}") {
+                            if (taskId != null) onOpenTask(taskId) else onOpenAgent(agent.agentId)
+                        }
                         .heightIn(min = 64.dp)
                         .padding(horizontal = Spacing.lg, vertical = Spacing.md),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(Spacing.md),
                 ) {
-                    AgentAvatar(agent.name, agent.colorIndex, size = 36.dp, status = StatusTone.WORKING)
+                    AgentAvatar(agent.name, agent.colorIndex, size = 36.dp, status = tone)
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(agent.name, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+                        agent.taskTitle?.let {
+                            Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp, color = appColors.working)
-                            Text(agent.detail, style = MaterialTheme.typography.bodySmall, color = appColors.working)
+                            CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp, color = appColors.status(tone))
+                            Text(agent.detail, style = MaterialTheme.typography.bodySmall, color = appColors.status(tone), maxLines = 2, overflow = TextOverflow.Ellipsis)
                         }
                     }
                     Icon(AppIcons.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)

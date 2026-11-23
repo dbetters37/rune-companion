@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.systemBars
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.mutableStateOf
@@ -64,6 +65,15 @@ fun AppShell(modifier: Modifier = Modifier) {
     val isTopLevel = destination?.isTopLevel() ?: true
     var showMore by rememberSaveable { mutableStateOf(false) }
     val openSection: (Section) -> Unit = { section -> navController.navigateToSection(section.route) }
+
+    // An objective asked for from outside the app (its notification) opens once the shell exists.
+    val objectiveToOpen by graph.objectiveToOpen.collectAsStateWithLifecycle()
+    LaunchedEffect(objectiveToOpen) {
+        objectiveToOpen?.let { id ->
+            graph.objectiveOpened()
+            navController.navigate(ObjectiveRoute(id.value)) { launchSingleTop = true }
+        }
+    }
 
     // Movable so the navigation host keeps its state when a resize swaps bar for rail.
     val screens = remember(navController) {

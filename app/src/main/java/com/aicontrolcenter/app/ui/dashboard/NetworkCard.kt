@@ -139,10 +139,11 @@ private fun NetworkLegend(hasHub: Boolean, modifier: Modifier = Modifier) {
         }
         Text(
             text = if (hasHub) {
-                "Lines show who reports to the Director: solid when both can run, dashed when one cannot. " +
-                    "A ringed agent is working, and a dot travels along its line. Pinch to zoom."
+                "Lines show who reports to the Director: solid when both can run, dashed when one cannot. A curve joins " +
+                    "two agents that exchanged messages in a running objective, and dots are messages on their way. " +
+                    "A ringed agent is working. Pinch to zoom."
             } else {
-                "No Director is designated, so there is no reporting structure to draw."
+                "No Director is designated, so there is no reporting structure to draw. Curves join agents that exchanged messages."
             },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

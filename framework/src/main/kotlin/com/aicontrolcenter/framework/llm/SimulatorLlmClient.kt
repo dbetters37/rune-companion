@@ -28,6 +28,9 @@ import kotlinx.serialization.json.put
  *  - when a tool is offered that plausibly answers the request (the time or date, who is on
  *    the team), it calls that tool;
  *  - otherwise it restates the request and shows what a real model would have received.
+ *
+ * Briefs of the Director protocol are answered by [SimulatedTeamwork] instead, so a whole
+ * objective can be run offline.
  */
 internal class SimulatorLlmClient(private val chunkDelayMs: Long) : LlmClient {
 
@@ -44,6 +47,11 @@ internal class SimulatorLlmClient(private val chunkDelayMs: Long) : LlmClient {
     }
 
     private fun respond(request: ChatRequest): ChatResponse {
+        // A brief of the Director protocol gets the plan, verdict, result or document it asks for.
+        SimulatedTeamwork.reply(request)?.let { text ->
+            val usage = TokenUsage(inputTokens = request.messages.sumOf { tokens(it.text) + tokens(it.toolResult?.content.orEmpty()) }, outputTokens = tokens(text))
+            return ChatResponse(ChatMessage.assistant(text), FinishReason.STOP, usage, request.model.ifBlank { Simulator.MODEL_NAME })
+        }
         val lastUser = request.messages.indexOfLast { it.role == ChatRole.USER }
         val question = request.messages.getOrNull(lastUser)?.text?.trim().orEmpty()
         val results = request.messages.drop(lastUser + 1).mapNotNull { it.toolResult }

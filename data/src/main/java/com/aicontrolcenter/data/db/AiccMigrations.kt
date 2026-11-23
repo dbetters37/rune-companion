@@ -18,7 +18,45 @@ import androidx.sqlite.execSQL
  * happens to the entity classes later.
  */
 internal object AiccMigrations {
-    val all: Array<Migration> = arrayOf(Migration1To2, Migration2To3)
+    val all: Array<Migration> = arrayOf(Migration1To2, Migration2To3, Migration3To4)
+}
+
+/**
+ * Adds orchestration: `tasks` (the owner's objectives and every task under them) and
+ * `agent_messages`, with their indexes. Purely additive like the earlier steps; nothing that
+ * version 3 stored is read, moved or rewritten.
+ *
+ * The statements are the `createSql` of the exported schema 4, verbatim (`MigrationTest`
+ * validates the result against it and `SchemaExportTest` compares the text). Neither table has
+ * a foreign key, so their order does not matter.
+ */
+internal object Migration3To4 : Migration(3, 4) {
+    /** Internal so `SchemaExportTest` can compare them with the exported `createSql`. */
+    internal val statements = listOf(
+        "CREATE TABLE IF NOT EXISTS `tasks` (`id` TEXT NOT NULL, `root_id` TEXT NOT NULL, `parent_id` TEXT, " +
+            "`kind` TEXT NOT NULL, `status` TEXT NOT NULL, `assignee_id` TEXT, `sort_order` INTEGER NOT NULL, " +
+            "`attempt` INTEGER NOT NULL, `revision_round` INTEGER NOT NULL, `needs_review` INTEGER NOT NULL, " +
+            "`conversation_id` TEXT, `title` TEXT NOT NULL, `instructions` TEXT NOT NULL, `status_detail` TEXT, " +
+            "`result` TEXT, `error` TEXT, `criteria_json` TEXT NOT NULL, `depends_on_json` TEXT NOT NULL, " +
+            "`delegation_chain_json` TEXT NOT NULL, `reviews_json` TEXT NOT NULL, `usage_json` TEXT NOT NULL, " +
+            "`options_json` TEXT, `requested_by_json` TEXT NOT NULL, `created_at` INTEGER NOT NULL, " +
+            "`updated_at` INTEGER NOT NULL, `started_at` INTEGER, `finished_at` INTEGER, `deadline_at` INTEGER, " +
+            "PRIMARY KEY(`id`))",
+        "CREATE INDEX IF NOT EXISTS `index_tasks_kind_created_at_id` ON `tasks` (`kind` ASC, `created_at` DESC, `id` ASC)",
+        "CREATE INDEX IF NOT EXISTS `index_tasks_root_id_created_at_id` ON `tasks` (`root_id`, `created_at`, `id`)",
+        "CREATE INDEX IF NOT EXISTS `index_tasks_status_created_at_id` ON `tasks` (`status`, `created_at`, `id`)",
+        "CREATE TABLE IF NOT EXISTS `agent_messages` (`id` TEXT NOT NULL, `root_id` TEXT NOT NULL, `task_id` TEXT, " +
+            "`from_kind` TEXT NOT NULL, `from_agent_id` TEXT, `to_kind` TEXT NOT NULL, `to_agent_id` TEXT, " +
+            "`type` TEXT NOT NULL, `body` TEXT NOT NULL, `reply_to` TEXT, `hop` INTEGER NOT NULL, `at` INTEGER NOT NULL, " +
+            "PRIMARY KEY(`id`))",
+        "CREATE INDEX IF NOT EXISTS `index_agent_messages_root_id_at_id` ON `agent_messages` (`root_id`, `at`, `id`)",
+        "CREATE INDEX IF NOT EXISTS `index_agent_messages_at_id` ON `agent_messages` (`at`, `id`)",
+    )
+
+    // Room calls one or the other depending on how the database is opened; both must work.
+    override fun migrate(db: SupportSQLiteDatabase) = statements.forEach(db::execSQL)
+
+    override fun migrate(connection: SQLiteConnection) = statements.forEach(connection::execSQL)
 }
 
 /**

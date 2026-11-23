@@ -28,26 +28,39 @@ data class NetworkNode(
     val working: Boolean = false,
 )
 
-/** A standing connection: [fromId] reports to [toId]. */
+enum class EdgeKind {
+    /** [NetworkEdge.fromId] reports to the Director. */
+    REPORTS,
+
+    /** Two agents that exchanged messages in a running objective, outside the reporting lines. */
+    EXCHANGE,
+}
+
+/** A connection between two agents. */
 data class NetworkEdge(
     val fromId: String,
     val toId: String,
     /** True when both ends can run right now, so messages could actually flow. */
     val live: Boolean,
+    val kind: EdgeKind = EdgeKind.REPORTS,
 )
 
 /**
- * Activity along an edge, [progress] 0 at the sender and 1 at the recipient. While an agent
- * works, its edge carries a pulse that the view keeps moving (from [progress] onwards), so
- * working agents stand out at a glance. The message bus of a later phase animates real
- * traffic through the same type.
+ * Activity along an edge, [progress] 0 at the sender and 1 at the recipient; the view keeps it
+ * moving from [progress] onwards. A pulse with a [messageId] is a message an agent sent in a
+ * running objective, travelling from sender to recipient; one without is an agent at work in a
+ * chat, travelling towards the Director.
  */
 data class NetworkPulse(
     val fromId: String,
     val toId: String,
     val progress: Float,
     val colorIndex: Int,
+    val messageId: String? = null,
 )
+
+/** One agent-to-agent message of a running objective: what the network animates. */
+data class AgentTraffic(val fromId: AgentId, val toId: AgentId, val messageId: String)
 
 data class AgentNetwork(
     val nodes: List<NetworkNode> = emptyList(),
@@ -61,10 +74,18 @@ data class AgentNetwork(
 
 /**
  * The reporting structure of the registry: every other agent reports to the designated
- * Director. Without a designated Director there is no structure, so there are no edges.
- * Agents in [working] are shown as working, and their edge carries a pulse.
+ * Director. Without a designated Director there is no structure, so there are no reporting edges.
+ *
+ * [traffic] (agent-to-agent messages of running objectives, newest first) adds what is actually
+ * happening: an edge between two agents that exchanged messages outside the reporting lines,
+ * and a pulse for each of the newest [MAX_MESSAGE_PULSES] messages, from sender to recipient.
+ * Agents in [working] are shown as working; one that is not already sending a message gets a
+ * pulse towards the Director.
  */
-fun RegistrySnapshot.toAgentNetwork(working: Map<AgentId, AgentRuntimeState> = emptyMap()): AgentNetwork {
+fun RegistrySnapshot.toAgentNetwork(
+    working: Map<AgentId, AgentRuntimeState> = emptyMap(),
+    traffic: List<AgentTraffic> = emptyList(),
+): AgentNetwork {
     val nodes = agents.map { entry ->
         val busy = working[entry.profile.id]
         NetworkNode(
@@ -81,16 +102,38 @@ fun RegistrySnapshot.toAgentNetwork(working: Map<AgentId, AgentRuntimeState> = e
             working = busy != null,
         )
     }
-    val director = director ?: return AgentNetwork(nodes = nodes)
-    val edges = agents.filterNot { it.isDesignatedDirector }.map { entry ->
+    val known = agentsById.keys
+    val shown = traffic.filter { it.fromId != it.toId && it.fromId in known && it.toId in known }
+    val director = director
+    val reports = if (director == null) emptyList() else agents.filterNot { it.isDesignatedDirector }.map { entry ->
         NetworkEdge(
             fromId = entry.profile.id.value,
             toId = director.profile.id.value,
             live = entry.availability.isReady && director.availability.isReady,
         )
     }
-    val pulses = agents.filterNot { it.isDesignatedDirector }.filter { it.profile.id in working }.map { entry ->
-        NetworkPulse(entry.profile.id.value, director.profile.id.value, progress = 0.55f, colorIndex = entry.profile.colorIndex)
+    // Pairs already joined by a reporting line need no second edge.
+    val exchanges = shown.map { setOf(it.fromId, it.toId) }.distinct()
+        .filter { pair -> director == null || director.profile.id !in pair }
+        .map { pair ->
+            val (a, b) = pair.sortedBy { it.value }
+            NetworkEdge(a.value, b.value, live = true, kind = EdgeKind.EXCHANGE)
+        }
+    val messagePulses = shown.take(MAX_MESSAGE_PULSES).mapIndexed { index, message ->
+        NetworkPulse(
+            fromId = message.fromId.value,
+            toId = message.toId.value,
+            progress = (0.15f + index * 0.22f) % 1f,
+            colorIndex = agentsById[message.fromId]?.profile?.colorIndex ?: 0,
+            messageId = message.messageId,
+        )
     }
-    return AgentNetwork(nodes = nodes, edges = edges, pulses = pulses)
+    val sending = messagePulses.map { it.fromId }.toSet()
+    val workPulses = if (director == null) emptyList() else agents.filterNot { it.isDesignatedDirector }
+        .filter { it.profile.id in working && it.profile.id.value !in sending }
+        .map { entry -> NetworkPulse(entry.profile.id.value, director.profile.id.value, progress = 0.55f, colorIndex = entry.profile.colorIndex) }
+    return AgentNetwork(nodes = nodes, edges = reports + exchanges, pulses = messagePulses + workPulses)
 }
+
+/** How many of the newest messages travel through the network at once; more would be noise. */
+const val MAX_MESSAGE_PULSES = 4

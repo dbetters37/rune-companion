@@ -270,6 +270,26 @@ class ToolExecutorTest {
     }
 
     @Test
+    fun `a tool that bounds its own running time is not cut at the executor's time limit`() = runTest {
+        val inner = LambdaTool("waits_for_agent") {
+            delay(60_000)
+            ToolOutcome.success("the teammate finished")
+        }
+        val waiting = object : SelfLimitingTool {
+            override val spec = inner.spec
+
+            override suspend fun execute(arguments: JsonObject, context: ToolContext) = inner.execute(arguments, context)
+        }
+        world.register(waiting)
+
+        val execution = world.executor.execute(call(waiting), context(waiting))
+
+        assertEquals(ToolCallEnd.OK, execution.end)
+        assertEquals("the teammate finished", execution.outcome.content)
+        assertEquals(60_000, currentTime)
+    }
+
+    @Test
     fun `oversized output is cut at the limit and says so`() = runTest {
         val verbose = world.register(LambdaTool("verbose") { ToolOutcome.success("x".repeat(250)) })
         val emoji = world.register(LambdaTool("emoji") { ToolOutcome.success("x".repeat(99) + "😀" + "y".repeat(50)) })

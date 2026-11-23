@@ -3,6 +3,7 @@ package com.aicontrolcenter.data
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ConversationId
 import com.aicontrolcenter.core.MemoryId
+import com.aicontrolcenter.core.MessageId
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.ProviderId
 import com.aicontrolcenter.core.SpaceId
@@ -41,14 +42,29 @@ import com.aicontrolcenter.core.registry.ModelSource
 import com.aicontrolcenter.core.registry.ModelStatus
 import com.aicontrolcenter.core.registry.ProviderKind
 import com.aicontrolcenter.core.settings.FrameworkSettings
+import com.aicontrolcenter.core.tasks.AgentMessage
+import com.aicontrolcenter.core.tasks.MessageType
+import com.aicontrolcenter.core.tasks.ObjectiveOptions
+import com.aicontrolcenter.core.tasks.Participant
+import com.aicontrolcenter.core.tasks.ReviewDecision
+import com.aicontrolcenter.core.tasks.ReviewVerdict
+import com.aicontrolcenter.core.tasks.TaskKind
+import com.aicontrolcenter.core.tasks.TaskRequester
+import com.aicontrolcenter.core.tasks.TaskStatus
+import com.aicontrolcenter.core.tasks.TaskUsage
 import com.aicontrolcenter.data.db.AiccDatabase
+import com.aicontrolcenter.data.db.dao.TaskDao
+import com.aicontrolcenter.data.db.entity.AgentMessageEntity
 import com.aicontrolcenter.data.db.entity.KnowledgeSpaceEntity
 import com.aicontrolcenter.data.db.entity.MemoryEmbeddingEntity
 import com.aicontrolcenter.data.db.entity.MemoryEntity
 import com.aicontrolcenter.data.db.entity.MemoryLinkEntity
+import com.aicontrolcenter.data.db.entity.TaskEntity
 import com.aicontrolcenter.data.db.mapper.ColumnSerializers
 import com.aicontrolcenter.data.db.mapper.EmbeddingCodec
 import com.aicontrolcenter.data.db.mapper.MemoryScopeType
+import com.aicontrolcenter.data.db.mapper.ParticipantColumns
+import com.aicontrolcenter.data.db.mapper.ParticipantKind
 import com.aicontrolcenter.data.db.mapper.ScopeColumns
 import com.aicontrolcenter.data.db.mapper.encodeColumn
 import com.aicontrolcenter.data.db.mapper.level
@@ -56,10 +72,13 @@ import com.aicontrolcenter.data.db.mapper.memoryHistorySerializer
 import com.aicontrolcenter.data.db.mapper.memorySearchText
 import com.aicontrolcenter.data.db.mapper.memorySearchWords
 import com.aicontrolcenter.data.db.mapper.toColumns
+import com.aicontrolcenter.data.db.mapper.toDomain
+import com.aicontrolcenter.data.db.mapper.toEntity
 import com.aicontrolcenter.data.security.AndroidKeystoreVaultCipher
 import com.aicontrolcenter.data.security.VaultFileStore
 import com.aicontrolcenter.data.settings.DataStoreSettingsRepository
 import com.aicontrolcenter.data.settings.SettingsCodec
+import com.aicontrolcenter.testkit.contract.TaskSamples
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.descriptors.elementNames
@@ -70,6 +89,7 @@ import kotlinx.serialization.serializer
 import org.junit.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * Pins every name that ends up in stored data: enum constants written to text columns and
@@ -113,6 +133,78 @@ class StoredNamesGoldenTest {
         assertStoredNames<LinkRelation>(
             "RELATES_TO", "SUPPORTS", "CONTRADICTS", "DERIVED_FROM", "PART_OF", "REFERENCES", "SUPERSEDES", "SHARED_COPY_OF",
         )
+        assertStoredNames<TaskKind>("OBJECTIVE", "WORK", "REVIEW", "SYNTHESIS")
+        assertStoredNames<TaskStatus>(
+            "QUEUED", "RUNNING", "WAITING_FOR_AGENT", "IN_REVIEW", "PAUSED", "COMPLETED", "FAILED", "TIMED_OUT", "CANCELLED",
+            "INTERRUPTED",
+        )
+        assertStoredNames<ReviewDecision>("APPROVED", "REVISE", "REJECTED")
+        assertStoredNames<MessageType>(
+            "ASSIGNMENT", "ASSISTANCE_REQUEST", "ASSISTANCE_RESPONSE", "FINDINGS", "DELEGATION", "MEMORY_SHARE", "REVIEW_REQUEST",
+            "REVIEW_RESULT", "COMPLETION", "FAILURE", "QUESTION", "ANSWER", "CANCEL", "STATUS",
+        )
+    }
+
+    @Test
+    fun `names of the task tables and of the participant kinds in them`() {
+        assertEquals(listOf("tasks", "agent_messages"), listOf(TaskEntity.TABLE, AgentMessageEntity.TABLE))
+        // The objectives listing filters on the stored name of the kind.
+        assertTrue("kind = '${TaskKind.OBJECTIVE.name}'" in TaskDao.OBJECTIVES, TaskDao.OBJECTIVES)
+        assertEquals(listOf("OWNER", "AGENT", "SYSTEM"), ParticipantKind.entries.map { it.name })
+        assertEquals(ParticipantColumns(ParticipantKind.OWNER, null), Participant.Owner.toColumns())
+        assertEquals(ParticipantColumns(ParticipantKind.SYSTEM, null), Participant.System.toColumns())
+        assertEquals(ParticipantColumns(ParticipantKind.AGENT, "agt_1"), Participant.Agent(AgentId("agt_1")).toColumns())
+        val message = AgentMessage(
+            MessageId("msg_1"), TaskId("tsk_root"), TaskId("tsk_1"), Participant.Agent(AgentId("agt_1")), Participant.Owner,
+            MessageType.REVIEW_RESULT, "Looks right", MessageId("msg_0"), hop = 2, at = 9,
+        ).toEntity()
+        assertEquals(
+            AgentMessageEntity("msg_1", "tsk_root", "tsk_1", "AGENT", "agt_1", "OWNER", null, "REVIEW_RESULT", "Looks right", "msg_0", 2, 9),
+            message,
+        )
+    }
+
+    @Test
+    fun `keys and exact text of the task columns`() {
+        assertStoredKeys(ReviewVerdict.serializer(), "reviewer", "decision", "summary", "issues", "at", "reviewTaskId")
+        assertStoredKeys(TaskUsage.serializer(), "modelCalls", "toolCalls", "inputTokens", "outputTokens", "messagesSent")
+        assertStoredKeys(ObjectiveOptions.serializer(), "reviewResults", "saveKnowledge", "maxTasks")
+        assertEquals("""{"type":"owner"}""", encodeColumn(ColumnSerializers.taskRequester, TaskRequester.Owner))
+        assertEquals(
+            """{"type":"agent","agentId":"agt_director"}""",
+            encodeColumn(ColumnSerializers.taskRequester, TaskRequester.Agent(AgentId("agt_director"))),
+        )
+        assertEquals(
+            """[{"reviewer":"agt_reviewer","decision":"REVISE","summary":"Missing prices","issues":["Add prices","Cite sources"],""" +
+                """"at":5,"reviewTaskId":"tsk_rev"},{"reviewer":"agt_b","decision":"APPROVED","summary":"Fine","issues":[],""" +
+                """"at":6,"reviewTaskId":null}]""",
+            encodeColumn(
+                ColumnSerializers.reviewList,
+                listOf(
+                    ReviewVerdict(AgentId("agt_reviewer"), ReviewDecision.REVISE, "Missing prices", listOf("Add prices", "Cite sources"), 5, TaskId("tsk_rev")),
+                    ReviewVerdict(AgentId("agt_b"), ReviewDecision.APPROVED, "Fine", at = 6),
+                ),
+            ),
+        )
+        assertEquals(
+            """{"modelCalls":3,"toolCalls":2,"inputTokens":1200,"outputTokens":300,"messagesSent":4}""",
+            encodeColumn(TaskUsage.serializer(), TaskUsage(3, 2, 1_200, 300, 4)),
+        )
+        assertEquals(
+            """{"reviewResults":true,"saveKnowledge":false,"maxTasks":null}""",
+            encodeColumn(ObjectiveOptions.serializer(), ObjectiveOptions()),
+        )
+        assertEquals("""["tsk_z","tsk_a"]""", encodeColumn(ColumnSerializers.taskIdList, listOf(TaskId("tsk_z"), TaskId("tsk_a"))))
+        assertEquals("""["agt_director","agt_lead"]""", encodeColumn(ColumnSerializers.agentIdList, listOf(AgentId("agt_director"), AgentId("agt_lead"))))
+    }
+
+    @Test
+    fun `a task stored with fewer JSON keys than today still reads back`() {
+        // Objects in the task columns may gain fields with defaults without a migration; rows keep what they were written with.
+        val stored = TaskSamples.objective().toEntity().copy(usageJson = """{"modelCalls":2}""", optionsJson = """{"saveKnowledge":true}""")
+        val task = stored.toDomain()
+        assertEquals(TaskUsage(modelCalls = 2), task.usage)
+        assertEquals(ObjectiveOptions(reviewResults = true, saveKnowledge = true, maxTasks = null), task.options)
     }
 
     @Test

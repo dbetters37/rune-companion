@@ -77,6 +77,15 @@ import kotlinx.serialization.Serializable
 
 @Serializable data class SpaceDetailRoute(val spaceId: String)
 
+/** Writing a new objective for the Director. */
+@Serializable data object NewObjectiveRoute
+
+/** One objective: its plan, the agents' conversation, the log and the final document. */
+@Serializable data class ObjectiveRoute(val objectiveId: String)
+
+/** One task of an objective, with its transcript. */
+@Serializable data class TaskRoute(val taskId: String)
+
 /** The eight primary sections of the control center, in their fixed order. */
 enum class Section(val title: String, val description: String) {
     DASHBOARD("Dashboard", "Overview of your whole AI ecosystem"),
@@ -133,7 +142,7 @@ fun NavDestination.section(): Section = when {
     hasRoute<ModelsRoute>() || hasRoute<AiAppDetailRoute>() || hasRoute<RegisterAppRoute>() ||
         hasRoute<ConceptsRoute>() || hasRoute<ProviderPresetsRoute>() || hasRoute<ProviderFormRoute>() ||
         hasRoute<ProviderDetailRoute>() || hasRoute<ModelEditorRoute>() -> Section.MODELS
-    hasRoute<TasksRoute>() -> Section.TASKS
+    hasRoute<TasksRoute>() || hasRoute<NewObjectiveRoute>() || hasRoute<ObjectiveRoute>() || hasRoute<TaskRoute>() -> Section.TASKS
     hasRoute<MemoryRoute>() || hasRoute<MemoryDetailRoute>() || hasRoute<MemoryEditorRoute>() ||
         hasRoute<SpaceDetailRoute>() -> Section.MEMORY
     hasRoute<ToolsRoute>() -> Section.TOOLS

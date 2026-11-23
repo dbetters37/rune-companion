@@ -261,13 +261,11 @@ class ScreenshotTest {
         shootScreen("settings_4_clear_log")
     }
 
-    // --- Sections that are not built yet, and the shell ---
+    // --- The section that is not built yet, and the shell ---
 
     @Test
     fun plannedSections() {
-        val robot = app().openSection("Tasks")
-        shoot("planned_tasks")
-        robot.openSectionViaMore("Tools")
+        app().openSectionViaMore("Tools")
         shoot("planned_tools")
     }
 

@@ -1,8 +1,10 @@
 package com.aicontrolcenter.framework.agents
 
+import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ConversationId
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.TaskId
+import com.aicontrolcenter.core.ToolId
 import com.aicontrolcenter.core.agents.AgentProfile
 import com.aicontrolcenter.core.llm.ChatMessage
 import com.aicontrolcenter.core.llm.LlmException
@@ -28,6 +30,34 @@ data class AgentRunRequest(
     val purpose: String = "prompt and conversation",
     /** The chat this turn belongs to, if any; recorded as provenance of what the agent saves to memory. */
     val conversationId: ConversationId? = null,
+    /** Agents that delegated down to the task of this run, outermost first; handed to every tool call. */
+    val delegationChain: List<AgentId> = emptyList(),
+    /**
+     * Tools offered for this run on top of the agent's own, decided by the framework, never by
+     * content: the orchestrator offers the team tools inside an objective's task as the agent's
+     * delegation policy allows. They are authorised like the agent's own tools.
+     */
+    val extraToolIds: Set<ToolId> = emptySet(),
+    /** Ask the model for one JSON object as its reply. Set only for models that support it. */
+    val jsonOutput: Boolean = false,
+    /** Lower limits than the framework-wide ones for this run. */
+    val limits: RunLimits = RunLimits(),
+    /**
+     * What the activity monitor shows while this run works, e.g. "Task: Compare apps". The
+     * runner's own step ("Waiting for the model") is added after it. Null shows the step alone.
+     */
+    val activityLabel: String? = null,
+)
+
+/**
+ * Limits for one run that are lower than the framework's settings: a short sub-run, or a task
+ * with less time left before its deadline. Null keeps the framework limit; a value above the
+ * framework limit has no effect, so a run can never be given more than the owner allowed.
+ */
+data class RunLimits(
+    val maxModelCalls: Int? = null,
+    val maxToolCalls: Int? = null,
+    val timeoutMs: Long? = null,
 )
 
 /** Why a run stopped. */

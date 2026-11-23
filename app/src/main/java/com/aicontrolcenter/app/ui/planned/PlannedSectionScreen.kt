@@ -25,7 +25,6 @@ import com.aicontrolcenter.app.ui.components.SectionHeader
 import com.aicontrolcenter.app.ui.components.StatusChip
 import com.aicontrolcenter.app.ui.components.readableWidth
 import com.aicontrolcenter.app.ui.icons.AppIcons
-import com.aicontrolcenter.app.ui.icons.Tasks
 import com.aicontrolcenter.app.ui.icons.Tools
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
@@ -37,18 +36,6 @@ enum class PlannedSection(
     val willShow: List<String>,
     val dependsOn: String,
 ) {
-    TASKS(
-        title = "Tasks",
-        summary = "Where you will give the Director an objective and follow the work it turns into.",
-        willShow = listOf(
-            "Objectives you have given, and the tasks each was split into",
-            "Which agent each task is assigned to, and its state",
-            "Results, reviews and requested revisions",
-            "Controls to pause or cancel a run",
-        ),
-        dependsOn = "Tasks need the Director to plan and hand out work, which is a later stage of this build. Agents can already " +
-            "be talked to one at a time: open an agent and tap Chat.",
-    ),
     TOOLS(
         title = "Tools",
         summary = "Where you will decide what each agent is allowed to do, tool by tool.",
@@ -65,7 +52,6 @@ enum class PlannedSection(
 
     val icon: ImageVector
         get() = when (this) {
-            TASKS -> AppIcons.Tasks
             TOOLS -> AppIcons.Tools
         }
 }

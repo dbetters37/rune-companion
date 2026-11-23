@@ -34,6 +34,14 @@ data class ToolLimits(
     }
 }
 
+/**
+ * A tool whose calls bound their own running time, so [ToolExecutor] does not apply its
+ * per-call time limit ([ToolLimits.timeoutMs]) to them. For tools that wait on other agents:
+ * delegating a task runs that whole task, which the task's own deadline bounds, and the
+ * calling agent's run is bounded by its task deadline in turn.
+ */
+interface SelfLimitingTool : Tool
+
 /** How a tool call ended. */
 enum class ToolCallEnd {
     OK,
@@ -138,7 +146,8 @@ class ToolExecutor(
         if (decision is Authorization.Denied) return ToolCallEnd.DENIED to ToolOutcome.failure(decision.reason)
 
         val outcome = try {
-            withTimeoutOrNull(limits.timeoutMs) { tool.execute(call.arguments, context) }
+            if (tool is SelfLimitingTool) tool.execute(call.arguments, context)
+            else withTimeoutOrNull(limits.timeoutMs) { tool.execute(call.arguments, context) }
         } catch (e: Exception) {
             rethrowIfCancelled(e)
             return ToolCallEnd.FAILED to ToolOutcome.failure("${spec.functionName} failed: ${describe(e)}")

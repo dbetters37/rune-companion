@@ -1,0 +1,267 @@
+package com.aicontrolcenter.app.ui.tasks
+
+import androidx.compose.runtime.Immutable
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.aicontrolcenter.app.ui.chat.ToolInfo
+import com.aicontrolcenter.app.ui.chat.TranscriptItem
+import com.aicontrolcenter.app.ui.chat.transcriptOf
+import com.aicontrolcenter.app.ui.components.StatusLabel
+import com.aicontrolcenter.app.ui.components.UserMessage
+import com.aicontrolcenter.app.ui.components.formatCompactTimestamp
+import com.aicontrolcenter.app.ui.components.formatCount
+import com.aicontrolcenter.app.ui.components.formatDuration
+import com.aicontrolcenter.app.ui.components.formatTimeOfDay
+import com.aicontrolcenter.app.ui.components.plural
+import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.Clock
+import com.aicontrolcenter.core.TaskId
+import com.aicontrolcenter.core.agents.AgentActivityMonitor
+import com.aicontrolcenter.core.agents.AgentRuntimeState
+import com.aicontrolcenter.core.chat.AgentChat
+import com.aicontrolcenter.core.chat.ConversationEntry
+import com.aicontrolcenter.core.registry.RegistryDirectory
+import com.aicontrolcenter.core.registry.RegistrySnapshot
+import com.aicontrolcenter.core.tasks.AgentMessage
+import com.aicontrolcenter.core.tasks.MessageRepository
+import com.aicontrolcenter.core.tasks.Orchestrator
+import com.aicontrolcenter.core.tasks.TaskKind
+import com.aicontrolcenter.core.tasks.TaskRecord
+import com.aicontrolcenter.core.tasks.TaskRepository
+import com.aicontrolcenter.core.tasks.TaskStatus
+import com.aicontrolcenter.core.tasks.TaskUsage
+import com.aicontrolcenter.core.tools.ToolRegistry
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import java.time.ZoneId
+
+/** Another task, as a link. */
+@Immutable
+data class TaskLinkUi(val id: TaskId, val title: String, val kind: TaskKind, val status: StatusLabel)
+
+@Immutable
+data class ReviewUi(
+    val reviewer: AgentFaceUi?,
+    val status: StatusLabel,
+    val summary: String,
+    val issues: List<String>,
+    val time: String,
+)
+
+@Immutable
+data class TaskDetailUi(
+    val id: TaskId,
+    val rootId: TaskId,
+    val objectiveTitle: String,
+    val kind: TaskKind,
+    val title: String,
+    val instructions: String,
+    val criteria: List<String>,
+    val assignee: AgentFaceUi?,
+    val requestedBy: String,
+    val status: StatusLabel,
+    val statusDetail: String?,
+    val error: String?,
+    /** What its agent is doing on it right now. */
+    val liveActivity: String?,
+    val attempt: Int,
+    val revisionRound: Int,
+    /** For a review, the task it checks; for delegated work, the task that delegated it. */
+    val parent: TaskLinkUi?,
+    val dependsOn: List<TaskLinkUi>,
+    /** Its reviews and the work it delegated. */
+    val children: List<TaskLinkUi>,
+    /** Agents that delegated down to it, outermost first. */
+    val delegatedBy: List<String>,
+    val result: String?,
+    val reviews: List<ReviewUi>,
+    val usage: String?,
+    val timing: String,
+    val canRetry: Boolean,
+    val canCancel: Boolean,
+    /** Why it cannot be run again, when it has finished without success. */
+    val retryNote: String?,
+)
+
+@Immutable
+data class TaskDetailUiState(
+    val isLoading: Boolean = true,
+    val notFound: Boolean = false,
+    val task: TaskDetailUi? = null,
+    /** The assignee's stored work on this task, read-only. */
+    val transcript: List<TranscriptItem> = emptyList(),
+    val messages: List<MessageUi> = emptyList(),
+    val isBusy: Boolean = false,
+    val message: UserMessage? = null,
+)
+
+/**
+ * One task of an objective: what was asked and how to tell it is done, who works on it, its
+ * status, result and reviews, the messages about it, and the transcript of the agent's work.
+ * Failed tasks can be run again and unfinished ones cancelled; the orchestrator decides whether
+ * that is possible and its refusal is shown as is.
+ */
+class TaskDetailViewModel(
+    private val taskId: TaskId,
+    private val tasks: TaskRepository,
+    private val messages: MessageRepository,
+    private val directory: RegistryDirectory,
+    private val chat: AgentChat,
+    private val tools: ToolRegistry,
+    private val orchestrator: Orchestrator,
+    private val monitor: AgentActivityMonitor,
+    private val clock: Clock,
+    private val zone: ZoneId = ZoneId.systemDefault(),
+) : ViewModel() {
+
+    private data class Local(val isBusy: Boolean = false, val message: UserMessage? = null)
+
+    private data class Stored(
+        val tree: List<TaskRecord>,
+        val messages: List<AgentMessage>,
+        val snapshot: RegistrySnapshot,
+        val working: Map<AgentId, AgentRuntimeState>,
+    )
+
+    private val local = MutableStateFlow(Local())
+    private var messageCounter = 0L
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val stored: Flow<Stored?> = flow { emit(tasks.get(taskId)?.rootId) }.flatMapLatest { root ->
+        if (root == null) flowOf(null) else combine(tasks.observeTree(root), messages.observe(root), directory.observe(), monitor.states, ::Stored)
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val entries: Flow<List<ConversationEntry>> = stored
+        .map { it?.tree?.firstOrNull { task -> task.id == taskId }?.conversationId }
+        .distinctUntilChanged()
+        .flatMapLatest { id -> if (id == null) flowOf(emptyList()) else chat.observeEntries(id) }
+
+    val uiState: StateFlow<TaskDetailUiState> = combine(stored, entries, local) { stored, entries, local -> build(stored, entries, local) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TaskDetailUiState())
+
+    fun retry() = act("Queued to run again.") { orchestrator.retryTask(taskId) }
+
+    fun cancel() = act("Cancelled. The Director continues without it.") { orchestrator.cancelTask(taskId) }
+
+    fun messageShown() = local.update { it.copy(message = null) }
+
+    private fun build(stored: Stored?, entries: List<ConversationEntry>, local: Local): TaskDetailUiState {
+        val task = stored?.tree?.firstOrNull { it.id == taskId }
+            ?: return TaskDetailUiState(isLoading = false, notFound = true, message = local.message)
+        val faces = AgentFaces(stored.snapshot)
+        val now = clock.now()
+        val tree = stored.tree
+        val byId = tree.associateBy { it.id }
+        fun link(t: TaskRecord) = TaskLinkUi(t.id, t.title, t.kind, t.status.toStatusLabel(t.kind))
+        val objective = byId[task.rootId]
+        val live = task.assignee?.let { stored.working[it] }?.takeIf { it.currentTaskId == task.id }
+        return TaskDetailUiState(
+            isLoading = false,
+            task = TaskDetailUi(
+                id = task.id,
+                rootId = task.rootId,
+                objectiveTitle = objective?.title.orEmpty(),
+                kind = task.kind,
+                title = task.title,
+                instructions = task.instructions,
+                criteria = task.completionCriteria,
+                assignee = faces.of(task.assignee),
+                requestedBy = faces.requester(task.requestedBy),
+                status = task.status.toStatusLabel(task.kind),
+                statusDetail = task.statusDetail?.takeIf { it.isNotBlank() },
+                error = task.error?.takeIf { it.isNotBlank() && it != task.statusDetail },
+                liveActivity = live?.let { it.detail ?: "Working" },
+                attempt = task.attempt + 1,
+                revisionRound = task.revisionRound,
+                parent = task.parentId?.takeIf { it != task.rootId }?.let(byId::get)?.let(::link),
+                dependsOn = task.dependsOn.mapNotNull(byId::get).map(::link),
+                children = tree.filter { it.parentId == task.id && it.id != task.id }.map(::link),
+                delegatedBy = task.delegationChain.mapNotNull { faces.of(it)?.name },
+                result = task.result?.takeIf { it.isNotBlank() },
+                reviews = task.reviews.map { verdict ->
+                    ReviewUi(faces.of(verdict.reviewer), verdict.decision.toStatusLabel(), verdict.summary, verdict.issues, formatCompactTimestamp(verdict.at, now, zone))
+                },
+                usage = usageOf(task.usage),
+                timing = timingOf(task, now),
+                canRetry = task.status in RETRYABLE && task.kind != TaskKind.REVIEW && task.kind != TaskKind.OBJECTIVE && task.delegationChain.isEmpty(),
+                canCancel = !task.status.isFinished && task.kind != TaskKind.OBJECTIVE,
+                retryNote = retryNote(task),
+            ),
+            transcript = transcriptOf(entries, ::toolInfo, assignedModelName = null, turnRunning = task.status == TaskStatus.RUNNING),
+            messages = messagesUi(stored.messages.filter { it.taskId == task.id }, tree, faces, now, zone),
+            isBusy = local.isBusy,
+            message = local.message,
+        )
+    }
+
+    private fun toolInfo(functionName: String): ToolInfo? = tools.byFunctionName(functionName)?.spec?.let { ToolInfo(it.title, it.risk) }
+
+    private fun usageOf(usage: TaskUsage): String? {
+        if (usage == TaskUsage()) return null
+        return listOfNotNull(
+            plural(usage.modelCalls, "model call"),
+            usage.toolCalls.takeIf { it > 0 }?.let { plural(it, "tool call") },
+            "${formatCount(usage.inputTokens)} tokens in · ${formatCount(usage.outputTokens)} out",
+            usage.messagesSent.takeIf { it > 0 }?.let { plural(it, "message") + " sent" },
+        ).joinToString(" · ")
+    }
+
+    private fun timingOf(task: TaskRecord, now: Long): String {
+        val started = task.startedAt ?: return "Not started yet"
+        val parts = arrayListOf("Started ${formatCompactTimestamp(started, now, zone)}")
+        val finished = task.finishedAt
+        when {
+            finished != null -> parts += "took ${formatDuration((finished - started).coerceAtLeast(0))}"
+            task.status == TaskStatus.RUNNING || task.status == TaskStatus.WAITING_FOR_AGENT ->
+                task.deadlineAt?.let { parts += "times out at ${formatTimeOfDay(it, zone)}" }
+            else -> Unit
+        }
+        return parts.joinToString(" · ")
+    }
+
+    private fun retryNote(task: TaskRecord): String? = when {
+        task.status !in RETRYABLE -> null
+        task.kind == TaskKind.REVIEW -> "A review is not run again on its own: run the task it reviewed again."
+        task.delegationChain.isNotEmpty() -> "Delegated work is run by the task that delegated it: run that task again."
+        else -> null
+    }
+
+    private fun act(success: String, action: suspend () -> Unit) {
+        if (local.value.isBusy) return
+        local.update { it.copy(isBusy = true) }
+        viewModelScope.launch {
+            val text = try {
+                action()
+                success
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (refused: IllegalStateException) {
+                refused.message ?: "That is not possible right now."
+            } catch (gone: IllegalArgumentException) {
+                gone.message ?: "That task no longer exists."
+            } catch (failure: Exception) {
+                "Something went wrong: ${failure.message ?: "storage error"}"
+            }
+            local.update { it.copy(isBusy = false, message = UserMessage(text, ++messageCounter)) }
+        }
+    }
+
+    private companion object {
+        val RETRYABLE = setOf(TaskStatus.FAILED, TaskStatus.TIMED_OUT, TaskStatus.CANCELLED)
+    }
+}
+

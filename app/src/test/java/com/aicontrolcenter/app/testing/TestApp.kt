@@ -26,6 +26,9 @@ import com.aicontrolcenter.testkit.InMemoryAgentRepository
 import com.aicontrolcenter.testkit.InMemoryAiAppRepository
 import com.aicontrolcenter.testkit.InMemoryConversationRepository
 import com.aicontrolcenter.testkit.InMemoryMemoryRepository
+import com.aicontrolcenter.testkit.InMemoryMessageRepository
+import com.aicontrolcenter.testkit.InMemoryTaskRepository
+import com.aicontrolcenter.app.work.InMemoryNotificationAccess
 import com.aicontrolcenter.testkit.FakeProviderAdapter
 import com.aicontrolcenter.testkit.FakeProviderAdapterFactory
 import com.aicontrolcenter.framework.llm.SimulatorProviderFactory
@@ -54,6 +57,11 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
     val aiApps = InMemoryAiAppRepository()
     val conversations = InMemoryConversationRepository()
     val memories = InMemoryMemoryRepository()
+    val tasks = InMemoryTaskRepository()
+    val messages = InMemoryMessageRepository()
+
+    /** Notifications allowed, never asked: a test scripts a refusal with `set(false)`. */
+    val notifications = InMemoryNotificationAccess()
     val vault = InMemorySecretVault()
     val activityLog = InMemoryActivityLog()
     val settings = InMemorySettingsRepository(settings)
@@ -75,6 +83,8 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
         aiApps = aiApps,
         conversations = conversations,
         memories = memories,
+        tasks = tasks,
+        messages = messages,
         activityLog = activityLog,
         settings = this.settings,
         secretVault = vault,
@@ -109,6 +119,7 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
     val graph = AppGraph(
         ports, scope, factories.values.toList() + SimulatorProviderFactory(chunkDelayMs = 0),
         backgroundContext = EmptyCoroutineContext,
+        notifications = notifications,
     )
 
     private inline fun <T> failOr(block: () -> T): T = scanFailure?.let { throw it } ?: block()

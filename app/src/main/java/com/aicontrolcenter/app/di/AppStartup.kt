@@ -10,6 +10,7 @@ import com.aicontrolcenter.core.llm.ProviderManager
 import com.aicontrolcenter.core.memory.MemoryService
 import com.aicontrolcenter.core.registry.AiAppRegistry
 import com.aicontrolcenter.core.settings.SettingsRepository
+import com.aicontrolcenter.core.tasks.Orchestrator
 import com.aicontrolcenter.framework.memory.MemorySeeder
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -48,6 +49,8 @@ class AppStartup(
     private val activityRecorder: ActivityRecorder,
     private val packageChanges: Flow<Unit>,
     private val clock: Clock,
+    /** Null where there is no orchestrator (tests of start-up alone). */
+    private val orchestrator: Orchestrator? = null,
 ) {
     private var initialJob: Job? = null
     private var foregroundRefresh: Job? = null
@@ -73,6 +76,10 @@ class AppStartup(
             // After the team: the starter space is shared with the starter agents.
             step("Could not set up shared memory") { memorySeeder.ensureDefaults() }
             step("Could not refresh AI app statuses") { aiAppRegistry.refreshStatuses() }
+            // Last, once agents and their availability are known, and before an objective can be
+            // started: tasks that were running when the app stopped are marked interrupted (and
+            // resumed, if the owner allows it in the settings).
+            step("Could not recover interrupted objectives") { orchestrator?.recoverInterrupted() }
         }
         initialJob = job
         maintainMemory(after = job)
@@ -97,6 +104,12 @@ class AppStartup(
             }
         }
         return job
+    }
+
+    /** Waits for the one-off start-up steps when they have been started; returns at once otherwise. */
+    suspend fun awaitInitial() {
+        val job = synchronized(this) { initialJob } ?: return
+        job.join()
     }
 
     /**

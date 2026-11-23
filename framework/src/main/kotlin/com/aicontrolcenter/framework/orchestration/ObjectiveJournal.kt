@@ -1,0 +1,183 @@
+package com.aicontrolcenter.framework.orchestration
+
+import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.Clock
+import com.aicontrolcenter.core.IdGenerator
+import com.aicontrolcenter.core.MessageId
+import com.aicontrolcenter.core.TaskId
+import com.aicontrolcenter.core.activity.ActivityRecorder
+import com.aicontrolcenter.core.activity.ActivityType
+import com.aicontrolcenter.core.activity.Severity
+import com.aicontrolcenter.core.agents.AgentStats
+import com.aicontrolcenter.core.messageId
+import com.aicontrolcenter.core.registry.AgentRepository
+import com.aicontrolcenter.core.tasks.AgentMessage
+import com.aicontrolcenter.core.tasks.MessageRepository
+import com.aicontrolcenter.core.tasks.MessageType
+import com.aicontrolcenter.core.tasks.Participant
+import com.aicontrolcenter.core.tasks.TaskRecord
+import com.aicontrolcenter.core.tasks.TaskStatus
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+
+/**
+ * The record of what happens under an objective: every agent message is stored, and every
+ * message and task state change is written to the activity log.
+ *
+ * The log carries what the owner needs to follow a run, never whole bodies: a message event
+ * names its type, sender, recipient and task, with at most a short first line of the body.
+ * Bodies stay in the message store, where the objective's own view shows them.
+ *
+ * Writes here run non-cancellable: a record of something that happened must not be lost
+ * because the work that caused it was stopped the moment after.
+ */
+internal class ObjectiveJournal(
+    private val messages: MessageRepository,
+    private val agents: AgentRepository,
+    private val activity: ActivityRecorder,
+    private val ids: IdGenerator,
+    private val clock: Clock,
+) {
+    /** Stores a message and logs it. Returns the stored message. */
+    suspend fun send(
+        rootId: TaskId,
+        task: TaskRecord?,
+        from: Participant,
+        to: Participant,
+        type: MessageType,
+        body: String,
+        hop: Int = 0,
+        replyTo: MessageId? = null,
+    ): AgentMessage = withContext(NonCancellable) {
+        val message = AgentMessage(
+            id = ids.messageId(), rootId = rootId, taskId = task?.id, from = from, to = to, type = type,
+            body = body.trim().take(MAX_BODY), replyTo = replyTo, hop = hop, at = clock.now(),
+        )
+        messages.append(message)
+        val about = task?.let { " · Task: ${it.title}" }.orEmpty()
+        safely {
+            activity.record(
+                ActivityType.MESSAGE,
+                "${label(type)}: ${name(from)} → ${name(to)}",
+                firstLine(message.body) + about,
+                agentId = (from as? Participant.Agent)?.agentId,
+                taskId = task?.id, rootTaskId = rootId,
+                data = buildJsonObject {
+                    put("messageId", message.id.value)
+                    put("type", type.name)
+                    put("hop", hop)
+                },
+            )
+        }
+        message
+    }
+
+    /** Logs a task's state change: [title] says what happened, the detail is the task's status sentence. */
+    suspend fun taskChanged(task: TaskRecord, title: String, severity: Severity = Severity.INFO, data: JsonObject? = null) =
+        withContext(NonCancellable) {
+            safely {
+                activity.record(
+                    ActivityType.TASK, "$title: ${task.title}", task.statusDetail ?: task.error.orEmpty(),
+                    severity = severity, agentId = task.assignee, taskId = task.id, rootTaskId = task.rootId,
+                    data = data ?: buildJsonObject {
+                        put("kind", task.kind.name)
+                        put("status", task.status.name)
+                        put("attempt", task.attempt)
+                        put("revisionRound", task.revisionRound)
+                    },
+                )
+            }
+        }
+
+    /**
+     * Records that a limit stopped something: a STATUS message from the system to the owner,
+     * and a warning in the log. Every loop guard and runaway limit reports through here.
+     */
+    suspend fun limitReached(rootId: TaskId, task: TaskRecord?, reason: String) {
+        send(rootId, task, Participant.System, Participant.Owner, MessageType.STATUS, "Limit reached: $reason")
+        withContext(NonCancellable) {
+            safely {
+                activity.record(
+                    ActivityType.TASK, "Limit reached", reason, severity = Severity.WARNING,
+                    agentId = task?.assignee, taskId = task?.id, rootTaskId = rootId,
+                )
+            }
+        }
+    }
+
+    suspend fun warn(rootId: TaskId, task: TaskRecord?, title: String, detail: String, agentId: AgentId? = task?.assignee) =
+        withContext(NonCancellable) {
+            safely { activity.record(ActivityType.TASK, title, detail, Severity.WARNING, agentId, task?.id, rootId) }
+        }
+
+    suspend fun ownerAction(rootId: TaskId, task: TaskRecord?, title: String, detail: String = "") = withContext(NonCancellable) {
+        safely { activity.record(ActivityType.USER_ACTION, title, detail, taskId = task?.id, rootTaskId = rootId) }
+    }
+
+    /** Counts a finished task in its agent's track record, which the selector reads as reliability. */
+    suspend fun countFinished(task: TaskRecord) = withContext(NonCancellable) {
+        val agent = task.assignee ?: return@withContext
+        val duration = (task.finishedAt ?: clock.now()) - (task.startedAt ?: task.finishedAt ?: clock.now())
+        safely {
+            agents.updateStats(agent) {
+                when (task.status) {
+                    TaskStatus.COMPLETED -> it.copy(tasksCompleted = it.tasksCompleted + 1, totalTaskDurationMs = it.totalTaskDurationMs + duration.coerceAtLeast(0))
+                    TaskStatus.FAILED -> it.copy(tasksFailed = it.tasksFailed + 1, totalTaskDurationMs = it.totalTaskDurationMs + duration.coerceAtLeast(0))
+                    TaskStatus.TIMED_OUT -> it.copy(tasksTimedOut = it.tasksTimedOut + 1, totalTaskDurationMs = it.totalTaskDurationMs + duration.coerceAtLeast(0))
+                    TaskStatus.CANCELLED -> it.copy(tasksCancelled = it.tasksCancelled + 1)
+                    else -> it
+                }
+            }
+        }
+    }
+
+    suspend fun countStats(agentId: AgentId, change: (AgentStats) -> AgentStats) = withContext(NonCancellable) {
+        safely { agents.updateStats(agentId, change) }
+    }
+
+    suspend fun name(participant: Participant): String = when (participant) {
+        Participant.Owner -> "Owner"
+        Participant.System -> "System"
+        is Participant.Agent -> agents.get(participant.agentId)?.name ?: "A deleted agent"
+    }
+
+    /** The log is a record, not a dependency: a failure to write it never changes what happens. */
+    private inline fun safely(block: () -> Unit) {
+        try {
+            block()
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+        }
+    }
+
+    private fun firstLine(body: String): String {
+        val line = body.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+        return if (line.length <= MAX_LOGGED) line else line.take(MAX_LOGGED - 1).trimEnd() + "…"
+    }
+
+    private fun label(type: MessageType): String = when (type) {
+        MessageType.ASSIGNMENT -> "Assignment"
+        MessageType.ASSISTANCE_REQUEST -> "Request for help"
+        MessageType.ASSISTANCE_RESPONSE -> "Help given"
+        MessageType.FINDINGS -> "Findings"
+        MessageType.DELEGATION -> "Delegation"
+        MessageType.MEMORY_SHARE -> "Memory shared"
+        MessageType.REVIEW_REQUEST -> "Review requested"
+        MessageType.REVIEW_RESULT -> "Review result"
+        MessageType.COMPLETION -> "Task completed"
+        MessageType.FAILURE -> "Task failed"
+        MessageType.QUESTION -> "Question"
+        MessageType.ANSWER -> "Answer"
+        MessageType.CANCEL -> "Cancelled"
+        MessageType.STATUS -> "Status"
+    }
+
+    private companion object {
+        /** A message body is plain text for people to read; a body larger than this is cut. */
+        const val MAX_BODY = 20_000
+        const val MAX_LOGGED = 120
+    }
+}

@@ -7,6 +7,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ConversationId
 import com.aicontrolcenter.core.MemoryId
+import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.activity.ActivityFilter
 import com.aicontrolcenter.core.agents.AgentStats
 import com.aicontrolcenter.core.chat.Conversation
@@ -14,12 +15,16 @@ import com.aicontrolcenter.core.chat.ConversationEntry
 import com.aicontrolcenter.core.llm.ChatMessage
 import com.aicontrolcenter.core.llm.TokenUsage
 import com.aicontrolcenter.core.security.SecretVaultException
+import com.aicontrolcenter.core.tasks.MessageType
+import com.aicontrolcenter.core.tasks.TaskStatus
+import com.aicontrolcenter.core.tasks.TaskUsage
 import com.aicontrolcenter.data.repository.RoomAgentRepository
 import com.aicontrolcenter.data.security.DatabaseKeyException
 import com.aicontrolcenter.data.security.SoftwareVaultCipher
 import com.aicontrolcenter.data.security.VaultCipher
 import com.aicontrolcenter.testkit.Samples
 import com.aicontrolcenter.testkit.contract.MemorySamples
+import com.aicontrolcenter.testkit.contract.TaskSamples
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExecutorCoroutineDispatcher
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -73,6 +78,8 @@ class DataLayerTest {
         assertSame(data.activityLog, data.activityLog)
         assertSame(data.conversations, data.conversations)
         assertSame(data.memories, data.memories)
+        assertSame(data.tasks, data.tasks)
+        assertSame(data.messages, data.messages)
         assertSame(data.settings, data.settings)
         assertSame(data.secretVault, data.secretVault)
 
@@ -109,6 +116,11 @@ class DataLayerTest {
         first.memories.upsert(linked)
         first.memories.upsertLink(MemorySamples.link("lnk_1", "mem_1", "mem_2"))
         first.memories.putEmbedding(memory.id, "emb", floatArrayOf(0.6f, 0.8f))
+        val objective = TaskSamples.objective()
+        val work = TaskSamples.work("tsk_1", status = TaskStatus.RUNNING)
+        first.tasks.upsertAll(listOf(objective, work))
+        val assignment = TaskSamples.message("msg_1", at = 2_000)
+        first.messages.append(assignment)
         first.settings.update { it.copy(directorAgentId = agent.id, localOnlyMode = true, memorySeedVersion = 1) }
         first.secretVault.put(provider.apiKeyAlias!!, "sk-home-server")
         first.close()
@@ -128,6 +140,10 @@ class DataLayerTest {
         assertEquals(listOf("lnk_1"), second.memories.linksOf(MemoryId("mem_1")).map { it.id.value })
         assertEquals(listOf(0.6f, 0.8f), second.memories.embeddings("emb").getValue(memory.id).toList())
         assertEquals(listOf(memory), second.memories.searchText("CONTENT mem_1"))
+        // What was running when the app stopped is found again after the restart.
+        assertEquals(listOf(objective, work), second.tasks.withStatus(setOf(TaskStatus.RUNNING)))
+        assertEquals(listOf(objective), second.tasks.observeObjectives().first())
+        assertEquals(listOf(assignment), second.messages.list(objective.id))
         assertEquals(1, second.settings.get().memorySeedVersion)
         assertEquals(agent.id, second.settings.get().directorAgentId)
         assertTrue(second.settings.get().localOnlyMode)
@@ -148,6 +164,24 @@ class DataLayerTest {
         val entries = data.conversations.getEntries(id)
         assertEquals((0..79).toList(), entries.map { it.seq })
         assertEquals((1..80).map { "m$it" }.toSet(), entries.map { it.message.text }.toSet())
+    }
+
+    @Test
+    fun `updates of one task from many threads to the database file are all applied`() = runTest {
+        // The file-backed database has a pool of connections, unlike the in-memory one of the contract suite.
+        val data = dataLayer()
+        val id = TaskId("tsk_1")
+        data.tasks.upsert(TaskSamples.work(id.value).copy(usage = TaskUsage()))
+        withContext(Dispatchers.Default) {
+            (1..80).map { n ->
+                launch {
+                    data.tasks.update(id) { it.copy(usage = it.usage + TaskUsage(modelCalls = 1, messagesSent = n)) }
+                    data.messages.append(TaskSamples.message("msg_$n", at = n.toLong(), type = MessageType.STATUS))
+                }
+            }.joinAll()
+        }
+        assertEquals(TaskUsage(modelCalls = 80, messagesSent = (1..80).sum()), data.tasks.get(id)?.usage)
+        assertEquals(80, data.messages.count(TaskSamples.objective().id))
     }
 
     @Test

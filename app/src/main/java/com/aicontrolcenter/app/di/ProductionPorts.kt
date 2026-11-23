@@ -27,6 +27,9 @@ fun createProductionPorts(context: Context): Ports {
         conversations = data.conversations,
         // The same encrypted database as everything else, so memories never sit in plain text on disk.
         memories = data.memories,
+        // Same database again: task results and agent messages hold what agents found and wrote.
+        tasks = data.tasks,
+        messages = data.messages,
         activityLog = data.activityLog,
         settings = data.settings,
         secretVault = data.secretVault,
