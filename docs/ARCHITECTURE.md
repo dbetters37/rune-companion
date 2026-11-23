@@ -52,12 +52,13 @@ each feature needs from you (keys, models, permissions).
             │ bus, tasks, Director │          │          │ accessibility service   │
             └───┬─────────┬────────┘          │          └───┬─────────────────────┘
                 │         │                   │              │
-        ┌───────▼───┐ ┌───▼───────┐           │              │
-        │ :providers│ │ :memory   │           │              │
-        │ (JVM)     │ │ (JVM)     │           │              │
-        │ LLM       │ │ memory    │           │              │
-        │ adapters  │ │ engine    │           │              │
-        └───────┬───┘ └───┬───────┘           │              │
+        ┌───────▼────────────┐ ┌───▼───────┐  │              │
+        │ :providers (JVM)   │ │ :memory   │  │              │
+        │ OpenAI-compatible, │ │ (JVM)     │  │              │
+        │ Ollama, Gemini     │ │ memory    │  │              │
+        │ :providers-        │ │ engine    │  │              │
+        │ anthropic (SDK)    │ │ (Phase 3) │  │              │
+        └───────┬────────────┘ └───┬───────┘  │              │
                 │         │                   │              │
             ┌───▼─────────▼───────────────────▼──────────────▼───┐
             │ :core  (JVM)  domain models and ports (interfaces)  │
@@ -70,8 +71,10 @@ Rules:
 
 - `:core` depends on nothing but coroutines and kotlinx.serialization. It holds every domain
   type and every interface that crosses a module boundary.
-- The JVM modules (`:core`, `:framework`, `:providers`, `:memory`, `:testkit`) contain no
-  Android code and are tested with plain JUnit. Most of the product's logic lives there.
+- The JVM modules (`:core`, `:framework`, `:providers`, `:providers-anthropic`, `:memory`,
+  `:testkit`) contain no Android code and are tested with plain JUnit. Most of the product's
+  logic lives there. The only vendor SDK (Anthropic's) is confined to `:providers-anthropic`;
+  every other adapter speaks HTTP directly.
 - `:data` and `:device` implement `:core` ports with Android APIs. They do not depend on
   each other or on `:framework`.
 - `:app` is the only module that knows all the others. `AppGraph` builds the object graph

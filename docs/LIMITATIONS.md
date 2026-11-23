@@ -94,7 +94,22 @@ do it.
   consequential capabilities behind confirmation, which is the default and cannot be turned
   off for deletes, installs, purchases and sending messages.
 
-## 6. Not verifiable in the build environment
+## 6. Limits of the safeguards
+
+- **"On this device" means another process on this phone.** A provider at `127.0.0.1` or
+  `localhost` is whatever app is listening on that port. Text sent there does not leave the
+  phone, but it does leave this app.
+- **Local network includes overlay networks.** Addresses in `100.64.0.0/10` count as your own
+  network because Tailscale and similar private networks use them to reach a home server. A
+  carrier network also uses that range, but nobody enters a carrier's address as a provider.
+- **Echoed tool calls.** For models without native tool calling, a call that repeats text from
+  a tool result is refused, even if lightly reworded. This is a text comparison: it reduces
+  the risk of a model following instructions planted in what it reads, but cannot rule it
+  out. The protection that does not depend on the model is that consequential actions
+  (deleting, installing, paying, sending) always need your confirmation. No such tools exist
+  yet; they arrive with the phone operator.
+
+## 7. Not verifiable in the build environment
 
 - Behaviour on your phone's exact Android version and manufacturer skin, including battery
   management killing background work.
