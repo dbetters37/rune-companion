@@ -76,6 +76,8 @@ internal class StreamAssembler {
             throw LlmException.Network("The connection closed before the reply was complete.")
         }
         val usage: TokenUsage? = if (usageSeen) ResponseMapper.usage(inputTokens, outputTokens, cacheRead, cacheCreation) else null
+        // A block the stream never closed is read as if it had been: its arguments are what arrived.
+        blocks.values.forEach { it.closeIfOpen() }
         val argumentErrors = blocks.values.mapNotNull { block -> block.argumentsError?.let { error -> block.id?.let { it to error } } }.toMap()
         return RawTurn(model, stopReason, refusalExplanation, blocks.values.map { it.build() }, usage, argumentErrors)
     }
@@ -105,6 +107,7 @@ internal class StreamAssembler {
         private val inputJson = StringBuilder()
         private val citations = ArrayList<JsonElement>()
         private var input: JsonObject? = null
+        private var closed = false
 
         val id: String? get() = start.stringOrNull("id")
 
@@ -132,6 +135,7 @@ internal class StreamAssembler {
          * an [argumentsError], not a call with empty input.
          */
         fun close(): ChatChunk? {
+            closed = true
             if (start.blockType != "tool_use") return null
             if (inputJson.isBlank()) {
                 when (val given = start["input"]) {
@@ -154,6 +158,16 @@ internal class StreamAssembler {
                 if (argumentsError == null) input = parsed as JsonObject
             }
             return input?.let { ResponseMapper.toolCall(build()) }?.let(ChatChunk::ToolCall)
+        }
+
+        /**
+         * Reads the arguments of a block that never received its stop event, exactly as [close]
+         * would have, so that what arrived decides: a partial or non-object input becomes an
+         * [argumentsError] instead of a call with empty input. Announces nothing; the completed
+         * response reports the call.
+         */
+        fun closeIfOpen() {
+            if (!closed) close()
         }
 
         fun build(): JsonObject {

@@ -226,6 +226,56 @@ internal class StreamingTest : MockApiTest() {
     }
 
     @Test
+    fun `a tool call whose block never closes is read from what arrived, not run with empty input`() {
+        // Not what the API sends, but a proxy or a compatible server may leave out content_block_stop.
+        enqueueSse(
+            start(),
+            blockStart(0, """{"type":"tool_use","id":"t_nostop","name":"reset","input":"x"}"""),
+            blockStart(1, """{"type":"tool_use","id":"t_partial","name":"read_file","input":{}}"""),
+            delta(1, inputJson("""{"path": "/etc""")),
+            blockStart(2, """{"type":"tool_use","id":"t_whole","name":"read_file","input":{}}"""),
+            delta(2, inputJson("""{"path": "/tmp/a"}""")),
+            blockStart(3, """{"type":"tool_use","id":"t_null","name":"get_time","input":null}"""),
+            blockStart(4, """{"type":"tool_use","id":"t_bare","name":"get_weather","input":{}}"""),
+            delta(4, inputJson("""{"city": Oslo}""")),
+            messageDelta("tool_use"),
+            messageStop,
+        )
+
+        val chunks = collect()
+
+        assertTrue(chunks.filterIsInstance<ChatChunk.ToolCall>().isEmpty(), "a block that never closed is not announced early")
+        val completed = assertIs<ChatChunk.Completed>(chunks.last()).response
+        assertEquals(FinishReason.TOOL_CALLS, completed.finishReason)
+        val calls = completed.message.toolCalls.associateBy { it.id }
+        assertEquals(listOf("t_nostop", "t_partial", "t_whole", "t_null", "t_bare"), completed.message.toolCalls.map { it.id })
+
+        val nostop = calls.getValue("t_nostop")
+        assertTrue(nostop.arguments.isEmpty())
+        val stringReason = assertNotNull(nostop.argumentsError, "a string start input must not look like a valid call without arguments")
+        assertTrue("must be one JSON object of named values, but were a JSON string." in stringReason, stringReason)
+
+        val partial = calls.getValue("t_partial")
+        assertTrue(partial.arguments.isEmpty())
+        val partialReason = assertNotNull(partial.argumentsError, "cut-off arguments must not look like a valid call without arguments")
+        assertTrue("not valid JSON" in partialReason && """{"path": "/etc""" in partialReason, partialReason)
+
+        assertTrue("Oslo is not in quotes" in assertNotNull(calls.getValue("t_bare").argumentsError))
+
+        val whole = calls.getValue("t_whole")
+        assertNull(whole.argumentsError)
+        assertEquals(buildJsonObject { put("path", "/tmp/a") }, whole.arguments, "complete arguments are used, not the start input")
+
+        val none = calls.getValue("t_null")
+        assertNull(none.argumentsError, "a null start input without deltas is a call without arguments, as in a plain reply")
+        assertTrue(none.arguments.isEmpty())
+
+        // The stored turn holds the arguments that were read, so the call replays as made.
+        val stored = assertNotNull(completed.message.providerData).payload.jsonObject.getValue("content").jsonArray
+        assertEquals(buildJsonObject { put("path", "/tmp/a") }, stored[2].jsonObject["input"])
+    }
+
+    @Test
     fun `a refusal in mid-stream completes as refused with the explanation`() {
         enqueueSse(
             start(model = "claude-fable-5-2"),

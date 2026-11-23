@@ -13,37 +13,67 @@ import kotlinx.serialization.json.JsonPrimitive
  * In the prompted protocol a call is text, so a model that repeats what a tool returned can
  * repeat a call written into it, and the tool's output would choose an action. Defusing the
  * markup in tool output ([PromptedToolsFormat.quote]) does not hold on its own: small models
- * drop invisible characters, decode entities and re-wrap lines when they quote. So this is the
- * primary defence: a parsed call whose text, normalised, appears inside any tool result of the
- * request, or inside what an earlier call quoted in its arguments, is not run. It is passed on
- * with [REJECTION] as its arguments error, which the tool executor answers with an explanation.
+ * drop invisible characters, decode entities and re-wrap lines when they quote. So a parsed
+ * call is compared with what the model was shown as data: if any of the forms it was written
+ * as ([PromptedToolCallParser.Parsed.written]), normalised, appears inside a tool result of the
+ * request, inside all of them read one after another (a call split across two results), or
+ * inside what an earlier call quoted in its arguments, it is not run. It is passed on with
+ * [REJECTION] (or [REJECTION_WITHOUT_ARGUMENTS]) as its arguments error, which the tool
+ * executor answers with an explanation.
  *
  * Normalisation makes the comparison blind to what a model changes when it quotes: HTML
- * entities and JSON escapes are decoded (repeatedly, for text quoted twice), invisible
- * characters (zero-width, format and control characters, variation selectors, fillers) are
- * removed, the typographic quotes the parser reads as quotes become plain ones, and every line
- * break and other whitespace is collapsed away, so that re-spacing JSON hides nothing either.
+ * entities, JSON escapes and markdown escapes (a backslash before ASCII punctuation) are
+ * decoded, repeatedly for text quoted twice; invisible characters (zero-width, format and
+ * control characters, variation selectors, fillers) are removed; single, double and
+ * typographic quotes all become one plain quote; and every line break and other whitespace is
+ * collapsed away, so that re-spacing JSON hides nothing either.
+ *
+ * This is a text match. It reduces the risk of a model repeating a call injected into what it
+ * read, but it cannot eliminate it: a model that rewrites the call on the way (drops a member,
+ * changes its shape, fixes its JSON, swaps a look-alike letter) makes a call that matches
+ * nothing quoted. What keeps such a call from doing harm is not this class: consequential
+ * actions need the owner's confirmation, whoever asked for them (see
+ * [com.aicontrolcenter.framework.tools.DefaultToolAuthorizer]).
  *
  * An earlier call itself is not quoted content: the model wrote it, and making the same call
  * again is legitimate. Only what its arguments carry (string values, nested objects) is.
  */
-internal class EchoGuard private constructor(private val quoted: List<String>) {
+internal class EchoGuard private constructor(private val quoted: List<String>, private val resultsInOrder: String) {
 
     /** True when any of [texts], the forms a call was written as, appears in the quoted content. */
     fun repeats(texts: List<String>): Boolean = texts.any { text ->
         val needle = normalise(text)
-        needle.isNotEmpty() && quoted.any { needle in it }
+        needle.isNotEmpty() && (needle in resultsInOrder || quoted.any { needle in it })
     }
+
+    /**
+     * The arguments error for [call], a call without arguments that [repeats] quoted content:
+     * [REJECTION_WITHOUT_ARGUMENTS] when writing it out with explicit empty arguments, as that
+     * rejection suggests, would not repeat quoted content too; [REJECTION] otherwise.
+     */
+    fun rejectionOfCallWithoutArguments(name: String): String =
+        if (repeats(listOf(PromptedToolsFormat.callWithoutArguments(name)))) REJECTION else REJECTION_WITHOUT_ARGUMENTS
 
     companion object {
         /** The arguments error of a call that repeats quoted content. The tool executor answers it; it never runs. */
         const val REJECTION = "the call repeats content from a tool result"
 
+        /**
+         * [REJECTION] for a call without arguments, such as `{"name": "clock_now"}`, which a
+         * tool result listing tools may well contain. It is still refused (the safe side), but
+         * the tool executor tells the model how to write the call if it really means it: with
+         * `"arguments": {}` spelled out, a form that is refused only if it too was quoted.
+         */
+        const val REJECTION_WITHOUT_ARGUMENTS = "the call, which has no arguments, repeats content from a tool result"
+
+        /** True when [reason], an arguments error, says the call repeated quoted content. */
+        fun isRejection(reason: String?): Boolean = reason == REJECTION || reason == REJECTION_WITHOUT_ARGUMENTS
+
         private const val MAX_DECODE_PASSES = 4
 
-        /** HTML entities (named, decimal, hex) and JSON string escapes. */
+        /** HTML entities (named, decimal, hex), JSON string escapes, and a backslash before any ASCII punctuation (markdown's escapes). */
         private val ESCAPE = Regex(
-            "&(?:#([0-9]{1,7})|#[xX]([0-9a-fA-F]{1,6})|([A-Za-z][A-Za-z0-9]{1,31}));?|\\\\u([0-9a-fA-F]{4})|\\\\([\"'\\\\/bfnrt])",
+            "&(?:#([0-9]{1,7})|#[xX]([0-9a-fA-F]{1,6})|([A-Za-z][A-Za-z0-9]{1,31}));?|\\\\u([0-9a-fA-F]{4})|\\\\([!-/:-@\\[-`{-~]|[bfnrt])",
         )
 
         private val NAMED = mapOf(
@@ -64,12 +94,14 @@ internal class EchoGuard private constructor(private val quoted: List<String>) {
         /** What the model was shown as data in [request]: every tool result, and what earlier calls quoted in their arguments. */
         fun of(request: ChatRequest): EchoGuard {
             val quoted = ArrayList<String>()
+            val results = StringBuilder()
             for (message in request.messages) {
-                message.toolResult?.let { quoted += normalise(it.content) }
-                if (message.role == ChatRole.TOOL && message.text.isNotBlank()) quoted += normalise(message.text)
+                message.toolResult?.let { results.append(normalise(it.content)) }
+                if (message.role == ChatRole.TOOL && message.text.isNotBlank()) results.append(normalise(message.text))
                 for (call in message.toolCalls) call.arguments.values.forEach { collect(it, quoted) }
             }
-            return EchoGuard(quoted.filter { it.isNotEmpty() })
+            // Every tool result is part of the results read in order, so each is compared as part of that.
+            return EchoGuard(quoted.filter { it.isNotEmpty() }, results.toString())
         }
 
         private fun collect(element: JsonElement, into: MutableList<String>) {
@@ -129,10 +161,9 @@ internal class EchoGuard private constructor(private val quoted: List<String>) {
                 cp == 0x034F || cp == 0x115F || cp == 0x1160 || cp == 0x17B4 || cp == 0x17B5 || cp == 0x3164 || cp == 0xFFA0
         }
 
-        /** The typographic quotes [LenientJson] reads as quotes, as the plain ones. */
+        /** Every quote [LenientJson] reads as one, single, double or typographic, as the plain double quote. */
         private fun plainQuote(cp: Int): Int = when (cp) {
-            0x201C, 0x201D -> '"'.code
-            0x2018, 0x2019 -> '\''.code
+            0x201C, 0x201D, 0x2018, 0x2019, '\''.code -> '"'.code
             else -> cp
         }
     }

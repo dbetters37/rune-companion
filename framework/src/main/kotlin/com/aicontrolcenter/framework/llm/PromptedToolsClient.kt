@@ -24,8 +24,9 @@ import java.util.UUID
  *
  * A call the model repeated from a tool result, or from what an earlier call quoted, is never
  * run, however it was re-encoded on the way ([EchoGuard]): it is passed on empty, with
- * [EchoGuard.REJECTION] as its arguments error, and the tool executor answers it with an error
- * saying why. Tool output is data and must never choose an action.
+ * [EchoGuard.REJECTION] (or, for a call without arguments, [EchoGuard.REJECTION_WITHOUT_ARGUMENTS])
+ * as its arguments error, and the tool executor answers it with an error saying why. Tool
+ * output is data and must never choose an action.
  */
 class PromptedToolsClient(
     private val delegate: LlmClient,
@@ -81,7 +82,8 @@ class PromptedToolsClient(
         val echoes = EchoGuard.of(request)
         val calls = parsed.calls.mapIndexed { index, call ->
             if (echoes.repeats(parsed.written[index])) {
-                ToolCallRequest(newCallId(), call.name, JsonObject(emptyMap()), argumentsError = EchoGuard.REJECTION)
+                val reason = if (call.arguments.isEmpty() && call.argumentsError == null) echoes.rejectionOfCallWithoutArguments(call.name) else EchoGuard.REJECTION
+                ToolCallRequest(newCallId(), call.name, JsonObject(emptyMap()), argumentsError = reason)
             } else {
                 ToolCallRequest(newCallId(), call.name, call.arguments, argumentsError = call.argumentsError)
             }

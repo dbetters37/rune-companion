@@ -2,7 +2,10 @@ package com.aicontrolcenter.framework.tools
 
 import com.aicontrolcenter.core.activity.ActivityType
 import com.aicontrolcenter.core.activity.Severity
+import com.aicontrolcenter.core.llm.ChatMessage
+import com.aicontrolcenter.core.llm.ChatRequest
 import com.aicontrolcenter.core.llm.ToolCallRequest
+import com.aicontrolcenter.core.llm.ToolDefinition
 import com.aicontrolcenter.core.tools.ActionAssessment
 import com.aicontrolcenter.core.tools.Authorization
 import com.aicontrolcenter.core.tools.RiskLevel
@@ -13,6 +16,9 @@ import com.aicontrolcenter.core.tools.ToolOutcome
 import com.aicontrolcenter.framework.LambdaTool
 import com.aicontrolcenter.framework.TestWorld
 import com.aicontrolcenter.framework.llm.EchoGuard
+import com.aicontrolcenter.framework.llm.PromptedToolsClient
+import com.aicontrolcenter.testkit.ScriptStep
+import com.aicontrolcenter.testkit.ScriptedLlmClient
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
@@ -24,8 +30,10 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -173,6 +181,40 @@ class ToolExecutorTest {
         assertTrue("test_echo" in text && "repeated content from a tool result" in text && "never choose an action" in text, text)
         assertFalse("could not be read" in text, "it is not about unreadable arguments: $text")
         assertTrue(echo.calls.isEmpty())
+    }
+
+    @Test
+    fun `a call without arguments refused as an echo is told how to write it if meant, and written so it runs`() = runTest {
+        val clock = world.register(LambdaTool("clock") { ToolOutcome.success("noon") })
+        val name = clock.spec.functionName
+        val tools = listOf(ToolDefinition(name, "Tells the time.", buildJsonObject { put("type", "object") }))
+        // A tool listing that happens to hold the call {"name": "test_clock"}, written without arguments.
+        val history = listOf(
+            ChatMessage.user("What time is it?"),
+            ChatMessage.assistant("", listOf(ToolCallRequest("c0", "list_tools", JsonObject(emptyMap())))),
+            ChatMessage.toolResult("c0", "list_tools", "Tools: [{\"name\": \"$name\"}]"),
+        )
+        val replies = listOf("<tool_call>{\"name\": \"$name\"}</tool_call>", "<tool_call>{\"name\": \"$name\", \"arguments\": {}}</tool_call>")
+        val model = PromptedToolsClient(ScriptedLlmClient("tiny") { _, index -> ScriptStep.Reply(replies[index]) })
+
+        val refused = model.chat(ChatRequest(messages = history, tools = tools)).message.toolCalls.single()
+        assertEquals(EchoGuard.REJECTION_WITHOUT_ARGUMENTS, refused.argumentsError)
+        val answer = world.executor.execute(refused, context(clock))
+        assertEquals(ToolCallEnd.REJECTED, answer.end)
+        val text = answer.outcome.content
+        assertTrue("repeated content from a tool result" in text && "<tool_call>" in text && "\"arguments\": {}" in text, text)
+        assertTrue(clock.calls.isEmpty())
+
+        // The answer is itself a tool result now; the form it describes is still not an echo of it.
+        val next = history + ChatMessage.assistant("", listOf(refused)) + ChatMessage.toolResult(refused.id, name, text, isError = true)
+        val meant = model.chat(ChatRequest(messages = next, tools = tools)).message.toolCalls.single()
+        assertNull(meant.argumentsError)
+        assertEquals(ToolCallEnd.OK, world.executor.execute(meant, context(clock)).end)
+        assertEquals(1, clock.calls.size)
+
+        // A refused call with arguments is offered no such way: its arguments came from the tool result.
+        val withArguments = world.executor.execute(call(clock).copy(argumentsError = EchoGuard.REJECTION), context(clock)).outcome.content
+        assertFalse("<tool_call>" in withArguments, withArguments)
     }
 
     @Test

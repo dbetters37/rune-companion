@@ -230,9 +230,10 @@ class ProviderManagerTest {
         assertEquals(alias, renamed.apiKeyAlias)
         assertEquals(secret, world.vault.get(alias))
 
-        manager.updateProvider(provider.id, server(name = "Renamed", apiKey = replacement))
-        assertEquals(replacement, world.vault.get(alias))
-        assertEquals(setOf(alias), world.vault.aliases())
+        val replaced = manager.updateProvider(provider.id, server(name = "Renamed", apiKey = replacement)).apiKeyAlias!!
+        assertNotEquals(alias, replaced, "a new key never overwrites the one the stored record points at")
+        assertEquals(replacement, world.vault.get(replaced))
+        assertEquals(setOf(replaced), world.vault.aliases(), "the previous key is deleted once nothing points at it")
 
         val keyless = manager.updateProvider(provider.id, server(name = "Renamed", apiKey = ""))
         assertNull(keyless.apiKeyAlias)
@@ -270,7 +271,8 @@ class ProviderManagerTest {
         val replacement = "sk-test-key-for-the-lan-server"
         val moved = manager.updateProvider(openAi.id, toLan.copy(apiKey = replacement))
         assertEquals("http://192.168.1.100:1234/v1", moved.baseUrl)
-        assertEquals(replacement, world.vault.get(alias))
+        assertEquals(replacement, world.vault.get(moved.apiKeyAlias!!))
+        assertEquals(setOf(moved.apiKeyAlias), world.vault.aliases())
         // An explicitly emptied key still removes it, and then nothing stands in the way of moving.
         val keyless = manager.updateProvider(openAi.id, ProviderDraft("OpenAI", ProviderKind.OPENAI_COMPATIBLE, "https://api.openai.com/v1", apiKey = ""))
         assertNull(keyless.apiKeyAlias)

@@ -55,6 +55,12 @@ import kotlinx.serialization.json.put
  *    went, whether it worked or not, like a model call: it sent the key there.
  *  - A stored key is never moved to another address: an edit that points the provider at
  *    another host, or makes it another kind, must come with the key again (or remove it).
+ *  - A key is never written over the one a stored record points at. Every new key goes under a
+ *    new alias (`provider/<id>/<n>`); then the record is changed to point at it; only then is
+ *    the previous key deleted. A record write that fails deletes the new key again, so the old
+ *    record keeps its old key, and a process that dies half-way leaves at worst a key that
+ *    nothing points at, which [ensureBuiltIns] deletes at the next start ([deleteUnusedKeys]).
+ *    Records saved before this, whose alias is `provider/<id>`, keep working unchanged.
  *  - [ModelDescriptor] has no field for "edited by the owner", so a listed model whose name or
  *    capabilities the owner changes becomes a [ModelSource.MANUAL] model. Refreshing never
  *    overwrites the description of anything but [ModelSource.PROVIDER_LISTING] models, and only
@@ -90,18 +96,19 @@ class DefaultProviderManager(
         val key = ProviderDraftValidator.normaliseKey(draft.apiKey)
         val baseUrl = ProviderDraftValidator.normaliseBaseUrl(draft.baseUrl)
         val now = nextCreationTime(providers.getAll().maxOfOrNull { it.createdAt })
+        val alias = key?.let { nextKeyAlias(id, current = null) }
         val provider = ModelProvider(
             id = id, name = draft.name.trim(), kind = draft.kind, baseUrl = baseUrl,
-            apiKeyAlias = key?.let { keyAlias(id) }, extraHeaders = normaliseHeaders(draft.extraHeaders),
+            apiKeyAlias = alias, extraHeaders = normaliseHeaders(draft.extraHeaders),
             locality = Locality.infer(draft.kind, baseUrl), createdAt = now, updatedAt = now,
         )
         withContext(NonCancellable) {
-            if (key != null) vault.put(keyAlias(id), key)
+            if (alias != null) vault.put(alias, key)
             try {
                 providers.upsert(provider)
             } catch (e: Exception) {
                 // No record means nothing would ever delete the key again.
-                if (key != null) vault.delete(keyAlias(id))
+                if (alias != null) discardKey(alias, e)
                 throw e
             }
             val keyNote = if (key != null) ", API key saved" else ""
@@ -116,8 +123,9 @@ class DefaultProviderManager(
         val newKey = ProviderDraftValidator.normaliseKey(draft.apiKey)
         val removeKey = draft.apiKey != null && newKey == null
         val baseUrl = ProviderDraftValidator.normaliseBaseUrl(draft.baseUrl)
+        // A new key never overwrites the one the stored record points at; see the class comment.
         val alias = when {
-            newKey != null -> current.apiKeyAlias ?: keyAlias(id)
+            newKey != null -> nextKeyAlias(id, current.apiKeyAlias)
             removeKey -> null
             else -> current.apiKeyAlias
         }
@@ -144,8 +152,15 @@ class DefaultProviderManager(
         )
         withContext(NonCancellable) {
             if (newKey != null) vault.put(alias!!, newKey)
-            providers.upsert(updated)
-            if (removeKey) current.apiKeyAlias?.let { vault.delete(it) }
+            try {
+                providers.upsert(updated)
+            } catch (e: Exception) {
+                // The stored record still points at its own key; the new one must not outlive the failed edit.
+                if (newKey != null) discardKey(alias!!, e)
+                throw e
+            }
+            // Only now does nothing point at the previous key any more.
+            current.apiKeyAlias?.takeIf { it != alias }?.let { vault.delete(it) }
             activity.record(ActivityType.REGISTRY, "Provider updated", "${updated.name}: ${changes.joinToString(", ")}")
         }
         updated
@@ -376,6 +391,10 @@ class DefaultProviderManager(
 
     // ---- built-ins ----
 
+    /**
+     * Makes sure the built-in simulator exists, and deletes the provider keys left behind by an
+     * edit the process did not live to finish ([deleteUnusedKeys]). Meant for every start.
+     */
     override suspend fun ensureBuiltIns() = connections.changeRecords {
         val existing = providers.getAll()
         if (existing.none { it.id == Simulator.PROVIDER_ID }) {
@@ -401,7 +420,38 @@ class DefaultProviderManager(
                 ),
             )
         }
+        try {
+            deleteUnusedKeysLocked()
+        } catch (e: Exception) {
+            rethrowIfCancelled(e)
+            // Unused keys harm nobody while nothing points at them; the next start tries again.
+        }
         Unit
+    }
+
+    /**
+     * Deletes the provider keys in the vault that no provider record points at: the previous key
+     * of an edit, or the new key of a failed one, when the process stopped before it could
+     * delete it. Returns how many were deleted; the activity log says how many, never which.
+     *
+     * Only keys of a provider whose record can be read are considered. A key whose provider has
+     * no readable record is kept: the record may be one this version of the app cannot read,
+     * and deleting its key would lose it for good. Runs under the record lock, so it never sees
+     * an edit half-done.
+     */
+    suspend fun deleteUnusedKeys(): Int = connections.changeRecords { deleteUnusedKeysLocked() }
+
+    private suspend fun deleteUnusedKeysLocked(): Int {
+        val records = providers.getAll()
+        val used = records.mapNotNullTo(HashSet()) { it.apiKeyAlias }
+        val unused = vault.aliases().filter { alias -> alias !in used && records.any { isKeyAliasOf(it.id, alias) } }
+        if (unused.isEmpty()) return 0
+        withContext(NonCancellable) {
+            unused.forEach { vault.delete(it) }
+            val count = if (unused.size == 1) "1 saved API key" else "${unused.size} saved API keys"
+            activity.record(ActivityType.REGISTRY, "Unused API keys deleted", "$count that no provider used any more, left behind by a change that was interrupted.")
+        }
+        return unused.size
     }
 
     // ---- helpers ----
@@ -413,7 +463,33 @@ class DefaultProviderManager(
 
     private suspend fun hasStoredKey(provider: ModelProvider?): Boolean = provider?.apiKeyAlias?.let { vault.contains(it) } ?: false
 
+    /** The alias of [id]'s key as first saved, before aliases were versioned; records may still point at it. */
     private fun keyAlias(id: ProviderId): String = "provider/${id.value}"
+
+    /** A new alias for [id]'s key, never the one the record points at ([current]). */
+    private fun nextKeyAlias(id: ProviderId, current: String?): String {
+        val base = keyAlias(id)
+        val version = current?.takeIf { isKeyAliasOf(id, it) }?.substringAfter("$base/", missingDelimiterValue = "")?.toIntOrNull() ?: 0
+        return "$base/${version + 1}"
+    }
+
+    /** True when [alias] is one of the names [id]'s key is saved under: the original form or a versioned one. */
+    private fun isKeyAliasOf(id: ProviderId, alias: String): Boolean {
+        val base = keyAlias(id)
+        if (alias == base) return true
+        val version = alias.removePrefix("$base/")
+        return version.length < alias.length && version.isNotEmpty() && version.all { it in '0'..'9' }
+    }
+
+    /** Deletes the key a failed record write left without a record; a failure to do so is kept with [cause]. */
+    private suspend fun discardKey(alias: String, cause: Exception) {
+        try {
+            vault.delete(alias)
+        } catch (e: Exception) {
+            // The start-up clean-up deletes it if the record exists; the record write's failure is the one to report.
+            cause.addSuppressed(e)
+        }
+    }
 
     private fun normaliseHeaders(headers: Map<String, String>): Map<String, String> =
         headers.entries.associate { it.key.trim() to it.value.trim() }

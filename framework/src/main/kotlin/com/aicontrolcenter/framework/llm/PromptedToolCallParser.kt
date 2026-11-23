@@ -32,8 +32,10 @@ internal object PromptedToolCallParser {
     /** [text] is the reply without the call blocks that were understood. */
     data class Parsed(val text: String, val calls: List<Call>) {
         /**
-         * For each of [calls], the texts of the reply it was written as: its whole block, and
-         * every JSON object in the block that reads as this very call. Not part of equality.
+         * For each of [calls], the texts of the reply it was written as: its whole block; for a
+         * `<function=name>` or "Action:" call, its marker and arguments without anything that
+         * closes them; and every JSON object in the block that reads as this very call. Not part
+         * of equality.
          */
         var written: List<List<String>> = calls.map { emptyList() }
             private set
@@ -44,7 +46,12 @@ internal object PromptedToolCallParser {
         }
     }
 
-    private class Block(val start: Int, val end: Int, val calls: List<Call>)
+    /**
+     * @param canonical for a call written as a marker followed by its arguments (a function tag,
+     * an "Action:" line), the marker and the arguments as written, without a closing tag: an
+     * echo that added one, or that ends elsewhere, still contains it.
+     */
+    private class Block(val start: Int, val end: Int, val calls: List<Call>, val canonical: String? = null)
 
     private val TAG_OPEN = Regex("<(tool_calls?|toolcall|function_calls?|tool_use)>", RegexOption.IGNORE_CASE)
     private val FUNCTION_TAG = Regex("<function=([A-Za-z0-9_.\\-]+)>", RegexOption.IGNORE_CASE)
@@ -66,7 +73,9 @@ internal object PromptedToolCallParser {
     private val RESULT_OPEN = Regex("<tool_results?\\b", RegexOption.IGNORE_CASE)
     private val RESULT_CLOSE = Regex("</tool_results?\\s*>", RegexOption.IGNORE_CASE)
     private const val NOT_JSON = "the arguments are not valid JSON"
-    private const val MAX_ECHO_SCAN = 20_000
+
+    /** At most this many places in a block are tried as the start of a JSON object reading as a call. */
+    private const val MAX_OBJECT_READS = 50_000
     private const val NOT_AN_OBJECT = "the arguments are not a JSON object"
     private val ARGUMENT_KEYS = listOf("arguments", "args", "parameters", "params", "input", "tool_input", "action_input")
 
@@ -91,23 +100,29 @@ internal object PromptedToolCallParser {
         text.append(reply, from, reply.length)
         val written = blocks.flatMap { block ->
             val blockText = source.substring(block.start, block.end)
-            block.calls.map { call -> listOf(blockText) + objectsReadingAs(call, blockText) }
+            val objects = if (block.calls.any { it.argumentsError == null }) callObjects(blockText) else emptyMap()
+            block.calls.map { call ->
+                val own = if (call.argumentsError == null) objects[call].orEmpty() else emptyList()
+                (listOf(blockText) + listOfNotNull(block.canonical) + own).distinct()
+            }
         }
         return Parsed(BLANK_LINES.replace(text, "\n\n").trim(), blocks.flatMap { it.calls }, written)
     }
 
     /**
-     * The JSON objects in [text] that read as [call]: the call's own object inside an array, a
-     * wrapper or a block of several, as the model wrote it. Bounded in size; the block itself is
-     * always compared in full.
+     * The JSON objects in [text] that read as a call, by the call they read as: each call's own
+     * object inside an array, a wrapper or a block of several, as the model wrote it. Blocks of
+     * any length are searched; only the number of places tried is bounded ([MAX_OBJECT_READS]),
+     * and the block itself is always compared in full.
      */
-    private fun objectsReadingAs(call: Call, text: String): List<String> {
-        if (call.argumentsError != null || text.length > MAX_ECHO_SCAN) return emptyList()
-        val found = ArrayList<String>()
+    private fun callObjects(text: String): Map<Call, List<String>> {
+        val found = HashMap<Call, MutableList<String>>()
         var at = text.indexOf('{')
-        while (at >= 0) {
+        var reads = 0
+        while (at >= 0 && reads++ < MAX_OBJECT_READS) {
             val read = LenientJson.readAt(text, at, allowUnclosed = false)
-            if (read != null && (read.element as? JsonObject)?.let(::toCall) == call) found += text.substring(at, read.end)
+            val call = (read?.element as? JsonObject)?.let(::toCall)
+            if (call != null) found.getOrPut(call) { ArrayList() } += text.substring(at, read.end)
             at = text.indexOf('{', at + 1)
         }
         return found
@@ -185,8 +200,9 @@ internal object PromptedToolCallParser {
                 }
             }
         }
+        val canonical = reply.substring(open.range.first, end)
         FUNCTION_CLOSE.matchAt(reply, end)?.let { end = it.range.last + 1 }
-        return Block(open.range.first, end, listOf(Call(name, arguments, error)))
+        return Block(open.range.first, end, listOf(Call(name, arguments, error)), canonical)
     }
 
     private fun afterBracketMarker(reply: String, marker: MatchResult, truncated: Boolean): Block? {
@@ -334,7 +350,9 @@ internal object PromptedToolCallParser {
             val inputStart = action.range.last + 1
             val read = LenientJson.readAt(reply, inputStart, allowUnclosed = false)
             val arguments = if (read == null) JsonObject(emptyMap()) else read.element as? JsonObject ?: return@mapNotNull null
-            Block(action.range.first, read?.end ?: inputStart, listOf(Call(name, arguments)))
+            val end = read?.end ?: inputStart
+            // Nothing closes this form: its block is its marker and its arguments, which is also its canonical form.
+            Block(action.range.first, end, listOf(Call(name, arguments)), canonical = reply.substring(action.range.first, end))
         }.toList()
 
     /** Unmarked JSON is a call only when it names an offered tool and could be read completely. */

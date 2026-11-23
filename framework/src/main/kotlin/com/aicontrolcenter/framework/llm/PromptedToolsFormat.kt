@@ -17,8 +17,15 @@ import kotlinx.serialization.json.put
  * what it reads and what it is asked to write never disagree.
  */
 internal object PromptedToolsFormat {
-    private const val CALL_OPEN = "<tool_call>"
+    /** The tag a call is written in; also what the tool executor names when it tells the model how to write one. */
+    const val CALL_OPEN = "<tool_call>"
     private const val CALL_CLOSE = "</tool_call>"
+
+    /** The call object of [name] with its empty arguments spelled out, as the model is told to write one. */
+    fun callWithoutArguments(name: String): String = buildJsonObject {
+        put("name", name)
+        put("arguments", buildJsonObject {})
+    }.toString()
 
     /*
      * The explicit call markers: the tags of the formats models use and Mistral's bracket

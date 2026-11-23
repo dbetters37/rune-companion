@@ -17,6 +17,7 @@ import org.junit.Rule
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -156,14 +157,17 @@ class ProviderFormViewModelTest {
         val replace = form(app, editing = id)
         replace.setApiKey("sk-test-replacement-000000000")
         replace.save()
-        assertEquals("sk-test-replacement-000000000", app.vault.get(alias))
+        val replaced = assertNotNull(app.providers.get(id)?.apiKeyAlias)
+        assertNotEquals(alias, replaced, "a new key is saved under a new alias, never over the one in use")
+        assertEquals("sk-test-replacement-000000000", app.vault.get(replaced))
+        assertNull(app.vault.get(alias), "the previous key is deleted")
 
         val remove = form(app, editing = id)
         remove.setRemoveStoredKey(true)
         assertTrue(remove.uiState.value.isDirty)
         remove.save()
         assertNull(app.providers.get(id)?.apiKeyAlias)
-        assertNull(app.vault.get(alias))
+        assertNull(app.vault.get(replaced))
         assertTrue(assertNotNull(remove.uiState.value.setup).steps.first().detail!!.contains("deleted"))
     }
 

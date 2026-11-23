@@ -148,4 +148,29 @@ internal class SingleSendTest : MockApiTest() {
         assertEquals(listOf(true), oneShot)
         assertEquals(1, server.requestCount)
     }
+
+    @Test
+    fun `interceptors see a held Retry-After where the documentation says they do`() {
+        always { error(503, "api_error", "Retry-After" to "0") }
+        val seen = CopyOnWriteArrayList<String>()
+        fun recorder(label: String) = okhttp3.Interceptor { chain ->
+            chain.proceed(chain.request()).also {
+                seen += "$label ra=${it.headers.values("Retry-After")} held=${it.headers.values("X-AICC-Held-Retry-After")}"
+            }
+        }
+        val base = OkHttpClient.Builder()
+            .addInterceptor(recorder("app"))
+            .addNetworkInterceptor(recorder("net-before"))
+            .singleSend()
+            .build()
+        val derived = base.newBuilder().addNetworkInterceptor(recorder("net-derived")).build()
+
+        derived.newCall(Request.Builder().url(server.url("/v1/models")).build()).execute().use { assertEquals(listOf("0"), it.headers.values("Retry-After")) }
+
+        assertEquals(
+            listOf("net-derived ra=[0] held=[]", "net-before ra=[] held=[0]", "app ra=[0] held=[]"),
+            seen,
+        )
+        assertEquals(1, server.requestCount)
+    }
 }
