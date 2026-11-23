@@ -13,6 +13,7 @@ import com.aicontrolcenter.core.operator.OwnerRequest
 import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.OwnerRequestStatus
 import com.aicontrolcenter.core.operator.PermissionGrant
+import com.aicontrolcenter.core.operator.ScreenActionPolicy
 import com.aicontrolcenter.core.operator.SharedFolder
 import com.aicontrolcenter.core.tools.Capability
 import com.aicontrolcenter.core.tools.RiskLevel
@@ -150,7 +151,14 @@ internal fun OperatorApp.toEntity(): OperatorAppEntity = OperatorAppEntity(
     label = label,
     authorisedAt = authorisedAt,
     signingCertSha256 = signingCertSha256,
+    actionPolicy = policy.name,
 )
 
-internal fun OperatorAppEntity.toDomain(): OperatorApp =
-    OperatorApp(packageName = packageName, label = label, authorisedAt = authorisedAt, signingCertSha256 = signingCertSha256)
+internal fun OperatorAppEntity.toDomain(): OperatorApp = OperatorApp(
+    packageName = packageName,
+    label = label,
+    authorisedAt = authorisedAt,
+    signingCertSha256 = signingCertSha256,
+    // A name this version does not know falls back to the safe choice: ask before every action.
+    policy = ScreenActionPolicy.entries.firstOrNull { it.name == actionPolicy } ?: ScreenActionPolicy.ASK_EVERY_ACTION,
+)

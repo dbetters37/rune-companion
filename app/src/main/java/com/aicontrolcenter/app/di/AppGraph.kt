@@ -298,6 +298,8 @@ class AppGraph(
                 web = webReader,
                 screen = screenSessions,
                 authorisedApps = ports.operator.operatorApps.asAuthorisedApps(),
+                // Read-only: the screen tools check the operator switches and local-only mode before they look at a screen.
+                settings = ports.settings::get,
                 protectedPackages = protectedPackages,
                 shell = ports.operator.shell,
                 termux = ports.operator.termux,

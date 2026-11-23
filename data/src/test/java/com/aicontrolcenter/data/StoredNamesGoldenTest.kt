@@ -38,6 +38,7 @@ import com.aicontrolcenter.core.operator.OperatorApp
 import com.aicontrolcenter.core.operator.OperatorCapabilities
 import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.OwnerRequestStatus
+import com.aicontrolcenter.core.operator.ScreenActionPolicy
 import com.aicontrolcenter.core.operator.SharedFolder
 import com.aicontrolcenter.core.registry.AiAppCapability
 import com.aicontrolcenter.core.registry.AiAppStatus
@@ -164,6 +165,7 @@ class StoredNamesGoldenTest {
         assertStoredNames<OwnerRequestKind>("PERMISSION", "APPROVAL")
         assertStoredNames<OwnerRequestStatus>("PENDING", "APPROVED", "DENIED", "EXPIRED", "CANCELLED")
         assertStoredNames<RiskLevel>("SAFE", "MODIFYING", "CONSEQUENTIAL")
+        assertStoredNames<ScreenActionPolicy>("ASK_EVERY_ACTION", "ASK_CONSEQUENTIAL_ONLY")
     }
 
     @Test
@@ -230,9 +232,15 @@ class StoredNamesGoldenTest {
             SharedFolder(FolderId("fld_1"), "content://tree/primary%3ADocuments", "Documents", 5, readOnly = true).toEntity(),
         )
         assertEquals(
-            OperatorAppEntity("com.example.notes", "Notes", 7, "ab".repeat(32)),
+            OperatorAppEntity("com.example.notes", "Notes", 7, "ab".repeat(32), "ASK_EVERY_ACTION"),
             OperatorApp("com.example.notes", "Notes", 7, "ab".repeat(32)).toEntity(),
         )
+        assertEquals(
+            OperatorAppEntity("com.example.notes", "Notes", 7, null, "ASK_CONSEQUENTIAL_ONLY"),
+            OperatorApp("com.example.notes", "Notes", 7, null, ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY).toEntity(),
+        )
+        // A policy name this version does not know reads as the safe one.
+        assertEquals(ScreenActionPolicy.ASK_EVERY_ACTION, OperatorAppEntity("com.example.notes", "Notes", 7, null, "LATER_NAME").toDomain().policy)
         assertEquals(GrantId("grt_1"), s.grant("grt_1").toEntity().toDomain().id)
     }
 

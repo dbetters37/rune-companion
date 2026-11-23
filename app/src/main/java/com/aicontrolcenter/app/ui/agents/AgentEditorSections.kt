@@ -209,8 +209,8 @@ internal fun ToolsEditor(state: AgentEditorUiState, actions: AgentEditorActions)
             Column {
                 Text(
                     "Switching a tool on makes it available to this agent. It does not give the permission the tool needs: the " +
-                        "agent asks you the first time it needs one, and buying, sending, deleting or running a command asks you " +
-                        "every time.",
+                        "agent asks you the first time it needs one, and deleting, installing or running a command asks you every " +
+                        "time, as does each action on another app's screen unless you set that app to ask less.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

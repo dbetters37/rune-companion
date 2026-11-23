@@ -29,6 +29,7 @@ import com.aicontrolcenter.core.operator.OwnerRequests
 import com.aicontrolcenter.core.operator.OwnerResult
 import com.aicontrolcenter.core.operator.PermissionGrant
 import com.aicontrolcenter.core.operator.ProtectedPackages
+import com.aicontrolcenter.core.operator.ScreenActionPolicy
 import com.aicontrolcenter.core.operator.SharedFolder
 import com.aicontrolcenter.core.operator.SharedFolderRepository
 import com.aicontrolcenter.core.operator.SharedFolders
@@ -306,13 +307,29 @@ class DefaultOwnerOperatorApps(
             // A different app under the same name: what was granted for the old one does not carry over.
             revoked = grants.revokeAllWithConstraint(CapabilityConstraint.App(packageName), now)
         }
-        val app = OperatorApp(packageName, label, existing?.takeIf { it.signingCertSha256 == signingCertSha256 }?.authorisedAt ?: now, signingCertSha256)
+        // The same app keeps when it was authorised and how often it asks; a new or different one asks before every action.
+        val same = existing?.takeIf { it.signingCertSha256 == signingCertSha256 }
+        val app = OperatorApp(packageName, label, same?.authorisedAt ?: now, signingCertSha256, same?.policy ?: ScreenActionPolicy.ASK_EVERY_ACTION)
         apps.upsert(app)
         log(
             "App authorised for screen control: ${app.label}", app,
             if (revoked > 0) "Its signing certificate changed: $revoked earlier permission(s) for it revoked." else "",
         )
         OwnerResult.Done(app)
+    }
+
+    override suspend fun setPolicy(packageName: String, policy: ScreenActionPolicy): OperatorApp? = lock.withLock {
+        val app = apps.get(packageName) ?: return null
+        val changed = app.copy(policy = policy)
+        apps.upsert(changed)
+        log(
+            when (policy) {
+                ScreenActionPolicy.ASK_EVERY_ACTION -> "Every screen action asks first: ${app.label}"
+                ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY -> "Only buying, sending, deleting and similar ask first: ${app.label}"
+            },
+            changed, "",
+        )
+        changed
     }
 
     override suspend fun withdraw(packageName: String): Boolean = lock.withLock {
@@ -324,7 +341,13 @@ class DefaultOwnerOperatorApps(
     }
 
     private suspend fun log(title: String, app: OperatorApp, detail: String) = logSafely {
-        activity.record(ActivityType.USER_ACTION, title, detail, data = buildJsonObject { put("packageName", app.packageName) })
+        activity.record(
+            ActivityType.USER_ACTION, title, detail,
+            data = buildJsonObject {
+                put("packageName", app.packageName)
+                put("policy", app.policy.name)
+            },
+        )
     }
 }
 

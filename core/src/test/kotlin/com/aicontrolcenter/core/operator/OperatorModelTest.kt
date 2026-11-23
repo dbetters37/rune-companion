@@ -210,6 +210,78 @@ class OperatorModelTest {
         assertNull(ConsequentialControls.consequentialReason(base.copy(clickable = false)))
     }
 
+    /**
+     * Review 5, P4: the reviewer's 44 realistic controls, of which the word list of 0.5's first
+     * build missed 41. Each now asks, with its row or window title where the control alone says
+     * "OK" or "Yes", and look-alike letters and invisible characters folded away.
+     */
+    @Test
+    fun `buy, send, delete and consent controls the first word list missed are consequential`() {
+        fun el(text: String?, description: String? = null, label: String? = null, id: String? = null, context: String? = null) = ScreenElement(
+            snapshotId = 1, number = 1, packageName = "com.example", role = "Button", text = text, description = description,
+            resourceId = id, label = label, context = context, bounds = ScreenBounds(0, 0, 10, 10), clickable = true,
+        )
+        val cases = listOf(
+            el("Sell"), el("Swipe up to submit", id = "com.x:id/submit"), el("Place bid"), el("Withdraw"), el("Swap"), el("$4.99"),
+            el("€9.99/month"), el("Start free trial"), el("Upgrade"), el("Donate"), el("Tip \$5"), el("Request UberX"), el("Book now"),
+            el("Reserve"), el("Submit"), el("Forward"), el("Comment"), el("Report"), el("Block"), el("Join"), el("Go live"),
+            el("Decline"), el("Invite"), el("Upload"), el("Allow"), el("Approve"), el("I agree"), el("Move to trash"),
+            el("Move to bin"), el("Empty trash"), el("Clear chat"), el("Discard"), el("Archive"), el("Erase everything"), el("Reset"),
+            el("OK", context = "Delete 248 photos? · Gallery"), el("Yes", context = "Delete this conversation?"),
+            el(null, description = "Run"), el(null, description = "Play"),
+            el("\u03A1ay"), el("\u0405\u0435nd"), el("B\u200Buy"), el("\uFF22\uFF55\uFF59"), el("P\u00E0y"),
+            el("Buy now"), el(null, description = "Send"), el("Withdrawal"), el("Booking"), el("Reservation"), el("249.00 EUR"),
+        )
+        val missed = cases.filter { ConsequentialControls.consequentialReason(it) == null }
+        assertEquals(emptyList(), missed.map { it.text ?: it.description })
+        assertEquals("the control is labelled with \"pay\"", ConsequentialControls.consequentialReason(el("\u03A1ay")))
+        assertEquals("the control shows a price (\"$4.99\")", ConsequentialControls.consequentialReason(el("$4.99")))
+        // New stems match whole words and their forms only, so common words that merely contain them do not ask.
+        for (text in listOf("Display", "Facebook", "Notebook", "Nuclear", "Industrial", "Shallow", "Cabin", "Combine", "Olive", "Next", "Cancel", "Back")) {
+            assertNull(ConsequentialControls.consequentialReason(el(text)), text)
+        }
+        assertEquals("1,299.00 USD", ConsequentialControls.priceIn("Total 1,299.00 USD"))
+        assertNull(ConsequentialControls.priceIn("Line 3 of 4"))
+        assertNull(ConsequentialControls.priceIn("Try 2 more times"))
+    }
+
+    @Test
+    fun `a yes-button asks when its window or row mentions a consequential word or a price`() {
+        val ok = ScreenElement(1, 3, "com.example.shop", "Button", text = "Continue", bounds = ScreenBounds(0, 0, 1, 1), clickable = true)
+        fun window(title: String?, vararg texts: String) = ScreenSnapshot(
+            1, "com.example.shop", title,
+            texts.mapIndexed { i, t -> ScreenElement(1, i + 1, "com.example.shop", "TextView", text = t, bounds = ScreenBounds(0, 0, 1, 1)) } + ok,
+            withheld = 0, truncated = false, capturedAt = 1,
+        )
+        assertNull(ConsequentialControls.consequentialReason(ok))
+        assertNull(ConsequentialControls.consequentialReason(ok, window("Welcome", "Here is what is new")))
+        assertEquals(
+            "it answers a screen that mentions \"confirm\"",
+            ConsequentialControls.consequentialReason(ok, window("Confirm purchase of 3 items for 249.00")),
+        )
+        assertEquals(
+            "it answers a screen that shows a price (\"€249.00\")",
+            ConsequentialControls.consequentialReason(ok, window("Basket", "3 items", "Total: €249.00")),
+        )
+        assertNotNull(ConsequentialControls.consequentialReason(ok.copy(text = "OK"), window(null, "Delete 248 photos?")))
+        // Texts that are controls themselves, or fields, do not make a yes-button ask.
+        val withButton = window("Notes").let { w ->
+            w.copy(elements = w.elements + ScreenElement(1, 9, "com.example.shop", "Button", text = "Delete", bounds = ScreenBounds(0, 0, 1, 1), clickable = true))
+        }
+        assertNull(ConsequentialControls.consequentialReason(ok.copy(text = "Done"), withButton))
+    }
+
+    @Test
+    fun `typing asks for code fields and fields labelled with a consequential word, not for a message hint`() {
+        val field = ScreenElement(1, 1, "com.example", "EditText", bounds = ScreenBounds(0, 0, 1, 1), editable = true, clickable = true)
+        assertNull(ConsequentialControls.typingReason(field.copy(hint = "Send a message")))
+        assertNull(ConsequentialControls.typingReason(field.copy(hint = "Search", text = "pay rent")))
+        assertNotNull(ConsequentialControls.typingReason(field.copy(hint = "Code")))
+        assertNotNull(ConsequentialControls.typingReason(field.copy(hint = "Enter the verification code")))
+        assertNotNull(ConsequentialControls.typingReason(field.copy(resourceId = "com.bank:id/otp_input")))
+        assertNotNull(ConsequentialControls.typingReason(field.copy(description = "Amount to transfer")))
+    }
+
     @Test
     fun `protected packages include the system screens and this app`() {
         val list = ConsequentialControls.PROTECTED_PACKAGES

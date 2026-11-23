@@ -316,6 +316,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                 onOpenTask = openTask,
                 onOpenObjective = openObjective,
                 onOpenConversation = openConversation,
+                onOpenRequest = openRequest,
             )
         }
         composable<MemoryRoute> { entry ->

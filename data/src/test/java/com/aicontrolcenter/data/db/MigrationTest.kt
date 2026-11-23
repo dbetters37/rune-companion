@@ -30,6 +30,7 @@ import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.OwnerRequestRepository
 import com.aicontrolcenter.core.operator.OwnerRequestStatus
 import com.aicontrolcenter.core.operator.PermissionRepository
+import com.aicontrolcenter.core.operator.ScreenActionPolicy
 import com.aicontrolcenter.core.operator.SharedFolder
 import com.aicontrolcenter.core.operator.SharedFolderRepository
 import com.aicontrolcenter.core.registry.AiApp
@@ -139,6 +140,8 @@ class MigrationTest {
         val at = copied.firstOrNull()?.authorisedAt ?: 0
         assertTrue(at in before..after, "authorised at $at, migrated between $before and $after")
         assertEquals(expected.map { OperatorApp(it.packageName, it.label, at, it.signingCertSha256) }, copied)
+        // Apps carried over from 0.4 ask before every screen action, like a newly authorised one.
+        assertTrue(copied.all { it.policy == ScreenActionPolicy.ASK_EVERY_ACTION }, copied.toString())
     }
 
     /**

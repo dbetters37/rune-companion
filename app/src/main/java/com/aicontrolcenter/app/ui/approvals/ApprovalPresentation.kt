@@ -99,6 +99,11 @@ data class RequestUi(
     val hiddenWarning: String?,
     /** The owner's note, or why it expired or was cancelled. */
     val note: String?,
+    /**
+     * For a call on another app's screen: that the app comes back once the owner allows it, and
+     * that the call acts only if the app still shows what is described. Null for other requests.
+     */
+    val returnsToApp: String? = null,
     val taskId: TaskId?,
     val rootId: TaskId?,
     val conversationId: ConversationId?,
@@ -212,6 +217,9 @@ fun requestUi(
     val summary = shown(request.summary)
     val details = request.details.map(::shown)
     val action = actionOf(summary)
+    // Acting on another app's screen: that app may send what it is made to do off the phone.
+    val actsOnScreen = request.capability == OperatorCapabilities.SCREEN_OPERATE
+    val app = target ?: (request.constraint as? CapabilityConstraint.App)?.packageName
     val breadth = breadthOf(request.capability, permission, target)
     val notOnly = if (target == null && host != null) ", not only $host," else ""
     return RequestUi(
@@ -234,8 +242,8 @@ fun requestUi(
             is CapabilityConstraint.App -> "App"
             CapabilityConstraint.None -> null
         },
-        dataGoesTo = host?.let { "Sent to $it" } ?: "Stays on this phone",
-        dataLeavesPhone = host != null,
+        dataGoesTo = host?.let { "Sent to $it" } ?: if (actsOnScreen) "May leave this phone through ${target ?: "the app"}" else "Stays on this phone",
+        dataLeavesPhone = host != null || actsOnScreen,
         dataGoesToHost = host,
         riskLevel = request.risk,
         risk = request.risk.toRiskLabel(),
@@ -260,17 +268,31 @@ fun requestUi(
         always = AlwaysUi(
             title = "Always let ${agent.name} $breadth?",
             message = "${agent.name} may then $breadth$notOnly in any task or chat without asking you, until you remove it in " +
-                "Tools › Allowed. Buying, sending, deleting and similar still ask you every time.",
+                "Tools › Allowed. " + if (actsOnScreen) {
+                    "Each action on ${app ?: "the app"}'s screen still asks you, unless you set the app to ask only before buying, " +
+                        "sending, deleting and similar."
+                } else {
+                    "Buying, sending, deleting and similar still ask you every time."
+                },
             confirm = "Always allow ${agent.name}",
         ),
         hardToUndo = if (request.risk != RiskLevel.CONSEQUENTIAL) null else {
-            details.filter { IRREVERSIBLE.containsMatchIn(it) }.joinToString(" ").ifEmpty { request.risk.toRiskLabel().detail }
+            // A screen action's details quote the other app's own text, which must not be lifted into this app's warning.
+            if (request.constraint is CapabilityConstraint.App) request.risk.toRiskLabel().detail
+            else details.filter { IRREVERSIBLE.containsMatchIn(it) }.joinToString(" ").ifEmpty { request.risk.toRiskLabel().detail }
         },
         hiddenWarning = hiddenCharacterWarning(marked),
         note = request.decisionNote?.let { inWords(PreviewText.exact(it)) },
         taskId = request.taskId,
         rootId = request.rootId,
         conversationId = request.conversationId,
+        returnsToApp = if (open && request.constraint is CapabilityConstraint.App) {
+            "You answer here, in AI Control Center. Once you allow it, this app steps aside so $app comes back, and the agent " +
+                "goes on once $app is in front again; an action runs only if $app still shows what is described above. If " +
+                "another app comes back instead, switch to $app within 30 seconds, or nothing is done."
+        } else {
+            null
+        },
     )
 }
 

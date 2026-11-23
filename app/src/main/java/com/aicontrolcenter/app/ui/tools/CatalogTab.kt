@@ -69,8 +69,8 @@ fun CatalogTab(state: ToolsCatalogUiState, onOpenAgent: (AgentId) -> Unit, onOpe
             Column(verticalArrangement = Arrangement.spacedBy(Spacing.md)) {
                 Text(
                     "${plural(state.toolCount, "tool")} agents can be given. Switching a tool on for an agent, in its editor, does not give " +
-                        "it the permission the tool needs: the agent asks you the first time, and buying, sending, deleting or running a " +
-                        "command asks you every time.",
+                        "it the permission the tool needs: the agent asks you the first time, and deleting, installing or running a " +
+                        "command asks you every time, as does each action on another app's screen unless you set that app to ask less.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

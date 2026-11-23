@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 5,
-    "identityHash": "9c6a995229b79136b60ce54960b89124",
+    "identityHash": "7e8e74acdf92e4855a18221c3aa5388f",
     "entities": [
       {
         "tableName": "agents",
@@ -1991,7 +1991,7 @@
       },
       {
         "tableName": "operator_apps",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`package_name` TEXT NOT NULL, `label` TEXT NOT NULL, `authorised_at` INTEGER NOT NULL, `signing_cert_sha256` TEXT, PRIMARY KEY(`package_name`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`package_name` TEXT NOT NULL, `label` TEXT NOT NULL, `authorised_at` INTEGER NOT NULL, `signing_cert_sha256` TEXT, `action_policy` TEXT NOT NULL, PRIMARY KEY(`package_name`))",
         "fields": [
           {
             "fieldPath": "packageName",
@@ -2015,6 +2015,12 @@
             "fieldPath": "signingCertSha256",
             "columnName": "signing_cert_sha256",
             "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "actionPolicy",
+            "columnName": "action_policy",
+            "affinity": "TEXT",
+            "notNull": true
           }
         ],
         "primaryKey": {
@@ -2027,7 +2033,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '9c6a995229b79136b60ce54960b89124')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '7e8e74acdf92e4855a18221c3aa5388f')"
     ]
   }
 }

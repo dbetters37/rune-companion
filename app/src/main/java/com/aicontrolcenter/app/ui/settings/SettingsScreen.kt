@@ -198,8 +198,9 @@ private fun PhoneOperatorSection(settings: FrameworkSettings, actions: SettingsA
                 title = "Phone operator",
                 description = "On: agents may use the phone tools switched on for them: files in their workspace and in folders you " +
                     "share, photos you allow, apps and links, web pages and scripts. Reading their own workspace is always allowed; " +
-                    "every other tool needs your permission first, and deleting, installing, buying, sending or running a command " +
-                    "asks you every time. Off: no agent can touch the phone.",
+                    "every other tool needs your permission first, and deleting, installing or running a command asks you every " +
+                    "time, as does each action on another app's screen unless you set that app to ask less in Tools › Screen " +
+                    "control. Off: no agent can touch the phone.",
                 checked = settings.operatorEnabled,
                 onCheckedChange = actions.onOperatorEnabledChange,
             )

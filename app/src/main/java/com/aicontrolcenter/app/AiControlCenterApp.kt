@@ -6,6 +6,7 @@ import com.aicontrolcenter.app.di.createProductionPorts
 import com.aicontrolcenter.app.work.AndroidNotificationAccess
 import com.aicontrolcenter.app.work.ApprovalNotifier
 import com.aicontrolcenter.app.work.ObjectiveWorkController
+import com.aicontrolcenter.app.work.ScreenSessionNotifications
 import com.aicontrolcenter.app.work.ScreenSessionNotifier
 import com.aicontrolcenter.device.screen.ScreenOperatorLayer
 import kotlinx.coroutines.CoroutineScope
@@ -26,6 +27,13 @@ class AiControlCenterApp : Application() {
 
     @Volatile
     private var installedGraph: AppGraph? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        // Screen sessions live in this process only: an "is operating" notification still showing now was left by a
+        // process that died mid-session, and nothing is operating any more.
+        ScreenSessionNotifications.cancel(this)
+    }
 
     /**
      * The composition root; created from the production ports unless one was installed. The

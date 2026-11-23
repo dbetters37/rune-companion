@@ -9,9 +9,11 @@ import com.aicontrolcenter.core.RequestId
 import com.aicontrolcenter.core.operator.DecideResult
 import com.aicontrolcenter.core.operator.GrantScope
 import com.aicontrolcenter.core.operator.OwnerRequest
+import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.OwnerRequests
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.tools.Capability
+import com.aicontrolcenter.core.tools.CapabilityConstraint
 import com.aicontrolcenter.core.tools.CapabilityInfo
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -21,11 +23,13 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.time.ZoneId
 
 /** A tick now and then every half minute, so the time left on a request moves. */
@@ -73,7 +77,23 @@ data class ApprovalUiState(
     val note: String = "",
     val isBusy: Boolean = false,
     val message: UserMessage? = null,
+    /** Where to go once the owner allowed a call on another app's screen; the screen acts on it once. */
+    val afterAnswer: AfterAnswer? = null,
 )
+
+/**
+ * What follows once the owner allowed a call on another app's screen. They answered here, in AI
+ * Control Center, while that app waits behind it, and the call acts only once that app is in
+ * front again: so either the same call's next question opens (its approval right after its
+ * permission), or this app steps aside and the app it operates comes back.
+ */
+sealed interface AfterAnswer {
+    /** Step aside so [appLabel] comes back to the front. */
+    data class ReturnToApp(val appLabel: String) : AfterAnswer
+
+    /** The same call asks again at once: open [requestId]. */
+    data class OpenRequest(val requestId: RequestId) : AfterAnswer
+}
 
 /**
  * One question to the owner: who asks, for what exactly, where data would go, and the answers
@@ -92,7 +112,7 @@ class ApprovalViewModel(
     ticker: Flow<Unit> = everyHalfMinute(),
 ) : ViewModel() {
 
-    private data class Local(val note: String = "", val isBusy: Boolean = false, val message: UserMessage? = null)
+    private data class Local(val note: String = "", val isBusy: Boolean = false, val message: UserMessage? = null, val afterAnswer: AfterAnswer? = null)
 
     private val local = MutableStateFlow(Local())
     private var messageCounter = 0L
@@ -111,6 +131,7 @@ class ApprovalViewModel(
             note = local.note,
             isBusy = local.isBusy,
             message = local.message,
+            afterAnswer = local.afterAnswer,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ApprovalUiState())
 
@@ -122,6 +143,7 @@ class ApprovalViewModel(
         val note = local.value.note.trim().takeIf { it.isNotEmpty() }
         local.update { it.copy(isBusy = true) }
         viewModelScope.launch {
+            var allowedOnScreen: OwnerRequest? = null
             val text = try {
                 val result = when (choice) {
                     RequestChoice.ALLOW_ONCE -> requests.grant(requestId, GrantScope.ONCE, note)
@@ -130,6 +152,9 @@ class ApprovalViewModel(
                     RequestChoice.APPROVE -> requests.approve(requestId, note)
                     RequestChoice.DENY -> requests.deny(requestId, note)
                 }
+                if (result is DecideResult.Decided && choice != RequestChoice.DENY && result.request.constraint is CapabilityConstraint.App) {
+                    allowedOnScreen = result.request
+                }
                 describe(result, choice)
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -137,10 +162,32 @@ class ApprovalViewModel(
                 "Your answer could not be saved: ${failure.message ?: "storage error"}. The agent is still waiting."
             }
             local.update { it.copy(isBusy = false, note = "", message = UserMessage(text, ++messageCounter)) }
+            allowedOnScreen?.let { answered -> local.update { it.copy(afterAnswer = nextStep(answered)) } }
         }
     }
 
     fun messageShown() = local.update { it.copy(message = null) }
+
+    /** The screen went where [ApprovalUiState.afterAnswer] said. */
+    fun afterAnswerDone() = local.update { it.copy(afterAnswer = null) }
+
+    /**
+     * After allowing [answered], a call on another app's screen: the same call's approval when it
+     * asks for one right after its permission, else back to that app.
+     */
+    private suspend fun nextStep(answered: OwnerRequest): AfterAnswer {
+        val app = answered.targetLabel ?: (answered.constraint as CapabilityConstraint.App).packageName
+        if (answered.kind != OwnerRequestKind.PERMISSION) return AfterAnswer.ReturnToApp(app)
+        val next = withTimeoutOrNull(FOLLOW_UP_MS) {
+            requests.pending.map { pending -> pending.firstOrNull { it.followsUp(answered) } }.first { it != null }
+        }
+        return next?.let { AfterAnswer.OpenRequest(it.id) } ?: AfterAnswer.ReturnToApp(app)
+    }
+
+    /** The approval the same call raises right after its permission [answered]. */
+    private fun OwnerRequest.followsUp(answered: OwnerRequest): Boolean =
+        id != answered.id && kind == OwnerRequestKind.APPROVAL && agentId == answered.agentId && toolId == answered.toolId &&
+            constraint == answered.constraint && createdAt >= answered.createdAt
 
     private fun describe(result: DecideResult, choice: RequestChoice): String = when (result) {
         is DecideResult.Decided -> when (choice) {
@@ -158,5 +205,8 @@ class ApprovalViewModel(
 
     private companion object {
         const val MAX_NOTE = 500
+
+        /** How long to wait, after a permission for a screen call, for that call's approval before stepping aside. */
+        const val FOLLOW_UP_MS = 1_500L
     }
 }

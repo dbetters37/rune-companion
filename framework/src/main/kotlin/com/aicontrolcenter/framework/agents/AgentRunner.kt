@@ -1,5 +1,6 @@
 package com.aicontrolcenter.framework.agents
 
+import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.agents.AgentActivity
 import com.aicontrolcenter.core.agents.AgentProfile
@@ -69,8 +70,11 @@ import kotlin.time.TimeSource
  *    ([AgentRunListener.onWaitingForOwner]), so a chat can show the request.
  *  - The run's time limit is pausable ([withPausableTimeout]): time a tool call spends waiting
  *    for the owner to answer a permission or approval request does not count against it.
- *  - When the run ends, the agent's screen-operation indicator is ended
- *    ([ScreenOperator.endSession]).
+ *  - When the run ends after it used a screen tool, the agent's screen-operation indicator is
+ *    ended ([ScreenOperator.endSession]), unless another run of the same agent is still going:
+ *    that one may be operating an app, and ends the indicator itself when it ends (or the
+ *    indicator ends [ScreenOperator.SESSION_IDLE_MS] after the last screen call). A run that never
+ *    touched the screen ends nothing.
  *
  * A request can narrow a run, never widen it: [AgentRunRequest.limits] lowers the model call,
  * tool call and time limits for one run (a teammate's short answer, a task with little time
@@ -100,9 +104,13 @@ class AgentRunner(
     /** How memory tool results are stored and written out again; shared with the chat, which shows them. */
     internal val references = MemoryReferences(tools)
 
+    /** Runs going on now, per agent, so the end of one run never ends the screen indicator of another. */
+    private val runningPerAgent = HashMap<AgentId, Int>()
+
     suspend fun run(request: AgentRunRequest, listener: AgentRunListener = AgentRunListener.NONE): AgentRunResult {
         val limits = settings.get()
         val run = Run(request, listener, limits)
+        synchronized(runningPerAgent) { runningPerAgent[request.agent.id] = (runningPerAgent[request.agent.id] ?: 0) + 1 }
         monitor.runStarted(request.agent.id, request.activityLabel ?: "Preparing", request.taskId)
         try {
             val timeoutMinutes = limits.taskTimeoutMinutes.coerceAtLeast(1)
@@ -122,10 +130,17 @@ class AgentRunner(
                 run.closeOpenWork("the turn was stopped")
                 monitor.runEnded(request.agent.id)
                 run.saveStats()
-                try {
-                    screen?.endSession(request.agent.name)
-                } catch (e: Exception) {
-                    // Only the indicator depends on it; it ends by itself after a while.
+                val last = synchronized(runningPerAgent) {
+                    val left = (runningPerAgent[request.agent.id] ?: 1) - 1
+                    if (left > 0) runningPerAgent[request.agent.id] = left else runningPerAgent.remove(request.agent.id)
+                    left == 0
+                }
+                if (last && run.usedScreen) {
+                    try {
+                        screen?.endSession(request.agent.name)
+                    } catch (e: Exception) {
+                        // Only the indicator depends on it; it ends by itself after a while.
+                    }
                 }
             }
         }
@@ -165,6 +180,9 @@ class AgentRunner(
 
     /** The state of one run. */
     private inner class Run(val request: AgentRunRequest, val listener: AgentRunListener, val limits: FrameworkSettings) {
+        /** This run called a screen tool, so it may have started the agent's "operating" indicator. */
+        @Volatile var usedScreen = false
+
         private val agent = request.agent
         private val offered: List<ToolSpec> = offeredTools(request)
         private val definitions = offered.map(::definition)
@@ -322,6 +340,7 @@ class AgentRunner(
                     is Outcome.Go -> now.agent
                 }
                 val spec = tools.byFunctionName(call.name)?.spec
+                if (spec?.id?.value?.startsWith(SCREEN_TOOL_PREFIX) == true) usedScreen = true
                 report("Running tool: ${spec?.title ?: call.name.take(MAX_TOOL_NAME_SHOWN)}")
                 listener.onToolStarted(call, spec)
                 toolCalls++
@@ -421,6 +440,9 @@ class AgentRunner(
 
     private companion object {
         const val MAX_TOOL_NAME_SHOWN = 40
+
+        /** The screen tools' ids start with this; a run that called one ends the indicator when it ends. */
+        const val SCREEN_TOOL_PREFIX = "screen."
         const val LATIN_CHARS_PER_TOKEN = 4
     }
 }

@@ -120,4 +120,23 @@ class OperatorNotificationsTest {
         sessions.value = emptyList()
         assertTrue(manager.activeNotifications.none { it.id == ScreenSessionNotifications.NOTIFICATION_ID })
     }
+
+    /** Review 5, A9: nothing names the agent or the app over the lock screen, and a notification a dead process left is removed. */
+    @Test
+    fun `the operating notification is private on the lock screen, and one left by a dead process goes at start-up`() {
+        val stop = PendingIntent.getBroadcast(context, 7, Intent("test.STOP").setPackage(context.packageName), PendingIntent.FLAG_IMMUTABLE)
+        val notification = ScreenSessionNotifications.build(context, listOf(ScreenSession("Operator", "org.example.bank", "Bank")), stop)
+        assertEquals(Notification.VISIBILITY_PRIVATE, notification.visibility)
+        val public = assertNotNull(notification.publicVersion)
+        val publicTitle = public.extras.getString(Notification.EXTRA_TITLE).orEmpty()
+        assertEquals(ScreenSessionNotifications.PUBLIC_TITLE, publicTitle)
+        assertFalse("Operator" in publicTitle || "Bank" in publicTitle)
+        assertEquals("Stop", public.actions.single().title.toString())
+
+        // The process died mid-session: the notification is still in the shade when the app starts again.
+        ScreenSessionNotifications.post(context, notification)
+        assertTrue(manager.activeNotifications.any { it.id == ScreenSessionNotifications.NOTIFICATION_ID })
+        (context as com.aicontrolcenter.app.AiControlCenterApp).onCreate()
+        assertTrue(manager.activeNotifications.none { it.id == ScreenSessionNotifications.NOTIFICATION_ID })
+    }
 }

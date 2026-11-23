@@ -194,6 +194,7 @@ fun ToolsSectionRoute(initialTab: ToolsTab, initialAgent: AgentId?, navigation: 
                         onAuthorise = viewModel::authorise,
                         onWithdraw = viewModel::withdraw,
                         onSetAccess = viewModel::setAccess,
+                        onSetPolicy = viewModel::setPolicy,
                     ),
                 )
             })

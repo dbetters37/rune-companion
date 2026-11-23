@@ -137,7 +137,7 @@ class ScreenToolsTest {
             f.tool("screen.tap"), json("exact_text" to "Buy now"), f.context,
             change = { f.screen.screen = shop.copy(controls = shop.controls.map { if (it == coupon) coupon.copy(text = "SAVE99") else it }) },
             nothingDone = { taps.size == 1 },
-        ).also { assertTrue("fields on screen changed" in it.content, it.content) }
+        ).also { assertTrue("what the window shows changed" in it.content, it.content) }
 
         // Another app came to the front.
         f.screen.screen = shop
@@ -168,7 +168,7 @@ class ScreenToolsTest {
     }
 
     @Test
-    fun `home leads to the launcher, back and scroll stay in the app`() = runTest {
+    fun `home and back lead to the launcher, scroll stays in the app`() = runTest {
         ready()
         val home = f.assess("screen.home")
         assertEquals("com.android.launcher3", home.leadsTo)
@@ -183,7 +183,8 @@ class ScreenToolsTest {
         f.screen.launcher = "com.android.launcher3"
         PreparedActionChecks.assertRunsWhenUnchanged(f.tool("screen.back"), json(), f.context)
         assertEquals(GlobalAction.BACK, (f.screen.performed.last() as ScreenCall.Global).action)
-        assertTrue(f.assess("screen.back").leadsTo == null)
+        // Back can leave the app too, so it names the launcher like Home (review 5, R1).
+        assertEquals("com.android.launcher3", f.assess("screen.back").leadsTo)
         val scroll = f.ok("screen.scroll", "direction" to "down")
         assertTrue("Scrolled down" in scroll.content)
         assertEquals(ScrollDirection.DOWN, (f.screen.performed.last() as ScreenCall.Scroll).direction)

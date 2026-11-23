@@ -7,6 +7,7 @@ import com.aicontrolcenter.app.testing.raise
 import com.aicontrolcenter.app.testing.sampleApproval
 import com.aicontrolcenter.app.testing.samplePermission
 import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.FolderId
 import com.aicontrolcenter.core.GrantId
 import com.aicontrolcenter.core.RequestId
 import com.aicontrolcenter.core.TaskId
@@ -16,10 +17,10 @@ import com.aicontrolcenter.core.operator.OperatorCapabilities
 import com.aicontrolcenter.core.operator.OperatorTools
 import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.PermissionGrant
+import com.aicontrolcenter.core.operator.ScreenActionPolicy
 import com.aicontrolcenter.core.operator.ScreenServiceState
 import com.aicontrolcenter.core.registry.InstalledAppInfo
 import com.aicontrolcenter.core.tools.CapabilityConstraint
-import com.aicontrolcenter.core.FolderId
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.TestScope
@@ -363,6 +364,33 @@ class ToolsViewModelsTest {
         assertNull(app.operatorApps.get("org.example.terminal"))
         vm.authorise("com.android.settings", "Settings")
         assertEquals("Settings is never operated by agents: it can change the phone's security.", vm.uiState.value.message?.text)
+    }
+
+    /** Review 5, P4: every authorised app asks before every action until the owner chooses to be asked less. */
+    @Test
+    fun `an authorised app asks before every action until the owner chooses fewer questions, and can go back`() = runTest(mainRule.dispatcher) {
+        val app = started()
+        app.installSampleApps()
+        app.certificates["org.example.notes"] = "12".repeat(32)
+        val vm = screen(app)
+        vm.authorise("org.example.notes", "Notes")
+        assertEquals(ScreenActionPolicy.ASK_EVERY_ACTION, vm.uiState.value.apps.single().policy)
+        assertEquals(ScreenActionPolicy.ASK_EVERY_ACTION, app.operatorApps.get("org.example.notes")?.policy)
+
+        vm.setPolicy("org.example.notes", ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY)
+        assertEquals("Only actions recognised as buying, sending, deleting and similar ask you first in Notes now.", vm.uiState.value.message?.text)
+        assertEquals(ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY, vm.uiState.value.apps.single().policy)
+        assertEquals(ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY, app.operatorApps.get("org.example.notes")?.policy)
+
+        vm.setPolicy("org.example.notes", ScreenActionPolicy.ASK_EVERY_ACTION)
+        assertEquals("Every action in Notes asks you first now.", vm.uiState.value.message?.text)
+        assertEquals(ScreenActionPolicy.ASK_EVERY_ACTION, app.operatorApps.get("org.example.notes")?.policy)
+        vm.setPolicy("org.example.gone", ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY)
+        assertEquals("That app is not authorised any more.", vm.uiState.value.message?.text)
+        // The owner is told plainly what the fewer questions can miss.
+        val relaxed = ScreenPolicyText.description(ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY, "Notes")
+        assertTrue("can be missed" in relaxed && "Other actions in Notes run without asking" in relaxed, relaxed)
+        assertTrue("Every tap, typing, scroll, Back and Home" in ScreenPolicyText.description(ScreenActionPolicy.ASK_EVERY_ACTION, "Notes"))
     }
 
     @Test

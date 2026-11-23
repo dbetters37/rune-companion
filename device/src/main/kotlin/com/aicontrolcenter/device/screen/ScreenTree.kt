@@ -278,6 +278,25 @@ internal class ScreenReader(
             return if (text.length > MAX_TEXT) text.take(MAX_TEXT) + "…" else text
         }
 
+        /**
+         * Whether [node], just refreshed from the app, still is the control [element] was read
+         * as: the same kind, text (unless [compareText] is false, after typing into it),
+         * description, view id and, where the app sets one, unique id. A list that re-bound the
+         * view to another item between the read and the action fails this.
+         */
+        fun sameIdentity(node: AccessibilityNodeInfo, element: ScreenElement, compareText: Boolean = true): Boolean {
+            val role = node.className?.toString()?.substringAfterLast('.')?.ifBlank { null } ?: "View"
+            if (role != element.role) return false
+            if (compareText && !isWithheld(node) && clean(node.text) != element.text) return false
+            if (clean(node.contentDescription) != element.description) return false
+            if (node.viewIdResourceName?.ifBlank { null } != element.resourceId) return false
+            val key = element.nodeKey
+            if (key != null && key.startsWith("id:") && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                if (node.uniqueId?.ifBlank { null }?.let { "id:$it" } != key) return false
+            }
+            return true
+        }
+
         /** A password field (by flag or input type) or, on Android 14+, a view marked sensitive. */
         fun isWithheld(node: AccessibilityNodeInfo): Boolean {
             if (node.isPassword || isPasswordInput(node.inputType)) return true

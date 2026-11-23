@@ -80,7 +80,9 @@ object OperatorCapabilities {
         ),
         CapabilityInfo(
             SCREEN_OPERATE, "Use an app's screen",
-            "Tap, type and scroll in an app you authorised. Buying, sending, deleting and similar always ask you first. Given per app.",
+            "Tap, type and scroll in an app you authorised. Every action asks you first, unless you set that app to ask only before " +
+                "buying, sending, deleting and similar; those are recognised by their words, which can miss some. Given per app. " +
+                "Blocked in local-only mode, because the app may send data off this phone.",
             ToolCategory.ACCESSIBILITY, grantedByDefault = false, constrainedBy = ConstraintKind.APP,
         ),
         CapabilityInfo(

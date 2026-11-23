@@ -40,6 +40,8 @@ data class FakeControl(
     val clickable: Boolean = true,
     val editable: Boolean = false,
     val scrollable: Boolean = false,
+    val checkable: Boolean = false,
+    val checked: Boolean = false,
     val password: Boolean = false,
     val sensitive: Boolean = false,
 ) {
@@ -66,8 +68,9 @@ sealed interface ScreenCall {
  * A scriptable screen that follows the [ScreenOperator] contract: tests set [screen] (and change
  * it to simulate navigation, or from [onAction] after a tap), choose the [authorised] apps,
  * switch [setState] and Stop ([ScreenControl]), and check [calls] (every call), [performed]
- * (calls that acted) and [endedSessions]. Snapshots are numbered from 1; the last
- * [KEPT_SNAPSHOTS] are kept for [ScreenTarget.Numbered].
+ * (calls that acted), [inspected] and [endedSessions]. Snapshots are numbered from 1; the last
+ * [KEPT_SNAPSHOTS] are kept for [ScreenTarget.Numbered]. To act out the owner answering inside
+ * this app, set [screen] to a window of [ownPackage] and back.
  */
 class FakeScreenOperator(
     initialState: ScreenServiceState = ScreenServiceState.READY,
@@ -111,6 +114,9 @@ class FakeScreenOperator(
     /** Agent names passed to [endSession]. */
     val endedSessions = CopyOnWriteArrayList<String>()
 
+    /** Packages [inspect] read (side-effect free reads, not in [calls]: they start no session). */
+    val inspected = CopyOnWriteArrayList<String>()
+
     /** Runs after every call that acted, e.g. to show the next screen. */
     @Volatile var onAction: (ScreenCall) -> Unit = {}
 
@@ -141,6 +147,12 @@ class FakeScreenOperator(
         calls += call
         val shown = gate(packageName) ?: return refusal(packageName)
         return ScreenResult.Ok(snapshot(shown, maxElements)).also { acted(call) }
+    }
+
+    override suspend fun inspect(packageName: String, maxElements: Int): ScreenResult<ScreenSnapshot> {
+        val shown = gate(packageName) ?: return refusal(packageName)
+        inspected += packageName
+        return ScreenResult.Ok(snapshot(shown, maxElements, keep = false))
     }
 
     override suspend fun find(packageName: String, target: ScreenTarget): ScreenResult<ScreenElement> {
@@ -255,21 +267,24 @@ class FakeScreenOperator(
         onAction(call)
     }
 
-    private fun snapshot(shown: FakeScreen, maxElements: Int): ScreenSnapshot = synchronized(lock) {
+    /** A snapshot of [shown]; [keep]: numbered and kept for [ScreenTarget.Numbered], else id 0 and not kept ([inspect]). */
+    private fun snapshot(shown: FakeScreen, maxElements: Int, keep: Boolean = true): ScreenSnapshot = synchronized(lock) {
         val visible = shown.controls.filter { !it.withheld }
-        val id = ++snapshotCounter
+        val id = if (keep) ++snapshotCounter else 0L
         val elements = visible.take(maxElements).mapIndexed { i, c -> element(c, shown.packageName, id, i + 1) }
         ScreenSnapshot(id, shown.packageName, shown.title, elements, shown.controls.size - visible.size, visible.size > maxElements, clock.now())
             .also {
-                snapshots[id] = it to shown
-                while (snapshots.size > KEPT_SNAPSHOTS) snapshots.remove(snapshots.keys.first())
+                if (keep) {
+                    snapshots[id] = it to shown
+                    while (snapshots.size > KEPT_SNAPSHOTS) snapshots.remove(snapshots.keys.first())
+                }
             }
     }
 
     private fun element(c: FakeControl, packageName: String, snapshotId: Long, number: Int) = ScreenElement(
         snapshotId = snapshotId, number = number, packageName = packageName, role = c.role, text = c.text, description = c.description,
         hint = c.hint, resourceId = c.resourceId, label = c.label, context = c.context, nodeKey = c.nodeKey, bounds = c.bounds,
-        clickable = c.clickable, editable = c.editable, scrollable = c.scrollable,
+        clickable = c.clickable, editable = c.editable, scrollable = c.scrollable, checkable = c.checkable, checked = c.checked,
     )
 
     /** The one control on [shown] that [element] still is; null when none or several are. */

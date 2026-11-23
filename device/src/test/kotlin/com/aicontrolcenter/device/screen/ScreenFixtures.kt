@@ -44,6 +44,9 @@ internal class NodeBuilder(
     var collection = false
     var refuse = false
     var stale = false
+
+    /** Like Android's own text fields: the keyboard action is offered only once the field is focused (ACTION_FOCUS). */
+    var imeWhenFocused = false
     var labeledBy: NodeBuilder? = null
     val actions = mutableListOf<AccessibilityAction>()
     val children = mutableListOf<NodeBuilder>()
@@ -116,8 +119,14 @@ internal class NodeBuilder(
         actions.forEach(node::addAction)
         val shadow = shadowOf(node)
         shadow.setRefreshReturnValue(!stale)
+        if (imeWhenFocused) node.addAction(AccessibilityAction.ACTION_FOCUS)
         shadow.setOnPerformActionListener { action, arguments: Bundle? ->
             log += Performed(name, action, arguments?.getCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE))
+            if (imeWhenFocused && action == AccessibilityNodeInfo.ACTION_FOCUS && !refuse) {
+                // The app's view, now focused, reports itself anew: the next read sees the keyboard action.
+                built.isFocused = true
+                built.addAction(AccessibilityAction.ACTION_IME_ENTER)
+            }
             !refuse
         }
         labeledBy?.let { shadow.setLabeledBy(it.built) }

@@ -478,7 +478,12 @@ class AccessibilityScreenOperatorTest {
 
         window.log.clear()
         val subject = snapshot.elements.single { it.hint == "Subject" }
-        assertEquals(ScreenResult.NotSupported("That field has no keyboard action to press."), h.operator.type("Scout", subject, "hi", submit = true))
+        assertEquals(
+            ScreenResult.NotSupported(
+                "That field offers no keyboard action to press, even when focused. Tap it first and type again, or tap the app's own send button.",
+            ),
+            h.operator.type("Scout", subject, "hi", submit = true),
+        )
         assertEquals(ScreenResult.NotSupported("That element does not take text."), h.operator.type("Scout", snapshot.named("Today"), "hi", false))
         assertTrue(window.log.isEmpty(), "nothing typed when the whole action cannot be done")
     }
