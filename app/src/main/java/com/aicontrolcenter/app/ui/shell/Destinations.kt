@@ -12,6 +12,7 @@ import com.aicontrolcenter.app.ui.icons.MemoryBrain
 import com.aicontrolcenter.app.ui.icons.ModelChip
 import com.aicontrolcenter.app.ui.icons.Tasks
 import com.aicontrolcenter.app.ui.icons.Tools
+import com.aicontrolcenter.app.ui.memory.MemoryTab
 import com.aicontrolcenter.app.ui.models.ModelsTab
 import kotlinx.serialization.Serializable
 
@@ -29,7 +30,8 @@ import kotlinx.serialization.Serializable
 
 @Serializable data object TasksRoute
 
-@Serializable data object MemoryRoute
+/** [agentId] or [spaceId] opens the explorer narrowed to that agent's private memory or that space. */
+@Serializable data class MemoryRoute(val tab: MemoryTab = MemoryTab.EXPLORER, val agentId: String? = null, val spaceId: String? = null)
 
 @Serializable data object ToolsRoute
 
@@ -68,6 +70,13 @@ import kotlinx.serialization.Serializable
 
 @Serializable data class ChatRoute(val conversationId: String)
 
+@Serializable data class MemoryDetailRoute(val memoryId: String)
+
+/** [memoryId] edits a memory; otherwise a new one, pre-set to [agentId]'s private memory or [spaceId]. */
+@Serializable data class MemoryEditorRoute(val memoryId: String? = null, val agentId: String? = null, val spaceId: String? = null)
+
+@Serializable data class SpaceDetailRoute(val spaceId: String)
+
 /** The eight primary sections of the control center, in their fixed order. */
 enum class Section(val title: String, val description: String) {
     DASHBOARD("Dashboard", "Overview of your whole AI ecosystem"),
@@ -99,7 +108,7 @@ enum class Section(val title: String, val description: String) {
             AGENTS -> AgentsRoute()
             MODELS -> ModelsRoute()
             TASKS -> TasksRoute
-            MEMORY -> MemoryRoute
+            MEMORY -> MemoryRoute()
             TOOLS -> ToolsRoute
             ACTIVITY -> ActivityRoute
             SETTINGS -> SettingsRoute
@@ -125,7 +134,8 @@ fun NavDestination.section(): Section = when {
         hasRoute<ConceptsRoute>() || hasRoute<ProviderPresetsRoute>() || hasRoute<ProviderFormRoute>() ||
         hasRoute<ProviderDetailRoute>() || hasRoute<ModelEditorRoute>() -> Section.MODELS
     hasRoute<TasksRoute>() -> Section.TASKS
-    hasRoute<MemoryRoute>() -> Section.MEMORY
+    hasRoute<MemoryRoute>() || hasRoute<MemoryDetailRoute>() || hasRoute<MemoryEditorRoute>() ||
+        hasRoute<SpaceDetailRoute>() -> Section.MEMORY
     hasRoute<ToolsRoute>() -> Section.TOOLS
     hasRoute<ActivityRoute>() -> Section.ACTIVITY
     hasRoute<SettingsRoute>() -> Section.SETTINGS

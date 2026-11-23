@@ -18,7 +18,50 @@ import androidx.sqlite.execSQL
  * happens to the entity classes later.
  */
 internal object AiccMigrations {
-    val all: Array<Migration> = arrayOf(Migration1To2)
+    val all: Array<Migration> = arrayOf(Migration1To2, Migration2To3)
+}
+
+/**
+ * Adds memory: `knowledge_spaces`, `memories`, `memory_links` and `memory_embeddings`, with
+ * their indexes. Purely additive like 1 -> 2; nothing that version 2 stored is touched.
+ *
+ * The statements are the `createSql` of the exported schema 3, verbatim (`MigrationTest`
+ * validates the result against it). The parent table `memories` comes before the tables whose
+ * foreign keys point at it.
+ */
+private object Migration2To3 : Migration(2, 3) {
+    private val statements = listOf(
+        "CREATE TABLE IF NOT EXISTS `knowledge_spaces` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `description` TEXT NOT NULL, " +
+            "`created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "CREATE INDEX IF NOT EXISTS `index_knowledge_spaces_created_at_id` ON `knowledge_spaces` (`created_at`, `id`)",
+        "CREATE TABLE IF NOT EXISTS `memories` (`id` TEXT NOT NULL, `scope_type` TEXT NOT NULL, `scope_agent_id` TEXT, " +
+            "`scope_space_id` TEXT, `scope_task_id` TEXT, `kind` TEXT NOT NULL, `tier` TEXT NOT NULL, `title` TEXT NOT NULL, " +
+            "`content` TEXT NOT NULL, `tags_json` TEXT NOT NULL, `importance` REAL NOT NULL, `confidence` REAL NOT NULL, " +
+            "`provenance_json` TEXT NOT NULL, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, " +
+            "`last_accessed_at` INTEGER, `access_count` INTEGER NOT NULL, `expires_at` INTEGER, `revision` INTEGER NOT NULL, " +
+            "`search_text` TEXT NOT NULL, PRIMARY KEY(`id`))",
+        "CREATE INDEX IF NOT EXISTS `index_memories_updated_at_id` ON `memories` (`updated_at` DESC, `id` ASC)",
+        "CREATE INDEX IF NOT EXISTS `index_memories_scope_agent_id_scope_type_scope_task_id` ON `memories` " +
+            "(`scope_agent_id`, `scope_type`, `scope_task_id`)",
+        "CREATE INDEX IF NOT EXISTS `index_memories_scope_space_id` ON `memories` (`scope_space_id`)",
+        "CREATE INDEX IF NOT EXISTS `index_memories_kind_updated_at` ON `memories` (`kind`, `updated_at`)",
+        "CREATE INDEX IF NOT EXISTS `index_memories_expires_at` ON `memories` (`expires_at`)",
+        "CREATE TABLE IF NOT EXISTS `memory_links` (`id` TEXT NOT NULL, `from_id` TEXT NOT NULL, `to_id` TEXT NOT NULL, " +
+            "`relation` TEXT NOT NULL, `weight` REAL NOT NULL, `provenance_json` TEXT NOT NULL, `created_at` INTEGER NOT NULL, " +
+            "PRIMARY KEY(`id`), " +
+            "FOREIGN KEY(`from_id`) REFERENCES `memories`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , " +
+            "FOREIGN KEY(`to_id`) REFERENCES `memories`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "CREATE INDEX IF NOT EXISTS `index_memory_links_from_id` ON `memory_links` (`from_id`)",
+        "CREATE INDEX IF NOT EXISTS `index_memory_links_to_id` ON `memory_links` (`to_id`)",
+        "CREATE TABLE IF NOT EXISTS `memory_embeddings` (`memory_id` TEXT NOT NULL, `embedder_id` TEXT NOT NULL, " +
+            "`dimensions` INTEGER NOT NULL, `vector` BLOB NOT NULL, PRIMARY KEY(`memory_id`, `embedder_id`), " +
+            "FOREIGN KEY(`memory_id`) REFERENCES `memories`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "CREATE INDEX IF NOT EXISTS `index_memory_embeddings_embedder_id` ON `memory_embeddings` (`embedder_id`)",
+    )
+
+    override fun migrate(db: SupportSQLiteDatabase) = statements.forEach(db::execSQL)
+
+    override fun migrate(connection: SQLiteConnection) = statements.forEach(connection::execSQL)
 }
 
 /**

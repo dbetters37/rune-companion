@@ -31,12 +31,22 @@ import com.aicontrolcenter.app.ui.models.ProviderDetailRoute as ProviderDetailSc
 import com.aicontrolcenter.app.ui.models.ProviderFormRoute as ProviderFormScreenRoute
 import com.aicontrolcenter.app.ui.models.ModelsTab
 import com.aicontrolcenter.app.ui.models.RegisterAppRoute as RegisterAppScreenRoute
+import com.aicontrolcenter.app.ui.memory.MemoryDetailRoute as MemoryDetailScreenRoute
+import com.aicontrolcenter.app.ui.memory.MemoryEditorRoute as MemoryEditorScreenRoute
+import com.aicontrolcenter.app.ui.memory.MemoryNavigation
+import com.aicontrolcenter.app.ui.memory.MemorySectionRoute
+import com.aicontrolcenter.app.ui.memory.MemoryTab
+import com.aicontrolcenter.app.ui.memory.ScopeFilter
+import com.aicontrolcenter.app.ui.memory.SpaceDetailRoute as SpaceDetailScreenRoute
 import com.aicontrolcenter.app.ui.planned.PlannedSection
 import com.aicontrolcenter.app.ui.planned.PlannedSectionScreen
 import com.aicontrolcenter.app.ui.settings.SettingsRoute as SettingsScreenRoute
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.AiAppId
 import com.aicontrolcenter.core.ConversationId
+import com.aicontrolcenter.core.MemoryId
+import com.aicontrolcenter.core.SpaceId
+import com.aicontrolcenter.core.memory.MemoryScope
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.ProviderId
 
@@ -71,6 +81,11 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
     val addProvider: () -> Unit = { navController.open(ProviderPresetsRoute) }
     val openConversation: (ConversationId) -> Unit = { navController.open(ChatRoute(it.value)) }
     val back: () -> Unit = { navController.popBackStack() }
+    val openMemory: (MemoryId) -> Unit = { navController.open(MemoryDetailRoute(it.value)) }
+    val openSpace: (SpaceId) -> Unit = { navController.open(SpaceDetailRoute(it.value)) }
+    // A filter chosen elsewhere must win over the explorer the owner left, so the section is not restored.
+    val openAgentMemories: (AgentId) -> Unit = { navController.navigateToSection(MemoryRoute(agentId = it.value), restore = false) }
+    val openSpaceMemories: (SpaceId) -> Unit = { navController.navigateToSection(MemoryRoute(spaceId = it.value), restore = false) }
 
     NavHost(
         navController = navController,
@@ -103,6 +118,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                     onSeeAllActivity = { navController.navigateToSection(ActivityRoute) },
                     onAddProvider = addProvider,
                     onOpenProvider = openProvider,
+                    onOpenMemory = { navController.navigateToSection(MemoryRoute(MemoryTab.EXPLORER), restore = false) },
                 ),
             )
         }
@@ -147,6 +163,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                 onOpenAgent = openAgent,
                 onOpenModels = { navController.navigateToSection(ModelsRoute(ModelsTab.MODELS), restore = false) },
                 onChat = { navController.open(ConversationsRoute(it.value)) },
+                onOpenMemories = openAgentMemories,
             )
         }
         composable<ConversationsRoute> { entry ->
@@ -228,7 +245,69 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
         }
         composable<ConceptsRoute> { ConceptsScreen(onBack = back) }
         composable<TasksRoute> { PlannedSectionScreen(PlannedSection.TASKS) }
-        composable<MemoryRoute> { PlannedSectionScreen(PlannedSection.MEMORY) }
+        composable<MemoryRoute> { entry ->
+            val route = entry.toRoute<MemoryRoute>()
+            MemorySectionRoute(
+                initialTab = route.tab,
+                initialScope = when {
+                    route.agentId != null -> ScopeFilter.Agent(AgentId(route.agentId))
+                    route.spaceId != null -> ScopeFilter.Space(SpaceId(route.spaceId))
+                    else -> ScopeFilter.All
+                },
+                navigation = MemoryNavigation(
+                    onOpenMemory = openMemory,
+                    onNewMemory = { scope ->
+                        navController.open(
+                            MemoryEditorRoute(
+                                agentId = (scope as? MemoryScope.Agent)?.agentId?.value,
+                                spaceId = (scope as? MemoryScope.Shared)?.spaceId?.value,
+                            ),
+                        )
+                    },
+                    onOpenSpace = openSpace,
+                ),
+            )
+        }
+        composable<MemoryDetailRoute> { entry ->
+            MemoryDetailScreenRoute(
+                memoryId = MemoryId(entry.toRoute<MemoryDetailRoute>().memoryId),
+                onBack = back,
+                onEdit = { navController.open(MemoryEditorRoute(memoryId = it.value)) },
+                onOpenMemory = openMemory,
+                onOpenAgent = openAgent,
+                onOpenConversation = openConversation,
+            )
+        }
+        composable<MemoryEditorRoute> { entry ->
+            val route = entry.toRoute<MemoryEditorRoute>()
+            MemoryEditorScreenRoute(
+                memoryId = route.memoryId?.let(::MemoryId),
+                initialScope = when {
+                    route.agentId != null -> MemoryScope.Agent(AgentId(route.agentId))
+                    route.spaceId != null -> MemoryScope.Shared(SpaceId(route.spaceId))
+                    else -> null
+                },
+                onClose = back,
+                onSaved = { id, isNew ->
+                    if (isNew) {
+                        // Leave the editor behind: Back from the new memory returns to where it was started.
+                        navController.navigate(MemoryDetailRoute(id.value)) {
+                            popUpTo<MemoryEditorRoute> { inclusive = true }
+                            launchSingleTop = true
+                        }
+                    } else {
+                        navController.popBackStack()
+                    }
+                },
+            )
+        }
+        composable<SpaceDetailRoute> { entry ->
+            SpaceDetailScreenRoute(
+                spaceId = SpaceId(entry.toRoute<SpaceDetailRoute>().spaceId),
+                onBack = back,
+                onOpenMemories = openSpaceMemories,
+            )
+        }
         composable<ToolsRoute> { PlannedSectionScreen(PlannedSection.TOOLS) }
         composable<ActivityRoute> { ActivityScreenRoute() }
         composable<SettingsRoute> { SettingsScreenRoute() }

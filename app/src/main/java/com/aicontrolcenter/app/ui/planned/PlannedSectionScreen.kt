@@ -25,7 +25,6 @@ import com.aicontrolcenter.app.ui.components.SectionHeader
 import com.aicontrolcenter.app.ui.components.StatusChip
 import com.aicontrolcenter.app.ui.components.readableWidth
 import com.aicontrolcenter.app.ui.icons.AppIcons
-import com.aicontrolcenter.app.ui.icons.MemoryBrain
 import com.aicontrolcenter.app.ui.icons.Tasks
 import com.aicontrolcenter.app.ui.icons.Tools
 import com.aicontrolcenter.app.ui.theme.Spacing
@@ -50,16 +49,6 @@ enum class PlannedSection(
         dependsOn = "Tasks need the Director to plan and hand out work, which is a later stage of this build. Agents can already " +
             "be talked to one at a time: open an agent and tap Chat.",
     ),
-    MEMORY(
-        title = "Memory",
-        summary = "Where you will see what each agent remembers and what agents share with each other.",
-        willShow = listOf(
-            "Each agent's private memories",
-            "Shared knowledge spaces and who may read or write them",
-            "Search across memories, with editing and deletion",
-        ),
-        dependsOn = "The memory system is a later stage of this build. Each agent's memory policy can already be set in its editor.",
-    ),
     TOOLS(
         title = "Tools",
         summary = "Where you will decide what each agent is allowed to do, tool by tool.",
@@ -76,7 +65,6 @@ enum class PlannedSection(
     val icon: ImageVector
         get() = when (this) {
             TASKS -> AppIcons.Tasks
-            MEMORY -> AppIcons.MemoryBrain
             TOOLS -> AppIcons.Tools
         }
 }

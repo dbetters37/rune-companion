@@ -25,6 +25,8 @@ fun createProductionPorts(context: Context): Ports {
         models = data.models,
         aiApps = data.aiApps,
         conversations = data.conversations,
+        // The same encrypted database as everything else, so memories never sit in plain text on disk.
+        memories = data.memories,
         activityLog = data.activityLog,
         settings = data.settings,
         secretVault = data.secretVault,

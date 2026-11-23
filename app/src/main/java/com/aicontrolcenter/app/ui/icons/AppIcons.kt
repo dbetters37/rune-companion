@@ -18,6 +18,7 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.ui.graphics.Color
@@ -53,6 +54,7 @@ object AppIcons {
     val Search: ImageVector get() = Icons.Rounded.Search
     val Send: ImageVector get() = Icons.AutoMirrored.Rounded.Send
     val Settings: ImageVector get() = Icons.Rounded.Settings
+    val Share: ImageVector get() = Icons.Rounded.Share
     val Star: ImageVector get() = Icons.Rounded.Star
 
     /** Status glyphs that already exist in the core set; the rest live in `StatusIcons`. */

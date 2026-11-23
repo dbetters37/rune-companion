@@ -47,13 +47,14 @@ class SchemaExportTest {
         }.toSet()
 
     @Test
-    fun `the current schema is exported and lists all eight tables`() {
+    fun `the current schema is exported and lists all twelve tables`() {
         val current = schema(AiccDatabase.VERSION)
         assertEquals(AiccDatabase.VERSION, current.getValue("version").jsonPrimitive.int)
         assertEquals(
             setOf(
                 "agents", "agent_stats", "providers", "models", "ai_apps", "activity_events",
                 "conversations", "conversation_entries",
+                "knowledge_spaces", "memories", "memory_links", "memory_embeddings",
             ),
             current.tables().keys,
         )
@@ -80,6 +81,42 @@ class SchemaExportTest {
             tables.getValue("ai_apps").indexColumns(),
         )
         assertEquals(setOf(listOf("updated_at"), listOf("agent_id", "updated_at")), tables.getValue("conversations").indexColumns())
+        assertEquals(
+            setOf(
+                listOf("updated_at", "id"), listOf("scope_agent_id", "scope_type", "scope_task_id"), listOf("scope_space_id"),
+                listOf("kind", "updated_at"), listOf("expires_at"),
+            ),
+            tables.getValue("memories").indexColumns(),
+        )
+        assertEquals(setOf(listOf("from_id"), listOf("to_id")), tables.getValue("memory_links").indexColumns())
+        assertEquals(setOf(listOf("embedder_id")), tables.getValue("memory_embeddings").indexColumns())
+        assertEquals(setOf(listOf("created_at", "id")), tables.getValue("knowledge_spaces").indexColumns())
+    }
+
+    @Test
+    fun `memories are listed from an index in exactly the listing order`() {
+        val index = schema(AiccDatabase.VERSION).tables().getValue("memories").getValue("indices").jsonArray
+            .map { it.jsonObject }.single { it.getValue("name").jsonPrimitive.content == "index_memories_updated_at_id" }
+        assertEquals(listOf("DESC", "ASC"), index.getValue("orders").jsonArray.map { it.jsonPrimitive.content })
+    }
+
+    @Test
+    fun `links and embeddings cannot outlive their memories`() {
+        val tables = schema(AiccDatabase.VERSION).tables()
+        fun JsonObject.cascades(): List<List<String>> = getValue("foreignKeys").jsonArray.map { it.jsonObject }.map { key ->
+            assertEquals("memories", key.getValue("table").jsonPrimitive.content)
+            assertEquals("CASCADE", key.getValue("onDelete").jsonPrimitive.content)
+            assertEquals(listOf("id"), key.getValue("referencedColumns").jsonArray.map { it.jsonPrimitive.content })
+            key.getValue("columns").jsonArray.map { it.jsonPrimitive.content }
+        }
+        assertEquals(listOf(listOf("from_id"), listOf("to_id")), tables.getValue("memory_links").cascades())
+        assertEquals(listOf(listOf("memory_id")), tables.getValue("memory_embeddings").cascades())
+        assertEquals(
+            listOf("memory_id", "embedder_id"),
+            tables.getValue("memory_embeddings").getValue("primaryKey").jsonObject.getValue("columnNames").jsonArray.map { it.jsonPrimitive.content },
+        )
+        // Shared memory may name a space that is not registered; see MemoryEntity.
+        assertTrue(tables.getValue("memories")["foreignKeys"]?.jsonArray.isNullOrEmpty())
     }
 
     @Test
@@ -105,6 +142,17 @@ class SchemaExportTest {
         assertEquals("771a2500805fc58d277bd82d0535d125", released.getValue("identityHash").jsonPrimitive.content)
         assertEquals(
             setOf("agents", "agent_stats", "providers", "models", "ai_apps", "activity_events"),
+            released.tables().keys,
+        )
+    }
+
+    @Test
+    fun `the schema of the released version 2 is still the one that was released`() {
+        // Release 0.2.0 created and migrated databases to exactly this schema.
+        val released = schema(2)
+        assertEquals("21e1ac3cc1536e3d16cd97afc3452ea5", released.getValue("identityHash").jsonPrimitive.content)
+        assertEquals(
+            setOf("agents", "agent_stats", "providers", "models", "ai_apps", "activity_events", "conversations", "conversation_entries"),
             released.tables().keys,
         )
     }

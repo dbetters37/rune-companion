@@ -1,5 +1,6 @@
 package com.aicontrolcenter.framework.agents
 
+import com.aicontrolcenter.core.ConversationId
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.agents.AgentProfile
@@ -21,6 +22,8 @@ data class AgentRunRequest(
     val rootTaskId: TaskId? = null,
     /** What is being sent, in words, for the record of data leaving the device. */
     val purpose: String = "prompt and conversation",
+    /** The chat this turn belongs to, if any; recorded as provenance of what the agent saves to memory. */
+    val conversationId: ConversationId? = null,
 )
 
 /** Why a run stopped. */

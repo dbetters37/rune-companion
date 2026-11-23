@@ -247,6 +247,20 @@ class DataStoreSettingsRepositoryTest {
     }
 
     @Test
+    fun `settings written by release 0_2_0 load with the memory seed not yet applied, and recording it keeps no copy`() = runTest {
+        val (store, _) = stores.open(stores.newFileName())
+        val written = SettingsCodec.encode(customised).replace(""","memorySeedVersion":0""", "")
+        assertTrue("memorySeedVersion" !in written)
+        store.edit { it[DataStoreSettingsRepository.SETTINGS_KEY] = written }
+        val repository = DataStoreSettingsRepository(store)
+
+        assertEquals(customised, repository.get())
+        assertEquals(customised.copy(memorySeedVersion = 1), repository.update { it.copy(memorySeedVersion = 1) })
+        assertNull(store.data.first()[DataStoreSettingsRepository.UNREADABLE_COPY_KEY], "a missing field is not damage")
+        assertTrue(store.data.first()[DataStoreSettingsRepository.SETTINGS_KEY]!!.endsWith(""","memorySeedVersion":1}"""))
+    }
+
+    @Test
     fun `fields added by a newer version are ignored and missing fields take their defaults`() = runTest {
         val (store, _) = stores.open(stores.newFileName())
         store.edit {

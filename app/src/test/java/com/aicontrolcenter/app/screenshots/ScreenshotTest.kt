@@ -267,8 +267,6 @@ class ScreenshotTest {
     fun plannedSections() {
         val robot = app().openSection("Tasks")
         shoot("planned_tasks")
-        robot.openSectionViaMore("Memory")
-        shoot("planned_memory")
         robot.openSectionViaMore("Tools")
         shoot("planned_tools")
     }

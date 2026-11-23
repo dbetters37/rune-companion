@@ -33,6 +33,7 @@ import com.aicontrolcenter.app.ui.components.TintedChip
 import com.aicontrolcenter.app.ui.components.icon
 import com.aicontrolcenter.app.ui.components.label
 import com.aicontrolcenter.app.ui.icons.AppIcons
+import com.aicontrolcenter.app.ui.icons.MemoryBrain
 import com.aicontrolcenter.app.ui.icons.ModelChip
 import com.aicontrolcenter.app.ui.icons.Tools
 import com.aicontrolcenter.app.ui.theme.Spacing
@@ -216,7 +217,7 @@ internal fun ToolsSection(agent: AgentDetailUi) {
 }
 
 @Composable
-internal fun PolicySections(agent: AgentDetailUi) {
+internal fun PolicySections(agent: AgentDetailUi, onOpenMemories: () -> Unit) {
     val profile = agent.profile
     Column {
         SectionHeader("Generation settings")
@@ -227,13 +228,27 @@ internal fun PolicySections(agent: AgentDetailUi) {
             )
             KeyValueRow("Maximum output tokens", profile.generation.maxOutputTokens?.toString() ?: "Model default")
         }
-        SectionHeader("Memory policy", modifier = Modifier.padding(top = Spacing.md))
+        SectionHeader("Memory", modifier = Modifier.padding(top = Spacing.md))
         AppCard {
-            KeyValueRow("Private memory", if (profile.memory.privateMemoryEnabled) "On" else "Off")
-            KeyValueRow("Automatic recall", if (profile.memory.autoRecall) "On" else "Off")
-            KeyValueRow("Memories per task", profile.memory.recallLimit.toString())
-            KeyValueRow("Shared spaces it reads", countOrNone(profile.memory.readableSpaces.size))
-            KeyValueRow("Shared spaces it writes", countOrNone(profile.memory.writableSpaces.size))
+            KeyValueRow(
+                "Private memory",
+                when {
+                    !profile.memory.privateMemoryEnabled -> "Off" + (agent.privateMemoryCount?.takeIf { it > 0 }?.let { ", $it kept but not recalled" } ?: "")
+                    agent.privateMemoryCount == null -> "On"
+                    agent.privateMemoryCount == 1 -> "On, 1 memory"
+                    else -> "On, ${agent.privateMemoryCount} memories"
+                },
+            )
+            KeyValueRow("Automatic recall", if (profile.memory.autoRecall) "On, up to ${profile.memory.recallLimit} per turn" else "Off")
+            KeyValueRow("Shared spaces it reads", namesOrNone(agent.readableSpaces))
+            KeyValueRow("Shared spaces it writes", namesOrNone(agent.writableSpaces))
+            OutlinedButton(
+                onClick = onOpenMemories,
+                modifier = Modifier.fillMaxWidth().padding(top = Spacing.sm).heightIn(min = 48.dp),
+            ) {
+                Icon(AppIcons.MemoryBrain, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+                Text("Open its memories", modifier = Modifier.padding(start = 8.dp))
+            }
         }
         SectionHeader("Delegation policy", modifier = Modifier.padding(top = Spacing.md))
         AppCard {
@@ -244,7 +259,7 @@ internal fun PolicySections(agent: AgentDetailUi) {
     }
 }
 
-private fun countOrNone(count: Int): String = if (count == 0) "None" else count.toString()
+private fun namesOrNone(names: List<String>): String = if (names.isEmpty()) "None" else names.joinToString(", ")
 
 /** Designate and delete: the two actions that change the team's structure. */
 @Composable

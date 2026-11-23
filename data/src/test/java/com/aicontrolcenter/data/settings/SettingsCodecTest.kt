@@ -15,8 +15,25 @@ class SettingsCodecTest {
         maxModelCallsPerTask = 8, maxToolCallsPerTask = 9, maxRevisionRounds = 1, maxTaskAttempts = 3,
         taskTimeoutMinutes = 5, objectiveTimeoutMinutes = 45, approvalTimeoutMinutes = 2,
         autoResumeInterruptedTasks = true, operatorEnabled = true, accessibilityOperatorEnabled = true,
-        onboardingCompleted = true, seedVersion = 2,
+        onboardingCompleted = true, seedVersion = 2, memorySeedVersion = 1,
     )
+
+    @Test
+    fun `settings stored by release 0_2_0, before memory existed, are read completely`() {
+        // Exactly what 0.2.0 wrote: every field it knew, none for the memory seed.
+        val stored = """{"localOnlyMode":true,"activityRetentionDays":0,"directorAgentId":"agt_director","maxConcurrentTasks":5,""" +
+            """"maxDelegationDepth":4,"maxTasksPerObjective":10,"maxMessagesPerObjective":50,"maxModelCallsPerTask":8,""" +
+            """"maxToolCallsPerTask":9,"maxRevisionRounds":1,"maxTaskAttempts":3,"taskTimeoutMinutes":5,""" +
+            """"objectiveTimeoutMinutes":45,"approvalTimeoutMinutes":2,"autoResumeInterruptedTasks":true,""" +
+            """"operatorEnabled":true,"accessibilityOperatorEnabled":true,"onboardingCompleted":true,"seedVersion":2}"""
+
+        val decoded = SettingsCodec.decode(stored)
+
+        assertTrue(decoded.complete, "a field added later is not damage: ${decoded.unreadableFields}")
+        assertEquals(customised.copy(memorySeedVersion = 0), decoded.settings)
+        // The starter memory has not been applied yet, so it will be, once.
+        assertEquals(0, decoded.settings.memorySeedVersion)
+    }
 
     @Test
     fun `what is encoded decodes to the same settings, completely`() {
@@ -67,7 +84,7 @@ class SettingsCodecTest {
     fun `any single field may be unreadable without costing the others, least of all local-only mode`() {
         val defaults = FrameworkSettings()
         val fields = SettingsCodec.encode(customised).removeSurrounding("{", "}").split(",")
-        assertEquals(19, fields.size)
+        assertEquals(20, fields.size)
         for (broken in fields) {
             val name = broken.substringBefore(':').trim('"')
             val stored = "{" + fields.joinToString(",") { if (it == broken) "\"$name\":[\"unreadable\"]" else it } + "}"
@@ -96,6 +113,7 @@ class SettingsCodecTest {
                 "accessibilityOperatorEnabled" -> customised.copy(accessibilityOperatorEnabled = defaults.accessibilityOperatorEnabled)
                 "onboardingCompleted" -> customised.copy(onboardingCompleted = defaults.onboardingCompleted)
                 "seedVersion" -> customised.copy(seedVersion = defaults.seedVersion)
+                "memorySeedVersion" -> customised.copy(memorySeedVersion = defaults.memorySeedVersion)
                 else -> error("FrameworkSettings has a field this test does not know: $name")
             }
             assertEquals(expected, decoded.settings, "with $name unreadable")

@@ -5,6 +5,7 @@ import com.aicontrolcenter.core.agents.AgentKind
 import com.aicontrolcenter.core.agents.AgentTemplate
 import com.aicontrolcenter.core.agents.DelegationPolicy
 import com.aicontrolcenter.core.agents.GenerationSettings
+import com.aicontrolcenter.framework.memory.MemoryTools
 import com.aicontrolcenter.framework.tools.BuiltInTools
 
 /**
@@ -198,11 +199,15 @@ object AgentTemplates {
     )
 
     /**
-     * Every template, with the framework's read-only basic tools (clock, team list) switched
-     * on, so a new agent can answer "what day is it" without the owner configuring anything.
+     * Every template, with the framework's read-only basic tools (clock, team list) and the
+     * memory tools (search, save) switched on, so a new agent can answer "what day is it" and
+     * remember what it learns without the owner configuring anything. What an agent may read
+     * or write in memory is still decided by its memory policy; sharing into a space is left
+     * for the owner to switch on.
      */
-    val all: List<AgentTemplate> =
-        definitions.map { it.copy(draft = it.draft.copy(toolIds = it.draft.toolIds + BuiltInTools.defaultToolIds)) }
+    val all: List<AgentTemplate> = definitions.map {
+        it.copy(draft = it.draft.copy(toolIds = it.draft.toolIds + BuiltInTools.defaultToolIds + MemoryTools.defaultToolIds))
+    }
 
     fun byId(id: String): AgentTemplate? = all.firstOrNull { it.id == id }
 }

@@ -23,4 +23,9 @@ class MainActivity : ComponentActivity() {
         // Package broadcasts are not delivered reliably to a stopped app, so re-check on return.
         graph.onAppForegrounded()
     }
+
+    override fun onStop() {
+        super.onStop()
+        graph.onAppBackgrounded()
+    }
 }

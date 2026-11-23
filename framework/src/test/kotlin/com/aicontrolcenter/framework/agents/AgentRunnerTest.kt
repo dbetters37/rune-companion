@@ -89,7 +89,7 @@ class AgentRunnerTest {
     fun `the model gets the agent's persona, the standing rules, the conversation and only the tools the agent has`() = runTest {
         val client = ScriptedLlmClient.replies("Noon.")
         val request = request(
-            client, tools = setOf(ClockTool.ID, ToolId("memory.search")), generation = GenerationSettings(temperature = 0.3, maxOutputTokens = 256),
+            client, tools = setOf(ClockTool.ID, ToolId("web.search")), generation = GenerationSettings(temperature = 0.3, maxOutputTokens = 256),
         )
 
         val result = world.runner.run(request)

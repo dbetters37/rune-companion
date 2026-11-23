@@ -44,4 +44,8 @@ internal class RowRef(val table: String, val rowId: String) {
     inline fun <reified E : Enum<E>> enum(column: String, name: String): E =
         enumValues<E>().firstOrNull { it.name == name }
             ?: throw StoredDataException("Column $table.$column of row '$rowId' holds the unknown value '$name'.")
+
+    /** [value], which [reason] needs; a null there means the row is damaged. */
+    fun <T : Any> present(column: String, value: T?, reason: String): T =
+        value ?: throw StoredDataException("Column $table.$column of row '$rowId' is empty, but $reason.")
 }

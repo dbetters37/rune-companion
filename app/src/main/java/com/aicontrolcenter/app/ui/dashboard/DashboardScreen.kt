@@ -45,6 +45,7 @@ data class DashboardNavigation(
     val onSeeAllActivity: () -> Unit,
     val onAddProvider: () -> Unit,
     val onOpenProvider: (com.aicontrolcenter.core.ProviderId) -> Unit,
+    val onOpenMemory: () -> Unit = {},
 )
 
 @Composable
@@ -58,6 +59,7 @@ fun DashboardRoute(navigation: DashboardNavigation) {
             clock = graph.clock,
             monitor = graph.activityMonitor,
             agentManager = graph.agentManager,
+            memory = graph.memoryService,
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -100,6 +102,8 @@ fun DashboardScreen(
                     onOpenModels = navigation.onOpenModels,
                     onOpenProviders = navigation.onOpenProviders,
                     onOpenApps = navigation.onOpenApps,
+                    memory = state.memory,
+                    onOpenMemory = navigation.onOpenMemory,
                 )
             }
             val notice: @Composable () -> Unit = {

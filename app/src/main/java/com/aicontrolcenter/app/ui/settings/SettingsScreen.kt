@@ -71,6 +71,7 @@ fun SettingsRoute() {
             appVersion = BuildConfig.VERSION_NAME,
             directory = graph.registryDirectory,
             tools = graph.toolRegistry.all().map { it.spec },
+            memoryInfo = MemoryInfoUi.of(graph.memoryConfig.shortTermTtlMs, graph.embedder.locality),
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -106,6 +107,7 @@ fun SettingsScreen(state: SettingsUiState, actions: SettingsActions) {
             verticalArrangement = Arrangement.spacedBy(Spacing.md),
         ) {
             PrivacySection(state.settings, state.localOnlyEffect, actions, onClearRequested = { confirmClear = true })
+            state.memory?.let { MemorySection(it) }
             OrchestrationSection(state.settings, actions)
             DeviceSection(state.device, actions.onRefreshDevice)
             AboutSection(state.appVersion)
@@ -174,6 +176,26 @@ private fun PrivacySection(
                 Icon(AppIcons.Delete, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
                 Text("Clear activity log", modifier = Modifier.padding(start = 8.dp))
             }
+        }
+    }
+}
+
+/** Where memories live, how they are searched and how long short-term memory lasts: facts, not switches. */
+@Composable
+private fun MemorySection(info: MemoryInfoUi) {
+    Column {
+        SectionHeader("Memory")
+        AppCard {
+            KeyValueRow("Stored", "Encrypted, on this phone only")
+            KeyValueRow("Semantic search", if (info.searchOnDevice) "Runs offline, on this phone" else "Uses an outside service")
+            KeyValueRow("Short-term memory", if (info.shortTermDays == 1) "Kept for 1 day, then deleted" else "Kept for ${info.shortTermDays} days, then deleted")
+            InfoBanner(
+                icon = AppIcons.OnDevice,
+                text = "Memories are kept in the app's encrypted database and searched without a network. They reach a model " +
+                    "only when an agent uses them in a turn: with a cloud model, recalled memories are part of what is sent, " +
+                    "which the activity log records and local-only mode blocks.",
+                modifier = Modifier.padding(top = Spacing.sm),
+            )
         }
     }
 }

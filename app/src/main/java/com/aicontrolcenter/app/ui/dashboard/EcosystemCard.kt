@@ -38,6 +38,7 @@ import com.aicontrolcenter.app.ui.components.plural
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.Apps
 import com.aicontrolcenter.app.ui.icons.ChevronRight
+import com.aicontrolcenter.app.ui.icons.MemoryBrain
 import com.aicontrolcenter.app.ui.icons.ModelChip
 import com.aicontrolcenter.app.ui.icons.Provider
 import com.aicontrolcenter.app.ui.theme.OverlineTextStyle
@@ -60,6 +61,8 @@ internal fun EcosystemSummarySection(
     onOpenProviders: () -> Unit,
     onOpenApps: () -> Unit,
     modifier: Modifier = Modifier,
+    memory: MemorySummaryUi? = null,
+    onOpenMemory: () -> Unit = {},
 ) {
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(Spacing.md)) {
         AppCard(contentPadding = PaddingValues(0.dp)) {
@@ -70,23 +73,25 @@ internal fun EcosystemSummarySection(
                 DirectorRow(summary.director, onOpenAgent, onOpenAgents)
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
+        val models: @Composable (Modifier) -> Unit = { m ->
             StatTile(
                 value = summary.modelCount.toString(),
                 label = "Models",
                 icon = AppIcons.ModelChip,
                 accent = MaterialTheme.colorScheme.secondary,
                 onClick = onOpenModels,
-                modifier = Modifier.weight(1f),
+                modifier = m,
                 caption = "${summary.modelsInUse} in use",
             )
+        }
+        val providers: @Composable (Modifier) -> Unit = { m ->
             StatTile(
                 value = summary.providerCount.toString(),
                 label = "Providers",
                 icon = AppIcons.Provider,
                 accent = MaterialTheme.colorScheme.secondary,
                 onClick = onOpenProviders,
-                modifier = Modifier.weight(1f),
+                modifier = m,
                 caption = if (summary.providerProblems > 0) {
                     if (summary.providerProblems == 1) "1 problem" else "${summary.providerProblems} problems"
                 } else {
@@ -94,15 +99,42 @@ internal fun EcosystemSummarySection(
                 },
                 captionColor = if (summary.providerProblems > 0) appColors.attention else MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+        val apps: @Composable (Modifier) -> Unit = { m ->
             StatTile(
                 value = summary.installedApps.toString(),
                 label = "AI apps",
                 icon = AppIcons.Apps,
                 accent = MaterialTheme.colorScheme.tertiary,
                 onClick = onOpenApps,
-                modifier = Modifier.weight(1f),
+                modifier = m,
                 caption = "installed",
             )
+        }
+        if (memory == null) {
+            Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
+                models(Modifier.weight(1f))
+                providers(Modifier.weight(1f))
+                apps(Modifier.weight(1f))
+            }
+        } else {
+            // Four tiles read better as two rows of two than as one cramped row on a phone.
+            Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
+                models(Modifier.weight(1f))
+                providers(Modifier.weight(1f))
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
+                apps(Modifier.weight(1f))
+                StatTile(
+                    value = memory.memoryCount.toString(),
+                    label = "Memories",
+                    icon = AppIcons.MemoryBrain,
+                    accent = MaterialTheme.colorScheme.primary,
+                    onClick = onOpenMemory,
+                    modifier = Modifier.weight(1f),
+                    caption = plural(memory.spaceCount, "shared space"),
+                )
+            }
         }
     }
 }

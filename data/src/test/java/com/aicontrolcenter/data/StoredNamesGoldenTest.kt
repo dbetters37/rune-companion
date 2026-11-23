@@ -1,8 +1,12 @@
 package com.aicontrolcenter.data
 
+import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.ConversationId
+import com.aicontrolcenter.core.MemoryId
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.ProviderId
 import com.aicontrolcenter.core.SpaceId
+import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.ToolId
 import com.aicontrolcenter.core.activity.ActivityType
 import com.aicontrolcenter.core.activity.EgressInfo
@@ -18,6 +22,12 @@ import com.aicontrolcenter.core.llm.ProviderData
 import com.aicontrolcenter.core.llm.TokenUsage
 import com.aicontrolcenter.core.llm.ToolCallRequest
 import com.aicontrolcenter.core.llm.ToolResultContent
+import com.aicontrolcenter.core.memory.LinkRelation
+import com.aicontrolcenter.core.memory.MemoryKind
+import com.aicontrolcenter.core.memory.MemoryScope
+import com.aicontrolcenter.core.memory.MemoryTier
+import com.aicontrolcenter.core.memory.Provenance
+import com.aicontrolcenter.core.memory.ProvenanceOrigin
 import com.aicontrolcenter.core.registry.AiAppCapability
 import com.aicontrolcenter.core.registry.AiAppStatus
 import com.aicontrolcenter.core.registry.CapabilityTier
@@ -30,9 +40,18 @@ import com.aicontrolcenter.core.registry.ModelStatus
 import com.aicontrolcenter.core.registry.ProviderKind
 import com.aicontrolcenter.core.settings.FrameworkSettings
 import com.aicontrolcenter.data.db.AiccDatabase
+import com.aicontrolcenter.data.db.entity.KnowledgeSpaceEntity
+import com.aicontrolcenter.data.db.entity.MemoryEmbeddingEntity
+import com.aicontrolcenter.data.db.entity.MemoryEntity
+import com.aicontrolcenter.data.db.entity.MemoryLinkEntity
 import com.aicontrolcenter.data.db.mapper.ColumnSerializers
+import com.aicontrolcenter.data.db.mapper.EmbeddingCodec
+import com.aicontrolcenter.data.db.mapper.MemoryScopeType
+import com.aicontrolcenter.data.db.mapper.ScopeColumns
 import com.aicontrolcenter.data.db.mapper.encodeColumn
 import com.aicontrolcenter.data.db.mapper.level
+import com.aicontrolcenter.data.db.mapper.memorySearchText
+import com.aicontrolcenter.data.db.mapper.toColumns
 import com.aicontrolcenter.data.security.AndroidKeystoreVaultCipher
 import com.aicontrolcenter.data.security.VaultFileStore
 import com.aicontrolcenter.data.settings.DataStoreSettingsRepository
@@ -45,6 +64,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.serializer
 import org.junit.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 
 /**
@@ -83,6 +103,62 @@ class StoredNamesGoldenTest {
             "TASK", "MEMORY", "DATA_EGRESS", "ERROR",
         )
         assertStoredNames<ChatRole>("SYSTEM", "USER", "ASSISTANT", "TOOL")
+        assertStoredNames<MemoryKind>("FACT", "PREFERENCE", "EVENT", "FINDING", "DECISION", "PROCEDURE", "INSIGHT", "SUMMARY", "NOTE")
+        assertStoredNames<MemoryTier>("SHORT_TERM", "LONG_TERM")
+        assertStoredNames<ProvenanceOrigin>("OWNER", "AGENT", "TOOL", "SYSTEM", "DERIVED", "IMPORT")
+        assertStoredNames<LinkRelation>(
+            "RELATES_TO", "SUPPORTS", "CONTRADICTS", "DERIVED_FROM", "PART_OF", "REFERENCES", "SUPERSEDES", "SHARED_COPY_OF",
+        )
+    }
+
+    @Test
+    fun `names of the memory tables and of the scope types in them`() {
+        assertEquals(
+            listOf("knowledge_spaces", "memories", "memory_links", "memory_embeddings"),
+            listOf(KnowledgeSpaceEntity.TABLE, MemoryEntity.TABLE, MemoryLinkEntity.TABLE, MemoryEmbeddingEntity.TABLE),
+        )
+        assertEquals(listOf("AGENT", "SHARED", "TASK"), MemoryScopeType.entries.map { it.name })
+        assertEquals(ScopeColumns(MemoryScopeType.AGENT, "agt_1", null, null), MemoryScope.Agent(AgentId("agt_1")).toColumns())
+        assertEquals(ScopeColumns(MemoryScopeType.SHARED, null, "spc_1", null), MemoryScope.Shared(SpaceId("spc_1")).toColumns())
+        assertEquals(
+            ScopeColumns(MemoryScopeType.TASK, "agt_1", null, "tsk_1"),
+            MemoryScope.Task(TaskId("tsk_1"), AgentId("agt_1")).toColumns(),
+        )
+    }
+
+    @Test
+    fun `keys and exact text of the memory columns`() {
+        assertStoredKeys(
+            Provenance.serializer(),
+            "origin", "agentId", "taskId", "conversationId", "modelId", "modelName", "derivedFrom", "source", "recordedAt",
+        )
+        assertEquals(
+            """{"origin":"AGENT","agentId":"agt_1","taskId":"tsk_1","conversationId":"cnv_1","modelId":"mdl_1",""" +
+                """"modelName":"model-x","derivedFrom":["mem_z","mem_a"],"source":"Tool: Clock","recordedAt":42}""",
+            encodeColumn(
+                Provenance.serializer(),
+                Provenance(
+                    ProvenanceOrigin.AGENT, AgentId("agt_1"), TaskId("tsk_1"), ConversationId("cnv_1"), ModelId("mdl_1"), "model-x",
+                    listOf(MemoryId("mem_z"), MemoryId("mem_a")), "Tool: Clock", recordedAt = 42,
+                ),
+            ),
+        )
+        assertEquals(
+            """{"origin":"OWNER","agentId":null,"taskId":null,"conversationId":null,"modelId":null,"modelName":null,""" +
+                """"derivedFrom":[],"source":null,"recordedAt":1}""",
+            encodeColumn(Provenance.serializer(), Provenance(ProvenanceOrigin.OWNER, recordedAt = 1)),
+        )
+        assertEquals("""["research","shared tag"]""", encodeColumn(ColumnSerializers.stringSet, linkedSetOf("research", "shared tag")))
+        // Rows keep the search text they were written with: a change here needs a migration that rebuilds it.
+        assertEquals(
+            "über äpfel\nline one\nline two\ntea time ß",
+            memorySearchText("Über ÄPFEL", "Line one\nLINE two", linkedSetOf("tea time", "ß")),
+        )
+        // Little-endian float32: 1.0 and -0.0.
+        assertContentEquals(
+            byteArrayOf(0, 0, 0x80.toByte(), 0x3F, 0, 0, 0, 0x80.toByte()),
+            EmbeddingCodec.encode(floatArrayOf(1f, -0f)),
+        )
     }
 
     @Test
@@ -223,12 +299,12 @@ class StoredNamesGoldenTest {
             "maxTasksPerObjective", "maxMessagesPerObjective", "maxModelCallsPerTask", "maxToolCallsPerTask",
             "maxRevisionRounds", "maxTaskAttempts", "taskTimeoutMinutes", "objectiveTimeoutMinutes",
             "approvalTimeoutMinutes", "autoResumeInterruptedTasks", "operatorEnabled", "accessibilityOperatorEnabled",
-            "onboardingCompleted", "seedVersion",
+            "onboardingCompleted", "seedVersion", "memorySeedVersion",
         )
         // The defaults are deliberately not pinned as text: changing a default is not a format change.
-        val stored = SettingsCodec.encode(FrameworkSettings(localOnlyMode = true, seedVersion = 3))
+        val stored = SettingsCodec.encode(FrameworkSettings(localOnlyMode = true, seedVersion = 3, memorySeedVersion = 1))
         assertEquals(true, stored.startsWith("""{"localOnlyMode":true,"activityRetentionDays":"""), stored)
-        assertEquals(true, stored.endsWith(""","onboardingCompleted":false,"seedVersion":3}"""), stored)
+        assertEquals(true, stored.endsWith(""","onboardingCompleted":false,"seedVersion":3,"memorySeedVersion":1}"""), stored)
     }
 
     @Test

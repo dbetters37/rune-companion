@@ -10,11 +10,16 @@ import com.aicontrolcenter.core.chat.Conversation
 import com.aicontrolcenter.core.chat.ConversationEntry
 import com.aicontrolcenter.core.llm.ChatMessage
 import com.aicontrolcenter.core.llm.TokenUsage
+import com.aicontrolcenter.core.memory.MemoryKind
+import com.aicontrolcenter.core.memory.MemoryTier
 import com.aicontrolcenter.data.StoredDataException
+import com.aicontrolcenter.data.db.entity.MemoryEntity
+import com.aicontrolcenter.data.db.entity.MemoryRow
 import com.aicontrolcenter.data.db.mapper.level
 import com.aicontrolcenter.data.db.mapper.toDomain
 import com.aicontrolcenter.data.db.mapper.toEntity
 import com.aicontrolcenter.testkit.Samples
+import com.aicontrolcenter.testkit.contract.MemorySamples
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import org.junit.Test
@@ -163,5 +168,67 @@ class StoredColumnsTest {
         val failure = assertFailsWith<StoredDataException> { stored.copy(messageJson = """{"role":"USER","text":"private""").toDomain() }
         assertEquals("Column conversation_entries.message_json of row 'cnv_1#4' does not hold readable JSON.", failure.message)
         assertFailsWith<StoredDataException> { stored.copy(usageJson = "[]").toDomain() }
+    }
+
+    private fun MemoryEntity.toRow() = MemoryRow(
+        id, scopeType, scopeAgentId, scopeSpaceId, scopeTaskId, kind, tier, title, content, tagsJson, importance, confidence,
+        provenanceJson, createdAt, updatedAt, lastAccessedAt, accessCount, expiresAt, revision,
+    )
+
+    @Test
+    fun `a memory keeps scope, kind, tier and times as plain columns, and tags and provenance as JSON`() {
+        val record = MemorySamples.memory(
+            "mem_1", MemorySamples.task, updatedAt = 500, kind = MemoryKind.DECISION, tier = MemoryTier.SHORT_TERM,
+            title = "Ölpreis", content = "STEIGT", tags = setOf("markt"), expiresAt = 9_000,
+        )
+        val stored = record.toEntity()
+        assertEquals("TASK", stored.scopeType)
+        assertEquals("agt_researcher", stored.scopeAgentId)
+        assertNull(stored.scopeSpaceId)
+        assertEquals("tsk_1", stored.scopeTaskId)
+        assertEquals("DECISION", stored.kind)
+        assertEquals("SHORT_TERM", stored.tier)
+        assertEquals(500L, stored.updatedAt)
+        assertEquals(9_000L, stored.expiresAt)
+        assertEquals("""["markt"]""", stored.tagsJson)
+        assertEquals(
+            setOf("origin", "agentId", "taskId", "conversationId", "modelId", "modelName", "derivedFrom", "source", "recordedAt"),
+            Json.parseToJsonElement(stored.provenanceJson).jsonObject.keys,
+        )
+        assertEquals("ölpreis\nsteigt\nmarkt", stored.searchText)
+        assertEquals(record, stored.toRow().toDomain())
+
+        val shared = MemorySamples.memory("mem_2", MemorySamples.commons).toEntity()
+        assertEquals(listOf("SHARED", null, "spc_commons", null), listOf(shared.scopeType, shared.scopeAgentId, shared.scopeSpaceId, shared.scopeTaskId))
+    }
+
+    @Test
+    fun `an unreadable memory or link is reported with table, column and row but without the content`() {
+        val stored = MemorySamples.memory("mem_1", content = "the owner's secret").toEntity().toRow()
+        val failures = listOf(
+            stored.copy(scopeType = "GALAXY"),
+            stored.copy(scopeAgentId = null),
+            stored.copy(tier = "FOREVER"),
+            stored.copy(provenanceJson = """{"origin":"AGENT","""),
+            stored.copy(tagsJson = "[1"),
+        ).map { assertFailsWith<StoredDataException> { it.toDomain() }.message!! }
+        assertEquals(
+            listOf(
+                "Column memories.scope_type of row 'mem_1' holds the unknown value 'GALAXY'.",
+                "Column memories.scope_agent_id of row 'mem_1' is empty, but private memory has an agent.",
+                "Column memories.tier of row 'mem_1' holds the unknown value 'FOREVER'.",
+                "Column memories.provenance_json of row 'mem_1' does not hold readable JSON.",
+                "Column memories.tags_json of row 'mem_1' does not hold readable JSON.",
+            ),
+            failures,
+        )
+        assertTrue(failures.none { "secret" in it })
+        // A kind added by a later version reads as a note instead (see MemoryKind).
+        assertEquals(MemoryKind.NOTE, stored.copy(kind = "DREAM").toDomain().kind)
+
+        val link = MemorySamples.link("lnk_1", "mem_1", "mem_2").toEntity()
+        assertEquals(MemorySamples.link("lnk_1", "mem_1", "mem_2"), link.toDomain())
+        val badRelation = assertFailsWith<StoredDataException> { link.copy(relation = "ENTANGLED").toDomain() }
+        assertEquals("Column memory_links.relation of row 'lnk_1' holds the unknown value 'ENTANGLED'.", badRelation.message)
     }
 }

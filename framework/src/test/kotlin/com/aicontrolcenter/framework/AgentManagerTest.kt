@@ -16,6 +16,7 @@ import com.aicontrolcenter.core.agents.toDraft
 import com.aicontrolcenter.framework.agents.AgentDeletionListener
 import com.aicontrolcenter.framework.agents.AgentTemplates
 import com.aicontrolcenter.framework.agents.DefaultAgentManager
+import com.aicontrolcenter.framework.memory.MemoryTools
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -48,7 +49,7 @@ class AgentManagerTest {
     }
 
     @Test
-    fun `an install upgraded from the first version gets the information tools but not its deleted agents back`() = runTest {
+    fun `an install upgraded from the first version gets the information and memory tools but not its deleted agents back`() = runTest {
         // What a version-1 install looks like: the starter team without tools, one agent deleted,
         // one agent given tools by its owner, one created by hand.
         for (templateId in AgentTemplates.starterTeam) {
@@ -67,11 +68,18 @@ class AgentManagerTest {
         val templateTools = AgentTemplates.byId(AgentTemplates.RESEARCHER)!!.draft.toolIds
         assertTrue(templateTools.isNotEmpty())
         assertEquals(templateTools, after.single { it.name == "Researcher" }.toolIds)
-        assertEquals(setOf(ToolId("team.list_agents")), after.single { it.id == chosen.id }.toolIds, "the owner's choice is kept")
+        assertTrue(templateTools.containsAll(MemoryTools.defaultToolIds))
+        assertEquals(
+            setOf(ToolId("team.list_agents")) + MemoryTools.defaultToolIds, after.single { it.id == chosen.id }.toolIds,
+            "the owner's choice is kept, and only the memory tools are added to it",
+        )
         assertTrue(after.single { it.id == handMade.id }.toolIds.isEmpty(), "an agent not made from a template is left alone")
         assertEquals(DefaultAgentManager.SEED_VERSION, world.settings.get().seedVersion)
-        assertEquals("Information tools switched on", world.log.all.last().title)
-        assertTrue("5 agents" in world.log.all.last().detail, world.log.all.last().detail)
+        val information = world.log.all.single { it.title == "Information tools switched on" }
+        assertTrue("5 agents" in information.detail, information.detail)
+        assertTrue("only read information" in information.detail, "the information step gives only the read-only tools")
+        val memory = world.log.all.single { it.title == "Memory tools switched on" }
+        assertTrue("6 agents" in memory.detail, "every template agent gets the memory tools, in their own step: ${memory.detail}")
 
         val events = world.log.all.size
         manager.ensureDefaults()

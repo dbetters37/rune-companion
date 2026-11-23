@@ -211,7 +211,7 @@ class DefaultAgentChat(
         val locality = providersById[model.providerId]?.effectiveLocality
         live.update { turns -> turns.change(id) { it.copy(modelName = model.displayName, locality = locality) } }
 
-        val request = AgentRunRequest(agent, modelId, ConversationHistory.toMessages(conversations.getEntries(id)))
+        val request = AgentRunRequest(agent, modelId, ConversationHistory.toMessages(conversations.getEntries(id)), conversationId = id)
         tooLongFor(model, agent, request)?.let { return failed(id, agent.id, it, retryable = false, log = true) }
 
         val run = coroutineScope {

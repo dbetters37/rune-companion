@@ -25,6 +25,19 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
+import androidx.compose.ui.test.click
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performTouchInput
+import com.aicontrolcenter.app.ui.memory.graph.GRAPH_TEST_TAG
+import com.aicontrolcenter.app.ui.memory.graph.GraphCanvasPadding
+import com.aicontrolcenter.app.ui.memory.graph.GraphFilters
+import com.aicontrolcenter.app.ui.memory.graph.GraphViewport
+import com.aicontrolcenter.app.ui.memory.graph.MemoryGraphViewModel
+import com.aicontrolcenter.core.MemoryId
+import com.aicontrolcenter.core.memory.MemoryActor
+import org.robolectric.shadows.ShadowLooper
+import java.util.concurrent.TimeUnit
 
 /**
  * Drives the whole app in a Compose test the way the owner would: by what is written on the
@@ -110,6 +123,43 @@ class AppRobot(private val compose: ComposeContentTestRule) {
 
     fun scrollTo(text: String) = apply {
         compose.onAllNodes(hasText(text, substring = true)).onFirst().performScrollTo()
+        compose.waitForIdle()
+    }
+
+    /**
+     * Waits until [text] is on screen, for work that finishes off the main thread or after a
+     * delay (a debounced search, a graph layout). The main looper's clock is moved on while
+     * waiting, so delayed posts run without real waiting.
+     */
+    fun waitUntilShown(text: String, timeoutMs: Long = 10_000) = apply {
+        waitUntil(timeoutMs) { compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    /** Waits for [condition], letting delayed main-thread work run in between checks. */
+    fun waitUntil(timeoutMs: Long = 10_000, condition: () -> Boolean) = apply {
+        compose.waitUntil(timeoutMs) {
+            ShadowLooper.idleMainLooper(50, TimeUnit.MILLISECONDS)
+            condition()
+        }
+        compose.waitForIdle()
+    }
+
+    /** Waits until the memory graph has been laid out (that happens off the main thread) and drawn. */
+    fun waitForGraph() = waitUntil { compose.onAllNodes(hasTestTag(GRAPH_TEST_TAG)).fetchSemanticsNodes().isNotEmpty() }
+
+    /**
+     * Taps where memory [id] is drawn in the graph, unzoomed. The position comes from the same
+     * deterministic layout of the same snapshot the screen drew, so this is a real touch, not a shortcut.
+     */
+    fun tapGraphMemory(id: MemoryId, filters: GraphFilters = GraphFilters()) = apply {
+        waitForGraph()
+        val snapshot = runBlocking { app.graph.memoryService.graph(MemoryActor.Owner, filters.request(MemoryGraphViewModel.MAX_VIEW_NODES)) }
+        val point = MemoryGraphViewModel.layoutOf(snapshot).getValue("mem:${id.value}")
+        val canvas = compose.onNodeWithTag(GRAPH_TEST_TAG)
+        val size = canvas.fetchSemanticsNode().size
+        val padding = with(compose.density) { GraphCanvasPadding.toPx() }
+        val target = GraphViewport().toScreen(point.x.toFloat(), point.y.toFloat(), size.width.toFloat(), size.height.toFloat(), padding)
+        canvas.performTouchInput { click(target) }
         compose.waitForIdle()
     }
 

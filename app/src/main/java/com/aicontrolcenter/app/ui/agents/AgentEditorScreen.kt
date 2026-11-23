@@ -38,6 +38,7 @@ import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ModelId
+import com.aicontrolcenter.core.SpaceId
 import com.aicontrolcenter.core.ToolId
 import com.aicontrolcenter.core.agents.AgentDraft
 
@@ -58,6 +59,8 @@ class AgentEditorActions(
     val onDiscard: () -> Unit,
     val onClose: () -> Unit,
     val onMessageShown: () -> Unit,
+    val onSetSpaceReadable: (SpaceId, Boolean) -> Unit = { _, _ -> },
+    val onSetSpaceWritable: (SpaceId, Boolean) -> Unit = { _, _ -> },
 )
 
 private class SavedStateDraftStore(private val handle: SavedStateHandle) : DraftStore {
@@ -87,6 +90,7 @@ fun AgentEditorRoute(
             templateId = templateId,
             draftStore = SavedStateDraftStore(createSavedStateHandle()),
             tools = graph.toolRegistry.all().map { it.spec },
+            spaces = graph.memoryService.observeSpaces(),
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -112,6 +116,8 @@ fun AgentEditorRoute(
         onDiscard = viewModel::discard,
         onClose = onClose,
         onMessageShown = viewModel::messageShown,
+        onSetSpaceReadable = viewModel::setSpaceReadable,
+        onSetSpaceWritable = viewModel::setSpaceWritable,
     )
     AgentEditorScreen(state, actions)
 }

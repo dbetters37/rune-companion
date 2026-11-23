@@ -4,6 +4,7 @@ import com.aicontrolcenter.core.ToolId
 import com.aicontrolcenter.core.llm.ToolCallRequest
 import com.aicontrolcenter.core.tools.Capabilities
 import com.aicontrolcenter.core.tools.RiskLevel
+import com.aicontrolcenter.core.tools.ToolCategory
 import com.aicontrolcenter.core.tools.ToolContext
 import com.aicontrolcenter.framework.TestWorld
 import com.aicontrolcenter.testkit.FakeClock
@@ -32,7 +33,7 @@ class BuiltInToolsTest {
 
     @Test
     fun `the built-in tools are registered, read-only and need only basic information`() {
-        val specs = world.toolRegistry.all().map { it.spec }
+        val specs = world.toolRegistry.all().map { it.spec }.filter { it.category != ToolCategory.MEMORY }
 
         assertEquals(listOf(ToolId("clock.now"), ToolId("team.list_agents")), specs.map { it.id })
         assertEquals(BuiltInTools.defaultToolIds, specs.map { it.id }.toSet())

@@ -29,6 +29,11 @@ import com.aicontrolcenter.framework.llm.DefaultProviderManager
 import com.aicontrolcenter.framework.llm.ProviderConnections
 import com.aicontrolcenter.framework.llm.RetryPolicy
 import com.aicontrolcenter.framework.llm.SimulatorProviderFactory
+import com.aicontrolcenter.framework.memory.AgentMemoryCleanup
+import com.aicontrolcenter.framework.memory.AutoRecall
+import com.aicontrolcenter.framework.memory.FakeMemoryService
+import com.aicontrolcenter.framework.memory.MemorySeeder
+import com.aicontrolcenter.framework.memory.MemoryTools
 import com.aicontrolcenter.framework.registry.DefaultAiAppRegistry
 import com.aicontrolcenter.framework.registry.DefaultRegistryDirectory
 import com.aicontrolcenter.framework.tools.BuiltInTools
@@ -53,6 +58,7 @@ import com.aicontrolcenter.testkit.SequentialIdGenerator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import java.time.ZoneOffset
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -93,11 +99,17 @@ class TestWorld(
     val gateway = DefaultModelGateway(providers, models, settings, connections, activity, clock, retry)
     val providerManager = DefaultProviderManager(providers, models, settings, vault, connections, activity, ids, clock)
 
-    val toolRegistry = DefaultToolRegistry().also { BuiltInTools.registerAll(it, clock, directory) }
+    /** Memory as the framework sees it: the contract, here a fake. Days are shown in UTC. */
+    val memory = FakeMemoryService(agents, clock, ids)
     val capabilities = CapabilityRegistry()
+    val toolRegistry = DefaultToolRegistry().also {
+        BuiltInTools.registerAll(it, clock, directory)
+        MemoryTools.registerAll(it, memory, capabilities, agents, clock) { ZoneOffset.UTC }
+    }
     val executor = ToolExecutor(toolRegistry, DefaultToolAuthorizer(settings, capabilities), activity, clock, toolLimits)
     val monitor = DefaultAgentActivityMonitor(clock)
-    val runner = AgentRunner(gateway, toolRegistry, executor, agents, settings, monitor, clock)
+    val recall = AutoRecall(memory, activity, zone = { ZoneOffset.UTC })
+    val runner = AgentRunner(gateway, toolRegistry, executor, agents, settings, monitor, clock, recall = recall)
     val chat = DefaultAgentChat(conversations, agents, models, providers, settings, runner, activity, ids, clock, scope)
 
     private val nextPort = java.util.concurrent.atomic.AtomicInteger()
@@ -105,8 +117,9 @@ class TestWorld(
     val deleted = mutableListOf<String>()
     val agentManager = DefaultAgentManager(
         agents, settings, activity, ids, clock,
-        deletionListeners = listOf(AgentDeletionListener { deleted += it.name }, chat),
+        deletionListeners = listOf(AgentDeletionListener { deleted += it.name }, chat, AgentMemoryCleanup(memory)),
     )
+    val memorySeeder = MemorySeeder(memory, agentManager, agents, settings, activity)
 
     /** Registers a provider at [baseUrl] whose adapter is [adapter], and stores [apiKey] for it when given. */
     suspend fun provider(

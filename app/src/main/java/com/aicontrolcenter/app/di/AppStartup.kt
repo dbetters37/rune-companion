@@ -7,15 +7,20 @@ import com.aicontrolcenter.core.activity.ActivityType
 import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.agents.AgentManager
 import com.aicontrolcenter.core.llm.ProviderManager
+import com.aicontrolcenter.core.memory.MemoryService
 import com.aicontrolcenter.core.registry.AiAppRegistry
 import com.aicontrolcenter.core.settings.SettingsRepository
+import com.aicontrolcenter.framework.memory.MemorySeeder
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
@@ -25,12 +30,19 @@ import kotlinx.coroutines.launch
  *
  * Every step is independent: a failure in one is written to the activity log and does not stop
  * the others, because a broken package scan must never prevent the owner from seeing agents.
+ *
+ * Memory upkeep ([MemoryService.maintain]: deleting expired short-term memories and computing
+ * missing search vectors) runs once after the start-up steps, again whenever local-only mode is
+ * switched off (an off-device embedder may then fill in what it was refused), and every
+ * [MEMORY_MAINTENANCE_INTERVAL_MS] while the app is in the foreground. It never runs twice at once.
  */
 class AppStartup(
     private val scope: CoroutineScope,
     private val agentManager: AgentManager,
     private val aiAppRegistry: AiAppRegistry,
     private val providerManager: ProviderManager,
+    private val memorySeeder: MemorySeeder,
+    private val memory: MemoryService,
     private val settings: SettingsRepository,
     private val activityLog: ActivityLog,
     private val activityRecorder: ActivityRecorder,
@@ -40,6 +52,12 @@ class AppStartup(
     private var initialJob: Job? = null
     private var foregroundRefresh: Job? = null
     private var providerCheck: Job? = null
+    private var memoryMaintenance: Job? = null
+    private var foregroundMaintenanceLoop: Job? = null
+
+    /** When memory upkeep last started, or null before the first time. */
+    @Volatile
+    private var lastMemoryMaintenanceAt: Long? = null
 
     /** When the last check of every provider started, or null before the first one. */
     @Volatile
@@ -52,9 +70,18 @@ class AppStartup(
             // First, so the simulator is there for the starter team and for "Try with the simulator".
             step("Could not register the built-in simulator") { providerManager.ensureBuiltIns() }
             step("Could not create the starter team") { agentManager.ensureDefaults() }
+            // After the team: the starter space is shared with the starter agents.
+            step("Could not set up shared memory") { memorySeeder.ensureDefaults() }
             step("Could not refresh AI app statuses") { aiAppRegistry.refreshStatuses() }
         }
         initialJob = job
+        maintainMemory(after = job)
+        scope.launch {
+            // Off again: vectors an off-device embedder was refused can be computed now.
+            settings.settings.map { it.localOnlyMode }.distinctUntilChanged().drop(1).filter { on -> !on }.collect {
+                maintainMemory(after = job, force = true)
+            }
+        }
         // A stored status can be days old, and an offline or rejected one keeps agents from running
         // until something re-checks it. Network calls can take long, so they never hold up the start.
         checkProviders(after = job)
@@ -87,6 +114,39 @@ class AppStartup(
         }
         val last = lastProviderCheckAt
         if (last == null || clock.now() - last >= PROVIDER_RECHECK_MS) checkProviders(after = initial)
+        maintainMemory(after = initial)
+        if (foregroundMaintenanceLoop?.isActive != true) {
+            foregroundMaintenanceLoop = scope.launch {
+                while (true) {
+                    delay(MEMORY_MAINTENANCE_INTERVAL_MS)
+                    maintainMemory(after = initial)
+                }
+            }
+        }
+    }
+
+    /** Stops the periodic memory upkeep until the app is in the foreground again. */
+    @Synchronized
+    fun onAppBackgrounded() {
+        foregroundMaintenanceLoop?.cancel()
+        foregroundMaintenanceLoop = null
+    }
+
+    /**
+     * Starts memory upkeep after [after], unless it is running or ran less than
+     * [MEMORY_MAINTENANCE_INTERVAL_MS] ago. [force] skips the time check, not the running check.
+     */
+    @Synchronized
+    private fun maintainMemory(after: Job, force: Boolean = false) {
+        if (memoryMaintenance?.isActive == true) return
+        val last = lastMemoryMaintenanceAt
+        // The first run (at start) always happens; later ones respect the interval.
+        if (!force && last != null && clock.now() - last < MEMORY_MAINTENANCE_INTERVAL_MS) return
+        lastMemoryMaintenanceAt = clock.now()
+        memoryMaintenance = scope.launch {
+            after.join()
+            step("Could not tidy up memory") { memory.maintain() }
+        }
     }
 
     @Synchronized
@@ -134,5 +194,8 @@ class AppStartup(
 
         /** Provider status older than this is checked again when the app returns to the foreground. */
         const val PROVIDER_RECHECK_MS = 10L * 60 * 1000
+
+        /** How often memory upkeep runs while the app is in the foreground. */
+        const val MEMORY_MAINTENANCE_INTERVAL_MS = 30L * 60 * 1000
     }
 }

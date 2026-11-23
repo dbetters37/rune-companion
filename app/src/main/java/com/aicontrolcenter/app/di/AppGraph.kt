@@ -11,6 +11,8 @@ import com.aicontrolcenter.core.device.DeviceInspector
 import com.aicontrolcenter.core.llm.ModelGateway
 import com.aicontrolcenter.core.llm.ProviderAdapterFactory
 import com.aicontrolcenter.core.llm.ProviderManager
+import com.aicontrolcenter.core.memory.Embedder
+import com.aicontrolcenter.core.memory.MemoryService
 import com.aicontrolcenter.core.registry.AiAppLauncher
 import com.aicontrolcenter.core.registry.AiAppRegistry
 import com.aicontrolcenter.core.registry.RegistryDirectory
@@ -25,6 +27,10 @@ import com.aicontrolcenter.framework.llm.DefaultModelGateway
 import com.aicontrolcenter.framework.llm.DefaultProviderManager
 import com.aicontrolcenter.framework.llm.ProviderConnections
 import com.aicontrolcenter.framework.llm.SimulatorProviderFactory
+import com.aicontrolcenter.framework.memory.AgentMemoryCleanup
+import com.aicontrolcenter.framework.memory.AutoRecall
+import com.aicontrolcenter.framework.memory.MemorySeeder
+import com.aicontrolcenter.framework.memory.MemoryTools
 import com.aicontrolcenter.framework.registry.DefaultAiAppRegistry
 import com.aicontrolcenter.framework.registry.DefaultRegistryDirectory
 import com.aicontrolcenter.framework.registry.LoggingAiAppLauncher
@@ -33,6 +39,10 @@ import com.aicontrolcenter.framework.tools.CapabilityRegistry
 import com.aicontrolcenter.framework.tools.DefaultToolAuthorizer
 import com.aicontrolcenter.framework.tools.DefaultToolRegistry
 import com.aicontrolcenter.framework.tools.ToolExecutor
+import com.aicontrolcenter.memory.DefaultMemoryService
+import com.aicontrolcenter.memory.HashingEmbedder
+import com.aicontrolcenter.memory.MemoryConfig
+import com.aicontrolcenter.app.BuildConfig
 import com.aicontrolcenter.providers.HttpProviderAdapters
 import com.aicontrolcenter.providers.anthropic.AnthropicAdapterFactory
 import kotlinx.coroutines.CoroutineScope
@@ -58,11 +68,14 @@ fun productionAdapterFactories(): List<ProviderAdapterFactory> =
  * @param appScope lives as long as the process; start-up, background work and chat turns run in it.
  * @param adapterFactories how each provider kind is reached. Tests pass fakes, so nothing they
  *   do can touch the network.
+ * @param memoryConfig tunables of the memory engine (short-term lifetime, recall weights). The
+ *   app version it names is written into every exported memory graph.
  */
 class AppGraph(
     val ports: Ports,
     appScope: CoroutineScope,
     adapterFactories: List<ProviderAdapterFactory> = productionAdapterFactories(),
+    val memoryConfig: MemoryConfig = MemoryConfig(appVersion = BuildConfig.VERSION_NAME),
 ) {
     val clock: Clock = ports.clock
     val idGenerator: IdGenerator = ports.idGenerator
@@ -123,11 +136,38 @@ class AppGraph(
         clock = ports.clock,
     )
 
-    // --- tools ---
-    val toolRegistry: ToolRegistry = DefaultToolRegistry().also { BuiltInTools.registerAll(it, ports.clock, registryDirectory) }
+    // --- memory ---
 
-    /** Later phases register the capabilities their tools need here. */
+    /**
+     * Turns memories into vectors for semantic search. The hashing embedder needs no model and
+     * no network, so search works offline and nothing a memory says leaves the phone for it.
+     */
+    val embedder: Embedder = HashingEmbedder()
+
+    /**
+     * The one memory service of the process. It serialises writes with an in-process lock, so
+     * there must never be a second instance over the same repository.
+     */
+    val memoryService: MemoryService = DefaultMemoryService(
+        repository = ports.memories,
+        agents = ports.agents,
+        settings = ports.settings,
+        embedder = embedder,
+        activity = activityRecorder,
+        ids = ports.idGenerator,
+        clock = ports.clock,
+        config = memoryConfig,
+    )
+
+    // --- tools ---
+
+    /** The capabilities tools need. Declared before the tools, which register theirs into it. */
     val capabilities = CapabilityRegistry()
+
+    val toolRegistry: ToolRegistry = DefaultToolRegistry().also {
+        BuiltInTools.registerAll(it, ports.clock, registryDirectory)
+        MemoryTools.registerAll(it, memoryService, capabilities, ports.agents, ports.clock)
+    }
 
     private val toolExecutor = ToolExecutor(
         registry = toolRegistry,
@@ -150,6 +190,8 @@ class AppGraph(
         settings = ports.settings,
         monitor = monitor,
         clock = ports.clock,
+        // Relevant memories are added to the prompt before each turn, per the agent's memory policy.
+        recall = AutoRecall(memoryService, activityRecorder),
     )
 
     private val defaultAgentChat = DefaultAgentChat(
@@ -174,15 +216,21 @@ class AppGraph(
         activity = activityRecorder,
         ids = ports.idGenerator,
         clock = ports.clock,
-        // Deleting an agent stops its turns and removes its conversations.
-        deletionListeners = listOf(defaultAgentChat),
+        // Deleting an agent stops its turns, removes its conversations and forgets its private and
+        // task memory. What it shared into spaces stays there, with its provenance.
+        deletionListeners = listOf(defaultAgentChat, AgentMemoryCleanup(memoryService)),
     )
+
+    /** Creates the starter "Team knowledge" space once, after the starter team exists. */
+    private val memorySeeder = MemorySeeder(memoryService, agentManager, ports.agents, ports.settings, activityRecorder)
 
     private val startup = AppStartup(
         scope = appScope,
         agentManager = agentManager,
         aiAppRegistry = aiAppRegistry,
         providerManager = providerManager,
+        memorySeeder = memorySeeder,
+        memory = memoryService,
         settings = ports.settings,
         activityLog = ports.activityLog,
         activityRecorder = activityRecorder,
@@ -199,4 +247,7 @@ class AppGraph(
 
     /** Call when the app returns to the foreground: package broadcasts are best effort, and provider status goes stale. */
     fun onAppForegrounded() = startup.onAppForegrounded()
+
+    /** Call when the app leaves the foreground; periodic memory upkeep pauses until it returns. */
+    fun onAppBackgrounded() = startup.onAppBackgrounded()
 }

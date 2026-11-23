@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ConversationId
+import com.aicontrolcenter.core.MemoryId
 import com.aicontrolcenter.core.activity.ActivityFilter
 import com.aicontrolcenter.core.agents.AgentStats
 import com.aicontrolcenter.core.chat.Conversation
@@ -18,6 +19,7 @@ import com.aicontrolcenter.data.security.DatabaseKeyException
 import com.aicontrolcenter.data.security.SoftwareVaultCipher
 import com.aicontrolcenter.data.security.VaultCipher
 import com.aicontrolcenter.testkit.Samples
+import com.aicontrolcenter.testkit.contract.MemorySamples
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExecutorCoroutineDispatcher
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -70,6 +72,7 @@ class DataLayerTest {
         assertSame(data.aiApps, data.aiApps)
         assertSame(data.activityLog, data.activityLog)
         assertSame(data.conversations, data.conversations)
+        assertSame(data.memories, data.memories)
         assertSame(data.settings, data.settings)
         assertSame(data.secretVault, data.secretVault)
 
@@ -100,7 +103,13 @@ class DataLayerTest {
         first.activityLog.record(event)
         first.conversations.upsertConversation(conversation)
         assertEquals(listOf(question, answer), listOf(question, answer).map { first.conversations.appendEntry(it) })
-        first.settings.update { it.copy(directorAgentId = agent.id, localOnlyMode = true) }
+        val memory = MemorySamples.memory("mem_1", MemorySamples.researcher)
+        val linked = MemorySamples.memory("mem_2", MemorySamples.commons)
+        first.memories.upsert(memory)
+        first.memories.upsert(linked)
+        first.memories.upsertLink(MemorySamples.link("lnk_1", "mem_1", "mem_2"))
+        first.memories.putEmbedding(memory.id, "emb", floatArrayOf(0.6f, 0.8f))
+        first.settings.update { it.copy(directorAgentId = agent.id, localOnlyMode = true, memorySeedVersion = 1) }
         first.secretVault.put(provider.apiKeyAlias!!, "sk-home-server")
         first.close()
 
@@ -115,6 +124,11 @@ class DataLayerTest {
         assertEquals(listOf(question, answer), second.conversations.observeEntries(conversation.id).first())
         // Numbering carries on where it stopped before the restart.
         assertEquals(2, second.conversations.appendEntry(question.copy(at = 2_300)).seq)
+        assertEquals(listOf(memory, linked), second.memories.list())
+        assertEquals(listOf("lnk_1"), second.memories.linksOf(MemoryId("mem_1")).map { it.id.value })
+        assertEquals(listOf(0.6f, 0.8f), second.memories.embeddings("emb").getValue(memory.id).toList())
+        assertEquals(listOf(memory), second.memories.searchText("CONTENT mem_1"))
+        assertEquals(1, second.settings.get().memorySeedVersion)
         assertEquals(agent.id, second.settings.get().directorAgentId)
         assertTrue(second.settings.get().localOnlyMode)
         assertEquals("sk-home-server", second.secretVault.get(provider.apiKeyAlias!!))

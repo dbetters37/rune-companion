@@ -7,6 +7,7 @@ import com.aicontrolcenter.core.WallClock
 import com.aicontrolcenter.core.activity.ActivityLog
 import com.aicontrolcenter.core.chat.ConversationRepository
 import com.aicontrolcenter.core.device.DeviceInspector
+import com.aicontrolcenter.core.memory.MemoryRepository
 import com.aicontrolcenter.core.registry.AgentRepository
 import com.aicontrolcenter.core.registry.AiAppLauncher
 import com.aicontrolcenter.core.registry.AiAppRepository
@@ -33,6 +34,12 @@ data class Ports(
     val aiApps: AiAppRepository,
     /** Direct conversations between the owner and an agent, with every message and tool result. */
     val conversations: ConversationRepository,
+    /**
+     * Agents' private memories, shared knowledge spaces and task memory, with their links and
+     * search vectors. Only the memory service talks to it; screens go through the service, which
+     * checks who may see what.
+     */
+    val memories: MemoryRepository,
     val activityLog: ActivityLog,
     val settings: SettingsRepository,
     val secretVault: SecretVault,

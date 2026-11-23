@@ -66,6 +66,7 @@ class AgentDetailActions(
     val onDelete: () -> Unit,
     val onOpenModels: () -> Unit,
     val onMessageShown: () -> Unit,
+    val onOpenMemories: () -> Unit = {},
 )
 
 @Composable
@@ -76,10 +77,18 @@ fun AgentDetailRoute(
     onOpenAgent: (AgentId) -> Unit,
     onOpenModels: () -> Unit,
     onChat: (AgentId) -> Unit,
+    onOpenMemories: (AgentId) -> Unit = {},
 ) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel {
-        AgentDetailViewModel(agentId, graph.registryDirectory, graph.agentManager, graph.activityMonitor, graph.toolRegistry.all().map { it.spec })
+        AgentDetailViewModel(
+            agentId,
+            graph.registryDirectory,
+            graph.agentManager,
+            graph.activityMonitor,
+            graph.toolRegistry.all().map { it.spec },
+            graph.memoryService,
+        )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     LaunchedEffect(state.deleted) { if (state.deleted) onBack() }
@@ -101,6 +110,7 @@ fun AgentDetailRoute(
             onDelete = viewModel::delete,
             onOpenModels = onOpenModels,
             onMessageShown = viewModel::messageShown,
+            onOpenMemories = { onOpenMemories(agentId) },
         ),
     )
 }
@@ -148,7 +158,7 @@ fun AgentDetailScreen(state: AgentDetailUiState, actions: AgentDetailActions) {
                 ResponsibilitiesSection(agent)
                 ModelSection(agent, actions.onOpenModels)
                 ToolsSection(agent)
-                PolicySections(agent)
+                PolicySections(agent, actions.onOpenMemories)
                 TrackRecordSection(agent)
                 ManageSection(
                     agent = agent,

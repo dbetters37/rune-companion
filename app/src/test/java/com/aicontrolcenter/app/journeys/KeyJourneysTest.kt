@@ -228,7 +228,6 @@ class KeyJourneysTest {
     @Test
     fun `sections that are not built yet say so and offer nothing to tap`() {
         robot.openSection("Tasks").assertShown("built yet in this version")
-        robot.openSectionViaMore("Memory").assertShown("built yet in this version")
         robot.openSectionViaMore("Tools").assertShown("built yet in this version")
     }
 }

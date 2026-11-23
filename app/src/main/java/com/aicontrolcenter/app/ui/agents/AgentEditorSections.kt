@@ -4,6 +4,16 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.aicontrolcenter.app.ui.components.RowText
+import com.aicontrolcenter.app.ui.icons.Groups
+import com.aicontrolcenter.app.ui.memory.spaceColorIndex
+import com.aicontrolcenter.app.ui.theme.appColors
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Icon
@@ -266,6 +276,10 @@ internal fun GenerationEditor(state: AgentEditorUiState, actions: AgentEditorAct
     }
 }
 
+/**
+ * The agent's memory policy: its own private memory, which shared spaces it may read and which
+ * it may write (separately, so an agent is never forced to share everything), and automatic recall.
+ */
 @Composable
 internal fun MemoryEditor(state: AgentEditorUiState, actions: AgentEditorActions) {
     val memory = state.draft.memory
@@ -275,37 +289,93 @@ internal fun MemoryEditor(state: AgentEditorUiState, actions: AgentEditorActions
             Column {
                 SwitchRow(
                     title = "Private memory",
-                    description = "The agent keeps its own memories that no other agent can read.",
+                    description = if (memory.privateMemoryEnabled) {
+                        "The agent keeps its own memories that no other agent can read."
+                    } else {
+                        "Off: it neither saves nor recalls private memories. Memories already kept stay, unused, until you delete them."
+                    },
                     checked = memory.privateMemoryEnabled,
                     onCheckedChange = { on -> actions.onEdit { it.copy(memory = it.memory.copy(privateMemoryEnabled = on)) } },
                 )
                 RowDivider()
+                SpaceAccessEditor(state, actions)
+                RowDivider()
                 SwitchRow(
                     title = "Recall automatically",
-                    description = "Relevant memories are retrieved before each task.",
+                    description = "Before each turn, the memories most relevant to the request are added to its prompt.",
                     checked = memory.autoRecall,
                     onCheckedChange = { on -> actions.onEdit { it.copy(memory = it.memory.copy(autoRecall = on)) } },
                 )
-                RowDivider()
-                StepperRow(
-                    title = "Memories per task",
-                    description = "The most memories added to a prompt by automatic recall.",
-                    value = memory.recallLimit,
-                    onValueChange = { limit -> actions.onEdit { it.copy(memory = it.memory.copy(recallLimit = limit)) } },
-                    range = 0..50,
-                )
+                if (memory.autoRecall) {
+                    RowDivider()
+                    StepperRow(
+                        title = "Memories per turn",
+                        description = "The most memories automatic recall adds to one prompt.",
+                        value = memory.recallLimit,
+                        onValueChange = { limit -> actions.onEdit { it.copy(memory = it.memory.copy(recallLimit = limit)) } },
+                        range = 0..50,
+                    )
+                }
                 state.issue(AgentField.MEMORY)?.let {
                     Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
-                Text(
-                    "The policy is stored now and takes effect when the memory system is built.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = Spacing.sm),
-                )
             }
         }
     }
+}
+
+/** Read and write access per shared space, as two chips on each space's row. */
+@Composable
+private fun SpaceAccessEditor(state: AgentEditorUiState, actions: AgentEditorActions) {
+    val memory = state.draft.memory
+    Column(Modifier.padding(vertical = Spacing.md), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+        RowText(
+            title = "Shared spaces",
+            description = "Read: it may recall what is in the space. Write: it may add to it. Spaces you allow nothing stay invisible to it.",
+        )
+        if (state.spaces.isEmpty()) {
+            Text(
+                "There are no shared spaces yet. Create one under Memory, Spaces.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = Spacing.xs),
+            )
+        }
+        state.spaces.forEach { space ->
+            Row(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+            ) {
+                Icon(AppIcons.Groups, contentDescription = null, tint = appColors.agentAccent(spaceColorIndex(space.id)), modifier = Modifier.size(18.dp))
+                Text(
+                    space.name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                SpaceAccessChip("Read", space.id in memory.readableSpaces, "May read ${space.name}") { actions.onSetSpaceReadable(space.id, it) }
+                SpaceAccessChip("Write", space.id in memory.writableSpaces, "May write ${space.name}") { actions.onSetSpaceWritable(space.id, it) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SpaceAccessChip(label: String, selected: Boolean, description: String, onChange: (Boolean) -> Unit) {
+    FilterChip(
+        selected = selected,
+        onClick = { onChange(!selected) },
+        label = { Text(label) },
+        leadingIcon = if (selected) {
+            { Icon(AppIcons.Check, contentDescription = null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
+        } else {
+            null
+        },
+        modifier = Modifier.semantics { contentDescription = description },
+    )
 }
 
 @Composable

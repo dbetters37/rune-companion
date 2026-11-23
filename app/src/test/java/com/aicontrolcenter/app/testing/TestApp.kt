@@ -24,6 +24,7 @@ import com.aicontrolcenter.testkit.InMemoryActivityLog
 import com.aicontrolcenter.testkit.InMemoryAgentRepository
 import com.aicontrolcenter.testkit.InMemoryAiAppRepository
 import com.aicontrolcenter.testkit.InMemoryConversationRepository
+import com.aicontrolcenter.testkit.InMemoryMemoryRepository
 import com.aicontrolcenter.testkit.FakeProviderAdapter
 import com.aicontrolcenter.testkit.FakeProviderAdapterFactory
 import com.aicontrolcenter.framework.llm.SimulatorProviderFactory
@@ -51,6 +52,7 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
     val models = InMemoryModelRepository()
     val aiApps = InMemoryAiAppRepository()
     val conversations = InMemoryConversationRepository()
+    val memories = InMemoryMemoryRepository()
     val vault = InMemorySecretVault()
     val activityLog = InMemoryActivityLog()
     val settings = InMemorySettingsRepository(settings)
@@ -71,6 +73,7 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
         models = models,
         aiApps = aiApps,
         conversations = conversations,
+        memories = memories,
         activityLog = activityLog,
         settings = this.settings,
         secretVault = vault,

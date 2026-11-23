@@ -31,7 +31,13 @@ data class DashboardUiState(
     val isScanning: Boolean = false,
     val isAssigning: Boolean = false,
     val message: UserMessage? = null,
+    /** Null when the memory system is not part of this graph (some tests). */
+    val memory: MemorySummaryUi? = null,
 )
+
+/** The headline numbers of memory: everything remembered, and the spaces agents can share. */
+@Immutable
+data class MemorySummaryUi(val memoryCount: Int = 0, val spaceCount: Int = 0)
 
 /** Agents that have no model, and whether the simulator can stand in for one. */
 @Immutable

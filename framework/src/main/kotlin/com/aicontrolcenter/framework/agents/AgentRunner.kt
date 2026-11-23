@@ -22,6 +22,7 @@ import com.aicontrolcenter.core.tools.ToolContext
 import com.aicontrolcenter.core.tools.ToolRegistry
 import com.aicontrolcenter.core.tools.ToolSpec
 import com.aicontrolcenter.framework.llm.TokenEstimator
+import com.aicontrolcenter.framework.memory.AutoRecall
 import com.aicontrolcenter.framework.tools.ToolExecutor
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
@@ -46,6 +47,15 @@ import kotlinx.coroutines.withTimeoutOrNull
  *    again before every model call and every tool call. Each call is authorised against the
  *    agent as it is then, so a tool switched off mid-turn is refused; an agent switched off or
  *    deleted mid-turn ends the run as [RunEnd.STOPPED_BY_OWNER].
+ *  - With [recall], memories that relate to the newest owner or task message are looked up once,
+ *    as the agent is stored when the turn starts, and put into the system prompt before the
+ *    first model call. Recall never fails a turn, and the system prompt does not change after
+ *    that first call. The record of data leaving the device then says that memories went too.
+ *  - Every tool call runs with an [AgentTurnInfo] in its coroutine context, so tools that record
+ *    provenance know the model and conversation of the turn.
+ *
+ * [estimatePromptTokens] does not count recalled memories, which are only known once the turn
+ * runs; [AutoRecall] caps their size instead.
  */
 class AgentRunner(
     private val gateway: ModelGateway,
@@ -56,6 +66,8 @@ class AgentRunner(
     private val monitor: DefaultAgentActivityMonitor,
     private val clock: Clock,
     private val prompts: AgentPromptComposer = AgentPromptComposer(),
+    /** Null: no automatic recall, as before memory existed. */
+    private val recall: AutoRecall? = null,
 ) {
     suspend fun run(request: AgentRunRequest, listener: AgentRunListener = AgentRunListener.NONE): AgentRunResult {
         val limits = settings.get()
@@ -112,7 +124,7 @@ class AgentRunner(
             addAll(request.messages)
         }
         private val produced = ArrayList<ChatMessage>()
-        private val callContext = CallContext(agent.id, request.taskId, request.rootTaskId, request.purpose)
+        private var callContext = CallContext(agent.id, request.taskId, request.rootTaskId, request.purpose)
         private val maxModelCalls = limits.maxModelCallsPerTask.coerceAtLeast(1)
         private val maxToolCalls = limits.maxToolCallsPerTask.coerceAtLeast(0)
 
@@ -138,7 +150,11 @@ class AgentRunner(
                 if (modelCalls >= maxModelCalls) {
                     return Ending(RunEnd.MODEL_CALL_LIMIT, "Stopped after $modelCalls model calls, the limit for one task.")
                 }
-                (current() as? Outcome.Stop)?.let { return it.ending }
+                val profile = when (val now = current()) {
+                    is Outcome.Stop -> return now.ending
+                    is Outcome.Go -> now.agent
+                }
+                if (modelCalls == 0) recallMemories(profile)
                 val response = try {
                     callModel()
                 } catch (e: LlmException) {
@@ -195,6 +211,22 @@ class AgentRunner(
         }
 
         /**
+         * Puts the memories recalled for [profile] into the system prompt. Runs before the first
+         * model call, so nothing has been sent yet and the transcript still only grows from the
+         * model's point of view.
+         */
+        private suspend fun recallMemories(profile: AgentProfile) {
+            val recall = recall ?: return
+            if (!profile.memory.autoRecall || profile.memory.recallLimit <= 0) return
+            report("Recalling memories")
+            val recalled = recall.recall(profile, request.messages, request.taskId, request.rootTaskId) ?: return
+            transcript[0] = ChatMessage.system(prompts.compose(agent, offered, recalled.section))
+            val count = recalled.memories.size
+            val memories = if (count == 1) "1 recalled memory" else "$count recalled memories"
+            callContext = callContext.copy(purpose = "${request.purpose}, with $memories")
+        }
+
+        /**
          * The agent as it is stored now, or the ending of a run whose agent the owner switched
          * off or deleted. Its tool list and settings are what the next call is authorised against.
          */
@@ -220,7 +252,9 @@ class AgentRunner(
                 listener.onToolStarted(call, spec)
                 toolCalls++
                 executing = call
-                val execution = executor.execute(call, ToolContext(profile, request.taskId, request.rootTaskId))
+                val execution = withContext(AgentTurnInfo(request.modelId, modelName, request.conversationId)) {
+                    executor.execute(call, ToolContext(profile, request.taskId, request.rootTaskId))
+                }
                 executing = null
                 if (!execution.outcome.ok) toolErrors++
                 unanswered.remove(call)

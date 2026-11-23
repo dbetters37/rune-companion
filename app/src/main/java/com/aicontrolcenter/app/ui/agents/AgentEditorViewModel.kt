@@ -6,7 +6,12 @@ import androidx.lifecycle.viewModelScope
 import com.aicontrolcenter.app.ui.components.UserMessage
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ModelId
+import com.aicontrolcenter.core.SpaceId
 import com.aicontrolcenter.core.ToolId
+import com.aicontrolcenter.app.ui.memory.SpaceOptionUi
+import com.aicontrolcenter.core.memory.KnowledgeSpace
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import com.aicontrolcenter.app.ui.models.isSimulator
 import com.aicontrolcenter.core.registry.ModelStatus
 import com.aicontrolcenter.core.tools.RiskLevel
@@ -92,6 +97,8 @@ data class AgentEditorUiState(
     val isSaving: Boolean = false,
     val models: List<ModelOptionUi> = emptyList(),
     val tools: List<ToolOptionUi> = emptyList(),
+    /** Every shared knowledge space, by name, for the memory policy's read and write pickers. */
+    val spaces: List<SpaceOptionUi> = emptyList(),
     /** Set once after a successful save; the route navigates and calls back to clear it. */
     val savedAgentId: AgentId? = null,
     val message: UserMessage? = null,
@@ -129,6 +136,7 @@ class AgentEditorViewModel(
     private val templateId: String?,
     private val draftStore: DraftStore = DraftStore.None,
     tools: List<ToolSpec> = emptyList(),
+    spaces: Flow<List<KnowledgeSpace>> = flowOf(emptyList()),
 ) : ViewModel() {
 
     private val state = MutableStateFlow(
@@ -147,6 +155,9 @@ class AgentEditorViewModel(
         viewModelScope.launch { load() }
         viewModelScope.launch {
             directory.observe().collect { snapshot -> state.update { it.copy(models = snapshot.modelOptions()) } }
+        }
+        viewModelScope.launch {
+            spaces.collect { list -> state.update { it.copy(spaces = list.sortedBy { s -> s.name.lowercase() }.map { s -> SpaceOptionUi(s.id, s.name) }) } }
         }
     }
 
@@ -214,6 +225,18 @@ class AgentEditorViewModel(
 
     /** Switches a tool on or off for this agent. Using it still needs the matching permission. */
     fun setTool(id: ToolId, enabled: Boolean) = edit { if (enabled) it.copy(toolIds = it.toolIds + id) else it.copy(toolIds = it.toolIds - id) }
+
+    /** Lets the agent recall (read) a shared space, or stops it. */
+    fun setSpaceReadable(id: SpaceId, allowed: Boolean) = edit {
+        val policy = it.memory
+        it.copy(memory = policy.copy(readableSpaces = if (allowed) policy.readableSpaces + id else policy.readableSpaces - id))
+    }
+
+    /** Lets the agent add memories to (write) a shared space, or stops it. */
+    fun setSpaceWritable(id: SpaceId, allowed: Boolean) = edit {
+        val policy = it.memory
+        it.copy(memory = policy.copy(writableSpaces = if (allowed) policy.writableSpaces + id else policy.writableSpaces - id))
+    }
 
     /** Null means "use the model's own default". Values are kept to one decimal place. */
     fun setTemperature(value: Double?) = edit {

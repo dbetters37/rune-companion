@@ -22,6 +22,7 @@ import com.aicontrolcenter.core.agents.toDraft
 import com.aicontrolcenter.core.agents.toProfile
 import com.aicontrolcenter.core.registry.AgentRepository
 import com.aicontrolcenter.core.settings.SettingsRepository
+import com.aicontrolcenter.framework.memory.MemoryTools
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -221,6 +222,7 @@ class DefaultAgentManager(
             }
         }
         if (before in 1 until TOOLS_SEED_VERSION) giveTemplateToolsToEarlierAgents()
+        if (before in 1 until MEMORY_TOOLS_SEED_VERSION) giveMemoryToolsToTemplateAgents()
         val current = settings.get()
         val director = current.directorAgentId?.let { agents.get(it) }
             ?: agents.getAll().firstOrNull { it.kind == AgentKind.DIRECTOR }
@@ -232,13 +234,14 @@ class DefaultAgentManager(
      * Version 2 of the starter content added the built-in information tools to the templates.
      * Agents created from a template before then get the template's tools too, unless the owner
      * has already chosen tools for them. Those tools only read information (the date and time,
-     * the list of agents); the owner can switch them off per agent.
+     * the list of agents); the owner can switch them off per agent. Tools the templates gained
+     * in later versions are left to the steps of those versions, which run after this one.
      */
     private suspend fun giveTemplateToolsToEarlierAgents() = withContext(NonCancellable) {
         var updated = 0
         for (agent in agents.getAll()) {
             if (agent.toolIds.isNotEmpty()) continue
-            val tools = templates.firstOrNull { it.id == agent.templateId }?.draft?.toolIds.orEmpty()
+            val tools = templates.firstOrNull { it.id == agent.templateId }?.draft?.toolIds.orEmpty() - MemoryTools.defaultToolIds
             if (tools.isEmpty()) continue
             agents.upsert(agent.copy(toolIds = tools, updatedAt = clock.now()))
             updated++
@@ -249,6 +252,32 @@ class DefaultAgentManager(
                 ActivityType.SYSTEM, "Information tools switched on",
                 "$count from the starter templates can now read the date and time and the list of agents. " +
                     "These tools only read information; switch them off in each agent's settings.",
+            )
+        }
+    }
+
+    /**
+     * Version 3 of the starter content added memory search and saving to the templates. Every
+     * agent made from a template that has them gets exactly those two tools added, and keeps
+     * every other tool choice of the owner, including tools the owner switched off. It runs
+     * once, so an owner who later switches a memory tool off keeps it off. What each agent may
+     * read or write in memory is still limited by its memory policy.
+     */
+    private suspend fun giveMemoryToolsToTemplateAgents() = withContext(NonCancellable) {
+        var updated = 0
+        for (agent in agents.getAll()) {
+            val template = templates.firstOrNull { it.id == agent.templateId } ?: continue
+            val added = template.draft.toolIds.intersect(MemoryTools.defaultToolIds) - agent.toolIds
+            if (added.isEmpty()) continue
+            agents.upsert(agent.copy(toolIds = agent.toolIds + added, updatedAt = clock.now()))
+            updated++
+        }
+        if (updated > 0) {
+            val count = if (updated == 1) "1 agent" else "$updated agents"
+            activity.record(
+                ActivityType.SYSTEM, "Memory tools switched on",
+                "$count from the starter templates can now search and save memories. Each agent's memory settings decide what it may " +
+                    "read and write; switch the tools off in each agent's settings.",
             )
         }
     }
@@ -296,9 +325,12 @@ class DefaultAgentManager(
         const val MAX_DELEGATION_DEPTH = 10
 
         /** Bump when the built-in starter content changes in a way existing installs should receive. */
-        const val SEED_VERSION = 2
+        const val SEED_VERSION = 3
 
         /** The starter-content version that gave template agents the built-in information tools. */
         private const val TOOLS_SEED_VERSION = 2
+
+        /** The starter-content version that gave template agents memory search and saving. */
+        private const val MEMORY_TOOLS_SEED_VERSION = 3
     }
 }

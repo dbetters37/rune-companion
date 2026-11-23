@@ -14,6 +14,9 @@ import com.aicontrolcenter.core.agents.AgentActivityMonitor
 import com.aicontrolcenter.core.agents.AgentManager
 import com.aicontrolcenter.framework.llm.Simulator
 import kotlinx.coroutines.flow.flowOf
+import com.aicontrolcenter.core.memory.MemoryActor
+import com.aicontrolcenter.core.memory.MemoryService
+import kotlinx.coroutines.flow.Flow
 import com.aicontrolcenter.core.activity.ActivityLog
 import com.aicontrolcenter.core.registry.AiAppRegistry
 import com.aicontrolcenter.core.registry.RegistryDirectory
@@ -40,6 +43,7 @@ class DashboardViewModel(
     private val zone: ZoneId = ZoneId.systemDefault(),
     monitor: AgentActivityMonitor? = null,
     private val agentManager: AgentManager? = null,
+    memory: MemoryService? = null,
 ) : ViewModel() {
 
     private data class Local(
@@ -52,12 +56,17 @@ class DashboardViewModel(
     private val local = MutableStateFlow(Local())
     private var messageCounter = 0L
 
+    private val memorySummary: Flow<MemorySummaryUi?> = memory?.let { service ->
+        combine(service.observe(MemoryActor.Owner), service.observeSpaces()) { memories, spaces -> MemorySummaryUi(memories.size, spaces.size) }
+    } ?: flowOf(null)
+
     val uiState: StateFlow<DashboardUiState> = combine(
         directory.observe(),
         activityLog.observe(limit = RECENT_ACTIVITY_LIMIT),
         monitor?.states ?: flowOf(emptyMap()),
         local,
-    ) { snapshot, events, working, local ->
+        memorySummary,
+    ) { snapshot, events, working, local, memorySummary ->
         val network = snapshot.toAgentNetwork(working)
         val now = clock.now()
         DashboardUiState(
@@ -82,6 +91,7 @@ class DashboardViewModel(
             isScanning = local.isScanning,
             isAssigning = local.isAssigning,
             message = local.message,
+            memory = memorySummary,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), DashboardUiState())
 

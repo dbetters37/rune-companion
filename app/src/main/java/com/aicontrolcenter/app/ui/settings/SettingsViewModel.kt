@@ -43,6 +43,22 @@ data class LocalOnlyEffectUi(
     val agents: List<String> = emptyList(),
 )
 
+/** Facts about where memory lives and how it is searched, for the settings screen. */
+@Immutable
+data class MemoryInfoUi(
+    /** How long a short-term memory lives, in whole days. */
+    val shortTermDays: Int,
+    /** True when semantic search computes its vectors on this phone. */
+    val searchOnDevice: Boolean,
+) {
+    companion object {
+        private const val DAY_MS = 24L * 60 * 60 * 1000
+
+        fun of(shortTermTtlMs: Long, embedderLocality: Locality) =
+            MemoryInfoUi((shortTermTtlMs / DAY_MS).toInt().coerceAtLeast(1), embedderLocality == Locality.ON_DEVICE)
+    }
+}
+
 @Immutable
 data class SettingsUiState(
     val isLoading: Boolean = true,
@@ -51,6 +67,7 @@ data class SettingsUiState(
     val device: DeviceReportState = DeviceReportState.Loading,
     val appVersion: String = "",
     val message: UserMessage? = null,
+    val memory: MemoryInfoUi? = null,
 )
 
 /**
@@ -65,6 +82,7 @@ class SettingsViewModel(
     private val appVersion: String,
     directory: RegistryDirectory? = null,
     private val tools: List<ToolSpec> = emptyList(),
+    private val memoryInfo: MemoryInfoUi? = null,
 ) : ViewModel() {
 
     private data class Local(val device: DeviceReportState = DeviceReportState.Loading, val message: UserMessage? = null)
@@ -84,8 +102,9 @@ class SettingsViewModel(
             device = local.device,
             appVersion = appVersion,
             message = local.message,
+            memory = memoryInfo,
         )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState(appVersion = appVersion))
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState(appVersion = appVersion, memory = memoryInfo))
 
     init {
         refreshDeviceReport()

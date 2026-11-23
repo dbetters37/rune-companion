@@ -16,6 +16,11 @@ import com.aicontrolcenter.core.agents.AgentManager
 import com.aicontrolcenter.core.agents.AgentOperationException
 import com.aicontrolcenter.core.agents.AgentProfile
 import com.aicontrolcenter.core.agents.AgentStats
+import com.aicontrolcenter.core.memory.MemoryActor
+import com.aicontrolcenter.core.memory.MemoryFilter
+import com.aicontrolcenter.core.memory.MemoryScope
+import com.aicontrolcenter.core.memory.MemoryService
+import kotlinx.coroutines.flow.map
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -42,6 +47,11 @@ data class AgentDetailUi(
     val liveActivity: String? = null,
     /** Titles of the tools switched on for it that exist in the registry. */
     val tools: List<String> = emptyList(),
+    /** How many memories are in its private memory; null when the memory system is not available. */
+    val privateMemoryCount: Int? = null,
+    /** Names of the shared spaces its policy lets it read, and write. Spaces that no longer exist are left out. */
+    val readableSpaces: List<String> = emptyList(),
+    val writableSpaces: List<String> = emptyList(),
 ) {
     /** Only an agent with the Director role can be designated, and only if it is not already. */
     val canDesignateAsDirector: Boolean get() = profile.kind == AgentKind.DIRECTOR && !isDesignatedDirector
@@ -78,6 +88,7 @@ class AgentDetailViewModel(
     private val agentManager: AgentManager,
     monitor: AgentActivityMonitor? = null,
     tools: List<ToolSpec> = emptyList(),
+    memory: MemoryService? = null,
 ) : ViewModel() {
     private val toolTitles: Map<ToolId, String> = tools.associate { it.id to it.title }
 
@@ -91,12 +102,18 @@ class AgentDetailViewModel(
     private val local = MutableStateFlow(Local())
     private var messageCounter = 0L
 
+    private val privateCount = memory?.observe(MemoryActor.Owner, MemoryFilter(scopes = setOf(MemoryScope.Agent(agentId))))?.map { it.size }
+        ?: flowOf(null)
+
     val uiState: StateFlow<AgentDetailUiState> = combine(
         directory.observe(),
         monitor?.states ?: flowOf(emptyMap()),
         local,
-    ) { snapshot, working, local ->
+        privateCount,
+        memory?.observeSpaces() ?: flowOf(emptyList()),
+    ) { snapshot, working, local, privateCount, spaces ->
         val entry = snapshot.agentsById[agentId]
+        val spaceNames = spaces.associate { it.id to it.name }
         AgentDetailUiState(
             isLoading = false,
             agent = entry?.let {
@@ -110,6 +127,9 @@ class AgentDetailViewModel(
                     modelsAvailable = snapshot.models.isNotEmpty(),
                     liveActivity = working[agentId]?.let { state -> state.detail ?: "Working" },
                     tools = it.profile.toolIds.mapNotNull(toolTitles::get).sorted(),
+                    privateMemoryCount = privateCount,
+                    readableSpaces = it.profile.memory.readableSpaces.mapNotNull(spaceNames::get).sorted(),
+                    writableSpaces = it.profile.memory.writableSpaces.mapNotNull(spaceNames::get).sorted(),
                 )
             },
             deleted = local.deleted,
