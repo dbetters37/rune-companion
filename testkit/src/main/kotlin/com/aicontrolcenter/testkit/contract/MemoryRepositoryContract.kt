@@ -17,6 +17,8 @@ import com.aicontrolcenter.core.memory.MemoryRepository
 import com.aicontrolcenter.core.memory.MemoryScope
 import com.aicontrolcenter.core.memory.MemoryTier
 import com.aicontrolcenter.core.memory.Provenance
+import com.aicontrolcenter.core.memory.ProvenanceAction
+import com.aicontrolcenter.core.memory.ProvenanceEvent
 import com.aicontrolcenter.core.memory.ProvenanceOrigin
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -58,6 +60,10 @@ object MemorySamples {
         id = MemoryId(id), scope = scope, kind = kind, tier = tier, title = title, content = content, tags = tags,
         importance = 0.7, confidence = 0.9, provenance = provenance(updatedAt), createdAt = updatedAt - 10, updatedAt = updatedAt,
         lastAccessedAt = updatedAt + 1, accessCount = 3, expiresAt = expiresAt, revision = 2,
+        history = listOf(
+            ProvenanceEvent(ProvenanceAction.EDITED, ProvenanceOrigin.OWNER, at = updatedAt, note = "content, \"changed\""),
+            ProvenanceEvent(ProvenanceAction.SHARED_FROM, ProvenanceOrigin.AGENT, AgentId("agt_writer"), updatedAt + 1, MemoryId("mem_orig")),
+        ),
     )
 
     fun link(id: String, from: String, to: String, relation: LinkRelation = LinkRelation.RELATES_TO, at: Long = 2_000) =
@@ -76,7 +82,7 @@ abstract class MemoryRepositoryContract {
             s.memory("mem_1", s.researcher, 300),
             s.memory("mem_2", s.commons, 200, MemoryKind.PREFERENCE),
             s.memory("mem_3", s.task, 100, MemoryKind.NOTE, MemoryTier.SHORT_TERM, expiresAt = 9_999),
-            s.memory("mem_4", s.writer, 50).copy(tags = emptySet(), lastAccessedAt = null, accessCount = 0, title = "", provenance = Provenance(ProvenanceOrigin.OWNER, recordedAt = 1)),
+            s.memory("mem_4", s.writer, 50).copy(tags = emptySet(), lastAccessedAt = null, accessCount = 0, title = "", provenance = Provenance(ProvenanceOrigin.OWNER, recordedAt = 1), history = emptyList()),
         )
         records.forEach { repo.upsert(it) }
         records.forEach { assertEquals(it, repo.get(it.id)) }
@@ -229,6 +235,63 @@ abstract class MemoryRepositoryContract {
         assertNull(repo.getSpace(b.id))
         assertEquals(listOf("mem_out"), repo.list().map { it.id.value })
         assertTrue(repo.links().isEmpty())
+    }
+
+    @Test
+    fun `several memories and links are stored together or not at all`() = runTest {
+        val repo = createRepository()
+        repo.upsert(s.memory("mem_orig", s.researcher))
+        val copy = s.memory("mem_copy", s.commons)
+        repo.upsertAll(listOf(copy), listOf(s.link("lnk_copy", "mem_copy", "mem_orig", LinkRelation.SHARED_COPY_OF)))
+        assertEquals(copy, repo.get(MemoryId("mem_copy")))
+        assertEquals(listOf("lnk_copy"), repo.linksOf(MemoryId("mem_copy")).map { it.id.value })
+
+        val orphan = s.memory("mem_orphan", s.commons)
+        assertFails { repo.upsertAll(listOf(orphan), listOf(s.link("lnk_bad", "mem_orphan", "mem_gone"))) }
+        assertNull(repo.get(MemoryId("mem_orphan")), "nothing of a failed batch is kept")
+        assertEquals(listOf("lnk_copy"), repo.links().map { it.id.value })
+    }
+
+    @Test
+    fun `an agent's private and task memory can be found and deleted on its own`() = runTest {
+        val repo = createRepository()
+        val otherTask = MemoryScope.Task(TaskId("tsk_2"), AgentId("agt_writer"))
+        repo.upsert(s.memory("mem_priv", s.researcher, 100))
+        repo.upsert(s.memory("mem_t_old", s.task, 200, tier = MemoryTier.SHORT_TERM, expiresAt = 1_000))
+        repo.upsert(s.memory("mem_t_new", MemoryScope.Task(TaskId("tsk_9"), AgentId("agt_researcher")), 300, tier = MemoryTier.SHORT_TERM))
+        repo.upsert(s.memory("mem_w_task", otherTask, 400))
+        repo.upsert(s.memory("mem_shared", s.commons, 500))
+        repo.upsertLink(s.link("lnk", "mem_shared", "mem_priv"))
+        repo.putEmbedding(MemoryId("mem_priv"), "emb", floatArrayOf(1f))
+
+        assertEquals(setOf(AgentId("agt_researcher"), AgentId("agt_writer")), repo.agentsWithMemory())
+        assertEquals(listOf("mem_t_new", "mem_t_old"), repo.taskMemoryOf(AgentId("agt_researcher")).map { it.id.value })
+        assertEquals(listOf("mem_t_new"), repo.taskMemoryOf(AgentId("agt_researcher"), excludeExpiredAt = 1_000).map { it.id.value })
+        assertEquals(listOf("mem_t_new"), repo.taskMemoryOf(AgentId("agt_researcher"), limit = 1).map { it.id.value })
+
+        assertEquals(3, repo.deleteAgentMemory(AgentId("agt_researcher")))
+        assertEquals(listOf("mem_shared", "mem_w_task"), repo.list().map { it.id.value })
+        assertTrue(repo.links().isEmpty())
+        assertTrue(repo.embeddings("emb").isEmpty())
+        assertEquals(setOf(AgentId("agt_writer")), repo.agentsWithMemory())
+        assertEquals(0, repo.deleteAgentMemory(AgentId("agt_researcher")))
+    }
+
+    @Test
+    fun `links and vectors can be fetched for exactly a set of memories`() = runTest {
+        val repo = createRepository()
+        listOf("mem_a", "mem_b", "mem_c").forEach { repo.upsert(s.memory(it)) }
+        repo.upsertLink(s.link("lnk_ab", "mem_a", "mem_b", at = 1))
+        repo.upsertLink(s.link("lnk_bc", "mem_b", "mem_c", at = 2))
+        assertEquals(listOf("lnk_ab"), repo.linksAmong(listOf(MemoryId("mem_a"), MemoryId("mem_b"))).map { it.id.value })
+        assertTrue(repo.linksAmong(emptyList()).isEmpty())
+        repo.putEmbedding(MemoryId("mem_a"), "emb", floatArrayOf(0.5f, 0.5f))
+        repo.putEmbedding(MemoryId("mem_c"), "emb", floatArrayOf(1f, 0f))
+        val some = repo.embeddingsOf("emb", listOf(MemoryId("mem_a"), MemoryId("mem_b"), MemoryId("mem_missing")))
+        assertEquals(setOf(MemoryId("mem_a")), some.keys)
+        assertContentEquals(floatArrayOf(0.5f, 0.5f), some.getValue(MemoryId("mem_a")))
+        val many = (1..1_200).map { MemoryId("mem_x$it") } + MemoryId("mem_c")
+        assertEquals(setOf(MemoryId("mem_c")), repo.embeddingsOf("emb", many).keys, "long id lists are handled")
     }
 
     @Test

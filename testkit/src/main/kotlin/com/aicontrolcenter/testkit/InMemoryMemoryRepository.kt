@@ -1,5 +1,6 @@
 package com.aicontrolcenter.testkit
 
+import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.MemoryId
 import com.aicontrolcenter.core.MemoryLinkId
 import com.aicontrolcenter.core.SpaceId
@@ -44,7 +45,37 @@ class InMemoryMemoryRepository : MemoryRepository {
         state.value.records.let { all -> ids.distinct().mapNotNull { all[it] } }.sortedWith(newestFirst)
 
     override suspend fun upsert(record: MemoryRecord) = state.update { it.copy(records = it.records + (record.id to record)) }
+    override suspend fun upsertAll(records: List<MemoryRecord>, links: List<MemoryLink>) = state.update { current ->
+        val merged = current.records + records.associateBy { it.id }
+        require(links.all { it.from in merged && it.to in merged }) { "Both ends of a link must exist." }
+        current.copy(records = merged, links = current.links + links.associateBy { it.id })
+    }
+
     override suspend fun delete(id: MemoryId) = state.update { it.withoutMemories(setOf(id)) }
+
+    private fun MemoryScope.ownerAgent(): AgentId? = when (this) {
+        is MemoryScope.Agent -> agentId
+        is MemoryScope.Task -> agentId
+        is MemoryScope.Shared -> null
+    }
+
+    override suspend fun deleteAgentMemory(agentId: AgentId): Int {
+        var count = 0
+        state.update { current ->
+            val ids = current.records.values.filter { it.scope.ownerAgent() == agentId }.map { it.id }.toSet()
+            count = ids.size
+            current.withoutMemories(ids)
+        }
+        return count
+    }
+
+    override suspend fun agentsWithMemory(): Set<AgentId> = state.value.records.values.mapNotNullTo(HashSet()) { it.scope.ownerAgent() }
+
+    override suspend fun taskMemoryOf(agentId: AgentId, excludeExpiredAt: Long?, limit: Int): List<MemoryRecord> =
+        state.value.records.values
+            .filter { val scope = it.scope; scope is MemoryScope.Task && scope.agentId == agentId }
+            .filter { excludeExpiredAt == null || !it.isExpired(excludeExpiredAt) }
+            .sortedWith(newestFirst).take(limit)
 
     override suspend fun deleteScope(scope: MemoryScope): Int {
         var count = 0
@@ -87,6 +118,11 @@ class InMemoryMemoryRepository : MemoryRepository {
 
     override fun observeLinks(filter: MemoryFilter): Flow<List<MemoryLink>> = state.map { it.linksWithin(filter) }.distinctUntilChanged()
     override suspend fun links(filter: MemoryFilter): List<MemoryLink> = state.value.linksWithin(filter)
+    override suspend fun linksAmong(ids: Collection<MemoryId>): List<MemoryLink> {
+        val wanted = ids.toSet()
+        return state.value.links.values.filter { it.from in wanted && it.to in wanted }.sortedWith(compareBy({ it.createdAt }, { it.id.value }))
+    }
+
     override suspend fun linksOf(id: MemoryId): List<MemoryLink> =
         state.value.links.values.filter { it.from == id || it.to == id }.sortedWith(compareBy({ it.createdAt }, { it.id.value }))
 
@@ -108,6 +144,11 @@ class InMemoryMemoryRepository : MemoryRepository {
         return current.select(filter).mapNotNull { record ->
             current.vectors[record.id]?.get(embedderId)?.let { record.id to it.toFloatArray() }
         }.toMap()
+    }
+
+    override suspend fun embeddingsOf(embedderId: String, ids: Collection<MemoryId>): Map<MemoryId, FloatArray> {
+        val current = state.value
+        return ids.toSet().mapNotNull { id -> current.vectors[id]?.get(embedderId)?.let { id to it.toFloatArray() } }.toMap()
     }
 
     override suspend fun missingEmbeddings(embedderId: String, filter: MemoryFilter): List<MemoryId> {

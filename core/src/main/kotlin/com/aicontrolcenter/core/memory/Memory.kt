@@ -79,7 +79,37 @@ data class Provenance(
     val recordedAt: Long,
 )
 
-/** One remembered item. */
+/** Something done to a memory after it was created. */
+enum class ProvenanceAction {
+    /** Its title, content, kind, tags or scores were changed. */
+    EDITED,
+
+    /** This record is a copy shared into a knowledge space from [ProvenanceEvent.relatedMemory]. */
+    SHARED_FROM,
+
+    /** This record is a long-term copy of task memory [ProvenanceEvent.relatedMemory]. */
+    PROMOTED_FROM,
+}
+
+/** One entry of a memory's history: what was done, by whom, when. Appended, never rewritten. */
+@Serializable
+data class ProvenanceEvent(
+    val action: ProvenanceAction,
+    /** OWNER, AGENT or SYSTEM. */
+    val byOrigin: ProvenanceOrigin,
+    /** The agent that did it, when an agent did. */
+    val byAgentId: AgentId? = null,
+    val at: Long,
+    val relatedMemory: MemoryId? = null,
+    /** A short note, e.g. "content changed". */
+    val note: String? = null,
+)
+
+/**
+ * One remembered item. [provenance] describes how the text was first written and is copied
+ * unchanged onto shared and promoted copies; what happened to the memory afterwards is
+ * appended to [history].
+ */
 @Serializable
 data class MemoryRecord(
     val id: MemoryId,
@@ -105,6 +135,8 @@ data class MemoryRecord(
     val expiresAt: Long? = null,
     /** Incremented on every change, starting at 1. */
     val revision: Int = 1,
+    /** Later edits, shares and promotions, oldest first. */
+    val history: List<ProvenanceEvent> = emptyList(),
 ) {
     fun isExpired(now: Long): Boolean = expiresAt != null && expiresAt <= now
 }

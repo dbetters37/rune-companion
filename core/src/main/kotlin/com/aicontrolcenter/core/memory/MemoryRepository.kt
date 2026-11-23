@@ -35,11 +35,32 @@ interface MemoryRepository {
     suspend fun getAll(ids: Collection<MemoryId>): List<MemoryRecord>
     suspend fun upsert(record: MemoryRecord)
 
+    /**
+     * Stores [records] and then [links] in one transaction: either all are stored or none is
+     * (for example when a link names a memory that does not exist).
+     */
+    suspend fun upsertAll(records: List<MemoryRecord>, links: List<MemoryLink> = emptyList())
+
     /** Deletes the memory together with its links (in both directions) and its embeddings. */
     suspend fun delete(id: MemoryId)
 
     /** Deletes every memory in [scope], with their links and embeddings. Returns how many. */
     suspend fun deleteScope(scope: MemoryScope): Int
+
+    /**
+     * Deletes all private and task memory of [agentId] (scopes Agent and Task owned by it), with
+     * links and embeddings, in one transaction. Returns how many memories went.
+     */
+    suspend fun deleteAgentMemory(agentId: com.aicontrolcenter.core.AgentId): Int
+
+    /** Agents that own private or task memory. Used to find memory of agents that no longer exist. */
+    suspend fun agentsWithMemory(): Set<com.aicontrolcenter.core.AgentId>
+
+    /**
+     * The task memory of [agentId] (every task), newest first, at most [limit], leaving out
+     * memories that expired at or before [excludeExpiredAt] when it is set.
+     */
+    suspend fun taskMemoryOf(agentId: com.aicontrolcenter.core.AgentId, excludeExpiredAt: Long? = null, limit: Int = Int.MAX_VALUE): List<MemoryRecord>
 
     /** Deletes memories that expired at or before [now], with their links and embeddings. */
     suspend fun deleteExpired(now: Long): Int
@@ -57,6 +78,9 @@ interface MemoryRepository {
     fun observeLinks(filter: MemoryFilter = MemoryFilter()): Flow<List<MemoryLink>>
     suspend fun links(filter: MemoryFilter = MemoryFilter()): List<MemoryLink>
 
+    /** Links whose both ends are among [ids]. */
+    suspend fun linksAmong(ids: Collection<MemoryId>): List<MemoryLink>
+
     /** Links that start or end at [id]. */
     suspend fun linksOf(id: MemoryId): List<MemoryLink>
     suspend fun upsertLink(link: MemoryLink)
@@ -67,6 +91,9 @@ interface MemoryRepository {
 
     /** Stored vectors of [embedderId] for the memories in [filter]. */
     suspend fun embeddings(embedderId: String, filter: MemoryFilter = MemoryFilter()): Map<MemoryId, FloatArray>
+
+    /** Stored vectors of [embedderId] for exactly the memories [ids] that have one. */
+    suspend fun embeddingsOf(embedderId: String, ids: Collection<MemoryId>): Map<MemoryId, FloatArray>
 
     /** Ids of memories in [filter] that have no vector from [embedderId] yet. */
     suspend fun missingEmbeddings(embedderId: String, filter: MemoryFilter = MemoryFilter()): List<MemoryId>
