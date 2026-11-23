@@ -223,6 +223,7 @@ class DefaultAgentManager(
         }
         if (before in 1 until TOOLS_SEED_VERSION) giveTemplateToolsToEarlierAgents()
         if (before in 1 until MEMORY_TOOLS_SEED_VERSION) giveMemoryToolsToTemplateAgents()
+        if (before in 1 until OPERATOR_TOOLS_SEED_VERSION) giveOperatorToolsToTemplateAgents()
         val current = settings.get()
         val director = current.directorAgentId?.let { agents.get(it) }
             ?: agents.getAll().firstOrNull { it.kind == AgentKind.DIRECTOR }
@@ -241,7 +242,8 @@ class DefaultAgentManager(
         var updated = 0
         for (agent in agents.getAll()) {
             if (agent.toolIds.isNotEmpty()) continue
-            val tools = templates.firstOrNull { it.id == agent.templateId }?.draft?.toolIds.orEmpty() - MemoryTools.defaultToolIds
+            val tools = templates.firstOrNull { it.id == agent.templateId }?.draft?.toolIds.orEmpty() - MemoryTools.defaultToolIds -
+                AgentTemplates.operatorToolIds - AgentTemplates.askToolIds
             if (tools.isEmpty()) continue
             agents.upsert(agent.copy(toolIds = tools, updatedAt = clock.now()))
             updated++
@@ -278,6 +280,38 @@ class DefaultAgentManager(
                 ActivityType.SYSTEM, "Memory tools switched on",
                 "$count from the starter templates can now search and save memories. Each agent's memory settings decide what it may " +
                     "read and write; switch the tools off in each agent's settings.",
+            )
+        }
+    }
+
+    /**
+     * Version 4 of the starter content added the phone operator (Phase 5). The Operator gets the
+     * operator tools its template now has, and every agent made from a template gets
+     * `permissions.request`, so it can ask the owner for what it lacks. Exactly those tools are
+     * added; every other tool choice of the owner is kept. It runs once, so a tool the owner
+     * later switches off stays off. Switching a tool on gives no permission: each operator tool
+     * still needs the owner's grant (reading the workspace aside), and every consequential action
+     * asks the owner every time.
+     */
+    private suspend fun giveOperatorToolsToTemplateAgents() = withContext(NonCancellable) {
+        val added = AgentTemplates.operatorToolIds + AgentTemplates.askToolIds
+        var operators = 0
+        var updated = 0
+        for (agent in agents.getAll()) {
+            val template = templates.firstOrNull { it.id == agent.templateId } ?: continue
+            val missing = template.draft.toolIds.intersect(added) - agent.toolIds
+            if (missing.isEmpty()) continue
+            agents.upsert(agent.copy(toolIds = agent.toolIds + missing, updatedAt = clock.now()))
+            updated++
+            if (missing.any { it in AgentTemplates.operatorToolIds }) operators++
+        }
+        if (updated > 0) {
+            val count = if (updated == 1) "1 agent" else "$updated agents"
+            val operatorPart = if (operators > 0) " The Operator also has the phone tools switched on." else ""
+            activity.record(
+                ActivityType.SYSTEM, "Phone operator tools switched on",
+                "$count from the starter templates can now ask you for a permission.$operatorPart Switching a tool on gives no " +
+                    "permission: you grant each one, and every consequential action asks you first.",
             )
         }
     }
@@ -325,12 +359,15 @@ class DefaultAgentManager(
         const val MAX_DELEGATION_DEPTH = 10
 
         /** Bump when the built-in starter content changes in a way existing installs should receive. */
-        const val SEED_VERSION = 3
+        const val SEED_VERSION = 4
 
         /** The starter-content version that gave template agents the built-in information tools. */
         private const val TOOLS_SEED_VERSION = 2
 
         /** The starter-content version that gave template agents memory search and saving. */
         private const val MEMORY_TOOLS_SEED_VERSION = 3
+
+        /** The starter-content version that gave the Operator its phone tools and every template agent `permissions.request`. */
+        private const val OPERATOR_TOOLS_SEED_VERSION = 4
     }
 }

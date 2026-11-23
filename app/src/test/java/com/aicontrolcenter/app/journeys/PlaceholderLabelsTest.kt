@@ -6,8 +6,6 @@ import androidx.compose.ui.test.onFirst
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aicontrolcenter.app.testing.AppRobot
 import com.aicontrolcenter.app.testing.populateWithProviders
-import com.aicontrolcenter.app.ui.components.TEST_LABEL_SUFFIX
-import com.aicontrolcenter.app.ui.planned.PlannedSection
 import com.aicontrolcenter.app.ui.settings.OrchestrationLimit
 import com.aicontrolcenter.app.ui.shell.Section
 import org.junit.After
@@ -44,36 +42,14 @@ class PlaceholderLabelsTest {
         this@PlaceholderLabelsTest.compose.onAllNodes(hasText(label)).onFirst().assertExists("\"$label\" is not shown")
     }
 
-    @Test
-    fun `labels declared as data keep their mark`() {
-        // Tools: nothing to view or change yet (Phase 5: permission broker UI).
-        assertEquals("Tools$TEST_LABEL_SUFFIX", Section.TOOLS.title)
-        assertEquals("Tools$TEST_LABEL_SUFFIX", PlannedSection.TOOLS.title)
-        // Approval time-out: nothing asks the owner for approval yet, so nothing reads it.
-        assertEquals("Approval time-out$TEST_LABEL_SUFFIX", OrchestrationLimit.APPROVAL_TIMEOUT_MINUTES.title)
+    /** Fails if anything on screen reads exactly [label]. */
+    private fun AppRobot.assertNoLabel(label: String) = apply {
+        assertEquals(0, this@PlaceholderLabelsTest.compose.onAllNodes(hasText(label)).fetchSemanticsNodes().size, "\"$label\" is still shown")
     }
 
     @Test
-    fun `the Tools section, the approval time-out and the approval filter are marked`() {
-        app().openSectionViaMore("Tools (test)")
-            .assertLabel("Tools (test)")
-            .openSectionViaMore("Settings")
-            .scrollTo("Approval time-out")
-            .assertLabel("Approval time-out (test)")
-            .openSection("Activity")
-            // Nothing records approval events until approval requests exist.
-            .assertLabel("Approval (test)")
-    }
-
-    @Test
-    fun `the Phone Operator template and the model capabilities nothing reads are marked`() {
-        app().openSection("Agents")
-            .tapIcon("New agent")
-            .scrollListTo("Phone Operator")
-            // Its phone tools (files, documents, apps, the workspace) do not exist yet.
-            .assertLabel("Phone Operator (test)")
-            .back()
-            .openSectionViaMore("Models")
+    fun `the model capabilities nothing reads are marked`() {
+        app().openSectionViaMore("Models")
             .tap("Models · 5")
             .tapItemContaining("Llama 3.2 3B")
             // No image is ever sent to a model, and nothing picks models by tier.
@@ -82,17 +58,46 @@ class PlaceholderLabelsTest {
             .assertLabel("Coding (test)")
     }
 
+    /** Phase 5 made these real: the broker asks the owner, and the Operator's phone tools exist. */
     @Test
-    fun `authorising accessibility operation is marked on the switch and in its dialog`() {
-        app().openSectionViaMore("Models")
+    fun `the approval time-out, the approval filter and the Phone Operator template are no longer marked`() {
+        assertEquals("Approval time-out", OrchestrationLimit.APPROVAL_TIMEOUT_MINUTES.title)
+        app().openSectionViaMore("Settings")
+            .scrollTo("Approval time-out")
+            .assertLabel("Approval time-out")
+            .assertNoLabel("Approval time-out (test)")
+            .openSection("Activity")
+            .assertLabel("Approval")
+            .assertNoLabel("Approval (test)")
+            .openSection("Agents")
+            .tapIcon("New agent")
+            .scrollListTo("Phone Operator")
+            .assertLabel("Phone Operator")
+            .assertNoLabel("Phone Operator (test)")
+    }
+
+    /**
+     * Phase 5 made these real too: the Tools section has its five tabs, and authorising an AI app
+     * for accessibility operation goes through the list the screen operator reads (operator_apps).
+     */
+    @Test
+    fun `the Tools section and authorising accessibility operation are no longer marked`() {
+        assertEquals("Tools", Section.TOOLS.title)
+        app().openSectionViaMore("Tools")
+            .assertNoLabel("Tools (test)")
+            .assertLabel("All tools")
+            .assertLabel("Allowed")
+            .assertLabel("Screen")
+            .openSectionViaMore("Models")
             .tap("AI apps · 4")
             .scrollListTo("com.example.chatbot")
             .tapItemContaining("com.example.chatbot")
             .scrollTo("Allow accessibility operation")
-            // There is no operator service yet, so authorising only records the decision.
-            .assertLabel("Allow accessibility operation (test)")
+            .assertLabel("Allow accessibility operation")
+            .assertNoLabel("Allow accessibility operation (test)")
             .tapItemContaining("Allow accessibility operation")
-            .assertLabel("Authorise (test)")
+            .assertLabel("Authorise")
+            .assertNoLabel("Authorise (test)")
             .tapInDialog("Cancel")
     }
 }

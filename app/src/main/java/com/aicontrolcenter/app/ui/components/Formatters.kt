@@ -42,9 +42,12 @@ fun formatCompactTimestamp(epochMillis: Long, nowMillis: Long, zone: ZoneId): St
     }
 }
 
-/** "3.1 GB", "512 MB", "2.0 KB", "17 B". Binary units, as memory and storage are reported. */
+/**
+ * "3.1 GB", "512 MB", "2.0 KB", "17 bytes". Binary units, as memory and storage are reported.
+ * The number and its unit are joined by a non-breaking space, so a size never splits across lines.
+ */
 fun formatBytes(bytes: Long): String {
-    if (bytes < 1024) return "$bytes B"
+    if (bytes < 1024) return if (bytes == 1L) "1${NBSP}byte" else "$bytes${NBSP}bytes"
     val units = listOf("KB", "MB", "GB", "TB")
     var value = bytes / 1024.0
     var unit = 0
@@ -52,7 +55,33 @@ fun formatBytes(bytes: Long): String {
         value /= 1024
         unit++
     }
-    return if (value >= 100) "%.0f %s".format(Locale.ROOT, value, units[unit]) else "%.1f %s".format(Locale.ROOT, value, units[unit])
+    return if (value >= 100) "%.0f$NBSP%s".format(Locale.ROOT, value, units[unit]) else "%.1f$NBSP%s".format(Locale.ROOT, value, units[unit])
+}
+
+/** Joins a number to its unit so the two stay on one line. */
+const val NBSP: Char = '\u00A0'
+
+/**
+ * A file's kind in words, from its media type: "Text (Markdown)", "Table (CSV)", "Image (PNG)".
+ * Unknown types fall back to "Other file".
+ */
+fun fileKindOf(mimeType: String): String = when (mimeType) {
+    "text/plain" -> "Text"
+    "text/markdown" -> "Text (Markdown)"
+    "text/csv" -> "Table (CSV)"
+    "application/json" -> "Data (JSON)"
+    "text/html" -> "Web page (HTML)"
+    "text/xml" -> "Data (XML)"
+    "text/javascript" -> "Script (JavaScript)"
+    "application/pdf" -> "Document (PDF)"
+    "image/png" -> "Image (PNG)"
+    "image/jpeg" -> "Image (JPEG)"
+    "image/webp" -> "Image (WebP)"
+    "image/gif" -> "Image (GIF)"
+    "video/mp4" -> "Video (MP4)"
+    "application/zip" -> "Archive (ZIP)"
+    "application/vnd.android.package-archive" -> "Android app (APK)"
+    else -> "Other file"
 }
 
 /** "42 s", "3 min", "1 h 05 min". */

@@ -31,6 +31,9 @@ import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.Stop
 import com.aicontrolcenter.app.ui.icons.Tasks
 import com.aicontrolcenter.app.ui.theme.Spacing
+import com.aicontrolcenter.app.ui.approvals.WaitingForYou
+import com.aicontrolcenter.app.ui.approvals.icon
+import com.aicontrolcenter.core.RequestId
 import com.aicontrolcenter.core.TaskId
 
 class TaskDetailActions(
@@ -40,19 +43,30 @@ class TaskDetailActions(
     val onRetry: () -> Unit,
     val onCancel: () -> Unit,
     val onMessageShown: () -> Unit,
+    /** Opens the Approval screen of a request the task waits on. */
+    val onOpenRequest: (RequestId) -> Unit = {},
 )
 
 @Composable
-fun TaskDetailRoute(taskId: TaskId, onBack: () -> Unit, onOpenTask: (TaskId) -> Unit, onOpenObjective: (TaskId) -> Unit) {
+fun TaskDetailRoute(
+    taskId: TaskId,
+    onBack: () -> Unit,
+    onOpenTask: (TaskId) -> Unit,
+    onOpenObjective: (TaskId) -> Unit,
+    onOpenRequest: (RequestId) -> Unit = {},
+) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel(key = "task-${taskId.value}") {
         TaskDetailViewModel(
             taskId, graph.tasks, graph.messages, graph.registryDirectory, graph.agentChat, graph.toolRegistry, graph.orchestrator,
-            graph.activityMonitor, graph.clock,
+            graph.activityMonitor, graph.clock, requests = graph.ownerRequests.pending, capabilityInfo = graph.capabilities::info,
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    TaskDetailScreen(state, TaskDetailActions(onBack, onOpenTask, onOpenObjective, viewModel::retry, viewModel::cancel, viewModel::messageShown))
+    TaskDetailScreen(
+        state,
+        TaskDetailActions(onBack, onOpenTask, onOpenObjective, viewModel::retry, viewModel::cancel, viewModel::messageShown, onOpenRequest),
+    )
 }
 
 /** One task: what was asked, who does it, how it went, its reviews, messages and the agent's transcript. */
@@ -75,7 +89,15 @@ fun TaskDetailScreen(state: TaskDetailUiState, actions: TaskDetailActions) {
                 contentPadding = PaddingValues(bottom = Spacing.xl),
             ) {
                 item(key = "header") {
-                    Pad { TaskHeader(task, state.isBusy, actions.onOpenObjective, actions.onRetry, onCancel = { confirmCancel = true }) }
+                    Pad {
+                        TaskHeader(
+                            task, state.isBusy, actions.onOpenObjective, actions.onRetry, onCancel = { confirmCancel = true },
+                            statusIcon = state.waitingFor.firstOrNull()?.kind?.icon,
+                        )
+                    }
+                }
+                if (state.waitingFor.isNotEmpty()) {
+                    item(key = "waiting") { Pad { WaitingForYou(state.waitingFor, actions.onOpenRequest) } }
                 }
                 item(key = "instructions") { Pad { TaskInstructions(task) } }
                 if (task.parent != null || task.dependsOn.isNotEmpty() || task.children.isNotEmpty()) {

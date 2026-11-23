@@ -37,7 +37,6 @@ import com.aicontrolcenter.app.ui.components.EmptyState
 import com.aicontrolcenter.app.ui.components.ScreenScaffold
 import com.aicontrolcenter.app.ui.components.SectionHeader
 import com.aicontrolcenter.app.ui.components.readableWidth
-import com.aicontrolcenter.app.ui.components.testLabel
 import com.aicontrolcenter.app.ui.icons.Accessibility
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.Apps
@@ -61,7 +60,7 @@ class AiAppDetailActions(
 fun AiAppDetailRoute(appId: AiAppId, onBack: () -> Unit) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel {
-        AiAppDetailViewModel(appId, graph.aiAppRegistry, graph.aiAppLauncher, graph.settings)
+        AiAppDetailViewModel(appId, graph.aiAppRegistry, graph.aiAppLauncher, graph.settings, graph.ownerOperatorApps, graph.installedApps)
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     LaunchedEffect(state.removed) { if (state.removed) onBack() }
@@ -134,6 +133,8 @@ fun AiAppDetailScreen(state: AiAppDetailUiState, actions: AiAppDetailActions) {
                 CapabilitiesSection(app)
                 RegistrySettingsSection(
                     app = app,
+                    operatorAuthorised = state.operatorAuthorised,
+                    needsReauthorisation = state.needsReauthorisation,
                     isBusy = state.isBusy,
                     onSetEnabled = actions.onSetEnabled,
                     onToggleAccessibility = { wanted ->
@@ -169,17 +170,19 @@ fun AiAppDetailScreen(state: AiAppDetailUiState, actions: AiAppDetailActions) {
         when (dialog) {
             AppDialog.ACCESSIBILITY_WARNING -> ConfirmDialog(
                 title = "Allow operating ${app.label}'s screen?",
-                message = "What it would allow: agents operating ${app.label} through Android's accessibility " +
-                    "service. That means reading everything the app shows, including your conversations in it, " +
-                    "and tapping and typing in it as if they were you.\n\n" +
-                    "What it does today: nothing. Operating an app also needs the operator service, which is not " +
-                    "built yet, and both operator switches in Settings, which do not exist yet either. Until all " +
-                    "of that is in place this only records your decision.\n\n" +
-                    "You can revoke it here at any time. It is withdrawn automatically if a different app appears " +
-                    "under this package name.",
-                confirmLabel = testLabel("Authorise"),
+                message = "What it allows: agents you choose operating ${app.label} through Android's accessibility " +
+                    "service. That means reading everything the app shows, including your conversations in it, and tapping " +
+                    "and typing in it as if they were you, one action at a time, with a Stop banner showing.\n\n" +
+                    "What still applies: each agent also needs your permission for this app (Tools › Screen), both " +
+                    "operator switches in Settings must be on, and buying, sending, deleting and similar always ask you first. " +
+                    "Password fields and views the app marks as sensitive are never read.\n\n" +
+                    "The app is checked now, so a look-alike installed later under the same name is not trusted. " +
+                    "You can remove it here or in Tools › Screen at any time.",
+                confirmLabel = "Authorise",
                 icon = AppIcons.Accessibility,
                 cautionary = true,
+                widens = true,
+                guarded = true,
                 onConfirm = {
                     dialog = null
                     actions.onSetAccessibilityAuthorized(true)

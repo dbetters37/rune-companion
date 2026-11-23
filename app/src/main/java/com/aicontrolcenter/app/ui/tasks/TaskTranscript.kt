@@ -53,6 +53,8 @@ internal fun LazyListScope.taskTranscript(items: List<TranscriptItem>, agent: Ag
                     markdown = true,
                 )
                 is TranscriptItem.Notice -> TranscriptNotice(item)
+                // A task's requests are shown at the top of the task screen, not in its transcript.
+                is TranscriptItem.Request -> Unit
             }
         }
     }

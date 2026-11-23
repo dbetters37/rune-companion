@@ -195,7 +195,8 @@ class ModelsAndChatScreenshotTest {
         val robot = app().openSection("Agents").tapItemContaining("Turns objectives into plans").tapIcon("Edit agent")
             .scrollTo("Leaves this device")
         shoot("p2_agent_editor_1_cloud_warning")
-        robot.scrollTo("Team members")
+        // Tools are grouped by family; the information family holds the team list.
+        robot.scrollTo("Facts about the app and the clock").tap("Information").scrollTo("Team members")
         shoot("p2_agent_editor_2_tools")
         robot.back().back().scrollListTo("Organises material").tapItemContaining("Organises material").tapIcon("Edit agent").scrollTo("Replies are scripted")
         shoot("p2_agent_editor_3_simulator")

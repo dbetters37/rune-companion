@@ -6,6 +6,10 @@ import androidx.lifecycle.viewModelScope
 import com.aicontrolcenter.app.ui.components.UserMessage
 import com.aicontrolcenter.core.AiAppId
 import com.aicontrolcenter.core.registry.AiApp
+import com.aicontrolcenter.core.registry.AiAppScanner
+import com.aicontrolcenter.core.registry.AiAppStatus
+import com.aicontrolcenter.core.operator.OwnerOperatorApps
+import com.aicontrolcenter.core.operator.OwnerResult
 import com.aicontrolcenter.core.registry.AiAppLauncher
 import com.aicontrolcenter.core.registry.AiAppRegistry
 import com.aicontrolcenter.core.registry.ControlChannel
@@ -36,6 +40,14 @@ data class AiAppDetailUiState(
      * actual effect are never confused.
      */
     val accessibilityAuthorisedButInactive: Boolean = false,
+    /**
+     * The app is on the list of apps agents may operate (`operator_apps`, the one list the screen
+     * operator reads), with its signing certificate recorded. This, not the registry's own flag,
+     * is what the switch shows.
+     */
+    val operatorAuthorised: Boolean = false,
+    /** It is on that list without a certificate (authorised before certificates were recorded), so the operator does not trust it. */
+    val needsReauthorisation: Boolean = false,
     /** Set once after this screen removed the app; the route leaves the screen. */
     val removed: Boolean = false,
     val isBusy: Boolean = false,
@@ -55,6 +67,10 @@ class AiAppDetailViewModel(
     private val registry: AiAppRegistry,
     private val launcher: AiAppLauncher,
     settings: SettingsRepository,
+    /** The apps agents may operate: authorising and withdrawing go through it, and the switch reads it. */
+    private val operatorApps: OwnerOperatorApps,
+    /** Reads the app's signing certificate as installed now, recorded when it is authorised. */
+    private val installed: AiAppScanner,
 ) : ViewModel() {
 
     private data class Local(val removed: Boolean = false, val isBusy: Boolean = false, val message: UserMessage? = null)
@@ -65,14 +81,20 @@ class AiAppDetailViewModel(
     val uiState: StateFlow<AiAppDetailUiState> = combine(
         registry.observeApps().map { apps -> apps.firstOrNull { it.id == appId } },
         settings.settings,
+        operatorApps.observeAll(),
         local,
-    ) { app, settings, local ->
-        val channels = app?.controlChannels(settings).orEmpty()
+    ) { app, settings, operable, local ->
+        val row = app?.let { a -> operable.firstOrNull { it.packageName == a.packageName } }
+        val authorised = row?.signingCertSha256 != null
+        // The accessibility channel follows operator_apps; the registry's own flag is only kept in step with it.
+        val channels = app?.copy(accessibilityAuthorized = authorised)?.controlChannels(settings).orEmpty()
         AiAppDetailUiState(
             isLoading = false,
             app = app,
             channels = channels,
-            accessibilityAuthorisedButInactive = app?.accessibilityAuthorized == true && ControlChannel.ACCESSIBILITY !in channels,
+            accessibilityAuthorisedButInactive = authorised && ControlChannel.ACCESSIBILITY !in channels,
+            operatorAuthorised = authorised,
+            needsReauthorisation = row != null && !authorised,
             removed = local.removed,
             isBusy = local.isBusy,
             message = local.message,
@@ -87,10 +109,36 @@ class AiAppDetailViewModel(
         show("Confirmed as an AI application.")
     }
 
-    /** Records the owner's explicit decision. The warning dialog is the screen's responsibility. */
+    /**
+     * The owner's decision, through the list of apps agents may operate: authorising records the
+     * app's signing certificate as installed now; withdrawing revokes every permission for the app
+     * first. The registry's own flag follows, for its display only. The warning dialog is the
+     * screen's responsibility.
+     */
     fun setAccessibilityAuthorized(authorized: Boolean) = run {
-        registry.setAccessibilityAuthorized(appId, authorized)
-        show(if (authorized) "Accessibility operation authorised for this app." else "Accessibility authorisation revoked.")
+        val app = currentApp() ?: return@run
+        if (!authorized) {
+            operatorApps.withdraw(app.packageName)
+            if (app.accessibilityAuthorized) registry.setAccessibilityAuthorized(appId, false)
+            show("Accessibility operation removed. Every permission agents had for ${app.label} was removed too.")
+            return@run
+        }
+        if (app.status != AiAppStatus.INSTALLED) {
+            show("${app.label} is not installed, so it cannot be authorised for accessibility operation.")
+            return@run
+        }
+        val certificate = installed.inspect(app.packageName)?.signingCertSha256
+        if (certificate == null) {
+            show("${app.label} could not be checked (its signing certificate could not be read), so it was not authorised.")
+            return@run
+        }
+        when (val result = operatorApps.authorise(app.packageName, app.label, certificate)) {
+            is OwnerResult.Refused -> show(result.reason)
+            is OwnerResult.Done -> {
+                if (!app.accessibilityAuthorized) registry.setAccessibilityAuthorized(appId, true)
+                show("Authorised and checked. Choose which agents may use it in Tools › Screen.")
+            }
+        }
     }
 
     fun saveNotes(notes: String) = run {

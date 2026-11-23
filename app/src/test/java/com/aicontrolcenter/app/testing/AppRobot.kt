@@ -1,5 +1,10 @@
 package com.aicontrolcenter.app.testing
 
+import androidx.activity.compose.LocalActivityResultRegistryOwner
+import androidx.activity.result.ActivityResultRegistry
+import androidx.activity.result.ActivityResultRegistryOwner
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -55,8 +60,19 @@ class AppRobot(private val compose: ComposeContentTestRule) {
     /** Runs set-up against the registry before (or while) the UI is shown. */
     fun given(block: suspend TestApp.() -> Unit) = apply { runBlocking { app.block() } }
 
-    fun launch(darkTheme: Boolean = true) = apply {
-        compose.setContent { AiControlCenterRoot(app.graph, darkTheme) }
+    /**
+     * Shows the app. [results] answers Android's pickers (folder, document) in place of the system
+     * UI, the way the owner would pick; without it, launching one is recorded by Robolectric only.
+     */
+    fun launch(darkTheme: Boolean = true, results: ActivityResultRegistry? = null) = apply {
+        compose.setContent {
+            if (results == null) {
+                AiControlCenterRoot(app.graph, darkTheme)
+            } else {
+                val owner = remember(results) { object : ActivityResultRegistryOwner { override val activityResultRegistry: ActivityResultRegistry = results } }
+                CompositionLocalProvider(LocalActivityResultRegistryOwner provides owner) { AiControlCenterRoot(app.graph, darkTheme) }
+            }
+        }
         compose.waitForIdle()
     }
 
@@ -95,6 +111,17 @@ class AppRobot(private val compose: ComposeContentTestRule) {
 
     fun tapIcon(description: String) = apply {
         compose.onAllNodes(hasContentDescription(description) and hasClickAction()).onFirst().performScrollToIfPossible().performClick()
+        compose.waitForIdle()
+    }
+
+    /**
+     * Presses the control screen readers know as [description] through its click action, as
+     * TalkBack does. For a control a snackbar may still cover for a few seconds, where a tap at
+     * its centre would land on the snackbar.
+     */
+    fun press(description: String) = apply {
+        compose.onAllNodes(hasContentDescription(description) and hasClickAction()).onFirst().performScrollToIfPossible()
+            .performSemanticsAction(SemanticsActions.OnClick)
         compose.waitForIdle()
     }
 

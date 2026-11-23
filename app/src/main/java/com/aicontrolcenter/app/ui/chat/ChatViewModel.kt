@@ -3,11 +3,14 @@ package com.aicontrolcenter.app.ui.chat
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aicontrolcenter.app.ui.approvals.requestUi
 import com.aicontrolcenter.app.ui.components.UserMessage
 import com.aicontrolcenter.app.ui.models.describe
 import com.aicontrolcenter.app.ui.models.isSimulator
 import com.aicontrolcenter.app.ui.models.providerFailureText
 import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.Clock
+import com.aicontrolcenter.core.WallClock
 import com.aicontrolcenter.core.ConversationId
 import com.aicontrolcenter.core.ProviderId
 import com.aicontrolcenter.core.agents.AgentAvailability
@@ -18,12 +21,17 @@ import com.aicontrolcenter.core.chat.ConversationEntry
 import com.aicontrolcenter.core.chat.LiveTurn
 import com.aicontrolcenter.core.chat.TurnResult
 import com.aicontrolcenter.core.llm.ProviderManager
+import com.aicontrolcenter.core.operator.OwnerRequest
 import com.aicontrolcenter.core.registry.ConnectionStatus
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.registry.RegistrySnapshot
 import com.aicontrolcenter.core.registry.effectiveLocality
+import com.aicontrolcenter.core.tools.Capability
+import com.aicontrolcenter.core.tools.CapabilityInfo
 import com.aicontrolcenter.core.tools.ToolRegistry
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -33,6 +41,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.time.ZoneId
 
 @Immutable
 data class ChatUiState(
@@ -65,6 +74,13 @@ data class ChatUiState(
  * One conversation with an agent. Sending runs the turn in the framework's own scope, so it
  * goes on when this screen is left; the transcript and the live turn are read back from
  * [AgentChat], so returning shows whatever happened meanwhile.
+ *
+ * Questions the agent's tool calls put to the owner in this chat ([requests]) appear in the
+ * transcript where they were raised, each with the way to its Approval screen; they are never
+ * answered here.
+ *
+ * @param awaitStartup waits for start-up, which withdraws requests left open when the app last
+ *   stopped; a message sent before it finished could otherwise have its fresh request withdrawn.
  */
 class ChatViewModel(
     private val conversationId: ConversationId,
@@ -72,6 +88,11 @@ class ChatViewModel(
     private val chat: AgentChat,
     private val tools: ToolRegistry,
     private val providerManager: ProviderManager,
+    requests: Flow<List<OwnerRequest>> = flowOf(emptyList()),
+    private val capabilityInfo: (Capability) -> CapabilityInfo? = { null },
+    private val clock: Clock = WallClock,
+    private val awaitStartup: suspend () -> Unit = {},
+    private val zone: ZoneId = ZoneId.systemDefault(),
 ) : ViewModel() {
 
     private data class Local(
@@ -94,9 +115,9 @@ class ChatViewModel(
         conversation,
         chat.observeEntries(conversationId),
         live,
-        local,
-    ) { snapshot, conversation, entries, live, local ->
-        build(snapshot, conversation, entries, live, local)
+        combine(local, requests, ::Pair),
+    ) { snapshot, conversation, entries, live, (local, requests) ->
+        build(snapshot, conversation, entries, live, local, requests)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatUiState())
 
     private fun build(
@@ -105,6 +126,7 @@ class ChatViewModel(
         entries: List<ConversationEntry>,
         live: LiveTurn?,
         local: Local,
+        requests: List<OwnerRequest>,
     ): ChatUiState {
         if (conversation == null) {
             return ChatUiState(isLoading = false, notFound = true, deleted = local.deleted, message = local.message)
@@ -138,14 +160,19 @@ class ChatViewModel(
         // The provider worth checking: the one the agent's own model lives on.
         val provider = primary?.let(snapshot::provider)?.takeUnless { it.isSimulator }
         val blockedByConnection = (availability as? AgentAvailability.Unavailable)?.reason in CONNECTION_REASONS
-        val items = transcriptOf(
-            entries = entries,
-            tools = ::toolInfo,
-            assignedModelName = primary?.modelName,
-            turnRunning = live != null,
-            activeToolCallId = live?.activeTool?.id,
+        val now = clock.now()
+        val items = withRequests(
+            transcriptOf(
+                entries = entries,
+                tools = ::toolInfo,
+                assignedModelName = primary?.modelName,
+                turnRunning = live != null,
+                activeToolCallId = live?.activeTool?.id,
+            ),
+            entries,
+            requests.map { it.createdAt to requestUi(it, snapshot, capabilityInfo, now, zone) },
         )
-        val lastIsFailure = (items.lastOrNull() as? TranscriptItem.Notice)?.kind == NoticeKind.FAILURE
+        val lastIsFailure = (items.lastOrNull { it !is TranscriptItem.Request } as? TranscriptItem.Notice)?.kind == NoticeKind.FAILURE
         val connectionFailure = lastIsFailure && live == null &&
             (local.lastFailureRetryable == true || provider?.status in PROBLEM_STATUSES)
         val offerCheck = provider != null && (blockedByConnection || connectionFailure)
@@ -180,6 +207,7 @@ class ChatViewModel(
         local.update { it.copy(draft = "", lastFailureRetryable = null) }
         viewModelScope.launch {
             try {
+                awaitStartup()
                 val result = chat.send(conversationId, text)
                 if (result is TurnResult.Failed) local.update { it.copy(lastFailureRetryable = result.retryable) }
             } catch (cancelled: CancellationException) {

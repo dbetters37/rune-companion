@@ -71,6 +71,10 @@ class AgentDetailActions(
     val onOpenMemories: () -> Unit = {},
     /** Opens one of its tasks (or, for the Director, an objective). */
     val onOpenTask: (AgentTaskUi) -> Unit = {},
+    /** Opens Tools › Permissions narrowed to this agent. */
+    val onOpenPermissions: () -> Unit = {},
+    /** Opens the workspace file manager. */
+    val onOpenWorkspace: () -> Unit = {},
 )
 
 @Composable
@@ -84,6 +88,8 @@ fun AgentDetailRoute(
     onOpenMemories: (AgentId) -> Unit = {},
     onOpenTask: (TaskId) -> Unit = {},
     onOpenObjective: (TaskId) -> Unit = {},
+    onOpenPermissions: (AgentId) -> Unit = {},
+    onOpenWorkspace: () -> Unit = {},
 ) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel {
@@ -120,6 +126,8 @@ fun AgentDetailRoute(
             onMessageShown = viewModel::messageShown,
             onOpenMemories = { onOpenMemories(agentId) },
             onOpenTask = { task -> if (task.kind == TaskKind.OBJECTIVE) onOpenObjective(task.id) else onOpenTask(task.id) },
+            onOpenPermissions = { onOpenPermissions(agentId) },
+            onOpenWorkspace = onOpenWorkspace,
         ),
     )
 }
@@ -166,7 +174,7 @@ fun AgentDetailScreen(state: AgentDetailUiState, actions: AgentDetailActions) {
                 InstructionsSection(agent)
                 ResponsibilitiesSection(agent)
                 ModelSection(agent, actions.onOpenModels)
-                ToolsSection(agent)
+                ToolsSection(agent, actions.onOpenPermissions, actions.onOpenWorkspace)
                 PolicySections(agent, actions.onOpenMemories)
                 TrackRecordSection(agent)
                 RecentTasksSection(agent, actions.onOpenTask)

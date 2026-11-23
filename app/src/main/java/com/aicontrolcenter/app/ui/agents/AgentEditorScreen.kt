@@ -61,6 +61,8 @@ class AgentEditorActions(
     val onMessageShown: () -> Unit,
     val onSetSpaceReadable: (SpaceId, Boolean) -> Unit = { _, _ -> },
     val onSetSpaceWritable: (SpaceId, Boolean) -> Unit = { _, _ -> },
+    /** Opens Tools › Permissions for the agent being edited; null for an agent not created yet. */
+    val onOpenPermissions: (() -> Unit)? = null,
 )
 
 private class SavedStateDraftStore(private val handle: SavedStateHandle) : DraftStore {
@@ -80,6 +82,7 @@ fun AgentEditorRoute(
     templateId: String?,
     onClose: () -> Unit,
     onSaved: (AgentId, isNew: Boolean) -> Unit,
+    onOpenPermissions: (AgentId) -> Unit = {},
 ) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel {
@@ -118,6 +121,7 @@ fun AgentEditorRoute(
         onMessageShown = viewModel::messageShown,
         onSetSpaceReadable = viewModel::setSpaceReadable,
         onSetSpaceWritable = viewModel::setSpaceWritable,
+        onOpenPermissions = agentId?.let { id -> { onOpenPermissions(id) } },
     )
     AgentEditorScreen(state, actions)
 }

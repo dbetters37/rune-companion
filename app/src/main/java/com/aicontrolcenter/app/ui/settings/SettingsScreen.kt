@@ -57,6 +57,8 @@ class SettingsActions(
     val onAutoResumeChange: (Boolean) -> Unit,
     val onRefreshDevice: () -> Unit,
     val onMessageShown: () -> Unit,
+    val onOperatorEnabledChange: (Boolean) -> Unit = {},
+    val onScreenControlEnabledChange: (Boolean) -> Unit = {},
 )
 
 @Composable
@@ -85,6 +87,8 @@ fun SettingsRoute() {
             onAutoResumeChange = viewModel::setAutoResumeInterruptedTasks,
             onRefreshDevice = viewModel::refreshDeviceReport,
             onMessageShown = viewModel::messageShown,
+            onOperatorEnabledChange = viewModel::setOperatorEnabled,
+            onScreenControlEnabledChange = viewModel::setScreenControlEnabled,
         ),
     )
 }
@@ -107,6 +111,7 @@ fun SettingsScreen(state: SettingsUiState, actions: SettingsActions) {
             verticalArrangement = Arrangement.spacedBy(Spacing.md),
         ) {
             PrivacySection(state.settings, state.localOnlyEffect, actions, onClearRequested = { confirmClear = true })
+            PhoneOperatorSection(state.settings, actions)
             state.memory?.let { MemorySection(it) }
             OrchestrationSection(state.settings, actions)
             DeviceSection(state.device, actions.onRefreshDevice)
@@ -180,6 +185,41 @@ private fun PrivacySection(
     }
 }
 
+/**
+ * The phone operator's two master switches. Both are off until the owner turns them on, and
+ * each says exactly what turning it on allows. Screen control needs the phone operator on too.
+ */
+@Composable
+private fun PhoneOperatorSection(settings: FrameworkSettings, actions: SettingsActions) {
+    Column {
+        SectionHeader("Phone operator")
+        AppCard {
+            SwitchRow(
+                title = "Phone operator",
+                description = "On: agents may use the phone tools switched on for them: files in their workspace and in folders you " +
+                    "share, photos you allow, apps and links, web pages and scripts. Reading their own workspace is always allowed; " +
+                    "every other tool needs your permission first, and deleting, installing, buying, sending or running a command " +
+                    "asks you every time. Off: no agent can touch the phone.",
+                checked = settings.operatorEnabled,
+                onCheckedChange = actions.onOperatorEnabledChange,
+            )
+            RowDivider()
+            SwitchRow(
+                title = "Screen control",
+                description = "On: agents may also read and use the screen of apps you authorise in Tools › Screen, through " +
+                    "Android's accessibility service: they see what those apps show and tap and type in them, one action at a time, " +
+                    "with a Stop banner showing. Settings, installers, the lock screen, password fields and this app are never " +
+                    "operated. Off: no agent can see or use any screen." +
+                    if (!settings.operatorEnabled) " Needs Phone operator on as well." else "",
+                checked = settings.accessibilityOperatorEnabled,
+                onCheckedChange = actions.onScreenControlEnabledChange,
+                // Always possible to turn off; turning on only makes sense with the phone operator on.
+                enabled = settings.operatorEnabled || settings.accessibilityOperatorEnabled,
+            )
+        }
+    }
+}
+
 /** Where memories live, how they are searched and how long short-term memory lasts: facts, not switches. */
 @Composable
 private fun MemorySection(info: MemoryInfoUi) {
@@ -207,7 +247,7 @@ private fun OrchestrationSection(settings: FrameworkSettings, actions: SettingsA
         AppCard {
             Text(
                 "Loop and runaway protection for agent runs. Model calls, tool calls and the task time-out apply to every " +
-                    "chat turn and task; the others apply when the Director runs objectives. A limit marked (test) has no effect yet.",
+                    "chat turn and task; the others apply when the Director runs objectives.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = Spacing.sm),

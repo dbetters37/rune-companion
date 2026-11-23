@@ -1,6 +1,7 @@
 package com.aicontrolcenter.app.ui.chat
 
 import androidx.compose.runtime.Immutable
+import com.aicontrolcenter.app.ui.approvals.RequestUi
 import com.aicontrolcenter.app.ui.components.formatCount
 import com.aicontrolcenter.core.chat.ConversationEntry
 import com.aicontrolcenter.core.chat.LiveTurn
@@ -78,6 +79,30 @@ sealed interface TranscriptItem {
     ) : TranscriptItem
 
     data class Notice(override val key: String, val text: String, val kind: NoticeKind) : TranscriptItem
+
+    /** A question to the owner raised in this chat, where it happened, with the way to its Approval screen. */
+    data class Request(override val key: String, val request: RequestUi) : TranscriptItem
+}
+
+/**
+ * [items] with every request of [requests] (raised time, request) placed after the last item
+ * stored before it was raised, so each appears in the chat where it happened. [entries] give
+ * the items' times.
+ */
+fun withRequests(items: List<TranscriptItem>, entries: List<ConversationEntry>, requests: List<Pair<Long, RequestUi>>): List<TranscriptItem> {
+    if (requests.isEmpty()) return items
+    val timeOf = entries.associate { "e${it.seq}" to it.at }
+    val queue = ArrayDeque(requests.sortedBy { it.first })
+    val out = ArrayList<TranscriptItem>(items.size + requests.size)
+    for (item in items) {
+        val at = timeOf[item.key]
+        if (at != null) {
+            while (queue.isNotEmpty() && queue.first().first < at) out += queue.removeFirst().second.let { TranscriptItem.Request("r${it.id.value}", it) }
+        }
+        out += item
+    }
+    queue.forEach { (_, request) -> out += TranscriptItem.Request("r${request.id.value}", request) }
+    return out
 }
 
 /** The turn in progress, as the screen shows it under the transcript. */
@@ -225,7 +250,7 @@ private fun short(value: JsonElement): String {
 
 /** The live turn in words. [toolTitle] names the running tool. */
 fun LiveTurn.toUi(toolTitle: (String) -> String?): LiveTurnUi = LiveTurnUi(
-    phase = when (phase) {
+    phase = if (waitingForOwner != null) "Waiting for your answer" else when (phase) {
         TurnPhase.PREPARING -> "Preparing"
         TurnPhase.WAITING_FOR_MODEL -> if (modelCalls > 1) "Waiting for the model (step $modelCalls)" else "Waiting for the model"
         TurnPhase.RECEIVING -> if (partialText.isEmpty() && partialReasoning.isNotEmpty()) "Thinking" else "Writing the reply"

@@ -147,8 +147,8 @@ val ControlChannel.explanation: String
         ControlChannel.ROUND_TRIP_TEXT ->
             "Text can be sent through Android's process-text action and the processed text comes back."
         ControlChannel.ACCESSIBILITY ->
-            "Agents may operate this app's screen through the accessibility service, because you " +
-                "authorised it for this app and both operator switches are on."
+            "Agents you allow in Tools › Screen may see and use this app's screen through the accessibility " +
+                "service: you authorised it, and both operator switches are on."
         ControlChannel.LINKED_API ->
             "The vendor's models can be called through a linked API provider. That does not go through the app."
     }

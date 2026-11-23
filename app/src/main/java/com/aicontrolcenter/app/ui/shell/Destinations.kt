@@ -4,7 +4,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.navigation.NavDestination
 import androidx.navigation.NavDestination.Companion.hasRoute
 import com.aicontrolcenter.app.ui.agents.AgentStatusFilter
-import com.aicontrolcenter.app.ui.components.testLabel
 import com.aicontrolcenter.app.ui.icons.Activity
 import com.aicontrolcenter.app.ui.icons.Agent
 import com.aicontrolcenter.app.ui.icons.AppIcons
@@ -15,6 +14,7 @@ import com.aicontrolcenter.app.ui.icons.Tasks
 import com.aicontrolcenter.app.ui.icons.Tools
 import com.aicontrolcenter.app.ui.memory.MemoryTab
 import com.aicontrolcenter.app.ui.models.ModelsTab
+import com.aicontrolcenter.app.ui.tools.ToolsTab
 import kotlinx.serialization.Serializable
 
 /*
@@ -34,7 +34,8 @@ import kotlinx.serialization.Serializable
 /** [agentId] or [spaceId] opens the explorer narrowed to that agent's private memory or that space. */
 @Serializable data class MemoryRoute(val tab: MemoryTab = MemoryTab.EXPLORER, val agentId: String? = null, val spaceId: String? = null)
 
-@Serializable data object ToolsRoute
+/** [tab] opens one of the section's tabs; [agentId] narrows its Permissions tab to one agent. */
+@Serializable data class ToolsRoute(val tab: ToolsTab = ToolsTab.TOOLS, val agentId: String? = null)
 
 @Serializable data object ActivityRoute
 
@@ -87,6 +88,21 @@ import kotlinx.serialization.Serializable
 /** One task of an objective, with its transcript. */
 @Serializable data class TaskRoute(val taskId: String)
 
+/** The questions waiting for the owner's answer. */
+@Serializable data object ApprovalsRoute
+
+/** One question to the owner, where it is answered. */
+@Serializable data class ApprovalRoute(val requestId: String)
+
+/** A folder of the agents' workspace; the empty path is the workspace itself. */
+@Serializable data class WorkspaceRoute(val path: String = "")
+
+/** One workspace file, read-only. */
+@Serializable data class WorkspaceFileRoute(val path: String)
+
+/** The workspace trash. */
+@Serializable data object WorkspaceTrashRoute
+
 /** The eight primary sections of the control center, in their fixed order. */
 enum class Section(val title: String, val description: String) {
     DASHBOARD("Dashboard", "Overview of your whole AI ecosystem"),
@@ -94,7 +110,7 @@ enum class Section(val title: String, val description: String) {
     MODELS("Models", "Providers, models and installed AI apps"),
     TASKS("Tasks", "Objectives and the work done on them"),
     MEMORY("Memory", "What agents remember and share"),
-    TOOLS(testLabel("Tools"), "What agents are allowed to do"),
+    TOOLS("Tools", "What agents are allowed to do"),
     ACTIVITY("Activity", "Communication, actions and history"),
     SETTINGS("Settings", "Framework limits, privacy and security"),
     ;
@@ -119,7 +135,7 @@ enum class Section(val title: String, val description: String) {
             MODELS -> ModelsRoute()
             TASKS -> TasksRoute
             MEMORY -> MemoryRoute()
-            TOOLS -> ToolsRoute
+            TOOLS -> ToolsRoute()
             ACTIVITY -> ActivityRoute
             SETTINGS -> SettingsRoute
         }
@@ -146,7 +162,9 @@ fun NavDestination.section(): Section = when {
     hasRoute<TasksRoute>() || hasRoute<NewObjectiveRoute>() || hasRoute<ObjectiveRoute>() || hasRoute<TaskRoute>() -> Section.TASKS
     hasRoute<MemoryRoute>() || hasRoute<MemoryDetailRoute>() || hasRoute<MemoryEditorRoute>() ||
         hasRoute<SpaceDetailRoute>() -> Section.MEMORY
-    hasRoute<ToolsRoute>() -> Section.TOOLS
+    // Requests are about what agents may do.
+    hasRoute<ToolsRoute>() || hasRoute<ApprovalsRoute>() || hasRoute<ApprovalRoute>() ||
+        hasRoute<WorkspaceRoute>() || hasRoute<WorkspaceFileRoute>() || hasRoute<WorkspaceTrashRoute>() -> Section.TOOLS
     hasRoute<ActivityRoute>() -> Section.ACTIVITY
     hasRoute<SettingsRoute>() -> Section.SETTINGS
     else -> Section.DASHBOARD

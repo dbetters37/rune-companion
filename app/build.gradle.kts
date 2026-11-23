@@ -45,8 +45,9 @@ android {
         debug { signingConfig = signingConfigs.getByName("shared") }
         release {
             // Not debuggable, so adb cannot read the app's data. Code shrinking stays off until
-            // keep rules have been proven on a device.
+            // keep rules have been proven on a device; the rules are ready in proguard-rules.pro.
             isMinifyEnabled = false
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.getByName("shared")
         }
     }

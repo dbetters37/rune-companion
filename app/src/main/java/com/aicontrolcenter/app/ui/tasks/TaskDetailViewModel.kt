@@ -3,6 +3,9 @@ package com.aicontrolcenter.app.ui.tasks
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aicontrolcenter.app.ui.approvals.RequestUi
+import com.aicontrolcenter.app.ui.approvals.isOpenAt
+import com.aicontrolcenter.app.ui.approvals.requestUi
 import com.aicontrolcenter.app.ui.chat.ToolInfo
 import com.aicontrolcenter.app.ui.chat.TranscriptItem
 import com.aicontrolcenter.app.ui.chat.transcriptOf
@@ -20,6 +23,7 @@ import com.aicontrolcenter.core.agents.AgentActivityMonitor
 import com.aicontrolcenter.core.agents.AgentRuntimeState
 import com.aicontrolcenter.core.chat.AgentChat
 import com.aicontrolcenter.core.chat.ConversationEntry
+import com.aicontrolcenter.core.operator.OwnerRequest
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.registry.RegistrySnapshot
 import com.aicontrolcenter.core.tasks.AgentMessage
@@ -30,6 +34,8 @@ import com.aicontrolcenter.core.tasks.TaskRecord
 import com.aicontrolcenter.core.tasks.TaskRepository
 import com.aicontrolcenter.core.tasks.TaskStatus
 import com.aicontrolcenter.core.tasks.TaskUsage
+import com.aicontrolcenter.core.tools.Capability
+import com.aicontrolcenter.core.tools.CapabilityInfo
 import com.aicontrolcenter.core.tools.ToolRegistry
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -104,6 +110,8 @@ data class TaskDetailUiState(
     /** The assignee's stored work on this task, read-only. */
     val transcript: List<TranscriptItem> = emptyList(),
     val messages: List<MessageUi> = emptyList(),
+    /** Questions this task's agent put to the owner that are still open; the task waits for them. */
+    val waitingFor: List<RequestUi> = emptyList(),
     val isBusy: Boolean = false,
     val message: UserMessage? = null,
 )
@@ -125,6 +133,9 @@ class TaskDetailViewModel(
     private val monitor: AgentActivityMonitor,
     private val clock: Clock,
     private val zone: ZoneId = ZoneId.systemDefault(),
+    /** The requests waiting for the owner (`OwnerRequests.pending`); this task's are shown with a link. */
+    requests: Flow<List<OwnerRequest>> = flowOf(emptyList()),
+    private val capabilityInfo: (Capability) -> CapabilityInfo? = { null },
 ) : ViewModel() {
 
     private data class Local(val isBusy: Boolean = false, val message: UserMessage? = null)
@@ -150,7 +161,7 @@ class TaskDetailViewModel(
         .distinctUntilChanged()
         .flatMapLatest { id -> if (id == null) flowOf(emptyList()) else chat.observeEntries(id) }
 
-    val uiState: StateFlow<TaskDetailUiState> = combine(stored, entries, local) { stored, entries, local -> build(stored, entries, local) }
+    val uiState: StateFlow<TaskDetailUiState> = combine(stored, entries, local, requests) { stored, entries, local, requests -> build(stored, entries, local, requests) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TaskDetailUiState())
 
     fun retry() = act("Queued to run again.") { orchestrator.retryTask(taskId) }
@@ -159,7 +170,7 @@ class TaskDetailViewModel(
 
     fun messageShown() = local.update { it.copy(message = null) }
 
-    private fun build(stored: Stored?, entries: List<ConversationEntry>, local: Local): TaskDetailUiState {
+    private fun build(stored: Stored?, entries: List<ConversationEntry>, local: Local, requests: List<OwnerRequest>): TaskDetailUiState {
         val task = stored?.tree?.firstOrNull { it.id == taskId }
             ?: return TaskDetailUiState(isLoading = false, notFound = true, message = local.message)
         val faces = AgentFaces(stored.snapshot)
@@ -182,7 +193,7 @@ class TaskDetailViewModel(
                 assignee = faces.of(task.assignee),
                 requestedBy = faces.requester(task.requestedBy),
                 status = task.status.toStatusLabel(task.kind),
-                statusDetail = task.statusDetail?.takeIf { it.isNotBlank() },
+                statusDetail = task.statusDetail?.takeIf { it.isNotBlank() }?.let(::ownerFacing),
                 error = task.error?.takeIf { it.isNotBlank() && it != task.statusDetail },
                 liveActivity = live?.let { it.detail ?: "Working" },
                 attempt = task.attempt + 1,
@@ -203,6 +214,7 @@ class TaskDetailViewModel(
             ),
             transcript = transcriptOf(entries, ::toolInfo, assignedModelName = null, turnRunning = task.status == TaskStatus.RUNNING),
             messages = messagesUi(stored.messages.filter { it.taskId == task.id }, tree, faces, now, zone),
+            waitingFor = requests.filter { it.taskId == task.id && it.isOpenAt(now) }.map { requestUi(it, stored.snapshot, capabilityInfo, now, zone) },
             isBusy = local.isBusy,
             message = local.message,
         )
@@ -226,7 +238,9 @@ class TaskDetailViewModel(
         val finished = task.finishedAt
         when {
             finished != null -> parts += "took ${formatDuration((finished - started).coerceAtLeast(0))}"
-            task.status == TaskStatus.RUNNING || task.status == TaskStatus.WAITING_FOR_AGENT ->
+            // Time spent waiting for the owner does not count: the limit moves on when the answer comes.
+            task.status == TaskStatus.WAITING_FOR_OWNER -> parts += "its time limit is paused while it waits for you"
+            task.status == TaskStatus.RUNNING || task.status.isWaiting ->
                 task.deadlineAt?.let { parts += "times out at ${formatTimeOfDay(it, zone)}" }
             else -> Unit
         }

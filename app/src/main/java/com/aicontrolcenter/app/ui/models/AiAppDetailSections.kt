@@ -29,7 +29,6 @@ import com.aicontrolcenter.app.ui.components.SwitchRow
 import com.aicontrolcenter.app.ui.components.TintedChip
 import com.aicontrolcenter.app.ui.components.explanation
 import com.aicontrolcenter.app.ui.components.label
-import com.aicontrolcenter.app.ui.components.testLabel
 import com.aicontrolcenter.app.ui.components.toStatusLabel
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.OpenInNew
@@ -143,8 +142,8 @@ internal fun PermittedSection(
                             color = MaterialTheme.colorScheme.onSurface,
                         )
                         Text(
-                            "You authorised it for this app, but nothing can use it: the operator service is not " +
-                                "built yet and the operator switches are off.",
+                            "You authorised it for this app, but no agent can use it while Phone operator or Screen control " +
+                                "is off in Settings.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -239,6 +238,8 @@ internal fun CapabilitiesSection(app: AiApp) {
 @Composable
 internal fun RegistrySettingsSection(
     app: AiApp,
+    operatorAuthorised: Boolean,
+    needsReauthorisation: Boolean,
     isBusy: Boolean,
     onSetEnabled: (Boolean) -> Unit,
     onToggleAccessibility: (Boolean) -> Unit,
@@ -256,16 +257,17 @@ internal fun RegistrySettingsSection(
             )
             RowDivider()
             SwitchRow(
-                title = testLabel("Allow accessibility operation"),
-                description = if (app.status == AiAppStatus.INSTALLED) {
-                    "Your permission for agents to operate this app's screen. It has no effect until the " +
-                        "operator service exists and both operator switches are on."
-                } else {
-                    "Only an installed app can be authorised."
+                title = "Allow accessibility operation",
+                description = when {
+                    app.status != AiAppStatus.INSTALLED && !operatorAuthorised -> "Only an installed app can be authorised."
+                    needsReauthorisation -> "Authorised before apps were checked, so agents cannot use it. " +
+                        "Switch it on to authorise and check it again."
+                    else -> "Lets agents you choose see and use this app's screen, each with your permission. The same as " +
+                        "authorising it in Tools › Screen, where you choose the agents."
                 },
-                checked = app.accessibilityAuthorized,
+                checked = operatorAuthorised,
                 onCheckedChange = onToggleAccessibility,
-                enabled = !isBusy && (app.status == AiAppStatus.INSTALLED || app.accessibilityAuthorized),
+                enabled = !isBusy && (app.status == AiAppStatus.INSTALLED || operatorAuthorised),
             )
         }
     }

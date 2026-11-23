@@ -5,12 +5,16 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.unit.dp
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.toRoute
 import com.aicontrolcenter.app.ui.activity.ActivityRoute as ActivityScreenRoute
+import com.aicontrolcenter.app.ui.approvals.ApprovalRoute as ApprovalScreenRoute
+import com.aicontrolcenter.app.ui.approvals.ApprovalsRoute as ApprovalsScreenRoute
 import com.aicontrolcenter.app.ui.agents.AgentDetailRoute as AgentDetailScreenRoute
 import com.aicontrolcenter.app.ui.agents.AgentEditorRoute as AgentEditorScreenRoute
 import com.aicontrolcenter.app.ui.agents.AgentStatusFilter
@@ -38,13 +42,18 @@ import com.aicontrolcenter.app.ui.memory.MemorySectionRoute
 import com.aicontrolcenter.app.ui.memory.MemoryTab
 import com.aicontrolcenter.app.ui.memory.ScopeFilter
 import com.aicontrolcenter.app.ui.memory.SpaceDetailRoute as SpaceDetailScreenRoute
-import com.aicontrolcenter.app.ui.planned.PlannedSection
 import com.aicontrolcenter.app.ui.tasks.NewObjectiveRoute as NewObjectiveScreenRoute
 import com.aicontrolcenter.app.ui.tasks.ObjectiveRoute as ObjectiveScreenRoute
 import com.aicontrolcenter.app.ui.tasks.ObjectivesRoute
 import com.aicontrolcenter.app.ui.tasks.TaskDetailRoute
-import com.aicontrolcenter.app.ui.planned.PlannedSectionScreen
 import com.aicontrolcenter.app.ui.settings.SettingsRoute as SettingsScreenRoute
+import com.aicontrolcenter.app.ui.tools.ToolsNavigation
+import com.aicontrolcenter.app.ui.tools.ToolsSectionRoute
+import com.aicontrolcenter.app.ui.tools.ToolsTab
+import com.aicontrolcenter.app.ui.workspace.WorkspaceFileRoute as WorkspaceFileScreenRoute
+import com.aicontrolcenter.app.ui.workspace.WorkspaceNavigation
+import com.aicontrolcenter.app.ui.workspace.WorkspaceRoute as WorkspaceScreenRoute
+import com.aicontrolcenter.app.ui.workspace.WorkspaceTrashRoute as WorkspaceTrashScreenRoute
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.AiAppId
 import com.aicontrolcenter.core.ConversationId
@@ -54,6 +63,7 @@ import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.memory.MemoryScope
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.ProviderId
+import com.aicontrolcenter.core.RequestId
 
 /**
  * Switches to a section root. The start destination stays at the bottom of the stack, so Back
@@ -90,6 +100,10 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
     val openSpace: (SpaceId) -> Unit = { navController.open(SpaceDetailRoute(it.value)) }
     val openObjective: (TaskId) -> Unit = { navController.open(ObjectiveRoute(it.value)) }
     val openTask: (TaskId) -> Unit = { navController.open(TaskRoute(it.value)) }
+    val openRequest: (RequestId) -> Unit = { navController.open(ApprovalRoute(it.value)) }
+    val openWorkspace: () -> Unit = { navController.open(WorkspaceRoute()) }
+    // Opened on top of the screen that asked (an agent's editor keeps its draft), not as a section switch.
+    val openAgentPermissions: (AgentId) -> Unit = { navController.open(ToolsRoute(ToolsTab.PERMISSIONS, it.value)) }
     // A filter chosen elsewhere must win over the explorer the owner left, so the section is not restored.
     val openAgentMemories: (AgentId) -> Unit = { navController.navigateToSection(MemoryRoute(agentId = it.value), restore = false) }
     val openSpaceMemories: (SpaceId) -> Unit = { navController.navigateToSection(MemoryRoute(spaceId = it.value), restore = false) }
@@ -149,6 +163,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
             AgentEditorScreenRoute(
                 agentId = route.agentId?.let(::AgentId),
                 templateId = route.templateId,
+                onOpenPermissions = openAgentPermissions,
                 onClose = back,
                 onSaved = { id, isNew ->
                     if (isNew) {
@@ -174,6 +189,8 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                 onOpenMemories = openAgentMemories,
                 onOpenTask = openTask,
                 onOpenObjective = openObjective,
+                onOpenPermissions = openAgentPermissions,
+                onOpenWorkspace = openWorkspace,
             )
         }
         composable<ConversationsRoute> { entry ->
@@ -188,6 +205,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                 conversationId = ConversationId(entry.toRoute<ChatRoute>().conversationId),
                 onBack = back,
                 onOpenProvider = openProvider,
+                onOpenRequest = openRequest,
             )
         }
         composable<ModelsRoute> { entry ->
@@ -270,10 +288,35 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
             )
         }
         composable<ObjectiveRoute> { entry ->
-            ObjectiveScreenRoute(objectiveId = TaskId(entry.toRoute<ObjectiveRoute>().objectiveId), onBack = back, onOpenTask = openTask)
+            ObjectiveScreenRoute(
+                objectiveId = TaskId(entry.toRoute<ObjectiveRoute>().objectiveId),
+                onBack = back,
+                onOpenTask = openTask,
+                onOpenRequest = openRequest,
+            )
         }
         composable<TaskRoute> { entry ->
-            TaskDetailRoute(taskId = TaskId(entry.toRoute<TaskRoute>().taskId), onBack = back, onOpenTask = openTask, onOpenObjective = openObjective)
+            TaskDetailRoute(
+                taskId = TaskId(entry.toRoute<TaskRoute>().taskId),
+                onBack = back,
+                onOpenTask = openTask,
+                onOpenObjective = openObjective,
+                onOpenRequest = openRequest,
+            )
+        }
+        composable<ApprovalsRoute> {
+            // On a wide screen the list is the rail's Approvals destination, like a section: no back arrow.
+            val onRail = LocalConfiguration.current.screenWidthDp.dp >= WideLayoutMinWidth
+            ApprovalsScreenRoute(onBack = if (onRail) null else back, onOpenRequest = openRequest)
+        }
+        composable<ApprovalRoute> { entry ->
+            ApprovalScreenRoute(
+                requestId = RequestId(entry.toRoute<ApprovalRoute>().requestId),
+                onBack = back,
+                onOpenTask = openTask,
+                onOpenObjective = openObjective,
+                onOpenConversation = openConversation,
+            )
         }
         composable<MemoryRoute> { entry ->
             val route = entry.toRoute<MemoryRoute>()
@@ -338,7 +381,38 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                 onOpenMemories = openSpaceMemories,
             )
         }
-        composable<ToolsRoute> { PlannedSectionScreen(PlannedSection.TOOLS) }
+        composable<ToolsRoute> { entry ->
+            val route = entry.toRoute<ToolsRoute>()
+            ToolsSectionRoute(
+                initialTab = route.tab,
+                initialAgent = route.agentId?.let(::AgentId),
+                navigation = ToolsNavigation(
+                    onOpenAgent = openAgent,
+                    onOpenWorkspace = openWorkspace,
+                    onOpenRequest = openRequest,
+                    onOpenSettings = { navController.navigateToSection(SettingsRoute) },
+                    // Opened from an agent, on top of its screen: Back returns there.
+                    onBack = if (route.agentId != null) back else null,
+                ),
+            )
+        }
+        composable<WorkspaceRoute> { entry ->
+            WorkspaceScreenRoute(
+                path = entry.toRoute<WorkspaceRoute>().path,
+                navigation = WorkspaceNavigation(
+                    onBack = back,
+                    onOpenFolder = { navController.open(WorkspaceRoute(it.value)) },
+                    // Back up to that folder if it is on the stack, so Back does not walk down again.
+                    onOpenCrumb = { path ->
+                        if (!navController.popBackStack(WorkspaceRoute(path.value), inclusive = false)) navController.open(WorkspaceRoute(path.value))
+                    },
+                    onOpenFile = { navController.open(WorkspaceFileRoute(it.value)) },
+                    onOpenTrash = { navController.open(WorkspaceTrashRoute) },
+                ),
+            )
+        }
+        composable<WorkspaceFileRoute> { entry -> WorkspaceFileScreenRoute(path = entry.toRoute<WorkspaceFileRoute>().path, onBack = back) }
+        composable<WorkspaceTrashRoute> { WorkspaceTrashScreenRoute(onBack = back) }
         composable<ActivityRoute> { ActivityScreenRoute() }
         composable<SettingsRoute> { SettingsScreenRoute() }
     }

@@ -121,6 +121,16 @@ class TaskPresentationTest {
         assertNull(WorkNotice.of(emptySet(), listOf(tree)))
     }
 
+    @Test
+    fun `a task waiting for the owner says so in the owner's words, in the plan too`() {
+        val waiting = task("compare", TaskKind.WORK, status = TaskStatus.WAITING_FOR_OWNER)
+            .copy(statusDetail = "Waiting for the owner's permission: Read the web page \"https://example.org\"")
+        val row = planRows(listOf(objective, waiting), faces).single()
+        assertEquals("Waiting for your permission: Read the web page \"https://example.org\"", row.statusDetail)
+        assertEquals("Waiting for your approval: Delete \"a\"", ownerFacing("Waiting for the owner's approval: Delete \"a\""))
+        assertEquals("Waiting for the owner's lawyer", ownerFacing("Waiting for the owner's lawyer"), "only the broker's own line is rephrased")
+    }
+
     private var messageCount = 0
 
     private fun message(from: Participant, to: Participant, type: MessageType, body: String, task: TaskId? = null) =

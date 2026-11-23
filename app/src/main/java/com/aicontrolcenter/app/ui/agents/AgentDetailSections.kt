@@ -192,7 +192,7 @@ private fun ModelRefRow(model: ModelRefUi, label: String) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun ToolsSection(agent: AgentDetailUi) {
+internal fun ToolsSection(agent: AgentDetailUi, onOpenPermissions: () -> Unit, onOpenWorkspace: () -> Unit) {
     Column {
         SectionHeader("Tools")
         AppCard {
@@ -207,11 +207,16 @@ internal fun ToolsSection(agent: AgentDetailUi) {
                 }
             }
             Text(
-                "Switch tools on or off in the editor. Memory tools only reach what the memory policy below allows.",
+                "Switch tools on or off in the editor. A tool switched on still needs its permission, which the agent asks you " +
+                    "for. Memory tools only reach what the memory policy below allows.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = Spacing.sm),
             )
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(Spacing.sm), modifier = Modifier.padding(top = Spacing.xs)) {
+                TextButton(onClick = onOpenPermissions) { Text("Permissions") }
+                if (agent.usesWorkspace) TextButton(onClick = onOpenWorkspace) { Text("Workspace") }
+            }
         }
     }
 }

@@ -59,6 +59,8 @@ data class AgentDetailUi(
     val liveActivity: String? = null,
     /** Titles of the tools switched on for it that exist in the registry. */
     val tools: List<String> = emptyList(),
+    /** It has a workspace tool switched on, so its files are in the workspace. */
+    val usesWorkspace: Boolean = false,
     /** How many memories are in its private memory; null when the memory system is not available. */
     val privateMemoryCount: Int? = null,
     /** Names of the shared spaces its policy lets it read, and write. Spaces that no longer exist are left out. */
@@ -169,6 +171,7 @@ class AgentDetailViewModel(
                     modelsAvailable = snapshot.models.isNotEmpty(),
                     liveActivity = working[agentId]?.let { state -> state.detail ?: "Working" },
                     tools = it.profile.toolIds.mapNotNull(toolTitles::get).sorted(),
+                    usesWorkspace = it.profile.toolIds.any { id -> id.value.startsWith("workspace.") },
                     privateMemoryCount = privateCount,
                     readableSpaces = it.profile.memory.readableSpaces.mapNotNull(spaceNames::get).sorted(),
                     writableSpaces = it.profile.memory.writableSpaces.mapNotNull(spaceNames::get).sorted(),

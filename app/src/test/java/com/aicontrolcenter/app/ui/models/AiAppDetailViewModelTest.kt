@@ -27,7 +27,7 @@ class AiAppDetailViewModelTest {
     }
 
     private fun TestScope.detail(app: TestApp, id: AiAppId) =
-        AiAppDetailViewModel(id, app.graph.aiAppRegistry, app.graph.aiAppLauncher, app.graph.settings)
+        AiAppDetailViewModel(id, app.graph.aiAppRegistry, app.graph.aiAppLauncher, app.graph.settings, app.graph.ownerOperatorApps, app.graph.installedApps)
             .also { it.uiState.activeIn(backgroundScope) }
 
     @Test
@@ -77,26 +77,63 @@ class AiAppDetailViewModelTest {
     }
 
     @Test
-    fun `authorising accessibility records the decision but permits nothing while the operator is off`() = runTest(mainRule.dispatcher) {
+    fun `authorising accessibility puts the app on the operator's list with its certificate, and permits nothing while the switches are off`() = runTest(mainRule.dispatcher) {
         val app = scanned()
         val viewModel = detail(app, app.appNamed("Example Chatbot").id)
 
         viewModel.setAccessibilityAuthorized(true)
         val state = viewModel.uiState.value
-        assertTrue(assertNotNull(state.app).accessibilityAuthorized)
+        // operator_apps is the one list the screen operator reads; the certificate is the one installed now.
+        assertEquals("ab".repeat(32), app.operatorApps.get("com.example.chatbot")?.signingCertSha256)
+        assertTrue(state.operatorAuthorised)
+        assertTrue(assertNotNull(state.app).accessibilityAuthorized, "the registry's flag follows, for its display")
         assertFalse(ControlChannel.ACCESSIBILITY in state.channels)
         assertTrue(state.accessibilityAuthorisedButInactive)
-        val event = app.activityLog.all.last()
-        assertEquals(ActivityType.PERMISSION, event.type)
-        assertEquals(Severity.WARNING, event.severity)
+        assertTrue(app.activityLog.all.any { it.type == ActivityType.PERMISSION && it.severity == Severity.WARNING })
+        assertTrue(app.activityLog.all.any { it.title == "App authorised for screen control: Example Chatbot" })
 
         app.settings.update { it.copy(operatorEnabled = true, accessibilityOperatorEnabled = true) }
         assertTrue(ControlChannel.ACCESSIBILITY in viewModel.uiState.value.channels)
         assertFalse(viewModel.uiState.value.accessibilityAuthorisedButInactive)
 
         viewModel.setAccessibilityAuthorized(false)
+        assertNull(app.operatorApps.get("com.example.chatbot"))
+        assertFalse(viewModel.uiState.value.operatorAuthorised)
         assertFalse(assertNotNull(viewModel.uiState.value.app).accessibilityAuthorized)
-        assertEquals("Accessibility authorisation revoked.", viewModel.uiState.value.message?.text)
+        assertEquals(
+            "Accessibility operation removed. Every permission agents had for Example Chatbot was removed too.",
+            viewModel.uiState.value.message?.text,
+        )
+    }
+
+    @Test
+    fun `the switch reads the operator's list, not the registry's flag`() = runTest(mainRule.dispatcher) {
+        val app = scanned()
+        val viewModel = detail(app, app.appNamed("Example Chatbot").id)
+
+        // Authorised in Tools › Screen: the AI app screen shows it at once.
+        app.graph.ownerOperatorApps.authorise("com.example.chatbot", "Example Chatbot", "ab".repeat(32))
+        assertTrue(viewModel.uiState.value.operatorAuthorised)
+        assertFalse(assertNotNull(viewModel.uiState.value.app).accessibilityAuthorized)
+
+        // A row copied by the migration without a certificate is not trusted by the operator.
+        app.operatorApps.upsert(com.aicontrolcenter.core.operator.OperatorApp("com.example.chatbot", "Example Chatbot", 1, signingCertSha256 = null))
+        assertFalse(viewModel.uiState.value.operatorAuthorised)
+        assertTrue(viewModel.uiState.value.needsReauthorisation)
+        viewModel.setAccessibilityAuthorized(true)
+        assertEquals("ab".repeat(32), app.operatorApps.get("com.example.chatbot")?.signingCertSha256)
+        assertFalse(viewModel.uiState.value.needsReauthorisation)
+    }
+
+    @Test
+    fun `an app whose certificate cannot be read is not authorised`() = runTest(mainRule.dispatcher) {
+        val app = scanned()
+        val viewModel = detail(app, app.appNamed("AI Helper").id)
+        app.scanner.aiApps = listOf(TestApp.chatbot, TestApp.assistant, TestApp.lookalike.copy(signingCertSha256 = null))
+
+        viewModel.setAccessibilityAuthorized(true)
+        assertEquals("AI Helper could not be checked (its signing certificate could not be read), so it was not authorised.", viewModel.uiState.value.message?.text)
+        assertNull(app.operatorApps.get("io.unknown.aihelper"))
     }
 
     @Test
@@ -114,6 +151,7 @@ class AiAppDetailViewModelTest {
             viewModel.uiState.value.message?.text,
         )
         assertFalse(assertNotNull(viewModel.uiState.value.app).accessibilityAuthorized)
+        assertNull(app.operatorApps.get("com.example.chatbot"))
 
         viewModel.openApp()
         assertEquals("Example Chatbot cannot be opened.", viewModel.uiState.value.message?.text)

@@ -146,12 +146,15 @@ class KeyJourneysTest {
             .tapItemContaining("com.example.chatbot")
             .tapItemContaining("Allow accessibility operation")
             .assertShown("Allow operating Example Chatbot's screen?")
-            .assertShown("the operator service, which is not built yet")
+            .assertShown("The app is checked now, so a look-alike installed later under the same name is not trusted")
             .tapInDialog("Cancel")
         assertEquals(false, runBlocking { app.appNamed("Example Chatbot") }.accessibilityAuthorized)
+        assertEquals(null, runBlocking { app.operatorApps.get("com.example.chatbot") })
 
-        robot.tapItemContaining("Allow accessibility operation").tapInDialog("Authorise (test)")
-            .assertShown("Operate its screen: authorised, not active")
+        robot.tapItemContaining("Allow accessibility operation").tapInDialog("Authorise")
+            .waitUntilShown("Operate its screen: authorised, not active")
+        // On the one list the screen operator reads, with its certificate; the registry's flag follows for display.
+        assertEquals("ab".repeat(32), runBlocking { app.operatorApps.get("com.example.chatbot") }?.signingCertSha256)
         assertEquals(true, runBlocking { app.appNamed("Example Chatbot") }.accessibilityAuthorized)
     }
 
@@ -226,8 +229,8 @@ class KeyJourneysTest {
     }
 
     @Test
-    fun `the section that is not built yet says so and offers nothing to tap`() {
+    fun `every section is built and none says it is not built yet`() {
         robot.openSection("Tasks").assertShown("No objectives yet").assertNotShown("built yet in this version")
-        robot.openSectionViaMore("Tools (test)").assertShown("built yet in this version")
+        robot.openSectionViaMore("Tools").scrollListTo("Open the workspace").assertShown("Open the workspace").assertNotShown("built yet in this version")
     }
 }

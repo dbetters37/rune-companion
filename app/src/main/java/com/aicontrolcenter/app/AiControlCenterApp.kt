@@ -4,7 +4,10 @@ import android.app.Application
 import com.aicontrolcenter.app.di.AppGraph
 import com.aicontrolcenter.app.di.createProductionPorts
 import com.aicontrolcenter.app.work.AndroidNotificationAccess
+import com.aicontrolcenter.app.work.ApprovalNotifier
 import com.aicontrolcenter.app.work.ObjectiveWorkController
+import com.aicontrolcenter.app.work.ScreenSessionNotifier
+import com.aicontrolcenter.device.screen.ScreenOperatorLayer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -26,13 +29,18 @@ class AiControlCenterApp : Application() {
 
     /**
      * The composition root; created from the production ports unless one was installed. The
-     * production graph also gets the controller that keeps objectives running in the background.
+     * production graph also gets the controller that keeps objectives running in the background,
+     * a notification for every request waiting for the owner, and the "is operating" notification
+     * with its Stop while an agent drives another app's screen.
      */
     val graph: AppGraph
         get() = installedGraph ?: synchronized(this) {
             installedGraph ?: AppGraph(createProductionPorts(this), appScope, notifications = AndroidNotificationAccess(this)).also {
                 installedGraph = it
                 ObjectiveWorkController(this, it, appScope).start()
+                ApprovalNotifier(this, it.ownerRequests.pending, it.clock, appScope).start()
+                val context = this
+                ScreenSessionNotifier(this, it.screenSessions.sessions, { ScreenOperatorLayer.stopPendingIntent(context) }, appScope).start()
             }
         }
 

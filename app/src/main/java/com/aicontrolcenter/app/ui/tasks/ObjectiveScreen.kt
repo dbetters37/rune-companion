@@ -41,6 +41,8 @@ import com.aicontrolcenter.app.ui.icons.Forum
 import com.aicontrolcenter.app.ui.icons.Stop
 import com.aicontrolcenter.app.ui.icons.Tasks
 import com.aicontrolcenter.app.ui.theme.Spacing
+import com.aicontrolcenter.app.ui.approvals.WaitingForYou
+import com.aicontrolcenter.core.RequestId
 import com.aicontrolcenter.core.TaskId
 
 class ObjectiveActions(
@@ -51,14 +53,17 @@ class ObjectiveActions(
     val controls: ObjectiveControls,
     val onDocumentCopied: () -> Unit,
     val onMessageShown: () -> Unit,
+    /** Opens the Approval screen of a request one of its tasks waits on. */
+    val onOpenRequest: (RequestId) -> Unit = {},
 )
 
 @Composable
-fun ObjectiveRoute(objectiveId: TaskId, onBack: () -> Unit, onOpenTask: (TaskId) -> Unit) {
+fun ObjectiveRoute(objectiveId: TaskId, onBack: () -> Unit, onOpenTask: (TaskId) -> Unit, onOpenRequest: (RequestId) -> Unit = {}) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel(key = "objective-${objectiveId.value}") {
         ObjectiveViewModel(
             objectiveId, graph.tasks, graph.messages, graph.registryDirectory, graph.orchestrator, graph.activityLog, graph.settings, graph.clock,
+            requests = graph.ownerRequests.pending, capabilityInfo = graph.capabilities::info,
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -73,6 +78,7 @@ fun ObjectiveRoute(objectiveId: TaskId, onBack: () -> Unit, onOpenTask: (TaskId)
             controls = ObjectiveControls(viewModel::pause, viewModel::resume, viewModel::cancel, viewModel::delete, viewModel::runAgain),
             onDocumentCopied = viewModel::documentCopied,
             onMessageShown = viewModel::messageShown,
+            onOpenRequest = onOpenRequest,
         ),
     )
 }
@@ -114,6 +120,11 @@ fun ObjectiveScreen(state: ObjectiveUiState, actions: ObjectiveActions) {
                                 onRunAgain = controls.onRunAgain,
                             ),
                         )
+                    }
+                }
+                if (state.waitingFor.isNotEmpty()) {
+                    item(key = "waiting") {
+                        Box(Modifier.padding(horizontal = Spacing.screen, vertical = Spacing.xs)) { WaitingForYou(state.waitingFor, actions.onOpenRequest) }
                     }
                 }
                 state.limits?.reached?.takeIf { it.isNotEmpty() }?.let { reached ->

@@ -10,7 +10,13 @@ import com.aicontrolcenter.app.ui.components.formatCompactTimestamp
 import com.aicontrolcenter.app.ui.components.formatDuration
 import com.aicontrolcenter.app.ui.components.formatTimeOfDay
 import com.aicontrolcenter.app.work.ObjectiveProgress
+import com.aicontrolcenter.app.ui.approvals.RequestUi
+import com.aicontrolcenter.app.ui.approvals.isOpenAt
+import com.aicontrolcenter.app.ui.approvals.requestUi
 import com.aicontrolcenter.core.Clock
+import com.aicontrolcenter.core.operator.OwnerRequest
+import com.aicontrolcenter.core.tools.Capability
+import com.aicontrolcenter.core.tools.CapabilityInfo
 import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.activity.ActivityEvent
 import com.aicontrolcenter.core.activity.ActivityFilter
@@ -108,6 +114,8 @@ data class ObjectiveUiState(
     /** Why there is no document yet, or what it is based on. */
     val documentNote: String = "",
     val limits: LimitsUi? = null,
+    /** Questions the objective's agents put to the owner that are still open; their tasks wait for them. */
+    val waitingFor: List<RequestUi> = emptyList(),
     val tab: ObjectiveTab = ObjectiveTab.PLAN,
     val isBusy: Boolean = false,
     val message: UserMessage? = null,
@@ -138,6 +146,9 @@ class ObjectiveViewModel(
     private val clock: Clock,
     private val zone: ZoneId = ZoneId.systemDefault(),
     ticker: Flow<Unit> = everySecond(),
+    /** The requests waiting for the owner (`OwnerRequests.pending`); this objective's are shown with a link. */
+    requests: Flow<List<OwnerRequest>> = flowOf(emptyList()),
+    private val capabilityInfo: (Capability) -> CapabilityInfo? = { null },
 ) : ViewModel() {
 
     private data class Local(
@@ -171,7 +182,8 @@ class ObjectiveViewModel(
         activityLog.observe(ActivityFilter(rootTaskId = rootId), limit = LOG_LIMIT),
         local,
         ticks,
-    ) { stored, log, local, _ -> build(stored, log, local) }
+        requests,
+    ) { stored, log, local, _, requests -> build(stored, log, local, requests) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ObjectiveUiState())
 
     fun setTab(tab: ObjectiveTab) = local.update { it.copy(tab = tab) }
@@ -195,7 +207,7 @@ class ObjectiveViewModel(
 
     fun documentCopied() = local.update { it.copy(message = UserMessage("Document copied.", ++messageCounter)) }
 
-    private fun build(stored: Stored, log: List<ActivityEvent>, local: Local): ObjectiveUiState {
+    private fun build(stored: Stored, log: List<ActivityEvent>, local: Local, requests: List<OwnerRequest>): ObjectiveUiState {
         val objective = stored.tree.firstOrNull { it.id == rootId }
             ?: return ObjectiveUiState(isLoading = false, notFound = true, deleted = local.deleted, message = local.message)
         val faces = AgentFaces(stored.snapshot)
@@ -216,6 +228,7 @@ class ObjectiveViewModel(
             document = objective.result?.takeIf { it.isNotBlank() },
             documentNote = documentNote(objective, progress),
             limits = limits(objective, stored, now),
+            waitingFor = requests.filter { it.rootId == rootId && it.isOpenAt(now) }.map { requestUi(it, stored.snapshot, capabilityInfo, now, zone) },
             tab = local.tab,
             isBusy = local.isBusy,
             message = local.message,

@@ -78,8 +78,10 @@ import com.aicontrolcenter.app.ui.theme.MonoTextStyle
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.app.ui.theme.appColors
+import com.aicontrolcenter.app.ui.approvals.RequestCard
 import com.aicontrolcenter.core.ConversationId
 import com.aicontrolcenter.core.ProviderId
+import com.aicontrolcenter.core.RequestId
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.ui.text.style.TextAlign
 
@@ -93,13 +95,21 @@ class ChatActions(
     val onCheckProvider: () -> Unit,
     val onOpenProvider: (ProviderId) -> Unit,
     val onMessageShown: () -> Unit,
+    /** Opens the Approval screen of a request raised in this chat. */
+    val onOpenRequest: (RequestId) -> Unit = {},
 )
 
 @Composable
-fun ChatRoute(conversationId: ConversationId, onBack: () -> Unit, onOpenProvider: (ProviderId) -> Unit) {
+fun ChatRoute(conversationId: ConversationId, onBack: () -> Unit, onOpenProvider: (ProviderId) -> Unit, onOpenRequest: (RequestId) -> Unit = {}) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel {
-        ChatViewModel(conversationId, graph.registryDirectory, graph.agentChat, graph.toolRegistry, graph.providerManager)
+        ChatViewModel(
+            conversationId, graph.registryDirectory, graph.agentChat, graph.toolRegistry, graph.providerManager,
+            requests = graph.ownerRequests.observeForConversation(conversationId),
+            capabilityInfo = graph.capabilities::info,
+            clock = graph.clock,
+            awaitStartup = graph::awaitStartup,
+        )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     LaunchedEffect(state.deleted) { if (state.deleted) onBack() }
@@ -115,6 +125,7 @@ fun ChatRoute(conversationId: ConversationId, onBack: () -> Unit, onOpenProvider
             onCheckProvider = viewModel::checkProvider,
             onOpenProvider = onOpenProvider,
             onMessageShown = viewModel::messageShown,
+            onOpenRequest = onOpenRequest,
         ),
     )
 }
@@ -225,6 +236,8 @@ private fun Transcript(state: ChatUiState, actions: ChatActions, modifier: Modif
                 // One avatar per run of agent messages, so a turn with tool calls reads as one speaker.
                 is TranscriptItem.Agent -> AgentTurn(state.agentName, state.agentColorIndex, item, showAvatar = state.items.getOrNull(index - 1) !is TranscriptItem.Agent)
                 is TranscriptItem.Notice -> NoticeRow(item, state, actions, isLast = item === state.items.last())
+                // Answered on its Approval screen only, never in the chat.
+                is TranscriptItem.Request -> RequestCard(item.request, onOpen = { actions.onOpenRequest(item.request.id) })
             }
         }
         state.live?.let { live ->

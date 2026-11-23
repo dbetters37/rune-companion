@@ -25,6 +25,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.aicontrolcenter.app.ui.components.AgentAvatar
@@ -33,6 +34,7 @@ import com.aicontrolcenter.app.ui.components.InfoBanner
 import com.aicontrolcenter.app.ui.components.RowDivider
 import com.aicontrolcenter.app.ui.components.SectionHeader
 import com.aicontrolcenter.app.ui.components.StatusChip
+import com.aicontrolcenter.app.ui.components.icon
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.ChevronRight
 import com.aicontrolcenter.app.ui.icons.Stop
@@ -46,7 +48,15 @@ import com.aicontrolcenter.core.tasks.TaskKind
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun TaskHeader(task: TaskDetailUi, isBusy: Boolean, onOpenObjective: (TaskId) -> Unit, onRetry: () -> Unit, onCancel: () -> Unit) {
+internal fun TaskHeader(
+    task: TaskDetailUi,
+    isBusy: Boolean,
+    onOpenObjective: (TaskId) -> Unit,
+    onRetry: () -> Unit,
+    onCancel: () -> Unit,
+    /** The status chip's glyph when it should not be the tone's own: the kind of request the task waits on. */
+    statusIcon: ImageVector? = null,
+) {
     AppCard {
         Column(verticalArrangement = Arrangement.spacedBy(Spacing.md)) {
             Text(
@@ -59,7 +69,7 @@ internal fun TaskHeader(task: TaskDetailUi, isBusy: Boolean, onOpenObjective: (T
             )
             Text(task.title, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(Spacing.sm), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
-                StatusChip(task.status.text, task.status.tone)
+                StatusChip(task.status.text, task.status.tone, icon = statusIcon ?: task.status.tone.icon)
                 if (task.attempt > 1) StatusChip("Attempt ${task.attempt}", StatusTone.ATTENTION, icon = AppIcons.Refresh)
                 if (task.revisionRound > 0) StatusChip("Revision ${task.revisionRound}", StatusTone.WAITING, icon = AppIcons.Edit)
             }

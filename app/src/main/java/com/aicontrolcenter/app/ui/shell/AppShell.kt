@@ -27,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.aicontrolcenter.app.di.AppGraph
@@ -34,7 +35,7 @@ import com.aicontrolcenter.app.di.LocalAppGraph
 import com.aicontrolcenter.app.ui.theme.AppTheme
 
 /** Width from which the app uses a navigation rail instead of a bottom bar. */
-private val WideLayoutMinWidth = 600.dp
+internal val WideLayoutMinWidth = 600.dp
 
 /**
  * The whole app for one [graph]: theme, composition root and navigation shell.
@@ -52,12 +53,14 @@ fun AiControlCenterRoot(graph: AppGraph, darkTheme: Boolean = isSystemInDarkThem
  * The frame around every screen. Phones get a bottom bar with four sections and "More", which
  * opens a sheet listing all eight; wide screens get a rail with all eight. The bottom bar is
  * shown on section roots only, so inner screens (an editor, a detail page) have the full height.
+ * While requests wait for the owner, phones show how many above the bottom bar, and the rail
+ * shows the count on its Approvals item at the top.
  */
 @Composable
 fun AppShell(modifier: Modifier = Modifier) {
     val graph = LocalAppGraph.current
     val navController = rememberNavController()
-    val shellViewModel = viewModel { ShellViewModel(graph.registryDirectory) }
+    val shellViewModel = viewModel { ShellViewModel(graph.registryDirectory, graph.ownerRequests.pending) }
     val shellState by shellViewModel.uiState.collectAsStateWithLifecycle()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val destination = backStackEntry?.destination
@@ -65,6 +68,17 @@ fun AppShell(modifier: Modifier = Modifier) {
     val isTopLevel = destination?.isTopLevel() ?: true
     var showMore by rememberSaveable { mutableStateOf(false) }
     val openSection: (Section) -> Unit = { section -> navController.navigateToSection(section.route) }
+    val approvalsOpen = destination?.let { it.hasRoute<ApprovalsRoute>() || it.hasRoute<ApprovalRoute>() } == true
+    val openApprovals: () -> Unit = { navController.navigate(ApprovalsRoute) { launchSingleTop = true } }
+
+    // A request opened from its notification goes straight to its Approval screen.
+    val approvalToOpen by graph.approvalToOpen.collectAsStateWithLifecycle()
+    LaunchedEffect(approvalToOpen) {
+        approvalToOpen?.let { id ->
+            graph.approvalOpened()
+            navController.navigate(ApprovalRoute(id.value)) { launchSingleTop = true }
+        }
+    }
 
     // An objective asked for from outside the app (its notification) opens once the shell exists.
     val objectiveToOpen by graph.objectiveToOpen.collectAsStateWithLifecycle()
@@ -83,7 +97,7 @@ fun AppShell(modifier: Modifier = Modifier) {
     BoxWithConstraints(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         if (maxWidth >= WideLayoutMinWidth) {
             Row(Modifier.fillMaxSize()) {
-                AppNavigationRail(currentSection, shellState, openSection)
+                AppNavigationRail(currentSection, shellState, openSection, approvalsOpen, openApprovals)
                 Box(Modifier.weight(1f).consumeWindowInsets(WindowInsets.systemBars.only(WindowInsetsSides.Start))) {
                     screens(Modifier.fillMaxSize())
                 }
@@ -101,6 +115,10 @@ fun AppShell(modifier: Modifier = Modifier) {
                     ),
                 ) {
                     screens(Modifier.fillMaxSize())
+                }
+                // Agents wait while a request is open, so it is shown on every section root until answered.
+                if (isTopLevel && shellState.pendingRequests > 0) {
+                    ApprovalsStrip(shellState.pendingRequests, openApprovals)
                 }
                 if (isTopLevel) {
                     AppBottomBar(

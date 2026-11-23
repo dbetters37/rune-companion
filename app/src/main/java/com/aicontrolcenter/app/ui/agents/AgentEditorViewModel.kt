@@ -7,6 +7,8 @@ import com.aicontrolcenter.app.ui.components.UserMessage
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.SpaceId
+import com.aicontrolcenter.app.ui.tools.ToolFamily
+import com.aicontrolcenter.app.ui.tools.plainWordsFor
 import com.aicontrolcenter.core.ToolId
 import com.aicontrolcenter.app.ui.memory.SpaceOptionUi
 import com.aicontrolcenter.core.memory.KnowledgeSpace
@@ -82,6 +84,8 @@ data class ToolOptionUi(
     val risk: RiskLevel,
     /** True when calling it sends information off the device; such tools are blocked in local-only mode. */
     val sendsDataOffDevice: Boolean,
+    /** Where it is listed, with the other tools of its kind. */
+    val family: ToolFamily = ToolFamily.INFORMATION,
 )
 
 @Immutable
@@ -106,6 +110,10 @@ data class AgentEditorUiState(
     fun issue(field: AgentField): String? = issues[field]?.joinToString(" ")
 
     fun model(id: ModelId?): ModelOptionUi? = models.firstOrNull { it.id == id }
+
+    /** The tools by family, in catalogue order; families without a registered tool are left out. */
+    val toolFamilies: List<Pair<ToolFamily, List<ToolOptionUi>>>
+        get() = tools.groupBy { it.family }.toSortedMap().toList()
 }
 
 /**
@@ -142,7 +150,7 @@ class AgentEditorViewModel(
     private val state = MutableStateFlow(
         AgentEditorUiState(
             isNew = editingId == null,
-            tools = tools.sortedBy { it.title }.map { ToolOptionUi(it.id, it.title, firstSentence(it.description), it.risk, it.sendsDataOffDevice) },
+            tools = tools.sortedBy { it.title }.map { ToolOptionUi(it.id, it.title, plainWordsFor(it), it.risk, it.sendsDataOffDevice, ToolFamily.of(it)) },
         ),
     )
     val uiState: StateFlow<AgentEditorUiState> = state.asStateFlow()

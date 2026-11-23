@@ -70,8 +70,8 @@ class AgentManagerTest {
         assertEquals(templateTools, after.single { it.name == "Researcher" }.toolIds)
         assertTrue(templateTools.containsAll(MemoryTools.defaultToolIds))
         assertEquals(
-            setOf(ToolId("team.list_agents")) + MemoryTools.defaultToolIds, after.single { it.id == chosen.id }.toolIds,
-            "the owner's choice is kept, and only the memory tools are added to it",
+            setOf(ToolId("team.list_agents")) + MemoryTools.defaultToolIds + AgentTemplates.askToolIds, after.single { it.id == chosen.id }.toolIds,
+            "the owner's choice is kept, and only the memory tools and asking for a permission are added to it",
         )
         assertTrue(after.single { it.id == handMade.id }.toolIds.isEmpty(), "an agent not made from a template is left alone")
         assertEquals(DefaultAgentManager.SEED_VERSION, world.settings.get().seedVersion)

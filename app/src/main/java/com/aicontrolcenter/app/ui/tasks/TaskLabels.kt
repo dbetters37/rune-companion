@@ -39,6 +39,14 @@ fun TaskStatus.toStatusLabel(kind: TaskKind = TaskKind.WORK): StatusLabel = when
     TaskStatus.INTERRUPTED -> StatusLabel("Interrupted", StatusTone.ATTENTION)
 }
 
+/**
+ * A task's status line as the owner reads it. The framework writes it for every reader, agents
+ * included ("Waiting for the owner's permission: …"); on the owner's own screens it says "your".
+ */
+fun ownerFacing(detail: String): String = OWNER_WAIT.replaceFirst(detail, "Waiting for your $1:")
+
+private val OWNER_WAIT = Regex("""^Waiting for the owner's (permission|approval):""")
+
 val TaskKind.label: String
     get() = when (this) {
         TaskKind.OBJECTIVE -> "Objective"

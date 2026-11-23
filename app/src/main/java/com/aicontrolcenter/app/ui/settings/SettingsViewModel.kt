@@ -137,6 +137,35 @@ class SettingsViewModel(
         )
     }
 
+    /** The phone operator's master switch: off, every phone tool is refused before anyone is asked. */
+    fun setOperatorEnabled(enabled: Boolean) = change {
+        if (settings.get().operatorEnabled == enabled) return@change
+        settings.update { it.copy(operatorEnabled = enabled) }
+        activity.record(
+            ActivityType.USER_ACTION,
+            if (enabled) "Phone operator turned on" else "Phone operator turned off",
+            if (enabled) "Agents may use their phone tools, each with your permission." else "No agent can use the phone's files, apps, web pages or scripts.",
+        )
+    }
+
+    /**
+     * The second switch, for screen control (Android's accessibility service): off, no agent reads
+     * or uses any app's screen, whatever else is allowed. It works only with [setOperatorEnabled] on.
+     */
+    fun setScreenControlEnabled(enabled: Boolean) = change {
+        if (settings.get().accessibilityOperatorEnabled == enabled) return@change
+        settings.update { it.copy(accessibilityOperatorEnabled = enabled) }
+        activity.record(
+            ActivityType.USER_ACTION,
+            if (enabled) "Screen control turned on" else "Screen control turned off",
+            if (enabled) {
+                "Agents may see and use the screens of the apps you authorised, each with your permission."
+            } else {
+                "No agent can read or use any app's screen."
+            },
+        )
+    }
+
     /** [days] of history to keep; 0 keeps everything. Negative values are treated as 0. */
     fun setActivityRetentionDays(days: Int) = change {
         settings.update { it.copy(activityRetentionDays = days.coerceAtLeast(0)) }

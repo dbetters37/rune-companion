@@ -5,7 +5,10 @@ import com.aicontrolcenter.core.agents.AgentKind
 import com.aicontrolcenter.core.agents.AgentTemplate
 import com.aicontrolcenter.core.agents.DelegationPolicy
 import com.aicontrolcenter.core.agents.GenerationSettings
+import com.aicontrolcenter.core.ToolId
+import com.aicontrolcenter.core.operator.OperatorTools
 import com.aicontrolcenter.framework.memory.MemoryTools
+import com.aicontrolcenter.framework.operator.PermissionRequestTool
 import com.aicontrolcenter.framework.tools.BuiltInTools
 
 /**
@@ -24,6 +27,19 @@ object AgentTemplates {
 
     /** Templates instantiated on first run, in creation order. */
     val starterTeam: List<String> = listOf(DIRECTOR, RESEARCHER, ANALYST, WRITER, REVIEWER, OPERATOR)
+
+    /**
+     * Every agent may ask the owner for a permission, with its reason (`permissions.request`).
+     * Asking grants nothing: the owner answers in the app.
+     */
+    val askToolIds: Set<ToolId> = setOf(PermissionRequestTool.ID)
+
+    /**
+     * The phone operator's tools, switched on for the Operator template only. Switching a tool on
+     * gives no permission: each still needs the owner's grant (reading the workspace aside), and
+     * every consequential action asks the owner every time.
+     */
+    val operatorToolIds: Set<ToolId> = OperatorTools.all.mapTo(LinkedHashSet()) { it.id } - askToolIds
 
     private val definitions: List<AgentTemplate> = listOf(
         AgentTemplate(
@@ -181,6 +197,7 @@ object AgentTemplates {
                 responsibilities = listOf("Manage files and documents", "Organise the project workspace", "Operate apps through approved integrations"),
                 skills = setOf("phone-operation", "file-management", "automation"),
                 generation = GenerationSettings(temperature = 0.1),
+                toolIds = operatorToolIds,
                 colorIndex = 6,
                 templateId = OPERATOR,
             ),
@@ -199,14 +216,14 @@ object AgentTemplates {
     )
 
     /**
-     * Every template, with the framework's read-only basic tools (clock, team list) and the
-     * memory tools (search, save) switched on, so a new agent can answer "what day is it" and
-     * remember what it learns without the owner configuring anything. What an agent may read
-     * or write in memory is still decided by its memory policy; sharing into a space is left
-     * for the owner to switch on.
+     * Every template, with the framework's read-only basic tools (clock, team list), the
+     * memory tools (search, save) and asking the owner for a permission switched on, so a new
+     * agent can answer "what day is it", remember what it learns and ask for what it lacks
+     * without the owner configuring anything. What an agent may read or write in memory is
+     * still decided by its memory policy; sharing into a space is left for the owner to switch on.
      */
     val all: List<AgentTemplate> = definitions.map {
-        it.copy(draft = it.draft.copy(toolIds = it.draft.toolIds + BuiltInTools.defaultToolIds + MemoryTools.defaultToolIds))
+        it.copy(draft = it.draft.copy(toolIds = it.draft.toolIds + BuiltInTools.defaultToolIds + MemoryTools.defaultToolIds + askToolIds))
     }
 
     fun byId(id: String): AgentTemplate? = all.firstOrNull { it.id == id }

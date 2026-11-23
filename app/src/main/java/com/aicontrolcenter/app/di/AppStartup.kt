@@ -36,6 +36,11 @@ import kotlinx.coroutines.launch
  * missing search vectors) runs once after the start-up steps, again whenever local-only mode is
  * switched off (an off-device embedder may then fill in what it was refused), and every
  * [MEMORY_MAINTENANCE_INTERVAL_MS] while the app is in the foreground. It never runs twice at once.
+ *
+ * Questions to the owner: recovering interrupted objectives first withdraws every request left
+ * pending when the app stopped (no waiter survives a restart). After the start-up steps, requests
+ * nobody answered in time are closed, and again every [REQUEST_SWEEP_INTERVAL_MS] for as long as
+ * the process lives: an agent's own ask has no waiter whose timer would close it.
  */
 class AppStartup(
     private val scope: CoroutineScope,
@@ -51,6 +56,8 @@ class AppStartup(
     private val clock: Clock,
     /** Null where there is no orchestrator (tests of start-up alone). */
     private val orchestrator: Orchestrator? = null,
+    /** Closes pending requests past their expiry; null where there are none (tests of start-up alone). */
+    private val closeOverdueRequests: (suspend () -> Unit)? = null,
 ) {
     private var initialJob: Job? = null
     private var foregroundRefresh: Job? = null
@@ -82,6 +89,15 @@ class AppStartup(
             step("Could not recover interrupted objectives") { orchestrator?.recoverInterrupted() }
         }
         initialJob = job
+        closeOverdueRequests?.let { sweep ->
+            scope.launch {
+                job.join()
+                while (true) {
+                    step("Could not close unanswered requests") { sweep() }
+                    delay(REQUEST_SWEEP_INTERVAL_MS)
+                }
+            }
+        }
         maintainMemory(after = job)
         scope.launch {
             // Off again: vectors an off-device embedder was refused can be computed now.
@@ -210,5 +226,8 @@ class AppStartup(
 
         /** How often memory upkeep runs while the app is in the foreground. */
         const val MEMORY_MAINTENANCE_INTERVAL_MS = 30L * 60 * 1000
+
+        /** How often requests past their expiry are closed. */
+        const val REQUEST_SWEEP_INTERVAL_MS = 60L * 1000
     }
 }

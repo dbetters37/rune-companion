@@ -208,7 +208,7 @@ class ScreenshotTest {
         shootScreen("app_detail_4_remove")
         robot.tapInDialog("Cancel").tapItemContaining("Allow accessibility operation")
         shootScreen("app_detail_5_accessibility_warning")
-        robot.tapInDialog("Authorise (test)").scrollTo("Operate its screen: authorised, not active")
+        robot.tapInDialog("Authorise").waitUntilShown("Operate its screen: authorised, not active").scrollTo("Operate its screen: authorised, not active")
         shoot("app_detail_6_authorised_inactive")
     }
 
@@ -261,13 +261,7 @@ class ScreenshotTest {
         shootScreen("settings_4_clear_log")
     }
 
-    // --- The section that is not built yet, and the shell ---
-
-    @Test
-    fun plannedSections() {
-        app().openSectionViaMore("Tools (test)")
-        shoot("planned_tools")
-    }
+    // --- The shell ---
 
     @Test
     fun moreSheet() {

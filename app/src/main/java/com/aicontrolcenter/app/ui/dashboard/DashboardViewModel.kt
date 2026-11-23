@@ -147,7 +147,7 @@ class DashboardViewModel(
             taskId = task?.id,
             taskTitle = task?.title,
             objectiveTitle = task?.let { tasks[it.rootId]?.title },
-            waiting = state.activity == AgentActivity.WAITING_FOR_AGENT,
+            waiting = state.activity == AgentActivity.WAITING_FOR_AGENT || state.activity == AgentActivity.WAITING_FOR_APPROVAL,
         )
     }
 

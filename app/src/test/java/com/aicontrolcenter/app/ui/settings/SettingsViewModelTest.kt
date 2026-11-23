@@ -42,6 +42,26 @@ class SettingsViewModelTest {
     }
 
     @Test
+    fun `the phone operator and screen control switches are stored at once and each change is logged`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        val viewModel = settings(app)
+        assertFalse(viewModel.uiState.value.settings.operatorEnabled, "off until the owner turns it on")
+        assertFalse(viewModel.uiState.value.settings.accessibilityOperatorEnabled)
+
+        viewModel.setOperatorEnabled(true)
+        viewModel.setScreenControlEnabled(true)
+        viewModel.setScreenControlEnabled(true)
+        assertTrue(app.settings.get().operatorEnabled)
+        assertTrue(app.settings.get().accessibilityOperatorEnabled)
+        assertEquals(listOf("Phone operator turned on", "Screen control turned on"), app.activityLog.all.map { it.title })
+
+        viewModel.setScreenControlEnabled(false)
+        assertFalse(app.settings.get().accessibilityOperatorEnabled)
+        assertTrue(app.settings.get().operatorEnabled, "the switches are separate")
+        assertEquals("No agent can read or use any app's screen.", app.activityLog.all.last().detail)
+    }
+
+    @Test
     fun `every limit is kept inside its range whatever is asked for`() = runTest(mainRule.dispatcher) {
         val app = TestApp(backgroundScope)
         val viewModel = settings(app)

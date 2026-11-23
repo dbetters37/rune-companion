@@ -1,6 +1,5 @@
 package com.aicontrolcenter.app.ui.settings
 
-import com.aicontrolcenter.app.ui.components.testLabel
 import com.aicontrolcenter.core.settings.FrameworkSettings
 
 /**
@@ -60,7 +59,7 @@ enum class OrchestrationLimit(
         read = { it.objectiveTimeoutMinutes }, write = { s, v -> s.copy(objectiveTimeoutMinutes = v) },
     ),
     APPROVAL_TIMEOUT_MINUTES(
-        testLabel("Approval time-out"), "How long an agent waits for your answer before the action is refused.", 5..240, step = 5, unit = "min",
+        "Approval time-out", "How long an agent waits for your answer before the action is refused.", 5..240, step = 5, unit = "min",
         read = { it.approvalTimeoutMinutes }, write = { s, v -> s.copy(approvalTimeoutMinutes = v) },
     ),
     ;

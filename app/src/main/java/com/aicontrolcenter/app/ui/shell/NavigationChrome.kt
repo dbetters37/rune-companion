@@ -27,11 +27,13 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.NavigationRailItemDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -41,6 +43,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.aicontrolcenter.app.ui.components.plural
 import com.aicontrolcenter.app.ui.icons.AppIcons
+import com.aicontrolcenter.app.ui.icons.Approval
+import com.aicontrolcenter.app.ui.icons.ChevronRight
 import com.aicontrolcenter.app.ui.icons.MoreHoriz
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.appColors
@@ -65,6 +69,53 @@ private fun BadgedIcon(icon: ImageVector, badge: Int) {
 }
 
 private fun attentionSuffix(badge: Int): String = if (badge > 0) ", ${plural(badge, "item")} need attention" else ""
+
+/** "1 request waits for your answer", "3 requests wait for your answer". */
+internal fun waitingText(count: Int): String = plural(count, "request") + if (count == 1) " waits for your answer" else " wait for your answer"
+
+/**
+ * The phone's line above the bottom bar while agents wait for the owner: how many requests,
+ * and the way to them. Shown only while something waits, on every section root.
+ */
+@Composable
+internal fun ApprovalsStrip(count: Int, onOpen: () -> Unit) {
+    Column {
+        HorizontalDivider(color = appColors.attention.copy(alpha = 0.4f))
+        Surface(
+            onClick = onOpen,
+            color = appColors.attention.copy(alpha = if (appColors.isDark) 0.14f else 0.10f).compositeOver(MaterialTheme.colorScheme.surface),
+            modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) { contentDescription = waitingText(count) + ". Review" },
+        ) {
+            Row(
+                modifier = Modifier.heightIn(min = 52.dp).padding(start = Spacing.lg, end = Spacing.md, top = Spacing.sm, bottom = Spacing.sm),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+            ) {
+                Box(Modifier.padding(end = Spacing.xs)) {
+                    BadgedBox(
+                        badge = {
+                            Badge(
+                                containerColor = appColors.attention,
+                                contentColor = MaterialTheme.colorScheme.onTertiary,
+                                modifier = Modifier.offset(x = 6.dp, y = (-4).dp),
+                            ) { Text(if (count > 99) "99+" else count.toString()) }
+                        },
+                    ) {
+                        Icon(AppIcons.Approval, contentDescription = null, tint = appColors.attention)
+                    }
+                }
+                Text(
+                    waitingText(count),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f),
+                )
+                Text("Review", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                Icon(AppIcons.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+            }
+        }
+    }
+}
 
 /** Phone navigation: four sections and "More". */
 @Composable
@@ -108,18 +159,45 @@ internal fun AppBottomBar(
     }
 }
 
-/** Wide-screen navigation: all eight sections, scrollable when the window is short. */
+/**
+ * Wide-screen navigation: the requests waiting for the owner first, then all eight sections,
+ * scrollable when the window is short.
+ */
 @Composable
-internal fun AppNavigationRail(current: Section, state: ShellUiState, onOpenSection: (Section) -> Unit) {
+internal fun AppNavigationRail(
+    current: Section,
+    state: ShellUiState,
+    onOpenSection: (Section) -> Unit,
+    approvalsOpen: Boolean = false,
+    onOpenApprovals: () -> Unit = {},
+) {
     NavigationRail(containerColor = MaterialTheme.colorScheme.surface) {
         Column(
             modifier = Modifier.verticalScroll(rememberScrollState()).padding(vertical = Spacing.sm),
             verticalArrangement = Arrangement.spacedBy(Spacing.xs),
         ) {
+            val waiting = state.pendingRequests
+            NavigationRailItem(
+                selected = approvalsOpen,
+                onClick = onOpenApprovals,
+                icon = { BadgedIcon(AppIcons.Approval, waiting) },
+                label = { Text("Approvals", maxLines = 1) },
+                colors = NavigationRailItemDefaults.colors(
+                    selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                    indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                    unselectedIconColor = if (waiting > 0) appColors.attention else MaterialTheme.colorScheme.onSurfaceVariant,
+                    unselectedTextColor = if (waiting > 0) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                ),
+                modifier = Modifier.semantics {
+                    contentDescription = "Approvals" + if (waiting > 0) ", " + waitingText(waiting) else ", nothing waits for your answer"
+                },
+            )
+            HorizontalDivider(color = appColors.hairline, modifier = Modifier.padding(horizontal = Spacing.md, vertical = Spacing.xs).size(width = 48.dp, height = 1.dp))
             Section.entries.forEach { section ->
                 val badge = state.badge(section)
                 NavigationRailItem(
-                    selected = current == section,
+                    selected = !approvalsOpen && current == section,
                     onClick = { onOpenSection(section) },
                     icon = { BadgedIcon(section.icon, badge) },
                     label = { Text(section.title, maxLines = 1) },

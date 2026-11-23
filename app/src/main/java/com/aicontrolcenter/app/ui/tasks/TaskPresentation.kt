@@ -137,7 +137,7 @@ fun planRows(tree: List<TaskRecord>, faces: AgentFaces): List<PlanRowUi> {
             title = task.title,
             assignee = faces.of(task.assignee),
             status = task.status.toStatusLabel(task.kind),
-            statusDetail = task.statusDetail?.takeIf { it.isNotBlank() } ?: task.error,
+            statusDetail = task.statusDetail?.takeIf { it.isNotBlank() }?.let(::ownerFacing) ?: task.error,
             dependsOn = task.dependsOn.mapNotNull(numbers::get).sorted(),
             attempt = task.attempt + 1,
             revisionRound = task.revisionRound,

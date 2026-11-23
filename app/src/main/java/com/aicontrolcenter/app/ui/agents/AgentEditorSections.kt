@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import com.aicontrolcenter.app.ui.approvals.toRiskLabel
 import com.aicontrolcenter.app.ui.memory.AccessRow
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -33,6 +34,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.selection.toggleable
+import com.aicontrolcenter.app.ui.icons.ExpandLess
+import com.aicontrolcenter.app.ui.icons.ExpandMore
+import com.aicontrolcenter.app.ui.tools.icon
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import com.aicontrolcenter.app.ui.components.AppCard
@@ -189,44 +195,80 @@ private fun ModelWarning(model: ModelOptionUi) {
     }
 }
 
-/** The tools this agent may use. Each switch only makes a tool available; the permission rules still apply to every call. */
+/**
+ * The tools this agent may use, by family. Each switch only makes a tool available: the
+ * permission the tool needs is asked for, or given, separately, and consequential calls are
+ * approved every time.
+ */
 @Composable
 internal fun ToolsEditor(state: AgentEditorUiState, actions: AgentEditorActions) {
+    var expanded by rememberSaveable { mutableStateOf(setOf<String>()) }
     Column {
         SectionHeader("Tools")
         AppCard {
             Column {
                 Text(
-                    "Information and memory tools exist so far: they read facts, or search and save the agent's memories " +
-                        "within its memory policy. Tools that act on this phone arrive in a later version, with their own permissions.",
+                    "Switching a tool on makes it available to this agent. It does not give the permission the tool needs: the " +
+                        "agent asks you the first time it needs one, and buying, sending, deleting or running a command asks you " +
+                        "every time.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(bottom = Spacing.sm),
                 )
+                val openPermissions = actions.onOpenPermissions
+                if (openPermissions != null) {
+                    TextButton(onClick = openPermissions, modifier = Modifier.padding(top = Spacing.xs)) {
+                        Text("See what this agent is allowed in Tools › Allowed")
+                    }
+                } else {
+                    Text(
+                        "Once the agent exists, its permissions are listed in Tools › Allowed.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = Spacing.xs, bottom = Spacing.sm),
+                    )
+                }
                 if (state.tools.isEmpty()) {
                     Text("No tools are registered.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                state.tools.forEachIndexed { index, tool ->
-                    if (index > 0) RowDivider()
-                    SwitchRow(
-                        title = tool.title,
-                        description = "${tool.risk.label}. ${tool.description}",
-                        checked = tool.id in state.draft.toolIds,
-                        onCheckedChange = { on -> actions.onSetTool(tool.id, on) },
-                    )
+                state.toolFamilies.forEach { (family, tools) ->
+                    val isOpen = family.name in expanded
+                    val on = tools.count { it.id in state.draft.toolIds }
+                    RowDivider()
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 56.dp)
+                            .toggleable(value = isOpen, role = Role.Button) { open ->
+                                expanded = if (open) expanded + family.name else expanded - family.name
+                            }
+                            .padding(vertical = Spacing.sm),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+                    ) {
+                        Icon(family.icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        RowText(family.title, "$on of ${tools.size} on · ${family.description}", Modifier.weight(1f))
+                        Icon(if (isOpen) AppIcons.ExpandLess else AppIcons.ExpandMore, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (isOpen) {
+                        tools.forEach { tool ->
+                            SwitchRow(
+                                title = tool.title,
+                                description = "${tool.risk.label}. ${tool.description}" + if (tool.sendsDataOffDevice) " Sends data off this phone." else "",
+                                checked = tool.id in state.draft.toolIds,
+                                onCheckedChange = { on -> actions.onSetTool(tool.id, on) },
+                                modifier = Modifier.padding(start = Spacing.xl),
+                            )
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-/** How much a tool can do, in words. */
+/** How much a tool can do, in the app's one set of risk words ([toRiskLabel]). */
 internal val RiskLevel.label: String
-    get() = when (this) {
-        RiskLevel.SAFE -> "Safe: reads only"
-        RiskLevel.MODIFYING -> "Changes data you can undo"
-        RiskLevel.CONSEQUENTIAL -> "Consequential: always asks you first"
-    }
+    get() = toRiskLabel().text + if (this == RiskLevel.CONSEQUENTIAL) ": asks you every time" else ""
 
 @Composable
 internal fun GenerationEditor(state: AgentEditorUiState, actions: AgentEditorActions) {

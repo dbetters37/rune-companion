@@ -60,7 +60,7 @@ class MemorySeedingTest {
         manager.ensureDefaults()
         seeder.ensureDefaults()
 
-        assertEquals(3, DefaultAgentManager.SEED_VERSION)
+        assertEquals(4, DefaultAgentManager.SEED_VERSION)
         val team = world.agents.getAll()
         assertEquals(6, team.size)
         assertTrue(team.all { it.toolIds.containsAll(MemoryTools.defaultToolIds) })
@@ -93,9 +93,11 @@ class MemorySeedingTest {
         manager.ensureDefaults()
 
         assertFalse(world.agents.getAll().any { it.name == "Writer" }, "a deleted starter agent is not recreated")
-        assertEquals(setOf(TEAM_LIST) + MemoryTools.defaultToolIds, byName("Researcher").toolIds, "the clock the owner removed stays removed")
-        assertEquals(BuiltInTools.defaultToolIds + MemoryTools.defaultToolIds, byName("Analyst").toolIds)
-        assertEquals(setOf(ToolId("some.future_tool")) + MemoryTools.defaultToolIds, world.agents.get(coder.id)!!.toolIds)
+        // Version 4 then adds asking for a permission (its own step, see OperatorSeedTest).
+        val ask = AgentTemplates.askToolIds
+        assertEquals(setOf(TEAM_LIST) + MemoryTools.defaultToolIds + ask, byName("Researcher").toolIds, "the clock the owner removed stays removed")
+        assertEquals(BuiltInTools.defaultToolIds + MemoryTools.defaultToolIds + ask, byName("Analyst").toolIds)
+        assertEquals(setOf(ToolId("some.future_tool")) + MemoryTools.defaultToolIds + ask, world.agents.get(coder.id)!!.toolIds)
         assertEquals(setOf(ClockTool.ID), world.agents.get(handMade.id)!!.toolIds, "an agent not made from a template is left alone")
         assertEquals(DefaultAgentManager.SEED_VERSION, world.settings.get().seedVersion)
         val event = world.log.all.single { it.title == "Memory tools switched on" }
@@ -118,7 +120,7 @@ class MemorySeedingTest {
 
         val researcher = byName("Researcher")
         assertEquals(AgentTemplates.byId(AgentTemplates.RESEARCHER)!!.draft.toolIds, researcher.toolIds)
-        assertEquals(BuiltInTools.defaultToolIds + MemoryTools.defaultToolIds, researcher.toolIds)
+        assertEquals(BuiltInTools.defaultToolIds + MemoryTools.defaultToolIds + AgentTemplates.askToolIds, researcher.toolIds)
         assertTrue(world.log.all.any { it.title == "Information tools switched on" })
         assertTrue(world.log.all.any { it.title == "Memory tools switched on" })
     }

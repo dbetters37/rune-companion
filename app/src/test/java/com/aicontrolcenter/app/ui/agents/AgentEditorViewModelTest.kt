@@ -11,6 +11,7 @@ import com.aicontrolcenter.core.agents.AgentStats
 import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.framework.agents.AgentTemplates
 import com.aicontrolcenter.testkit.Samples
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Rule
 import org.junit.Test
@@ -224,5 +225,28 @@ class AgentEditorViewModelTest {
         val state = editor(app).uiState.value
         assertEquals(AgentDraft(name = "New agent"), state.draft)
         assertEquals("Researcher 3", AgentEditorViewModel.uniqueName("Researcher", listOf("researcher", "Researcher 2")))
+    }
+
+    @Test
+    fun `the editor offers every tool grouped by family, in plain words, and switching one on grants nothing`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.graph.start().join()
+        val operator = app.agentNamed("Operator").profile.id
+        val viewModel = AgentEditorViewModel(
+            app.graph.agentManager, app.graph.registryDirectory, operator, null, DraftStore.None,
+            tools = app.graph.toolRegistry.all().map { it.spec },
+        )
+        val state = viewModel.uiState.value
+        val families = state.toolFamilies.map { it.first }
+        assertEquals(com.aicontrolcenter.app.ui.tools.ToolFamily.entries.filter { it in families }, families, "families in catalogue order")
+        val workspace = state.toolFamilies.first { it.first == com.aicontrolcenter.app.ui.tools.ToolFamily.WORKSPACE }.second
+        assertEquals(12, workspace.size)
+        assertEquals("Deletes items in the workspace trash for good. You approve it every time.", workspace.first { it.id.value == "workspace.empty_trash" }.description)
+        assertTrue(state.tools.first { it.id.value == "web.read_page" }.sendsDataOffDevice)
+
+        viewModel.setTool(com.aicontrolcenter.core.ToolId("scripts.run_shell"), false)
+        viewModel.save()
+        assertFalse(com.aicontrolcenter.core.ToolId("scripts.run_shell") in app.agentNamed("Operator").profile.toolIds)
+        assertEquals(emptyList(), app.permissions.observeAll().first(), "a tool switch is not a permission")
     }
 }

@@ -124,7 +124,7 @@ class ActivityViewModelTest {
         assertEquals("192.168.1.20", egress["Destination"])
         assertEquals("Home server", egress["Provider"])
         assertEquals("prompt and conversation", egress["What was sent"])
-        assertEquals("2.0 KB", egress["Approximate size"])
+        assertEquals("2.0\u00A0KB", egress["Approximate size"])
         assertTrue(assertNotNull(egress["Where that is"]).startsWith("Local network"))
 
         // The open event stays readable after the log is cleared underneath it.
