@@ -287,6 +287,8 @@ What the review found and what was fixed:
 | Storage | The Room task and message stores pass the same contract suites as the reference implementation. Migrations 3 → 4, 1 → 4 step by step, and 1 → 4 directly were tested with data in every table |
 | Orchestrator | The whole Director flow runs in tests on the simulator and on scripted model replies: planning, retries, reviews, revisions, arbitration, delegation, limits, pause, cancel, run again and recovery |
 | Crash simulation | An independent harness killed the app at each of 15 points while an objective finished, once or every time, under different limits and settings, plus store errors at every write: several hundred scenarios. Across all of them no summary or announcement was duplicated, every objective that could finish finished, and recovery never started agent work you had not allowed |
+| Upgrade on the emulator | 0.4.0 installed over 0.3.0: agents, memories and the "Team knowledge" space kept; the database moved to version 4 on first start |
+| On the emulator | Two objectives run with the simulator. A one-task objective with knowledge saving finished in 39 s and saved one summary to "Team knowledge". A three-part objective ran three agents, a review sent one result back, the revision was approved, and the final document was written (1 min). The progress notification with its Pause button appeared after the one-time permission request. Nothing left the phone, and no crash was logged |
 | Independent review | An adversarial review of the orchestrator found 11 problems (1 critical, 6 major). Six rounds of fixes followed, each checked by separate verifiers who re-ran the earlier reproductions and wrote new ones |
 
 What the review found and what was fixed:
