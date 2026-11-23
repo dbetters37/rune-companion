@@ -161,8 +161,81 @@ What the review found and what was fixed:
   an unrelated alias of the same model is flagged.
 - Conversations are not paged; very long conversations with many images load slowly.
 
-## Next: Phase 3
+## Phase 3: individual and shared memory (complete)
 
-Individual and shared memory: per-agent private memory, shared knowledge spaces with explicit
-read and write permissions, semantic search, links between memories, provenance, a memory
-explorer and graph view, and memory tools for agents.
+### What works
+
+- **Private memory per agent.** Each agent has its own memory, which no other agent can read.
+  Switch it off per agent in the agent editor.
+- **Shared knowledge spaces.** Create spaces and allow each agent to read and, separately, to
+  write each one. The starter space "Team knowledge" is readable by the starter agents and
+  writable only by the Director. Agents are never given access to a space you did not allow.
+- **Short-term task memory** that expires (3 days by default), with the important parts kept
+  long-term when a task ends (used by the Director in Phase 4).
+- **Agents use memory.** Agents can search, save and share memories with tools, and recall
+  relevant memories automatically before replying (switchable per agent, with a limit).
+- **Semantic search, offline.** Search ranks by meaning, keywords, recency and importance. It
+  runs on the phone with no download and no network.
+- **Provenance.** Every memory says who wrote it, in which chat or task, with which model and
+  when, what it was derived from, and every later edit, share and promotion.
+- **Links and graph.** Link memories (relates to, supports, contradicts, derived from, part
+  of, references, replaces). The Graph tab draws them interactively, coloured by agent and
+  space, and exports the graph as `aicc.memory-graph` JSON through the share sheet, for an
+  external graph viewer.
+- **Memory section**: an explorer with search and filters, memory details, a new-memory form,
+  spaces with per-agent read and write switches, and the graph.
+
+### How it was verified
+
+| Check | Result |
+|---|---|
+| Unit and UI tests, all modules | 1,303 pass: core 11, test kit 57, framework 240, memory 107, providers 202, Claude adapter 89, data 272, device 85, app 240. The app suite passed three times in a row |
+| Storage | The Room implementation and the reference implementation pass the same memory contract suite; migrations 1 → 2 → 3 and 2 → 3 tested with data in every table |
+| Upgrade on the emulator | 0.3.0 installed over 0.2.0: agents, models and conversations kept; the "Team knowledge" space created with the intended access |
+| On the emulator | A memory created, stored in the encrypted database, found by search, and drawn in the graph |
+| Independent review | An adversarial review of the engine, storage and agent integration found 11 problems (1 critical). Two rounds of fixes followed, each checked by a separate verifier who re-ran the reviewer's reproductions |
+
+What the review found and what was fixed:
+
+- Recalled memories were placed in the system prompt, where a stored note could pose as an
+  instruction. They now travel as a quoted data block with a per-turn marker; nothing inside
+  a memory can start a line of the frame or close it.
+- Memory text that had appeared in a chat kept being sent to the model after the memory was
+  deleted or access to it was revoked. Chats now store references and re-check access on
+  every read.
+- Sharing or promoting a memory overwrote who originally wrote it, and edits were not
+  recorded. The original provenance is now kept, with an append-only history.
+- Deletes could race with updates and shares and bring a memory back. Writes are serialised,
+  and a copy and its link are stored together or not at all.
+- With large stores, recall and agent deletion read far too much (including other agents'
+  short-term memory), and recall could not be interrupted. Reads are now bounded and
+  interruptible; in the reviewer's test a slow recall went from 1.6 s to 0.2-0.3 s.
+- Smaller fixes: switching on local-only mode stops a maintenance pass at once; deleted
+  agents' memory is cleaned up even after an interrupted deletion; search folds accents; a
+  memory and its shared copy no longer take two recall slots; re-sharing never overwrites
+  edits someone made to the shared copy.
+
+### Not verified
+
+- Search quality with real-world memories at scale. The offline embedder recognises
+  inflections and shared word parts, but it is not a language model: it finds related wording,
+  not related meaning in different words, and a single misspelt word may not be found.
+- Performance with tens of thousands of memories on a phone. Bounds and timings were measured
+  on a desktop JVM.
+- Nothing has run on a physical phone.
+
+### Known rough edges
+
+- Counts on the Memory screens load the full memory list; very large stores will load slowly.
+- Memory upkeep (deleting expired short-term memory) runs at start and every 30 minutes while
+  the app is open, not in the background.
+- Exporting the graph is refused while local-only mode is on, even when you would only save
+  the file on the phone.
+- Deleting a space while editing an agent's memory settings at the same moment can lose one of
+  the two changes.
+
+## Next: Phase 4
+
+The Director and multi-agent work: give the Director an objective; it plans tasks, assigns
+them to agents, collects and reviews results, resolves disagreements, and delivers a final
+result, with live monitoring, interruption and loop protection.

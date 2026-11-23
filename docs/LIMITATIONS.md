@@ -109,6 +109,11 @@ do it.
   (deleting, installing, paying, sending) always need your confirmation. No such tools exist
   yet; they arrive with the phone operator.
 
+- **Memory sent to cloud models.** When an agent uses a cloud model, memories it recalls or
+  finds with its search tool are sent to that provider as part of the conversation, and the
+  call is logged as data leaving the device. Local-only mode prevents it. There is no
+  per-memory or per-space "never send" mark yet.
+
 ## 7. Not verifiable in the build environment
 
 - Behaviour on your phone's exact Android version and manufacturer skin, including battery

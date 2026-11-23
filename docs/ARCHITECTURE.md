@@ -202,8 +202,10 @@ settings, the permission controller and the package installer.
 ### E. Memory
 
 - `MemoryRecord`: content, kind, tier (short-term or long-term), tags, importance,
-  timestamps, access counters, expiry, revision, and **provenance** (who or what created it,
-  from which task, model and sources, with what confidence).
+  timestamps, access counters, expiry, revision, **provenance** (who or what first wrote it,
+  from which task, conversation, model and sources) and an append-only **history** of edits,
+  shares and promotions. Copies keep the original's provenance; the copy is recorded in the
+  history.
 - **Scopes**: `Agent(id)` private memory, `Shared(space)` knowledge spaces, `Task(id)`
   working memory. An agent reads and writes only the scopes its `MemoryPolicy` allows;
   sharing a memory is an explicit, logged operation that copies it into a space with a link
@@ -213,7 +215,13 @@ settings, the permission controller and the package installer.
   they form the memory graph.
 - **Retrieval**: hybrid ranking of semantic similarity (pluggable `Embedder`; an offline
   feature-hashing embedder ships by default, provider and on-device embedding models can
-  replace it), keyword match, recency and importance.
+  replace it), keyword match, recency and importance. Reads are bounded by count and by total
+  text, and scoring runs off the caller's thread so a time-out can stop it.
+- **Use by agents**: tools to search, save and share memory, and automatic recall before a
+  reply. Recalled memories go into the request as a quoted data block with a per-turn marker,
+  never into the system prompt, so stored text cannot pose as instructions. Conversations
+  store references to memory search results, not their text, and render them from current
+  memory on every read: a forgotten memory, or one whose space was revoked, is not sent again.
 - **Lifecycle**: task memory expires; on completion the valuable parts are promoted to
   long-term memory when the task allows saving knowledge.
 - **Graph bridge**: the engine exports a neutral `MemoryGraphSnapshot` (nodes, edges,
