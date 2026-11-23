@@ -43,3 +43,11 @@ class InMemoryConversationRepositoryTest : com.aicontrolcenter.testkit.contract.
 class InMemoryMemoryRepositoryTest : com.aicontrolcenter.testkit.contract.MemoryRepositoryContract() {
     override fun createRepository() = InMemoryMemoryRepository()
 }
+
+class InMemoryTaskRepositoryTest : com.aicontrolcenter.testkit.contract.TaskRepositoryContract() {
+    override fun createRepository() = InMemoryTaskRepository()
+}
+
+class InMemoryMessageRepositoryTest : com.aicontrolcenter.testkit.contract.MessageRepositoryContract() {
+    override fun createRepository() = InMemoryMessageRepository()
+}
