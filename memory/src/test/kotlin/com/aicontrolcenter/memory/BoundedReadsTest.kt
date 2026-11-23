@@ -61,7 +61,7 @@ class BoundedReadsTest {
     }
 
     @Test
-    fun `thousands of task scopes never become query conditions, and vectors are loaded for the candidates only`() = runTest {
+    fun `task scopes nobody asked for never become query conditions, and vectors are loaded for the candidates only`() = runTest {
         val w = world(MemoryConfig(candidateLimit = 300))
         val team = w.space("Team")
         val a = w.agent("agt_a", read = setOf(team.id))
@@ -73,10 +73,12 @@ class BoundedReadsTest {
         spy.filters.clear()
 
         w.service.recall(a, RecallQuery("move step", recordAccess = false))
-        w.service.recall(a, RecallQuery("move step", scopes = (1..1_200).map { task(a, "tsk_$it") }.toSet(), recordAccess = false))
         w.service.graph(a, GraphRequest(includeTaskMemory = true))
+        assertFalse(spy.sawTaskScopeInAFilter(), "a filter named task scopes nobody asked for")
+        // Task scopes asked for by name are read as asked, a chunk at a time (see CandidateReadsTest).
+        w.service.recall(a, RecallQuery("move step", scopes = (1..1_200).map { task(a, "tsk_$it") }.toSet(), recordAccess = false))
+        assertTrue(spy.filters.all { it.scopes.orEmpty().size <= MemoryReader.SCOPE_CHUNK })
 
-        assertFalse(spy.sawTaskScopeInAFilter(), "a filter named task scopes")
         assertFalse(spy.calls.any { it.startsWith("embeddings(") }, "${spy.calls}")
         val vectorRequests = spy.calls.filter { it.startsWith("embeddingsOf(") }.map { it.removePrefix("embeddingsOf(").removeSuffix(")").toInt() }
         assertTrue(vectorRequests.isNotEmpty() && vectorRequests.all { it <= MemoryRecall.VECTOR_CHUNK }, "$vectorRequests")

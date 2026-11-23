@@ -33,6 +33,7 @@ internal class MemorySharing(private val ctx: MemoryContext) {
         val record: MemoryRecord
 
         class Unchanged(override val record: MemoryRecord) : Shared
+        class KeptEdited(override val record: MemoryRecord, val original: MemoryRecord) : Shared
         class Created(override val record: MemoryRecord, val original: MemoryRecord) : Shared
         class Refreshed(override val record: MemoryRecord, val original: MemoryRecord) : Shared
     }
@@ -44,7 +45,9 @@ internal class MemorySharing(private val ctx: MemoryContext) {
      *
      * Sharing the same memory into the same space again returns the existing copy; when the
      * original changed since that copy was made (a newer revision), the copy is refreshed to the
-     * original's current text first. An expired copy is ignored and a new one made.
+     * original's current text first, but only while nobody has edited the copy since it was
+     * shared: an edited copy is returned as it is, never overwritten, and the activity log says
+     * so. An expired copy is ignored and a new one made.
      */
     suspend fun share(actor: MemoryActor, id: MemoryId, spaceId: SpaceId): MemoryRecord {
         val target = MemoryScope.Shared(spaceId)
@@ -58,12 +61,17 @@ internal class MemorySharing(private val ctx: MemoryContext) {
             val existing = currentCopy(original, target, now)
             who to when {
                 existing == null -> create(who, original, target, now)
-                isOutdated(existing.first, original) -> refresh(who, existing.first, existing.second, original, now)
-                else -> Shared.Unchanged(existing.first)
+                !isOutdated(existing.first, original) -> Shared.Unchanged(existing.first)
+                original.id in sourcesOf(existing.first) -> refresh(who, existing.first, existing.second, original, now)
+                else -> Shared.KeptEdited(existing.first, original)
             }
         }
         when (outcome) {
             is Shared.Unchanged -> Unit
+            is Shared.KeptEdited -> ctx.log.changed(
+                who, "Memory not re-shared", outcome.record,
+                "The original in ${ctx.log.describe(outcome.original.scope)} changed, but the shared copy was edited since; left unchanged.",
+            )
             is Shared.Created -> {
                 ctx.log.changed(who, "Memory shared", outcome.record, "Copied from ${ctx.log.describe(outcome.original.scope)}.")
                 ctx.vectors.store(listOf(outcome.record), who.agentId, replacing = false)
@@ -181,5 +189,24 @@ internal class MemorySharing(private val ctx: MemoryContext) {
     companion object {
         /** The note of a SHARED_FROM event: the revision of the original that was copied. */
         const val REVISION_NOTE = "Copied revision "
+
+        /**
+         * The memories [record] is still an untouched copy of: those named by SHARED_FROM events
+         * after its last EDITED event. Empty when it is no copy, or when it was changed after it
+         * was last shared: an EDITED event after its last SHARED_FROM event, or a revision above
+         * the one sharing gave it (1 when made, one more for each refresh, so one per SHARED_FROM
+         * event of its own original), which catches a change written without an event.
+         */
+        fun sourcesOf(record: MemoryRecord): Set<MemoryId> {
+            val history = record.history
+            val lastShare = history.indexOfLast { it.action == ProvenanceAction.SHARED_FROM }
+            if (lastShare < 0) return emptySet()
+            val lastEdit = history.indexOfLast { it.action == ProvenanceAction.EDITED }
+            if (lastEdit > lastShare) return emptySet()
+            val own = history[lastShare].relatedMemory ?: return emptySet()
+            if (record.revision > history.count { it.action == ProvenanceAction.SHARED_FROM && it.relatedMemory == own }) return emptySet()
+            return history.subList(lastEdit + 1, history.size)
+                .mapNotNullTo(HashSet()) { event -> event.relatedMemory.takeIf { event.action == ProvenanceAction.SHARED_FROM } }
+        }
     }
 }

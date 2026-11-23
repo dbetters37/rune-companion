@@ -2,6 +2,7 @@ package com.aicontrolcenter.framework.llm
 
 import com.aicontrolcenter.core.llm.ChatRequest
 import com.aicontrolcenter.core.llm.ChatRole
+import com.aicontrolcenter.framework.memory.MemoryText
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -24,7 +25,9 @@ import kotlinx.serialization.json.JsonPrimitive
  * Normalisation makes the comparison blind to what a model changes when it quotes: HTML
  * entities, JSON escapes and markdown escapes (a backslash before ASCII punctuation) are
  * decoded, repeatedly for text quoted twice; invisible characters (zero-width, format and
- * control characters, variation selectors, fillers) are removed; single, double and
+ * control characters, variation selectors, fillers) are removed; the quote marker that starts
+ * every line of memory text ([MemoryText.QUOTE]) is removed from the start of lines, so a call
+ * written over several lines of a memory is found as the model writes it; single, double and
  * typographic quotes all become one plain quote; and every line break and other whitespace is
  * collapsed away, so that re-spacing JSON hides nothing either.
  *
@@ -40,7 +43,7 @@ import kotlinx.serialization.json.JsonPrimitive
  *
  * Memories recalled for the turn are quoted content too: they arrive in a
  * [RecalledMemoriesBlock] at the start of a user message, and a call repeated from inside that
- * block is not run either.
+ * block is not run either, however its lines were quoted there.
  */
 internal class EchoGuard private constructor(private val quoted: List<String>, private val resultsInOrder: String) {
 
@@ -74,6 +77,9 @@ internal class EchoGuard private constructor(private val quoted: List<String>, p
         fun isRejection(reason: String?): Boolean = reason == REJECTION || reason == REJECTION_WITHOUT_ARGUMENTS
 
         private const val MAX_DECODE_PASSES = 4
+
+        /** The quote marker of memory text at the start of a line, which a model copying a memory's lines leaves out. */
+        private val QUOTE_MARKER = Regex("(?m)^[ \\t]*" + Regex.escape(MemoryText.QUOTE.trimEnd()) + "[ \\t]?")
 
         /** HTML entities (named, decimal, hex), JSON string escapes, and a backslash before any ASCII punctuation (markdown's escapes). */
         private val ESCAPE = Regex(
@@ -128,7 +134,7 @@ internal class EchoGuard private constructor(private val quoted: List<String>, p
 
         /** [text] as compared for echoes; see the class comment. */
         fun normalise(text: String): String {
-            var decoded = text
+            var decoded = QUOTE_MARKER.replace(text, "")
             for (pass in 1..MAX_DECODE_PASSES) {
                 val next = ESCAPE.replace(decoded, ::decode)
                 if (next == decoded) break

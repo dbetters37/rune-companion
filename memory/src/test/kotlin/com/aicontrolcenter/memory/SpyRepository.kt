@@ -26,6 +26,15 @@ class SpyRepository(val inner: InMemoryMemoryRepository) : MemoryRepository by i
     /** How many records each list-like call returned. */
     val loaded = mutableListOf<Pair<String, Int>>()
 
+    /** Characters of text (title, content, tags) that list-like calls returned, in total. */
+    var textLoaded = 0L
+
+    private fun counted(name: String, records: List<MemoryRecord>): List<MemoryRecord> {
+        loaded += name to records.size
+        textLoaded += records.sumOf { MemoryReader.textSize(it) }
+        return records
+    }
+
     private var heldGet: Pair<MemoryId, CompletableDeferred<Unit>>? = null
     private var heldSpace: Pair<SpaceId, CompletableDeferred<Unit>>? = null
     private var spaceReadsToSkip = 0
@@ -83,13 +92,13 @@ class SpyRepository(val inner: InMemoryMemoryRepository) : MemoryRepository by i
     override suspend fun list(filter: MemoryFilter, limit: Int): List<MemoryRecord> {
         calls += "list"
         filters += filter
-        return inner.list(filter, limit).also { loaded += "list" to it.size }
+        return counted("list", inner.list(filter, limit))
     }
 
     override suspend fun searchText(query: String, filter: MemoryFilter, limit: Int): List<MemoryRecord> {
         calls += "searchText"
         filters += filter
-        return inner.searchText(query, filter, limit).also { loaded += "searchText" to it.size }
+        return counted("searchText", inner.searchText(query, filter, limit))
     }
 
     override suspend fun links(filter: MemoryFilter): List<MemoryLink> {
@@ -118,7 +127,7 @@ class SpyRepository(val inner: InMemoryMemoryRepository) : MemoryRepository by i
 
     override suspend fun taskMemoryOf(agentId: AgentId, excludeExpiredAt: Long?, limit: Int): List<MemoryRecord> {
         calls += "taskMemoryOf(${agentId.value})"
-        return inner.taskMemoryOf(agentId, excludeExpiredAt, limit).also { loaded += "taskMemoryOf(${agentId.value})" to it.size }
+        return counted("taskMemoryOf(${agentId.value})", inner.taskMemoryOf(agentId, excludeExpiredAt, limit))
     }
 
     override suspend fun deleteAgentMemory(agentId: AgentId): Int {

@@ -1,6 +1,8 @@
 package com.aicontrolcenter.memory
 
+import com.aicontrolcenter.core.memory.LinkRelation
 import com.aicontrolcenter.core.memory.MemoryChange
+import com.aicontrolcenter.core.memory.MemoryPermissionException
 import com.aicontrolcenter.core.memory.MemoryFilter
 import com.aicontrolcenter.core.memory.MemoryValidationException
 import com.aicontrolcenter.memory.MemoryWorld.Companion.private
@@ -124,5 +126,46 @@ class WriteSerialisationTest {
         update.await()
         forget.await()
         assertTrue(world.repository.list().isEmpty())
+    }
+
+    @Test
+    fun `a link waiting for the lock is refused when the agent lost write access meanwhile`() = runTest {
+        val team = world.space("Team")
+        val agent = world.agent("agt_a", read = setOf(team.id), write = setOf(team.id))
+        val x = world.remember(agent, shared(team), "Flight", "LH 123")
+        val y = world.remember(agent, shared(team), "Hotel", "Astoria")
+        val busy = world.remember(world.owner, shared(team), "Busy")
+        val gate = spy.holdNextGet(busy.id)
+        val update = async { service.update(world.owner, busy.id, MemoryChange(importance = 0.9)) }
+        runCurrent()
+        val link = async { runCatching { service.link(agent, x.id, y.id, LinkRelation.RELATES_TO) } }
+        runCurrent()
+        world.changePolicy(agent.profile.id) { it.copy(writableSpaces = emptySet()) }
+        gate.complete(Unit)
+        update.await()
+        assertTrue(link.await().exceptionOrNull() is MemoryPermissionException)
+        assertTrue(world.repository.linksOf(x.id).isEmpty())
+    }
+
+    @Test
+    fun `an unlink waits for the lock and finds the link without listing every link`() = runTest {
+        val agent = world.agent("agt_a")
+        val x = world.remember(world.owner, private(agent), "Flight", "LH 123")
+        val y = world.remember(world.owner, private(agent), "Hotel", "Astoria")
+        val link = service.link(world.owner, x.id, y.id, LinkRelation.RELATES_TO)
+        assertEquals(listOf(link), service.linksOf(world.owner, y.id))
+        spy.calls.clear()
+
+        val gate = spy.holdNextGet(y.id)
+        val update = async { service.update(world.owner, y.id, MemoryChange(importance = 0.9)) }
+        runCurrent()
+        val unlink = async { service.unlink(world.owner, link.id) }
+        runCurrent()
+        assertEquals(listOf(link), world.repository.linksOf(x.id), "the unlink waits behind the update")
+        gate.complete(Unit)
+        update.await()
+        unlink.await()
+        assertTrue(world.repository.linksOf(x.id).isEmpty())
+        assertTrue("links" !in spy.calls, "${spy.calls}")
     }
 }

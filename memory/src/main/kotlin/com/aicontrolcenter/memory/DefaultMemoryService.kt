@@ -8,6 +8,7 @@ import com.aicontrolcenter.core.MemoryLinkId
 import com.aicontrolcenter.core.SpaceId
 import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.activity.ActivityRecorder
+import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.memory.Embedder
 import com.aicontrolcenter.core.memory.GraphRequest
 import com.aicontrolcenter.core.memory.KnowledgeSpace
@@ -33,6 +34,7 @@ import com.aicontrolcenter.core.memory.RecallQuery
 import com.aicontrolcenter.core.memoryId
 import com.aicontrolcenter.core.registry.AgentRepository
 import com.aicontrolcenter.core.settings.SettingsRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -218,10 +220,10 @@ class DefaultMemoryService(
         recaller.recall(resolver.resolve(actor), query)
 
     override suspend fun link(actor: MemoryActor, from: MemoryId, to: MemoryId, relation: LinkRelation, weight: Double): MemoryLink =
-        links.link(resolver.resolve(actor), from, to, relation, weight)
+        links.link(actor, from, to, relation, weight)
 
     /** Unlinking a link that does not exist does nothing. */
-    override suspend fun unlink(actor: MemoryActor, linkId: MemoryLinkId) = links.unlink(resolver.resolve(actor), linkId)
+    override suspend fun unlink(actor: MemoryActor, linkId: MemoryLinkId) = links.unlink(actor, linkId)
 
     override suspend fun linksOf(actor: MemoryActor, id: MemoryId): List<MemoryLink> = links.linksOf(resolver.resolve(actor), id)
 
@@ -270,12 +272,25 @@ class DefaultMemoryService(
      * then computes up to [MemoryConfig.maxEmbeddingsPerMaintenance] missing or stale vectors.
      * The report's [MaintenanceReport.expiredDeleted] counts expired memories only; memory of
      * removed agents is reported in its own activity entry.
+     *
+     * Each step runs on its own: a step that fails (storage or the agent registry throwing)
+     * counts as zero and is reported in a WARNING entry naming the step and the kind of error,
+     * never its message (which may quote memory text); the other steps and the maintenance
+     * entry still run. Cancellation is never swallowed.
      */
     override suspend fun maintain(): MaintenanceReport {
         val now = clock.now()
-        val (expired, orphans) = ctx.writeLock.withLock {
-            repository.deleteExpired(now) to deleteMemoryOfRemovedAgents()
+        val failed = LinkedHashMap<String, Throwable>()
+        suspend fun <T> step(name: String, fallback: T, block: suspend () -> T): T = try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            failed[name] = e
+            fallback
         }
+        val expired = step("deleting expired memories", 0) { ctx.writeLock.withLock { repository.deleteExpired(now) } }
+        val orphans = step("deleting memory of removed agents", emptyMap()) { ctx.writeLock.withLock { deleteMemoryOfRemovedAgents() } }
         if (orphans.isNotEmpty()) {
             val total = orphans.values.sum()
             log.event(
@@ -287,7 +302,16 @@ class DefaultMemoryService(
                 },
             )
         }
-        val computed = vectors.refresh(now, config.maxEmbeddingsPerMaintenance)
+        val computed = step("computing embeddings", 0) { vectors.refresh(now, config.maxEmbeddingsPerMaintenance) }
+        if (failed.isNotEmpty()) {
+            log.event(
+                null, "Memory maintenance incomplete",
+                "Failed: " + failed.entries.joinToString("; ") { (name, e) -> "$name (${e::class.simpleName ?: "error"})" } +
+                    ". The other steps ran; the next maintenance tries again.",
+                buildJsonObject { put("failedSteps", JsonArray(failed.keys.map(::JsonPrimitive))) },
+                severity = Severity.WARNING,
+            )
+        }
         if (expired > 0 || computed > 0) {
             log.event(
                 null, "Memory maintenance",

@@ -5,7 +5,6 @@ import com.aicontrolcenter.core.memory.MemoryFilter
 import com.aicontrolcenter.core.memory.MemoryHit
 import com.aicontrolcenter.core.memory.MemoryRecord
 import com.aicontrolcenter.core.memory.MemoryScope
-import com.aicontrolcenter.core.memory.ProvenanceAction
 import com.aicontrolcenter.core.memory.RecallQuery
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -18,17 +17,20 @@ import kotlinx.coroutines.yield
  * Bounds: candidates are the newest [MemoryConfig.candidateLimit] memories the actor may read
  * (5,000 by default) and no more than [MemoryConfig.candidateTextBudget] characters of text,
  * plus, when a bound was reached, up to [TEXT_SEARCH_EXTRA] older ones that contain every word
- * of the query (and a quarter of the text budget), so an old memory named exactly is still
- * found; their whole text counts for keywords, the others' first
- * [RecallScorer.KEYWORD_TEXT_CHARS] characters. Expired memories are never candidates. A blank query, or a limit of zero, recalls
- * nothing; the limit is capped at [MemoryConfig.maxRecallLimit].
+ * of the query (and a quarter of the text budget), searched in the requested scopes (task
+ * scopes included) or everything readable, so an old memory named exactly is still found;
+ * their whole text counts for keywords, the others' first [RecallScorer.KEYWORD_TEXT_CHARS]
+ * characters. Requested scopes and kinds are selected by storage, so the newest memories of
+ * other scopes never crowd them out. Expired memories are never candidates. A blank query, or
+ * a limit of zero, recalls nothing; the limit is capped at [MemoryConfig.maxRecallLimit].
  *
  * Vectors are loaded for the candidates only, [VECTOR_CHUNK] at a time. Scoring runs on
  * [Dispatchers.Default] and checks for cancellation between chunks and every [YIELD_EVERY]
  * candidates, so a caller's time-out stops it instead of waiting for the result.
  *
- * A memory and its shared copies count once: of each such group, the hit in the most specific
- * scope (task, then private, then shared) is kept, so copies never crowd out other memories.
+ * A memory and its untouched shared copies count once: of each such group, the hit in the most
+ * specific scope (task, then private, then shared) is kept, so copies never crowd out other
+ * memories. A copy edited since it was shared is a hit of its own.
  */
 internal class MemoryRecall(private val ctx: MemoryContext, private val reader: MemoryReader, private val scorer: RecallScorer) {
     suspend fun recall(who: ResolvedActor, query: RecallQuery): List<MemoryHit> {
@@ -82,26 +84,31 @@ internal class MemoryRecall(private val ctx: MemoryContext, private val reader: 
         }
         if (!collected.bounded) return collected.records to emptySet()
         val known = collected.records.mapTo(HashSet()) { it.id }
-        // Task memory is short-term and fully covered by the candidates' own bound; leaving its
-        // scopes out keeps the search one condition per kind of scope, however many tasks there are.
-        val searchScopes = when {
-            who.access.everything -> requested?.filterNotTo(HashSet()) { it is MemoryScope.Task }
-            else -> (requested ?: who.access.readable).filterTo(HashSet()) { it !is MemoryScope.Task && who.access.canRead(it) }
+        // Requested scopes are searched as requested, task scopes included; without a request an
+        // agent's own task memory is covered by the candidates (taskMemoryOf) and not searched.
+        val searchScopes: Set<MemoryScope>? = when {
+            requested != null -> requested.filterTo(HashSet()) { who.access.canRead(it) }
+            who.access.everything -> null
+            else -> who.access.readable.filterNotTo(HashSet()) { it is MemoryScope.Task }
         }
         // The repository matches raw substrings: give it the query's words without punctuation or stop words.
         val words = TextAnalyzer.words(query.text).filterNot(TextAnalyzer::isStopWord)
         if (words.isEmpty() || (searchScopes != null && searchScopes.isEmpty())) return collected.records to emptySet()
-        val older = ctx.repository.searchText(words.joinToString(" "), base.copy(scopes = searchScopes), TEXT_SEARCH_EXTRA)
+        val filters = searchScopes?.let { MemoryReader.chunks(it).map { chunk -> base.copy(scopes = chunk) } } ?: listOf(base)
+        val older = filters.flatMap { ctx.repository.searchText(words.joinToString(" "), it, TEXT_SEARCH_EXTRA) }
             .filter { it.id !in known && who.access.canRead(it.scope) }
+            .sortedWith(MemoryReader.NEWEST_FIRST).take(TEXT_SEARCH_EXTRA)
         val added = MemoryReader.withinBudget(older, ctx.config.candidateTextBudget / 4)
         return collected.records + added to added.mapTo(HashSet()) { it.id }
     }
 
     /**
-     * Keeps one hit per memory and its shared copies. A copy names its original in a
-     * SHARED_FROM event of its history (written together with its SHARED_COPY_OF link), and
-     * carries the original's own history, so copies of copies and copies of the same original
-     * in different spaces end up in one group even when the original itself is not a hit.
+     * Keeps one hit per memory and its shared copies while the copies are untouched. A copy
+     * names its original in a SHARED_FROM event of its history (written together with its
+     * SHARED_COPY_OF link), and carries the original's own history, so copies of copies and
+     * copies of the same original in different spaces end up in one group even when the
+     * original itself is not a hit. A copy edited since it was shared says something of its own
+     * and is a hit of its own ([MemorySharing.sourcesOf]).
      */
     private fun collapseCopies(hits: List<MemoryHit>): List<MemoryHit> {
         if (hits.size < 2) return hits
@@ -119,8 +126,7 @@ internal class MemoryRecall(private val ctx: MemoryContext, private val reader: 
         }
         var linked = false
         for (hit in hits) {
-            for (event in hit.record.history) {
-                val original = event.relatedMemory?.takeIf { event.action == ProvenanceAction.SHARED_FROM } ?: continue
+            for (original in MemorySharing.sourcesOf(hit.record)) {
                 val a = root(hit.record.id)
                 val b = root(original)
                 if (a != b) parent[a] = b

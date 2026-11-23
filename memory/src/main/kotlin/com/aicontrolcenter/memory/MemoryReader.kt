@@ -6,6 +6,7 @@ import com.aicontrolcenter.core.memory.MemoryRecord
 import com.aicontrolcenter.core.memory.MemoryRepository
 import com.aicontrolcenter.core.memory.MemoryScope
 import com.aicontrolcenter.core.memory.MemoryTier
+import kotlin.math.ceil
 
 /** Readable memories, newest first; [bounded] is true when a limit may have left some out. */
 internal class Collected(val records: List<MemoryRecord>, val bounded: Boolean)
@@ -13,22 +14,22 @@ internal class Collected(val records: List<MemoryRecord>, val bounded: Boolean)
 /**
  * Fetches the memories an actor may read, bounded, for recall and the graph.
  *
- * - Private and shared scopes are passed to the repository explicitly, so storage only loads
- *   what is readable.
- * - Task memory is read per owning agent with [MemoryRepository.taskMemoryOf], never by
- *   listing task scopes (an agent may have thousands of tasks) and never by scanning other
- *   agents' memory. Only agents the actor may read the task memory of are asked for.
- * - Two bounds apply to what is returned: at most `limit` memories, and at most
- *   [MemoryConfig.candidateTextBudget] characters of text (title, content and tags) in total,
- *   newest first. Memories are fetched in growing pages, so a store of very long memories is
- *   never loaded wholesale just to be cut down afterwards.
+ * - Scopes the caller names (private, shared and task scopes alike) are passed to the
+ *   repository explicitly, with the kinds filter, so storage selects exactly what was asked
+ *   for. They are sent [SCOPE_CHUNK] at a time, well under SQLite's 999 bound variables.
+ * - An agent's whole task memory (every task, when no task scopes are named) is read with
+ *   [MemoryRepository.taskMemoryOf], never by listing its task scopes and never by scanning
+ *   other agents' memory. Only agents the actor may read the task memory of are asked for.
+ * - Two bounds apply to the whole read, all parts together: at most `limit` memories, and at
+ *   most [MemoryConfig.candidateTextBudget] characters of text (title, content and tags), newest
+ *   first. The parts are read in rounds of growing pages and merged; rows that can no longer
+ *   be among the newest are dropped after each round, so what is held stays near the limit.
  */
 internal class MemoryReader(private val repository: MemoryRepository, private val config: MemoryConfig) {
     /**
      * [scopes]: the scopes to read, each checked against the actor's access; null means every
-     * scope and is only allowed for the owner. Task scopes in it are read through their agent's
-     * task memory. [taskAgents]: agents whose task memory (all their tasks) is read as well,
-     * where the actor may read it.
+     * scope and is only allowed for the owner. [taskAgents]: agents whose task memory (all their
+     * tasks) is read as well, where the actor may read it.
      */
     suspend fun collect(
         who: ResolvedActor,
@@ -40,54 +41,108 @@ internal class MemoryReader(private val repository: MemoryRepository, private va
         val access = who.access
         if (scopes == null) {
             check(access.everything) { "Only the owner may read every scope." }
-            return paged(limit) { n -> repository.list(base, n) }
+            return merged(listOf(Part { n -> repository.list(base, n) }), limit)
         }
-        val allowed = scopes.filterTo(HashSet(), access::canRead)
-        val explicit = allowed.filterNotTo(HashSet()) { it is MemoryScope.Task }
-        val parts = ArrayList<Collected>()
-        if (explicit.isNotEmpty()) parts += paged(limit) { n -> repository.list(base.copy(scopes = explicit), n) }
+        val tasksPossible = base.tier != MemoryTier.LONG_TERM
+        val wholeAgents = if (!tasksPossible) emptySet() else taskAgents.filterTo(HashSet()) { access.everything || it == access.taskOwner }
+        val explicit = scopes.filter { scope ->
+            access.canRead(scope) && (scope !is MemoryScope.Task || (tasksPossible && scope.agentId !in wholeAgents))
+        }
+        val parts = ArrayList<Part>()
+        chunks(explicit).forEach { chunk -> parts += Part { n -> repository.list(base.copy(scopes = chunk), n) } }
+        wholeAgents.sortedBy { it.value }.forEach { agentId ->
+            // taskMemoryOf cannot filter by kind: the rest of the filter is applied here, and pages count every row read.
+            parts += Part(keep = base::matches) { n -> repository.taskMemoryOf(agentId, base.excludeExpiredAt, n) }
+        }
+        return merged(parts, limit)
+    }
 
-        if (base.tier != MemoryTier.LONG_TERM) {
-            val requestedTasks = allowed.filterIsInstance<MemoryScope.Task>().groupBy { it.agentId }.mapValues { (_, list) -> list.toSet() }
-            val wholeAgents = taskAgents.filterTo(HashSet()) { access.everything || it == access.taskOwner }
-            for (agentId in (wholeAgents + requestedTasks.keys).sortedBy { it.value }) {
-                val only = if (agentId in wholeAgents) null else requestedTasks.getValue(agentId)
-                val tasks = paged(limit) { n -> repository.taskMemoryOf(agentId, base.excludeExpiredAt, n) }
-                val kept = tasks.records.filter { base.matches(it) && (only == null || it.scope in only) }
-                parts += Collected(kept, tasks.bounded)
-            }
-        }
-        return when (parts.size) {
-            0 -> Collected(emptyList(), false)
-            1 -> parts.single()
-            else -> {
-                val merged = parts.flatMap { it.records }.distinctBy { it.id }.sortedWith(NEWEST_FIRST)
-                val kept = withinBudget(merged.take(limit), config.candidateTextBudget)
-                Collected(kept, parts.any { it.bounded } || kept.size < merged.size)
-            }
+    /** One source of memories, newest first: [fetch] returns its newest n rows, of which [keep] are wanted. */
+    private class Part(val keep: ((MemoryRecord) -> Boolean)? = null, val fetch: suspend (Int) -> List<MemoryRecord>) {
+        /** Rows asked for and returned by the last read, matching or not, and the last of them. */
+        var asked = 0
+        var returned = 0
+        var last: MemoryRecord? = null
+
+        /** Wanted rows of the last read, and how many there were before rows that cannot be kept were dropped. */
+        var rows: List<MemoryRecord> = emptyList()
+        var matched = 0
+
+        /** The last read was full, so older rows may follow. */
+        val more: Boolean get() = asked > 0 && returned == asked
+
+        suspend fun read(n: Int) {
+            val page = fetch(n)
+            asked = n
+            returned = page.size
+            last = page.lastOrNull()
+            rows = if (keep == null) page else page.filter(keep)
+            matched = rows.size
         }
     }
 
     /**
-     * The newest memories [fetch] returns, at most [limit] and within the text budget. Starts
-     * with a small page and grows it (at most [GROWTH] times per step, and no further than the
-     * text seen so far suggests fits the budget), so each read is bounded by what the previous
-     * one showed. Reads at most three times for the default limits.
+     * The newest wanted rows of all [parts] together, at most [limit] and within the text budget.
+     *
+     * Each round reads some parts and merges everything read. Rows down to the *boundary* (the
+     * newest last row among parts that may have more) are complete, because every part that
+     * still has unread rows has read past it. When the newest `limit` rows (or the rows that
+     * fit the budget) all lie within the boundary, the result is exact. Otherwise the parts
+     * that may hold the missing rows grow, each by its share of what is still missing (judged
+     * by how many of the complete rows it supplied), and the round's reads together grow at
+     * most [GROWTH] times over the previous ones, so a store of very long memories behind short
+     * new ones is never loaded wholesale. A single part reads 500, 2,000, 5,000 rows for the
+     * default limits.
      */
-    suspend fun paged(limit: Int, fetch: suspend (Int) -> List<MemoryRecord>): Collected {
+    private suspend fun merged(parts: List<Part>, limit: Int): Collected {
         if (limit <= 0) return Collected(emptyList(), true)
+        if (parts.isEmpty()) return Collected(emptyList(), false)
         val budget = config.candidateTextBudget
-        var n = minOf(limit, FIRST_PAGE)
+        val probe = minOf(limit, if (parts.size == 1) FIRST_PAGE else maxOf(MIN_PROBE, FIRST_PAGE / parts.size))
+        var reads: Map<Part, Int> = parts.associateWith { probe }
+        var round = 0
         while (true) {
-            val page = fetch(n)
-            val kept = withinBudget(page, budget)
-            if (kept.size < page.size) return Collected(kept, true)
-            if (page.size < n) return Collected(page, false)
-            if (n >= limit) return Collected(page, true)
-            val perRecord = (page.sumOf(::textSize) / page.size).coerceAtLeast(1L)
-            val affordable = budget / perRecord
-            n = minOf(limit.toLong(), n.toLong() * GROWTH, maxOf(n + 1L, affordable)).toInt()
+            for ((part, n) in reads) part.read(n)
+            round++
+            val all = parts.flatMap { it.rows }.sortedWith(NEWEST_FIRST)
+            val kept = withinBudget(all.take(limit), budget)
+            // A row after the last kept one can never be kept: more rows only ever come before it.
+            kept.lastOrNull()?.let { cut -> parts.forEach { part -> part.rows = part.rows.filter { NEWEST_FIRST.compare(it, cut) <= 0 } } }
+            val growable = parts.filter { it.more && it.asked < limit }
+            val boundary = growable.map { it.last!! }.minWithOrNull(NEWEST_FIRST)
+            val bounded = parts.any { it.more } || kept.size < all.size
+            if (boundary == null) return Collected(kept, bounded)
+            val complete = kept.filter { NEWEST_FIRST.compare(it, boundary) <= 0 }
+            val saturated = kept.size == limit || kept.size < minOf(limit, all.size)
+            if ((saturated && complete.size == kept.size) || round >= MAX_ROUNDS) return Collected(complete, true)
+            reads = nextReads(parts, growable, all, boundary, limit, budget)
         }
+    }
+
+    /** How many rows each part that may hold missing rows reads next. */
+    private fun nextReads(parts: List<Part>, growable: List<Part>, all: List<MemoryRecord>, boundary: MemoryRecord, limit: Int, budget: Long): Map<Part, Int> {
+        val complete = all.takeWhile { NEWEST_FIRST.compare(it, boundary) <= 0 }
+        val perRecord = if (all.isEmpty()) 1.0 else all.sumOf(::textSize).toDouble() / all.size
+        val textLeft = (budget - complete.sumOf(::textSize)).coerceAtLeast(0)
+        val fitting = ceil(textLeft / perRecord.coerceAtLeast(1.0)) + 1
+        val missing = minOf((limit - complete.size).toDouble(), fitting).toInt().coerceAtLeast(1)
+        val supplied = growable.associateWith { part -> part.rows.count { NEWEST_FIRST.compare(it, boundary) <= 0 } }
+        val total = supplied.values.sum()
+        val first = growable.first { it.last === boundary }
+        val wanted = growable.mapNotNull { part ->
+            val share = if (total == 0) missing.toDouble() / growable.size else missing.toDouble() * supplied.getValue(part) / total
+            val beyond = part.rows.size - supplied.getValue(part)
+            val rowsPerWanted = if (part.matched == 0) GROWTH.toDouble() else part.returned.toDouble() / part.matched
+            val extra = ceil((share - beyond).coerceAtLeast(0.0) * (1 + MARGIN) * rowsPerWanted).toLong()
+            val floor = if (part === first) maxOf(1, missing / growable.size).toLong() else 0L
+            val n = minOf(limit.toLong(), part.asked + maxOf(extra, floor) + (if (extra > 0 || floor > 0) 1 else 0))
+            if (n > part.asked) part to n else null
+        }
+        // Together the reads grow at most GROWTH times over what is held now.
+        val cap = GROWTH.toLong() * parts.sumOf { it.asked.toLong() }
+        val sum = wanted.sumOf { it.second }
+        val scale = if (sum <= cap) 1.0 else cap.toDouble() / sum
+        return wanted.associate { (part, n) -> part to maxOf(part.asked + 1L, (n * scale).toLong()).coerceAtMost(limit.toLong()).toInt() }
     }
 
     companion object {
@@ -96,6 +151,28 @@ internal class MemoryReader(private val repository: MemoryRepository, private va
 
         const val FIRST_PAGE = 500
         const val GROWTH = 4
+
+        /** Scopes per query: at most two bound variables each, so far below SQLite's 999. */
+        const val SCOPE_CHUNK = 250
+
+        /** The smallest first page of one of many parts. */
+        const val MIN_PROBE = 16
+
+        /** Extra rows asked for over a part's estimated share, so a round rarely falls just short. */
+        const val MARGIN = 0.02
+
+        /** Reads after which the complete rows found so far are returned, marked as bounded. */
+        const val MAX_ROUNDS = 8
+
+        /** [scopes] in queries of at most [SCOPE_CHUNK], tasks of one agent together. */
+        fun chunks(scopes: Collection<MemoryScope>): List<Set<MemoryScope>> =
+            scopes.sortedBy { scope ->
+                when (scope) {
+                    is MemoryScope.Agent -> "a:${scope.agentId.value}"
+                    is MemoryScope.Shared -> "s:${scope.spaceId.value}"
+                    is MemoryScope.Task -> "t:${scope.agentId.value}:${scope.taskId.value}"
+                }
+            }.chunked(SCOPE_CHUNK).map { it.toSet() }
 
         /** Characters of text a memory holds: title, content and tags. */
         fun textSize(record: MemoryRecord): Long =

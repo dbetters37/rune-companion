@@ -77,4 +77,47 @@ class SharedCopiesTest {
         assertTrue(!fresh.isExpired(world.clock.current))
         assertEquals(original.content, fresh.content)
     }
+
+    @Test
+    fun `sharing again never overwrites a copy someone edited after it was shared`() = runTest {
+        // The verifier's p1v case: B adds to the shared copy, then A changes its original and shares again.
+        val team = world.space("Team")
+        val a = world.agent("agt_a", read = setOf(team.id), write = setOf(team.id))
+        val b = world.agent("agt_b", read = setOf(team.id), write = setOf(team.id))
+        val original = world.remember(a, private(a), "Gate code", "Gate code 1111")
+        val copy = service.share(a, original.id, team.id)
+        world.clock.advance(10)
+        val edited = service.update(b, copy.id, MemoryChange(content = "Gate code 1111; parking is behind the building (added by B)"))
+        world.clock.advance(10)
+        service.update(a, original.id, MemoryChange(title = "Gate code (front)"))
+        world.clock.advance(10)
+
+        val again = service.share(a, original.id, team.id)
+        assertEquals(edited, again)
+        assertEquals(edited, world.repository.get(copy.id))
+        val event = world.events.last()
+        assertEquals("Memory not re-shared: Gate code", event.title)
+        assertTrue("shared copy was edited since; left unchanged" in event.detail, event.detail)
+        assertTrue("parking" !in event.detail)
+
+        // The edited copy says something of its own: recall returns it besides the original.
+        val hits = service.recall(a, RecallQuery("gate code parking", limit = 3, recordAccess = false))
+        assertEquals(setOf(copy.id, original.id), hits.map { it.record.id }.toSet())
+    }
+
+    @Test
+    fun `a copy changed without an edit event counts as edited by its revision`() = runTest {
+        val team = world.space("Team")
+        val a = world.agent("agt_a", read = setOf(team.id), write = setOf(team.id))
+        val original = world.remember(a, private(a), "Wifi", "Password is tulip")
+        val copy = service.share(a, original.id, team.id)
+        // Written by something other than the engine: a new revision but no EDITED event.
+        val changed = copy.copy(content = "Password is tulip; guest network is open", revision = copy.revision + 1)
+        world.repository.upsert(changed)
+        world.clock.advance(10)
+        service.update(a, original.id, MemoryChange(content = "Password is rose"))
+
+        assertEquals(changed, service.share(a, original.id, team.id))
+        assertEquals(changed, world.repository.get(copy.id))
+    }
 }
