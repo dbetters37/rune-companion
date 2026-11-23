@@ -11,6 +11,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.CircularProgressIndicator
@@ -55,16 +58,26 @@ class ExplorerActions(
 /** Search, filters and the list of memories. */
 @Composable
 internal fun MemoryExplorerTab(state: ExplorerUiState, actions: ExplorerActions) {
+    val listState = rememberLazyListState()
+    // New results start at the top, where the best match is. Remembered across navigation, so
+    // coming back from a memory keeps the place in an unchanged list.
+    var shownFilters by rememberSaveable { mutableIntStateOf(state.filters.hashCode()) }
+    LaunchedEffect(state.filters) {
+        val key = state.filters.hashCode()
+        if (key != shownFilters) {
+            shownFilters = key
+            listState.scrollToItem(0)
+        }
+    }
     Column(Modifier.fillMaxSize()) {
-        ExplorerFiltersBar(state, actions, Modifier.readableWidth())
+        // Filters mean nothing before there is anything to filter.
+        if (state.totalCount > 0) ExplorerFiltersBar(state, actions, Modifier.readableWidth())
         when {
             state.totalCount == 0 -> EmptyState(
                 icon = AppIcons.MemoryBrain,
                 title = "No memories yet",
-                message = "Agents save what they learn here as they work, and you can add your own. Each agent has a " +
-                    "private memory; shared spaces hold what you let agents share.",
-                actionLabel = "New memory",
-                onAction = actions.onNewMemory,
+                message = "Agents save what they learn here as they work, and you can add your own with New memory. Each " +
+                    "agent has a private memory; shared spaces hold what you let agents share.",
             )
             state.searchFailed -> EmptyState(
                 icon = AppIcons.Search,
@@ -83,6 +96,7 @@ internal fun MemoryExplorerTab(state: ExplorerUiState, actions: ExplorerActions)
                 onAction = actions.onClearFilters,
             )
             else -> LazyColumn(
+                state = listState,
                 modifier = Modifier.readableWidth().fillMaxSize(),
                 contentPadding = PaddingValues(start = Spacing.screen, end = Spacing.screen, top = Spacing.xs, bottom = 96.dp),
                 verticalArrangement = Arrangement.spacedBy(Spacing.sm),

@@ -57,8 +57,9 @@ enum class PlannedSection(
             "Which agents hold a grant for which tool",
             "Actions that always need your confirmation",
         ),
-        dependsOn = "Two safe information tools exist (the current time and the team list) and are switched on per agent in its " +
-            "editor. Tools that act on this phone, and the permission system for them, are a later stage of this build.",
+        dependsOn = "Information tools (the current time, the team list) and memory tools (search, save, share) exist and are " +
+            "switched on per agent in its editor. Tools that act on this phone, and the permission system for them, are a later " +
+            "stage of this build.",
     ),
     ;
 

@@ -7,6 +7,7 @@ import com.aicontrolcenter.core.MemoryId
 import com.aicontrolcenter.core.memory.MemoryKind
 import com.aicontrolcenter.core.memory.MemoryScope
 import com.aicontrolcenter.core.memory.MemoryTier
+import com.aicontrolcenter.core.memory.ProvenanceAction
 import com.aicontrolcenter.core.memory.ProvenanceOrigin
 import kotlinx.coroutines.test.runTest
 import org.junit.Rule
@@ -115,6 +116,9 @@ class MemoryEditorViewModelTest {
         assertEquals(before.content, after.content)
         assertEquals(before.provenance, after.provenance, "provenance is never edited away")
         assertEquals(before.revision + 1, after.revision)
+        val edit = after.history.last()
+        assertEquals(ProvenanceAction.EDITED, edit.action)
+        assertEquals(ProvenanceOrigin.OWNER, edit.byOrigin, "the history says the owner changed it")
         assertEquals(sample.lisbonTrip, viewModel.uiState.value.savedId)
     }
 

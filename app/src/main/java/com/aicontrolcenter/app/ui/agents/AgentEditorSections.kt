@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import com.aicontrolcenter.app.ui.memory.AccessRow
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.ui.text.style.TextOverflow
@@ -195,8 +197,8 @@ internal fun ToolsEditor(state: AgentEditorUiState, actions: AgentEditorActions)
         AppCard {
             Column {
                 Text(
-                    "Only safe information tools exist so far: they read facts and change nothing. Tools that act on this phone " +
-                        "arrive in a later version, with their own permissions.",
+                    "Information and memory tools exist so far: they read facts, or search and save the agent's memories " +
+                        "within its memory policy. Tools that act on this phone arrive in a later version, with their own permissions.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = Spacing.sm),
@@ -342,10 +344,14 @@ private fun SpaceAccessEditor(state: AgentEditorUiState, actions: AgentEditorAct
             )
         }
         state.spaces.forEach { space ->
-            Row(
-                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+            AccessRow(
+                canRead = space.id in memory.readableSpaces,
+                canWrite = space.id in memory.writableSpaces,
+                readDescription = "May read ${space.name}",
+                writeDescription = "May write ${space.name}",
+                onReadChange = { actions.onSetSpaceReadable(space.id, it) },
+                onWriteChange = { actions.onSetSpaceWritable(space.id, it) },
+                minHeight = 48.dp,
             ) {
                 Icon(AppIcons.Groups, contentDescription = null, tint = appColors.agentAccent(spaceColorIndex(space.id)), modifier = Modifier.size(18.dp))
                 Text(
@@ -356,27 +362,11 @@ private fun SpaceAccessEditor(state: AgentEditorUiState, actions: AgentEditorAct
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                SpaceAccessChip("Read", space.id in memory.readableSpaces, "May read ${space.name}") { actions.onSetSpaceReadable(space.id, it) }
-                SpaceAccessChip("Write", space.id in memory.writableSpaces, "May write ${space.name}") { actions.onSetSpaceWritable(space.id, it) }
             }
         }
     }
 }
 
-@Composable
-private fun SpaceAccessChip(label: String, selected: Boolean, description: String, onChange: (Boolean) -> Unit) {
-    FilterChip(
-        selected = selected,
-        onClick = { onChange(!selected) },
-        label = { Text(label) },
-        leadingIcon = if (selected) {
-            { Icon(AppIcons.Check, contentDescription = null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
-        } else {
-            null
-        },
-        modifier = Modifier.semantics { contentDescription = description },
-    )
-}
 
 @Composable
 internal fun DelegationEditor(state: AgentEditorUiState, actions: AgentEditorActions) {

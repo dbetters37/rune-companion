@@ -111,6 +111,14 @@ internal fun MemoryGraphTab(state: GraphUiState, actions: GraphActions) {
                     val density = LocalDensity.current
                     val widthPx = with(density) { maxWidth.toPx() }
                     val heightPx = with(density) { maxHeight.toPx() }
+                    val paddingPx = with(density) { GraphCanvasPadding.toPx() }
+                    // The buttons zoom around the selected memory when there is one, so it stays in view.
+                    val zoomCentre = {
+                        state.selected?.let { selected ->
+                            val node = state.render.nodes[selected.index]
+                            viewport.toScreen(node.x, node.y, widthPx, heightPx, paddingPx)
+                        } ?: Offset(widthPx / 2, heightPx / 2)
+                    }
                     MemoryGraphCanvas(
                         render = state.render,
                         selectedIndex = state.selected?.index,
@@ -121,24 +129,26 @@ internal fun MemoryGraphTab(state: GraphUiState, actions: GraphActions) {
                     )
                     ZoomControls(
                         viewport = viewport,
-                        onZoomIn = { viewport = viewport.zoomedBy(GraphViewport.ZOOM_STEP, widthPx, heightPx) },
-                        onZoomOut = { viewport = viewport.zoomedBy(1 / GraphViewport.ZOOM_STEP, widthPx, heightPx) },
+                        onZoomIn = { viewport = viewport.transformed(GraphViewport.ZOOM_STEP, Offset.Zero, zoomCentre(), widthPx, heightPx) },
+                        onZoomOut = { viewport = viewport.transformed(1 / GraphViewport.ZOOM_STEP, Offset.Zero, zoomCentre(), widthPx, heightPx) },
                         onReset = { viewport = GraphViewport() },
-                        modifier = Modifier.align(Alignment.TopEnd).padding(Spacing.sm),
+                        modifier = Modifier.align(Alignment.BottomEnd).padding(Spacing.sm),
                     )
-                    state.selected?.let { selected ->
-                        SelectedNodeCard(
-                            selected = selected,
-                            onOpen = { actions.onOpenMemory(selected.memoryId) },
-                            onClose = { actions.onSelect(null) },
-                            modifier = Modifier.align(Alignment.BottomCenter).padding(Spacing.sm),
-                        )
-                    }
                 }
             }
         }
+        // Under the graph rather than over it, so the card never hides the memory it describes.
+        val selected = state.selected
+        if (selected != null) {
+            SelectedNodeCard(
+                selected = selected,
+                onOpen = { actions.onOpenMemory(selected.memoryId) },
+                onClose = { actions.onSelect(null) },
+                modifier = Modifier.padding(start = Spacing.screen, end = Spacing.screen, top = Spacing.sm),
+            )
+        }
         Legend(state.render.relations)
-        ExportRow(state, actions.onExport)
+        if (selected == null) ExportRow(state, actions.onExport)
     }
 }
 
@@ -179,11 +189,12 @@ private fun summaryLine(state: GraphUiState): String {
 @Composable
 private fun ZoomControls(viewport: GraphViewport, onZoomIn: () -> Unit, onZoomOut: () -> Unit, onReset: () -> Unit, modifier: Modifier = Modifier) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
-        FilledTonalIconButton(onClick = onZoomIn, enabled = viewport.canZoomIn) { Icon(AppIcons.ZoomIn, contentDescription = "Zoom in") }
-        FilledTonalIconButton(onClick = onZoomOut, enabled = viewport.isZoomed) { Icon(AppIcons.ZoomOut, contentDescription = "Zoom out") }
+        // Anchored at the bottom: the reset button appears above the others without moving them.
         if (viewport.isZoomed) {
             FilledTonalIconButton(onClick = onReset) { Icon(AppIcons.CenterFocus, contentDescription = "Show the whole graph") }
         }
+        FilledTonalIconButton(onClick = onZoomIn, enabled = viewport.canZoomIn) { Icon(AppIcons.ZoomIn, contentDescription = "Zoom in") }
+        FilledTonalIconButton(onClick = onZoomOut, enabled = viewport.isZoomed) { Icon(AppIcons.ZoomOut, contentDescription = "Zoom out") }
     }
 }
 
@@ -286,7 +297,7 @@ private fun ExportRow(state: GraphUiState, onExport: () -> Unit) {
         horizontalArrangement = Arrangement.spacedBy(Spacing.md),
     ) {
         Text(
-            "Exports this view as aicc.memory-graph JSON, a neutral format external graph viewers can open. It includes the memories' full text.",
+            "Shares this view as aicc.memory-graph JSON, a neutral format for external graph viewers. Includes full text.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f),

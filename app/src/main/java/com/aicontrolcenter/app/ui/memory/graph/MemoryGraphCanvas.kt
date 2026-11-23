@@ -11,6 +11,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -134,7 +135,7 @@ fun MemoryGraphCanvas(
                 toRadius = render.nodes[edge.target].radiusDp.dp.toPx(),
                 style = edgeStyle(edge.relation, colors, scheme),
                 weight = edge.weight,
-                alpha = if (dimmed) 0.18f else 1f,
+                alpha = if (dimmed) 0.25f else 1f,
             )
         }
         render.nodes.forEachIndexed { index, node ->
@@ -142,16 +143,19 @@ fun MemoryGraphCanvas(
             val dimmed = focus != null && index !in focus
             drawNode(points[index], node.radiusDp.dp.toPx(), accent, node.shape, node.activation, selected = index == selectedIndex, dimmed = dimmed, scheme = scheme)
         }
+        // The selection first, then the most important: a label that would cover one already drawn is left out.
         val labelled = render.nodes.indices.filter { index ->
             when {
                 focus != null -> index in focus
                 render.nodes.size < LABEL_ALL_BELOW || viewport.scale >= 2.5f -> true
                 else -> render.nodes[index].weight >= 0.75
             }
-        }.take(MAX_LABELS)
+        }.sortedWith(compareByDescending<Int> { it == selectedIndex }.thenByDescending { render.nodes[it].weight }).take(MAX_LABELS)
+        val taken = ArrayList<Rect>()
         labelled.forEach { index ->
             val node = render.nodes[index]
-            drawLabel(measurer, node.label, points[index], node.radiusDp.dp.toPx(), labelStyle, scheme.surface, bold = index == selectedIndex)
+            val placed = drawLabel(measurer, node.label, points[index], node.radiusDp.dp.toPx(), labelStyle, scheme.surface, index == selectedIndex, taken)
+            if (placed != null) taken += placed
         }
     }
 }
@@ -215,7 +219,7 @@ private fun DrawScope.drawNode(
     dimmed: Boolean,
     scheme: ColorScheme,
 ) {
-    val alpha = if (dimmed) 0.3f else 1f
+    val alpha = if (dimmed) 0.45f else 1f
     val glow = activation.coerceIn(0.0, 1.0).toFloat()
     if (glow > 0.05f && !dimmed) {
         val reach = radius * (1.8f + 0.9f * glow)
@@ -246,7 +250,21 @@ private fun DrawScope.drawNode(
     }
 }
 
-private fun DrawScope.drawLabel(measurer: TextMeasurer, text: String, centre: Offset, radius: Float, style: TextStyle, backdrop: Color, bold: Boolean) {
+/**
+ * Draws a node's label in a pill below the node, or above it when below is taken. Returns the
+ * rectangle used, or null when both places would cover a label in [taken] (the selected node's
+ * label is always drawn).
+ */
+private fun DrawScope.drawLabel(
+    measurer: TextMeasurer,
+    text: String,
+    centre: Offset,
+    radius: Float,
+    style: TextStyle,
+    backdrop: Color,
+    bold: Boolean,
+    taken: List<Rect>,
+): Rect? {
     val maxWidth = 140.dp.roundToPx()
     val layout = measurer.measure(
         text,
@@ -260,7 +278,18 @@ private fun DrawScope.drawLabel(measurer: TextMeasurer, text: String, centre: Of
     val width = layout.size.width + 2 * padX
     val height = layout.size.height + 2 * padY
     val left = (centre.x - width / 2).coerceIn(0f, (size.width - width).coerceAtLeast(0f))
-    val top = (centre.y + radius + 4.dp.toPx()).coerceAtMost(size.height - height)
-    drawRoundRect(backdrop.copy(alpha = 0.88f), Offset(left, top), Size(width, height), CornerRadius(height / 2))
-    drawText(layout, topLeft = Offset(left + padX, top + padY))
+    val gap = 4.dp.toPx()
+    val below = Rect(Offset(left, (centre.y + radius + gap).coerceAtMost(size.height - height)), Size(width, height))
+    val above = Rect(Offset(left, (centre.y - radius - gap - height).coerceAtLeast(0f)), Size(width, height))
+    val margin = 2.dp.toPx()
+    fun free(rect: Rect) = taken.none { it.inflate(margin).overlaps(rect) }
+    val rect = when {
+        free(below) -> below
+        free(above) -> above
+        bold -> below
+        else -> return null
+    }
+    drawRoundRect(backdrop.copy(alpha = 0.88f), rect.topLeft, rect.size, CornerRadius(height / 2))
+    drawText(layout, topLeft = Offset(rect.left + padX, rect.top + padY))
+    return rect
 }

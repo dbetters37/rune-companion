@@ -136,7 +136,22 @@ internal fun ProvenanceSection(provenance: ProvenanceUi, actions: MemoryDetailAc
                 Text("Derived from", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 provenance.derivedFrom.forEach { source -> MemoryRefRow(source, prefix = null, onOpen = actions.onOpenMemory) }
             }
+            if (provenance.history.isNotEmpty()) {
+                RowDivider(Modifier.padding(vertical = Spacing.sm))
+                Text("Since then", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                provenance.history.forEach { event -> HistoryRow(event, actions.onOpenMemory) }
+            }
         }
+    }
+}
+
+/** One later change: what was done, when, and (for a share or promotion) the memory it came from. */
+@Composable
+private fun HistoryRow(event: HistoryRowUi, onOpen: (com.aicontrolcenter.core.MemoryId) -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(top = Spacing.sm), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(event.text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+        Text(event.at, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        event.related?.let { MemoryRefRow(it, prefix = null, onOpen = onOpen) }
     }
 }
 

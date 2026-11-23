@@ -150,7 +150,6 @@ fun MemoryEditorScreen(state: MemoryEditorUiState, actions: MemoryEditorActions)
                     .padding(start = Spacing.screen, end = Spacing.screen, top = Spacing.xs, bottom = Spacing.xl),
                 verticalArrangement = Arrangement.spacedBy(Spacing.md),
             ) {
-                ScopeSection(state, actions)
                 Column {
                     SectionHeader("The memory")
                     AppCard {
@@ -175,6 +174,8 @@ fun MemoryEditorScreen(state: MemoryEditorUiState, actions: MemoryEditorActions)
                         }
                     }
                 }
+                // What to remember comes first; where it goes is often pre-set from the explorer.
+                ScopeSection(state, actions)
                 DetailsSection(state, actions)
                 Button(onClick = actions.onSave, enabled = !state.isSaving, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) {
                     Text(if (state.isNew) "Save memory" else "Save changes")

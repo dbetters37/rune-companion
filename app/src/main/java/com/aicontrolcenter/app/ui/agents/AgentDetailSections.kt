@@ -207,7 +207,7 @@ internal fun ToolsSection(agent: AgentDetailUi) {
                 }
             }
             Text(
-                "Switch tools on or off in the editor. Only safe information tools exist so far.",
+                "Switch tools on or off in the editor. Memory tools only reach what the memory policy below allows.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = Spacing.sm),

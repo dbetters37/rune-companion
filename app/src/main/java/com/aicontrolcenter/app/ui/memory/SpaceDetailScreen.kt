@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -254,10 +255,14 @@ private fun AccessSection(detail: SpaceDetailUi, actions: SpaceDetailActions) {
 
 @Composable
 private fun AgentAccessRow(agent: AgentAccessUi, actions: SpaceDetailActions) {
-    Row(
-        modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(vertical = Spacing.sm),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+    AccessRow(
+        canRead = agent.canRead,
+        canWrite = agent.canWrite,
+        readDescription = "${agent.name} may read",
+        writeDescription = "${agent.name} may write",
+        onReadChange = { actions.onSetCanRead(agent.agentId, it) },
+        onWriteChange = { actions.onSetCanWrite(agent.agentId, it) },
+        minHeight = 64.dp,
     ) {
         AgentAvatar(agent.name, agent.colorIndex, size = 36.dp, dimmed = !agent.enabled)
         Column(Modifier.weight(1f)) {
@@ -269,22 +274,5 @@ private fun AgentAccessRow(agent: AgentAccessUi, actions: SpaceDetailActions) {
                 maxLines = 1,
             )
         }
-        AccessChip("Read", agent.canRead, "${agent.name} may read") { actions.onSetCanRead(agent.agentId, !agent.canRead) }
-        AccessChip("Write", agent.canWrite, "${agent.name} may write") { actions.onSetCanWrite(agent.agentId, !agent.canWrite) }
     }
-}
-
-@Composable
-private fun AccessChip(label: String, selected: Boolean, description: String, onClick: () -> Unit) {
-    FilterChip(
-        selected = selected,
-        onClick = onClick,
-        label = { Text(label) },
-        leadingIcon = if (selected) {
-            { Icon(AppIcons.Check, contentDescription = null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
-        } else {
-            null
-        },
-        modifier = Modifier.semantics { contentDescription = description },
-    )
 }

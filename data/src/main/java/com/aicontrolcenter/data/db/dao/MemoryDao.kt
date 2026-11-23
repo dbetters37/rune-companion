@@ -119,6 +119,38 @@ internal interface MemoryDao {
 
     // --- links ---
 
+    /** Stores [memories] and then [links] in one transaction; throws, storing nothing, if a link has a missing end. */
+    @Transaction
+    suspend fun upsertAll(memories: List<MemoryEntity>, links: List<MemoryLinkEntity>) {
+        memories.forEach { upsert(it) }
+        links.forEach { link ->
+            require(upsertLink(link)) { "Link ${link.id} needs both ends to exist, but memory ${link.fromId} or ${link.toId} does not." }
+        }
+    }
+
+    @Query("SELECT id FROM memories WHERE scope_agent_id = :agentId AND scope_type IN ('AGENT', 'TASK')")
+    suspend fun agentMemoryIds(agentId: String): List<String>
+
+    /** One transaction: an agent's private and task memory goes together with its links and embeddings. */
+    @Transaction
+    suspend fun deleteAgentMemory(agentId: String): Int = deleteMemories(agentMemoryIds(agentId))
+
+    @Query("SELECT DISTINCT scope_agent_id FROM memories WHERE scope_type IN ('AGENT', 'TASK') AND scope_agent_id IS NOT NULL")
+    suspend fun agentsWithMemory(): List<String>
+
+    @Query(
+        "SELECT ${MemoryRow.COLUMNS} FROM memories WHERE scope_type = 'TASK' AND scope_agent_id = :agentId " +
+            "AND (:excludeExpiredAt IS NULL OR expires_at IS NULL OR expires_at > :excludeExpiredAt) " +
+            "ORDER BY updated_at DESC, id ASC LIMIT :limit",
+    )
+    suspend fun taskMemoryOf(agentId: String, excludeExpiredAt: Long?, limit: Int): List<MemoryRow>
+
+    @Query("SELECT * FROM memory_links WHERE from_id IN (:ids) ORDER BY created_at ASC, id ASC")
+    suspend fun linksFrom(ids: List<String>): List<MemoryLinkEntity>
+
+    @Query("SELECT memory_id, dimensions, vector FROM memory_embeddings WHERE embedder_id = :embedderId AND memory_id IN (:ids)")
+    suspend fun embeddingsOf(embedderId: String, ids: List<String>): List<MemoryEmbeddingRow>
+
     @Query("SELECT * FROM memory_links WHERE from_id = :id OR to_id = :id ORDER BY created_at ASC, id ASC")
     suspend fun linksOf(id: String): List<MemoryLinkEntity>
 

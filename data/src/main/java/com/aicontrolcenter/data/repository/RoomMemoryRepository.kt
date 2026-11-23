@@ -1,5 +1,6 @@
 package com.aicontrolcenter.data.repository
 
+import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.MemoryId
 import com.aicontrolcenter.core.MemoryLinkId
 import com.aicontrolcenter.core.SpaceId
@@ -92,6 +93,45 @@ class RoomMemoryRepository internal constructor(
             "Memory ${record.id} holds $textBytes bytes of text; at most $MAX_TEXT_BYTES can be stored."
         }
         dao.upsert(entity)
+    }
+
+    /** @throws IllegalArgumentException, storing nothing, if a link names a missing memory or a memory is too large. */
+    override suspend fun upsertAll(records: List<MemoryRecord>, links: List<MemoryLink>) = withContext(dispatcher) {
+        val entities = records.map { record ->
+            record.toEntity().also { entity ->
+                val textBytes = entity.storedTextBytes()
+                require(textBytes <= MAX_TEXT_BYTES) {
+                    "Memory ${record.id} holds $textBytes bytes of text; at most $MAX_TEXT_BYTES can be stored."
+                }
+            }
+        }
+        dao.upsertAll(entities, links.map { it.toEntity() })
+    }
+
+    override suspend fun deleteAgentMemory(agentId: AgentId): Int = withContext(dispatcher) { dao.deleteAgentMemory(agentId.value) }
+
+    override suspend fun agentsWithMemory(): Set<AgentId> = withContext(dispatcher) { dao.agentsWithMemory().mapTo(HashSet(), ::AgentId) }
+
+    override suspend fun taskMemoryOf(agentId: AgentId, excludeExpiredAt: Long?, limit: Int): List<MemoryRecord> = withContext(dispatcher) {
+        dao.taskMemoryOf(agentId.value, excludeExpiredAt, limit.coerceAtLeast(0)).mapReadable(MemoryRow::toDomain)
+    }
+
+    override suspend fun linksAmong(ids: Collection<MemoryId>): List<MemoryLink> = withContext(dispatcher) {
+        val wanted = ids.mapTo(HashSet()) { it.value }
+        wanted.toList().chunked(MemoryDao.ID_CHUNK)
+            .flatMap { chunk -> dao.linksFrom(chunk) }
+            .filter { it.toId in wanted }
+            .mapReadable(MemoryLinkEntity::toDomain)
+            .sortedWith(compareBy<MemoryLink>({ it.createdAt }, { it.id.value }))
+    }
+
+    override suspend fun embeddingsOf(embedderId: String, ids: Collection<MemoryId>): Map<MemoryId, FloatArray> = withContext(dispatcher) {
+        val rows = ids.map { it.value }.distinct().chunked(MemoryDao.ID_CHUNK).flatMap { chunk -> dao.embeddingsOf(embedderId, chunk) }
+        buildMap(rows.size) {
+            for (row in rows) {
+                row.readableOrNull { it.decode() }?.let { put(MemoryId(row.memoryId), it) }
+            }
+        }
     }
 
     override suspend fun delete(id: MemoryId) {
