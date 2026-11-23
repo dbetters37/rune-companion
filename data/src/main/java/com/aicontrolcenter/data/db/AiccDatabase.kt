@@ -12,7 +12,11 @@ import com.aicontrolcenter.data.db.dao.AiAppDao
 import com.aicontrolcenter.data.db.dao.ConversationDao
 import com.aicontrolcenter.data.db.dao.MemoryDao
 import com.aicontrolcenter.data.db.dao.ModelDao
+import com.aicontrolcenter.data.db.dao.OperatorAppDao
+import com.aicontrolcenter.data.db.dao.OwnerRequestDao
+import com.aicontrolcenter.data.db.dao.PermissionGrantDao
 import com.aicontrolcenter.data.db.dao.ProviderDao
+import com.aicontrolcenter.data.db.dao.SharedFolderDao
 import com.aicontrolcenter.data.db.dao.TaskDao
 import com.aicontrolcenter.data.db.entity.ActivityEventEntity
 import com.aicontrolcenter.data.db.entity.AgentEntity
@@ -26,7 +30,11 @@ import com.aicontrolcenter.data.db.entity.MemoryEmbeddingEntity
 import com.aicontrolcenter.data.db.entity.MemoryEntity
 import com.aicontrolcenter.data.db.entity.MemoryLinkEntity
 import com.aicontrolcenter.data.db.entity.ModelEntity
+import com.aicontrolcenter.data.db.entity.OperatorAppEntity
+import com.aicontrolcenter.data.db.entity.OwnerRequestEntity
+import com.aicontrolcenter.data.db.entity.PermissionGrantEntity
 import com.aicontrolcenter.data.db.entity.ProviderEntity
+import com.aicontrolcenter.data.db.entity.SharedFolderEntity
 import com.aicontrolcenter.data.db.entity.TaskEntity
 import kotlinx.coroutines.CoroutineDispatcher
 
@@ -34,7 +42,9 @@ import kotlinx.coroutines.CoroutineDispatcher
  * The app's single SQLite database: the registry (agents and their stats, providers, models,
  * AI applications), the activity log, the conversations with agents, memory (knowledge
  * spaces, memories, the links between them and their embedding vectors), and orchestration
- * (the tasks of the owner's objectives and the messages agents exchange while working on them).
+ * (the tasks of the owner's objectives and the messages agents exchange while working on them),
+ * and the phone operator's permissions (the owner's grants, the questions put to the owner, the
+ * shared folders the owner picked and the apps authorised for screen operation).
  *
  * The schema is exported to `data/schemas` and versioned with the code. There is no destructive
  * fallback: opening a database whose version has no migration path fails loudly instead of
@@ -58,6 +68,10 @@ import kotlinx.coroutines.CoroutineDispatcher
         MemoryEmbeddingEntity::class,
         TaskEntity::class,
         AgentMessageEntity::class,
+        PermissionGrantEntity::class,
+        OwnerRequestEntity::class,
+        SharedFolderEntity::class,
+        OperatorAppEntity::class,
     ],
     version = AiccDatabase.VERSION,
     exportSchema = true,
@@ -72,13 +86,18 @@ abstract class AiccDatabase : RoomDatabase() {
     internal abstract fun memoryDao(): MemoryDao
     internal abstract fun taskDao(): TaskDao
     internal abstract fun agentMessageDao(): AgentMessageDao
+    internal abstract fun permissionGrantDao(): PermissionGrantDao
+    internal abstract fun ownerRequestDao(): OwnerRequestDao
+    internal abstract fun sharedFolderDao(): SharedFolderDao
+    internal abstract fun operatorAppDao(): OperatorAppDao
 
     companion object {
         /**
          * Version 1 was the first release; 2 added conversations, 3 memory, 4 tasks and agent
-         * messages. See [AiccMigrations].
+         * messages, 5 the operator's grants, owner requests, shared folders and operator apps.
+         * See [AiccMigrations].
          */
-        const val VERSION = 4
+        const val VERSION = 5
         const val DEFAULT_NAME = "aicc.db"
 
         /**

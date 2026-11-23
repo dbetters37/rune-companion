@@ -5,6 +5,10 @@ import androidx.sqlite.db.SupportSQLiteOpenHelper
 import com.aicontrolcenter.core.activity.ActivityLog
 import com.aicontrolcenter.core.chat.ConversationRepository
 import com.aicontrolcenter.core.memory.MemoryRepository
+import com.aicontrolcenter.core.operator.OperatorAppRepository
+import com.aicontrolcenter.core.operator.OwnerRequestRepository
+import com.aicontrolcenter.core.operator.PermissionRepository
+import com.aicontrolcenter.core.operator.SharedFolderRepository
 import com.aicontrolcenter.core.registry.AgentRepository
 import com.aicontrolcenter.core.registry.AiAppRepository
 import com.aicontrolcenter.core.registry.ModelRepository
@@ -23,7 +27,11 @@ import com.aicontrolcenter.data.repository.RoomConversationRepository
 import com.aicontrolcenter.data.repository.RoomMemoryRepository
 import com.aicontrolcenter.data.repository.RoomMessageRepository
 import com.aicontrolcenter.data.repository.RoomModelRepository
+import com.aicontrolcenter.data.repository.RoomOperatorAppRepository
+import com.aicontrolcenter.data.repository.RoomOwnerRequestRepository
+import com.aicontrolcenter.data.repository.RoomPermissionRepository
 import com.aicontrolcenter.data.repository.RoomProviderRepository
+import com.aicontrolcenter.data.repository.RoomSharedFolderRepository
 import com.aicontrolcenter.data.repository.RoomTaskRepository
 import com.aicontrolcenter.data.security.AndroidKeystoreVaultCipher
 import com.aicontrolcenter.data.security.DatabaseKeyStore
@@ -97,6 +105,26 @@ class DataLayer(
 
     /** Every message exchanged while working on an objective. */
     val messages: MessageRepository by lazy { RoomMessageRepository(database, ioDispatcher) }
+
+    /**
+     * The owner's permission grants. The composition root hands out only its narrow sides:
+     * [com.aicontrolcenter.core.operator.GrantLookup] to the broker and the orchestrator,
+     * [com.aicontrolcenter.core.operator.GrantStore] to the owner's ports.
+     */
+    val permissions: PermissionRepository by lazy { RoomPermissionRepository(database, ioDispatcher) }
+
+    /**
+     * Questions put to the owner. Answering one with a grant writes that grant into
+     * [permissions] in the same transaction. The broker gets only
+     * [com.aicontrolcenter.core.operator.OwnerRequestQueue].
+     */
+    val ownerRequests: OwnerRequestRepository by lazy { RoomOwnerRequestRepository(database, ioDispatcher) }
+
+    /** The shared-storage folders the owner picked. */
+    val sharedFolders: SharedFolderRepository by lazy { RoomSharedFolderRepository(database, ioDispatcher) }
+
+    /** The apps the owner authorised for screen operation; the screen tools read only this. */
+    val operatorApps: OperatorAppRepository by lazy { RoomOperatorAppRepository(database, ioDispatcher) }
 
     val settings: SettingsRepository by lazy {
         DataStoreSettingsRepository.create(appContext, CoroutineScope(settingsJob + ioDispatcher), settingsFileName)

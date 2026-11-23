@@ -9,6 +9,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ConversationId
+import com.aicontrolcenter.core.FolderId
+import com.aicontrolcenter.core.GrantId
 import com.aicontrolcenter.core.MemoryId
 import com.aicontrolcenter.core.SpaceId
 import com.aicontrolcenter.core.chat.Conversation
@@ -17,6 +19,20 @@ import com.aicontrolcenter.core.llm.ChatMessage
 import com.aicontrolcenter.core.memory.KnowledgeSpace
 import com.aicontrolcenter.core.memory.MemoryRepository
 import com.aicontrolcenter.core.memory.MemoryScope
+import com.aicontrolcenter.core.operator.DecideResult
+import com.aicontrolcenter.core.operator.GrantQuery
+import com.aicontrolcenter.core.operator.GrantScope
+import com.aicontrolcenter.core.operator.OperatorApp
+import com.aicontrolcenter.core.operator.OperatorAppRepository
+import com.aicontrolcenter.core.operator.OperatorCapabilities
+import com.aicontrolcenter.core.operator.OwnerDecision
+import com.aicontrolcenter.core.operator.OwnerRequestKind
+import com.aicontrolcenter.core.operator.OwnerRequestRepository
+import com.aicontrolcenter.core.operator.OwnerRequestStatus
+import com.aicontrolcenter.core.operator.PermissionRepository
+import com.aicontrolcenter.core.operator.SharedFolder
+import com.aicontrolcenter.core.operator.SharedFolderRepository
+import com.aicontrolcenter.core.registry.AiApp
 import com.aicontrolcenter.core.tasks.MessageRepository
 import com.aicontrolcenter.core.tasks.MessageType
 import com.aicontrolcenter.core.tasks.TaskKind
@@ -32,14 +48,20 @@ import com.aicontrolcenter.data.repository.RoomConversationRepository
 import com.aicontrolcenter.data.repository.RoomMemoryRepository
 import com.aicontrolcenter.data.repository.RoomMessageRepository
 import com.aicontrolcenter.data.repository.RoomModelRepository
+import com.aicontrolcenter.data.repository.RoomOperatorAppRepository
+import com.aicontrolcenter.data.repository.RoomOwnerRequestRepository
+import com.aicontrolcenter.data.repository.RoomPermissionRepository
 import com.aicontrolcenter.data.repository.RoomProviderRepository
+import com.aicontrolcenter.data.repository.RoomSharedFolderRepository
 import com.aicontrolcenter.data.repository.RoomTaskRepository
 import com.aicontrolcenter.data.security.SoftwareVaultCipher
+import com.aicontrolcenter.data.testing.VersionFourData
 import com.aicontrolcenter.data.testing.VersionOneData
 import com.aicontrolcenter.data.testing.VersionThreeData
 import com.aicontrolcenter.data.testing.VersionTwoData
 import com.aicontrolcenter.testkit.Samples
 import com.aicontrolcenter.testkit.contract.MemorySamples
+import com.aicontrolcenter.testkit.contract.OperatorSamples
 import com.aicontrolcenter.testkit.contract.TaskSamples
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
@@ -50,13 +72,14 @@ import org.robolectric.annotation.Config
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
- * Upgrades of a database that already holds the owner's data. Versions 1 to 3 are on real
+ * Upgrades of a database that already holds the owner's data. Versions 1 to 4 are on real
  * phones, so every test starts from a database created from the exported schema of one of them
  * (never from today's entity classes) and filled with [VersionOneData] and, for the later
- * versions, [VersionTwoData] and [VersionThreeData].
+ * versions, [VersionTwoData], [VersionThreeData] and [VersionFourData].
  *
  * Runs on plain SQLite: the SQLCipher native library only exists on a device. Encryption does
  * not change the SQL that a migration executes.
@@ -90,8 +113,72 @@ class MigrationTest {
         }
     }
 
-    private suspend fun assertVersionThreeDataIsThere(database: AiccDatabase) {
-        assertVersionTwoDataIsThere(database)
+    /** What release 0.4.0 holds: data in every table of schema version 4. */
+    private fun createVersionFourDatabase() {
+        helper.createDatabase(NAME, 4).use {
+            VersionOneData.insertInto(it)
+            VersionTwoData.insertInto(it)
+            VersionThreeData.insertInto(it)
+            VersionFourData.insertInto(it)
+        }
+    }
+
+    private suspend fun assertVersionFourDataIsThere(database: AiccDatabase) {
+        assertVersionThreeDataIsThere(database, apps = listOf(VersionOneData.app) + VersionFourData.apps)
+        assertEquals(VersionFourData.tasks, RoomTaskRepository(database).getTree(VersionFourData.objective.id))
+        assertEquals(VersionFourData.messages, RoomMessageRepository(database).list(VersionFourData.objective.id))
+    }
+
+    /**
+     * The AI apps that were authorised for accessibility operation, as operator apps: package,
+     * label and certificate of the oldest authorised row per package, all authorised at the
+     * moment of the migration, which happened between [before] and [after].
+     */
+    private suspend fun assertAuthorisedAppsWereCopied(database: AiccDatabase, expected: List<AiApp>, before: Long, after: Long) {
+        val copied = RoomOperatorAppRepository(database).getAll()
+        val at = copied.firstOrNull()?.authorisedAt ?: 0
+        assertTrue(at in before..after, "authorised at $at, migrated between $before and $after")
+        assertEquals(expected.map { OperatorApp(it.packageName, it.label, at, it.signingCertSha256) }, copied)
+    }
+
+    /**
+     * Uses every table schema 5 adds the way the app does: a folder and an operator app, a
+     * permission request answered with a grant (written in the same transaction), an approval
+     * answered, a grant used, and the start-up sweep.
+     */
+    private suspend fun assertOperatorRecordsCanBeStored(
+        permissions: PermissionRepository,
+        requests: OwnerRequestRepository,
+        folders: SharedFolderRepository,
+        apps: OperatorAppRepository,
+    ) {
+        val s = OperatorSamples
+        val folder = SharedFolder(FolderId("fld_reports"), "content://com.android.externalstorage.documents/tree/primary%3AReports", "Reports", 100)
+        folders.upsert(folder)
+        assertEquals(listOf(folder), folders.getAll())
+        val app = OperatorApp("com.example.calendar", "Calendar", 200, "ef".repeat(32))
+        apps.upsert(app)
+        assertEquals(app, apps.get(app.packageName))
+
+        val permission = s.request("req_perm", at = 1_000)
+        val approval = s.request("req_appr", OwnerRequestKind.APPROVAL, at = 1_100)
+        val left = s.request("req_left", at = 1_200)
+        listOf(permission, approval, left).forEach { requests.create(it) }
+        val granted = requests.decide(permission.id, OwnerDecision.Grant(GrantScope.ALWAYS, "Only Reports"), 1_500, GrantId("grt_1"))
+        assertIs<DecideResult.Decided>(granted)
+        assertEquals(granted.grant, permissions.findByRequest(permission.id))
+        val query = GrantQuery(s.agent, OperatorCapabilities.FOLDERS_WRITE, s.folder, taskId = null, at = 1_600)
+        assertEquals(listOfNotNull(granted.grant), permissions.findMatching(query))
+        assertIs<DecideResult.Decided>(requests.decide(approval.id, OwnerDecision.Approve(), 1_500, GrantId("grt_unused")))
+        assertEquals(listOf(left.id), requests.cancelAllPending(2_000, "The app restarted.").map { it.id })
+        assertEquals(OwnerRequestStatus.CANCELLED, requests.get(left.id)?.status)
+        assertEquals(listOf(left, approval, permission).map { it.id }, requests.observeRecent(10).first().map { it.id })
+        assertEquals(1, permissions.revokeAllWithConstraint(s.folder, 3_000))
+        assertTrue(permissions.findMatching(query.copy(at = 3_100)).isEmpty())
+    }
+
+    private suspend fun assertVersionThreeDataIsThere(database: AiccDatabase, apps: List<AiApp> = listOf(VersionOneData.app)) {
+        assertVersionTwoDataIsThere(database, apps)
         val memories = RoomMemoryRepository(database)
         assertEquals(VersionThreeData.memories, memories.list())
         assertEquals(listOf(VersionThreeData.space), memories.observeSpaces().first())
@@ -126,8 +213,8 @@ class MigrationTest {
         assertEquals(0, messages.count(root.id))
     }
 
-    private suspend fun assertVersionTwoDataIsThere(database: AiccDatabase) {
-        assertVersionOneDataIsThere(database)
+    private suspend fun assertVersionTwoDataIsThere(database: AiccDatabase, apps: List<AiApp> = listOf(VersionOneData.app)) {
+        assertVersionOneDataIsThere(database, apps)
         val conversations = RoomConversationRepository(database)
         assertEquals(listOf(VersionTwoData.conversation), conversations.observeConversations().first())
         assertEquals(VersionTwoData.entries, conversations.getEntries(VersionTwoData.conversation.id))
@@ -154,13 +241,14 @@ class MigrationTest {
         assertEquals(listOf("mem_a", "mem_c"), memories.list().map { it.id.value })
     }
 
-    private suspend fun assertVersionOneDataIsThere(database: AiccDatabase) {
+    /** [apps]: the AI apps stored, oldest first; release 0.4.0 data adds some to [VersionOneData.app]. */
+    private suspend fun assertVersionOneDataIsThere(database: AiccDatabase, apps: List<AiApp> = listOf(VersionOneData.app)) {
         val agents = RoomAgentRepository(database)
         assertEquals(listOf(VersionOneData.agent), agents.getAll())
         assertEquals(VersionOneData.stats, agents.getStats(VersionOneData.agent.id))
         assertEquals(listOf(VersionOneData.provider), RoomProviderRepository(database).getAll())
         assertEquals(listOf(VersionOneData.model), RoomModelRepository(database).getAll())
-        assertEquals(listOf(VersionOneData.app), RoomAiAppRepository(database).getAll())
+        assertEquals(apps, RoomAiAppRepository(database).getAll())
         assertEquals(VersionOneData.events.reversed(), RoomActivityLog(database).recent())
     }
 
@@ -325,12 +413,155 @@ class MigrationTest {
         )
         try {
             assertVersionThreeDataIsThere(data.database)
-            assertEquals(4, data.database.openHelper.readableDatabase.version)
+            assertEquals(AiccDatabase.VERSION, data.database.openHelper.readableDatabase.version)
             assertTasksAndMessagesCanBeStored(data.tasks, data.messages)
             // The data of the earlier releases is untouched by everything done with tasks.
             assertVersionThreeDataIsThere(data.database)
         } finally {
             data.close()
+        }
+    }
+
+    @Test
+    fun `a version 4 database with data in every table migrates to the exported schema 5, keeps its data and copies the authorised apps`() = runTest {
+        createVersionFourDatabase()
+
+        // Fails if the migrated tables or indexes differ from the exported schema 5.
+        val before = System.currentTimeMillis()
+        helper.runMigrationsAndValidate(NAME, 5, true, *AiccMigrations.all).close()
+        val after = System.currentTimeMillis()
+
+        val migrated = AiccDatabase.create(context, NAME)
+        try {
+            assertVersionFourDataIsThere(migrated)
+            // The oldest authorised row of each package, with its certificate; the unauthorised mail app stays out.
+            assertAuthorisedAppsWereCopied(migrated, listOf(VersionOneData.app, VersionFourData.notes), before, after)
+            for (table in listOf("permission_grants", "owner_requests", "shared_folders")) {
+                assertEquals(0, migrated.count(table), table)
+            }
+            assertOperatorRecordsCanBeStored(
+                RoomPermissionRepository(migrated), RoomOwnerRequestRepository(migrated),
+                RoomSharedFolderRepository(migrated), RoomOperatorAppRepository(migrated),
+            )
+            // The AI apps themselves are untouched, their own authorisation flag included.
+            assertEquals(listOf(VersionOneData.app) + VersionFourData.apps, RoomAiAppRepository(migrated).getAll())
+        } finally {
+            migrated.close()
+        }
+    }
+
+    @Test
+    fun `a version 1 database migrates through every release to the exported schema 5 and keeps the data of each`() = runTest {
+        createVersionOneDatabase()
+        // Each release upgraded the database and then stored data of its own in it.
+        helper.runMigrationsAndValidate(NAME, 2, true, *AiccMigrations.all).use { VersionTwoData.insertInto(it) }
+        helper.runMigrationsAndValidate(NAME, 3, true, *AiccMigrations.all).use { VersionThreeData.insertInto(it) }
+        helper.runMigrationsAndValidate(NAME, 4, true, *AiccMigrations.all).use { VersionFourData.insertInto(it) }
+
+        val before = System.currentTimeMillis()
+        helper.runMigrationsAndValidate(NAME, 5, true, *AiccMigrations.all).close()
+        val after = System.currentTimeMillis()
+
+        val migrated = AiccDatabase.create(context, NAME)
+        try {
+            assertVersionFourDataIsThere(migrated)
+            assertAuthorisedAppsWereCopied(migrated, listOf(VersionOneData.app, VersionFourData.notes), before, after)
+        } finally {
+            migrated.close()
+        }
+    }
+
+    @Test
+    fun `a version 1 database with data migrates straight to the exported schema 5`() = runTest {
+        createVersionOneDatabase()
+
+        // One upgrade over four versions, as on a phone that skipped every release since the first.
+        val before = System.currentTimeMillis()
+        helper.runMigrationsAndValidate(NAME, 5, true, *AiccMigrations.all).close()
+        val after = System.currentTimeMillis()
+
+        val migrated = AiccDatabase.create(context, NAME)
+        try {
+            assertVersionOneDataIsThere(migrated)
+            assertAuthorisedAppsWereCopied(migrated, listOf(VersionOneData.app), before, after)
+            assertTasksAndMessagesCanBeStored(RoomTaskRepository(migrated), RoomMessageRepository(migrated))
+            assertOperatorRecordsCanBeStored(
+                RoomPermissionRepository(migrated), RoomOwnerRequestRepository(migrated),
+                RoomSharedFolderRepository(migrated), RoomOperatorAppRepository(migrated),
+            )
+        } finally {
+            migrated.close()
+        }
+    }
+
+    @Test
+    fun `a database without authorised AI apps migrates to version 5 with no operator apps`() = runTest {
+        helper.createDatabase(NAME, 4).use {
+            VersionOneData.insertInto(it)
+            // The owner withdrew the authorisation under release 0.4.0.
+            it.execSQL("UPDATE ai_apps SET accessibility_authorized = 0")
+        }
+
+        helper.runMigrationsAndValidate(NAME, 5, true, *AiccMigrations.all).close()
+
+        val migrated = AiccDatabase.create(context, NAME)
+        try {
+            assertEquals(emptyList(), RoomOperatorAppRepository(migrated).getAll())
+            assertEquals(listOf(VersionOneData.app.copy(accessibilityAuthorized = false)), RoomAiAppRepository(migrated).getAll())
+        } finally {
+            migrated.close()
+        }
+    }
+
+    @Test
+    fun `the app opening a version 4 database upgrades it in place and can store the operator's records in it`() = runTest {
+        createVersionFourDatabase()
+
+        val before = System.currentTimeMillis()
+        val data = DataLayer(
+            context, databaseName = NAME, databaseEncryption = DatabaseEncryption.None, vaultCipher = SoftwareVaultCipher(),
+        )
+        try {
+            assertVersionFourDataIsThere(data.database)
+            val after = System.currentTimeMillis()
+            assertEquals(AiccDatabase.VERSION, data.database.openHelper.readableDatabase.version)
+            assertAuthorisedAppsWereCopied(data.database, listOf(VersionOneData.app, VersionFourData.notes), before, after)
+            assertOperatorRecordsCanBeStored(data.permissions, data.ownerRequests, data.sharedFolders, data.operatorApps)
+            // The data of the earlier releases is untouched by everything done with the operator's records.
+            assertVersionFourDataIsThere(data.database)
+        } finally {
+            data.close()
+        }
+    }
+
+    @Test
+    fun `the operator tables added by the migration have their indexes and hold one folder per tree`() = runTest {
+        createVersionFourDatabase()
+        helper.runMigrationsAndValidate(NAME, 5, true, *AiccMigrations.all).close()
+        val migrated = AiccDatabase.create(context, NAME)
+        try {
+            val sqlite = migrated.openHelper.writableDatabase
+            val indexes = sqlite.query(
+                SimpleSQLiteQuery(
+                    "SELECT name FROM sqlite_master WHERE type = 'index' " +
+                        "AND tbl_name IN ('permission_grants', 'owner_requests', 'shared_folders', 'operator_apps')",
+                ),
+            ).use { cursor -> buildSet { while (cursor.moveToNext()) add(cursor.getString(0)) } }
+            assertEquals(
+                setOf(
+                    "index_permission_grants_agent_id_capability_constraint_key", "index_permission_grants_request_id",
+                    "index_owner_requests_status_created_at_id", "index_owner_requests_conversation_id_created_at_id",
+                    "index_owner_requests_root_id_created_at_id", "index_owner_requests_task_id", "index_owner_requests_created_at_id",
+                    "index_shared_folders_tree_uri",
+                ),
+                indexes.filterNot { it.startsWith("sqlite_autoindex") }.toSet(),
+            )
+            sqlite.execSQL("INSERT INTO shared_folders (id, tree_uri, display_name, added_at, read_only) VALUES ('fld_a', 'content://tree/a', 'A', 1, 0)")
+            assertFailsWith<SQLiteConstraintException> {
+                sqlite.execSQL("INSERT INTO shared_folders (id, tree_uri, display_name, added_at, read_only) VALUES ('fld_b', 'content://tree/a', 'B', 2, 0)")
+            }
+        } finally {
+            migrated.close()
         }
     }
 

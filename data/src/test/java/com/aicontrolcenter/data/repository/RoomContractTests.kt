@@ -4,6 +4,9 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aicontrolcenter.core.activity.ActivityLog
 import com.aicontrolcenter.core.chat.ConversationRepository
 import com.aicontrolcenter.core.memory.MemoryRepository
+import com.aicontrolcenter.core.operator.OperatorAppRepository
+import com.aicontrolcenter.core.operator.PermissionRepository
+import com.aicontrolcenter.core.operator.SharedFolderRepository
 import com.aicontrolcenter.core.registry.AgentRepository
 import com.aicontrolcenter.core.registry.AiAppRepository
 import com.aicontrolcenter.core.registry.ModelRepository
@@ -18,7 +21,12 @@ import com.aicontrolcenter.testkit.contract.ConversationRepositoryContract
 import com.aicontrolcenter.testkit.contract.MemoryRepositoryContract
 import com.aicontrolcenter.testkit.contract.MessageRepositoryContract
 import com.aicontrolcenter.testkit.contract.ModelRepositoryContract
+import com.aicontrolcenter.testkit.contract.OperatorAppRepositoryContract
+import com.aicontrolcenter.testkit.contract.OwnerRequestRepositoryContract
+import com.aicontrolcenter.testkit.contract.PermissionRepositoryContract
 import com.aicontrolcenter.testkit.contract.ProviderRepositoryContract
+import com.aicontrolcenter.testkit.contract.RequestStores
+import com.aicontrolcenter.testkit.contract.SharedFolderRepositoryContract
 import com.aicontrolcenter.testkit.contract.TaskRepositoryContract
 import org.junit.Rule
 import org.junit.runner.RunWith
@@ -90,4 +98,33 @@ class RoomTaskRepositoryContractTest : TaskRepositoryContract() {
 class RoomMessageRepositoryContractTest : MessageRepositoryContract() {
     @get:Rule val db = InMemoryDatabaseRule()
     override fun createRepository(): MessageRepository = RoomMessageRepository(db.database)
+}
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [35])
+class RoomPermissionRepositoryContractTest : PermissionRepositoryContract() {
+    @get:Rule val db = InMemoryDatabaseRule()
+    override fun createRepository(): PermissionRepository = RoomPermissionRepository(db.database)
+}
+
+/** The requests and the grants their answers write live in the same database, as in the app. */
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [35])
+class RoomOwnerRequestRepositoryContractTest : OwnerRequestRepositoryContract() {
+    @get:Rule val db = InMemoryDatabaseRule()
+    override fun createStores() = RequestStores(RoomOwnerRequestRepository(db.database), RoomPermissionRepository(db.database))
+}
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [35])
+class RoomSharedFolderRepositoryContractTest : SharedFolderRepositoryContract() {
+    @get:Rule val db = InMemoryDatabaseRule()
+    override fun createRepository(): SharedFolderRepository = RoomSharedFolderRepository(db.database)
+}
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [35])
+class RoomOperatorAppRepositoryContractTest : OperatorAppRepositoryContract() {
+    @get:Rule val db = InMemoryDatabaseRule()
+    override fun createRepository(): OperatorAppRepository = RoomOperatorAppRepository(db.database)
 }

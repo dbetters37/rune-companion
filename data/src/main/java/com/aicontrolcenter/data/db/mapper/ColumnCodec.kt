@@ -7,6 +7,7 @@ import com.aicontrolcenter.core.ToolId
 import com.aicontrolcenter.core.registry.AiAppCapability
 import com.aicontrolcenter.core.tasks.ReviewVerdict
 import com.aicontrolcenter.core.tasks.TaskRequester
+import com.aicontrolcenter.core.tools.CapabilityConstraint
 import com.aicontrolcenter.data.DataJson
 import com.aicontrolcenter.data.StoredDataException
 import kotlinx.serialization.DeserializationStrategy
@@ -58,4 +59,24 @@ internal class RowRef(val table: String, val rowId: String) {
     /** [value], which [reason] needs; a null there means the row is damaged. */
     fun <T : Any> present(column: String, value: T?, reason: String): T =
         value ?: throw StoredDataException("Column $table.$column of row '$rowId' is empty, but $reason.")
+
+    /** A `CapabilityConstraint.stored` text read back. */
+    fun constraint(column: String, stored: String): CapabilityConstraint =
+        try {
+            CapabilityConstraint.parse(stored)
+        } catch (e: IllegalArgumentException) {
+            throw StoredDataException("Column $table.$column of row '$rowId' does not hold a readable constraint.", e)
+        }
+
+    /**
+     * The domain object [build] makes from the row's columns. A domain class that checks its
+     * invariants on construction throws [IllegalArgumentException] for a row whose columns
+     * contradict each other (a TASK grant without a task, say); that row is damaged.
+     */
+    fun <T> consistent(build: () -> T): T =
+        try {
+            build()
+        } catch (e: IllegalArgumentException) {
+            throw StoredDataException("Row '$rowId' of $table holds values that contradict each other.", e)
+        }
 }

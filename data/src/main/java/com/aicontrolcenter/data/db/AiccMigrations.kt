@@ -18,7 +18,77 @@ import androidx.sqlite.execSQL
  * happens to the entity classes later.
  */
 internal object AiccMigrations {
-    val all: Array<Migration> = arrayOf(Migration1To2, Migration2To3, Migration3To4)
+    val all: Array<Migration> = arrayOf(Migration1To2, Migration2To3, Migration3To4, Migration4To5)
+}
+
+/**
+ * Adds the phone operator's storage: `permission_grants`, `owner_requests`, `shared_folders` and
+ * `operator_apps`, with their indexes. Nothing that version 4 stored is changed.
+ *
+ * The statements are the `createSql` of the exported schema 5, verbatim (`MigrationTest`
+ * validates the result against it and `SchemaExportTest` compares the text). No table has a
+ * foreign key, so their order does not matter.
+ *
+ * Then [COPY_AUTHORISED_APPS] carries the owner's earlier choice over: every AI app with
+ * `accessibility_authorized` set becomes an operator app (package, label, stored signing
+ * certificate, authorised now), because `operator_apps` is from now on the one record of which
+ * apps may be operated through the screen. Where several AI app rows share a package (storage
+ * allows it; the registry avoids it), the oldest authorised one is used, as a lookup by
+ * package returns the oldest row.
+ */
+internal object Migration4To5 : Migration(4, 5) {
+    /** Internal so `SchemaExportTest` can compare them with the exported `createSql`. */
+    internal val statements = listOf(
+        "CREATE TABLE IF NOT EXISTS `permission_grants` (`id` TEXT NOT NULL, `agent_id` TEXT NOT NULL, `capability` TEXT NOT NULL, " +
+            "`constraint_key` TEXT NOT NULL, `scope` TEXT NOT NULL, `task_id` TEXT, `request_id` TEXT, `granted_at` INTEGER NOT NULL, " +
+            "`expires_at` INTEGER, `revoked_at` INTEGER, `consumed_at` INTEGER, PRIMARY KEY(`id`))",
+        "CREATE INDEX IF NOT EXISTS `index_permission_grants_agent_id_capability_constraint_key` ON `permission_grants` " +
+            "(`agent_id`, `capability`, `constraint_key`)",
+        "CREATE INDEX IF NOT EXISTS `index_permission_grants_request_id` ON `permission_grants` (`request_id`)",
+        "CREATE TABLE IF NOT EXISTS `owner_requests` (`id` TEXT NOT NULL, `kind` TEXT NOT NULL, `status` TEXT NOT NULL, " +
+            "`agent_id` TEXT NOT NULL, `tool_id` TEXT, `capability` TEXT NOT NULL, `constraint_key` TEXT NOT NULL, `risk` TEXT NOT NULL, " +
+            "`summary` TEXT NOT NULL, `details_json` TEXT NOT NULL, `data_goes_to` TEXT, `reason` TEXT, `task_id` TEXT, `root_id` TEXT, " +
+            "`conversation_id` TEXT, `created_at` INTEGER NOT NULL, `expires_at` INTEGER NOT NULL, `decided_at` INTEGER, " +
+            "`decision_scope` TEXT, `decision_note` TEXT, `agent_name` TEXT, `tool_title` TEXT, `target_label` TEXT, " +
+            "`delegation_chain_json` TEXT NOT NULL, PRIMARY KEY(`id`))",
+        "CREATE INDEX IF NOT EXISTS `index_owner_requests_status_created_at_id` ON `owner_requests` (`status`, `created_at`, `id`)",
+        "CREATE INDEX IF NOT EXISTS `index_owner_requests_conversation_id_created_at_id` ON `owner_requests` " +
+            "(`conversation_id`, `created_at`, `id`)",
+        "CREATE INDEX IF NOT EXISTS `index_owner_requests_root_id_created_at_id` ON `owner_requests` (`root_id`, `created_at`, `id`)",
+        "CREATE INDEX IF NOT EXISTS `index_owner_requests_task_id` ON `owner_requests` (`task_id`)",
+        "CREATE INDEX IF NOT EXISTS `index_owner_requests_created_at_id` ON `owner_requests` (`created_at`, `id`)",
+        "CREATE TABLE IF NOT EXISTS `shared_folders` (`id` TEXT NOT NULL, `tree_uri` TEXT NOT NULL, `display_name` TEXT NOT NULL, " +
+            "`added_at` INTEGER NOT NULL, `read_only` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "CREATE UNIQUE INDEX IF NOT EXISTS `index_shared_folders_tree_uri` ON `shared_folders` (`tree_uri`)",
+        "CREATE TABLE IF NOT EXISTS `operator_apps` (`package_name` TEXT NOT NULL, `label` TEXT NOT NULL, " +
+            "`authorised_at` INTEGER NOT NULL, `signing_cert_sha256` TEXT, PRIMARY KEY(`package_name`))",
+    )
+
+    /**
+     * Copies the authorised AI apps into `operator_apps`; the one parameter is the time of the
+     * migration (epoch ms). Version 4's column names, which this step must keep using whatever
+     * later happens to the entity classes. `1` is how SQLite stores `true`.
+     */
+    internal const val COPY_AUTHORISED_APPS =
+        "INSERT INTO `operator_apps` (`package_name`, `label`, `authorised_at`, `signing_cert_sha256`) " +
+            "SELECT a.`package_name`, a.`label`, ?, a.`signing_cert_sha256` FROM `ai_apps` AS a " +
+            "WHERE a.`accessibility_authorized` = 1 AND NOT EXISTS (SELECT 1 FROM `ai_apps` AS b " +
+            "WHERE b.`package_name` = a.`package_name` AND b.`accessibility_authorized` = 1 " +
+            "AND (b.`first_seen_at` < a.`first_seen_at` OR (b.`first_seen_at` = a.`first_seen_at` AND b.`id` < a.`id`)))"
+
+    // Room calls one or the other depending on how the database is opened; both must work.
+    override fun migrate(db: SupportSQLiteDatabase) {
+        statements.forEach(db::execSQL)
+        db.execSQL(COPY_AUTHORISED_APPS, arrayOf<Any>(System.currentTimeMillis()))
+    }
+
+    override fun migrate(connection: SQLiteConnection) {
+        statements.forEach(connection::execSQL)
+        connection.prepare(COPY_AUTHORISED_APPS).use { statement ->
+            statement.bindLong(1, System.currentTimeMillis())
+            statement.step()
+        }
+    }
 }
 
 /**

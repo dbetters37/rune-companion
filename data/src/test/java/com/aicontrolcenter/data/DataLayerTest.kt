@@ -6,6 +6,8 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ConversationId
+import com.aicontrolcenter.core.FolderId
+import com.aicontrolcenter.core.GrantId
 import com.aicontrolcenter.core.MemoryId
 import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.activity.ActivityFilter
@@ -14,6 +16,12 @@ import com.aicontrolcenter.core.chat.Conversation
 import com.aicontrolcenter.core.chat.ConversationEntry
 import com.aicontrolcenter.core.llm.ChatMessage
 import com.aicontrolcenter.core.llm.TokenUsage
+import com.aicontrolcenter.core.operator.DecideResult
+import com.aicontrolcenter.core.operator.GrantScope
+import com.aicontrolcenter.core.operator.OperatorApp
+import com.aicontrolcenter.core.operator.OwnerDecision
+import com.aicontrolcenter.core.operator.OwnerRequestStatus
+import com.aicontrolcenter.core.operator.SharedFolder
 import com.aicontrolcenter.core.security.SecretVaultException
 import com.aicontrolcenter.core.tasks.MessageType
 import com.aicontrolcenter.core.tasks.TaskStatus
@@ -24,9 +32,12 @@ import com.aicontrolcenter.data.security.SoftwareVaultCipher
 import com.aicontrolcenter.data.security.VaultCipher
 import com.aicontrolcenter.testkit.Samples
 import com.aicontrolcenter.testkit.contract.MemorySamples
+import com.aicontrolcenter.testkit.contract.OperatorSamples
 import com.aicontrolcenter.testkit.contract.TaskSamples
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExecutorCoroutineDispatcher
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.joinAll
@@ -80,6 +91,10 @@ class DataLayerTest {
         assertSame(data.memories, data.memories)
         assertSame(data.tasks, data.tasks)
         assertSame(data.messages, data.messages)
+        assertSame(data.permissions, data.permissions)
+        assertSame(data.ownerRequests, data.ownerRequests)
+        assertSame(data.sharedFolders, data.sharedFolders)
+        assertSame(data.operatorApps, data.operatorApps)
         assertSame(data.settings, data.settings)
         assertSame(data.secretVault, data.secretVault)
 
@@ -148,6 +163,71 @@ class DataLayerTest {
         assertEquals(agent.id, second.settings.get().directorAgentId)
         assertTrue(second.settings.get().localOnlyMode)
         assertEquals("sk-home-server", second.secretVault.get(provider.apiKeyAlias!!))
+    }
+
+    @Test
+    fun `the operator's records survive a restart, and a granted request finds its grant in the same database`() = runTest {
+        val s = OperatorSamples
+        val folder = SharedFolder(FolderId("fld_reports"), "content://com.android.externalstorage.documents/tree/primary%3AReports", "Reports", 100)
+        val app = OperatorApp("com.example.notes", "Notes", 200, "ab".repeat(32))
+        val asked = s.request("req_1", at = 1_000)
+        val pending = s.request("req_2", at = 1_100)
+
+        val first = dataLayer()
+        first.sharedFolders.upsert(folder)
+        first.operatorApps.upsert(app)
+        first.ownerRequests.create(asked)
+        first.ownerRequests.create(pending)
+        val answer = first.ownerRequests.decide(asked.id, OwnerDecision.Grant(GrantScope.TASK), 1_500, GrantId("grt_1"))
+        val grant = (answer as DecideResult.Decided).grant!!
+        first.close()
+
+        val second = dataLayer()
+        assertEquals(listOf(folder), second.sharedFolders.getAll())
+        assertEquals(listOf(app), second.operatorApps.getAll())
+        assertEquals(answer.request, second.ownerRequests.get(asked.id))
+        assertEquals(grant, second.permissions.findByRequest(asked.id))
+        assertEquals(listOf(grant), second.permissions.observeForAgent(s.agent).first())
+        // What was left pending when the app stopped is cancelled at start-up, before anything is recovered.
+        assertEquals(listOf(pending.id), second.ownerRequests.cancelAllPending(3_000, "The app stopped.").map { it.id })
+        // A finished task takes its grants with it.
+        assertEquals(1, second.permissions.revokeAllForTask(TaskId("tsk_1"), 4_000))
+        assertEquals(emptyList(), second.permissions.observeAll().first())
+    }
+
+    @Test
+    fun `answers and grants racing on the database file are each decided exactly once`() = runTest {
+        // The file-backed database has a pool of connections, unlike the in-memory one of the contract suite.
+        val data = dataLayer()
+        val s = OperatorSamples
+        val requests = (1..12).map { s.request("req_$it", at = it.toLong()) }
+        requests.forEach { data.ownerRequests.create(it) }
+        val decisions = listOf(OwnerDecision.Grant(GrantScope.ONCE), OwnerDecision.Deny("no"), OwnerDecision.Grant(GrantScope.ALWAYS))
+        val results = withContext(Dispatchers.Default) {
+            requests.flatMap { r ->
+                (0 until 12).map { n ->
+                    async {
+                        when (n % 4) {
+                            3 -> data.ownerRequests.close(r.id, OwnerRequestStatus.CANCELLED, 2_000, "stopped")
+                            else -> (data.ownerRequests.decide(r.id, decisions[n % 4], 2_000, GrantId("grt_${r.id}_$n")) as? DecideResult.Decided)?.request
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+        for (r in requests) {
+            val winners = results.filterNotNull().filter { it.id == r.id }
+            assertEquals(1, winners.size, "${r.id}: $winners")
+            assertEquals(winners.single(), data.ownerRequests.get(r.id))
+            val grant = data.permissions.findByRequest(r.id)
+            assertEquals(winners.single().decisionScope, grant?.scope)
+        }
+        // The one call the owner saw uses its ONCE grant, however many callers race for it.
+        val once = s.request("req_once", at = 3_000)
+        data.ownerRequests.create(once)
+        data.ownerRequests.decide(once.id, OwnerDecision.Grant(GrantScope.ONCE), 3_100, GrantId("grt_once"))
+        val used = withContext(Dispatchers.Default) { (1..24).map { async { data.permissions.consumeOnceFor(once.id, 3_200) } }.awaitAll() }
+        assertEquals(listOf(GrantId("grt_once")), used.filterNotNull().map { it.id })
     }
 
     @Test

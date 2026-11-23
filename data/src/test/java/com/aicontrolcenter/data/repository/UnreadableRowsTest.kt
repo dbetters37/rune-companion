@@ -1,10 +1,19 @@
 package com.aicontrolcenter.data.repository
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.aicontrolcenter.core.GrantId
+import com.aicontrolcenter.core.RequestId
+import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.agents.AgentStats
+import com.aicontrolcenter.core.operator.DecideResult
+import com.aicontrolcenter.core.operator.GrantQuery
+import com.aicontrolcenter.core.operator.GrantScope
+import com.aicontrolcenter.core.operator.OperatorCapabilities
+import com.aicontrolcenter.core.operator.OwnerDecision
 import com.aicontrolcenter.data.db.mapper.toEntity
 import com.aicontrolcenter.data.testing.InMemoryDatabaseRule
 import com.aicontrolcenter.testkit.Samples
+import com.aicontrolcenter.testkit.contract.OperatorSamples
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Rule
@@ -102,5 +111,44 @@ class UnreadableRowsTest {
         assertEquals(listOf("evt_3", "evt_1"), log.observe().first().map { it.id.value })
         assertEquals(3, log.prune(olderThan = 300))
         assertEquals(listOf("evt_3"), log.recent().map { it.id.value })
+    }
+
+    @Test
+    fun `an unreadable grant never authorises anything, and the readable ones still do`() = runTest {
+        val repo = RoomPermissionRepository(db.database)
+        val s = OperatorSamples
+        val good = s.grant("grt_good", at = 300)
+        repo.insert(good)
+        val dao = db.database.permissionGrantDao()
+        dao.insert(s.grant("grt_scope", at = 100).toEntity().copy(scope = "FOREVER"))
+        dao.insert(s.grant("grt_constraint", at = 110).toEntity().copy(constraintKey = "galaxy:far"))
+        // A TASK grant without its task contradicts itself; read as ALWAYS it would cover every call.
+        dao.insert(s.grant("grt_taskless", GrantScope.TASK, at = 120).toEntity().copy(taskId = null))
+
+        val query = GrantQuery(s.agent, OperatorCapabilities.FOLDERS_READ, s.folder, TaskId("tsk_1"), at = 5_000)
+        assertEquals(listOf(good), repo.findMatching(query))
+        assertEquals(listOf(good), repo.observeForAgent(s.agent).first())
+        assertEquals(listOf(good), repo.observeAll().first())
+        assertNull(repo.get(GrantId("grt_taskless")))
+        // Still stored, so revoking by agent ends it too.
+        assertEquals(4, repo.revokeAllFor(s.agent, 6_000))
+    }
+
+    @Test
+    fun `an unreadable request is never shown as pending and cannot be answered`() = runTest {
+        val repo = RoomOwnerRequestRepository(db.database)
+        val s = OperatorSamples
+        val good = s.request("req_good", at = 300)
+        repo.create(good)
+        db.database.ownerRequestDao().insert(s.request("req_damaged", at = 100).toEntity().copy(detailsJson = "[\"cut off"))
+
+        assertEquals(listOf(good), repo.observePending().first())
+        assertEquals(listOf(good), repo.observeRecent(10).first())
+        assertNull(repo.get(RequestId("req_damaged")))
+        assertEquals(DecideResult.NotFound, repo.decide(RequestId("req_damaged"), OwnerDecision.Grant(GrantScope.ALWAYS), 400, GrantId("grt_1")))
+        assertNull(RoomPermissionRepository(db.database).findByRequest(RequestId("req_damaged")))
+        // The start-up sweep still closes it, so it cannot linger as pending; only the readable one is reported.
+        assertEquals(listOf(good.id), repo.cancelAllPending(500, "Restarted.").map { it.id })
+        assertEquals("CANCELLED", db.database.ownerRequestDao().get("req_damaged")?.status)
     }
 }

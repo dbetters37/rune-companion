@@ -47,7 +47,7 @@ class SchemaExportTest {
         }.toSet()
 
     @Test
-    fun `the current schema is exported and lists all fourteen tables`() {
+    fun `the current schema is exported and lists all eighteen tables`() {
         val current = schema(AiccDatabase.VERSION)
         assertEquals(AiccDatabase.VERSION, current.getValue("version").jsonPrimitive.int)
         assertEquals(
@@ -56,6 +56,7 @@ class SchemaExportTest {
                 "conversations", "conversation_entries",
                 "knowledge_spaces", "memories", "memory_links", "memory_embeddings",
                 "tasks", "agent_messages",
+                "permission_grants", "owner_requests", "shared_folders", "operator_apps",
             ),
             current.tables().keys,
         )
@@ -98,6 +99,36 @@ class SchemaExportTest {
             tables.getValue("tasks").indexColumns(),
         )
         assertEquals(setOf(listOf("root_id", "at", "id"), listOf("at", "id")), tables.getValue("agent_messages").indexColumns())
+        assertEquals(
+            setOf(listOf("agent_id", "capability", "constraint_key"), listOf("request_id")),
+            tables.getValue("permission_grants").indexColumns(),
+        )
+        assertEquals(
+            setOf(
+                listOf("status", "created_at", "id"), listOf("conversation_id", "created_at", "id"), listOf("root_id", "created_at", "id"),
+                listOf("task_id"), listOf("created_at", "id"),
+            ),
+            tables.getValue("owner_requests").indexColumns(),
+        )
+        assertEquals(setOf(listOf("tree_uri")), tables.getValue("shared_folders").indexColumns())
+        assertEquals(emptySet(), tables.getValue("operator_apps").indexColumns())
+    }
+
+    @Test
+    fun `one tree is one folder, the operator tables stand alone, and no column is named constraint`() {
+        val tables = schema(AiccDatabase.VERSION).tables()
+        val treeIndex = tables.getValue("shared_folders").getValue("indices").jsonArray.single().jsonObject
+        assertEquals(true, treeIndex.getValue("unique").jsonPrimitive.content.toBoolean())
+        for (table in listOf("permission_grants", "owner_requests", "shared_folders", "operator_apps")) {
+            // Grants and requests are the record of what the owner allowed: nothing may delete them by cascade.
+            assertTrue(tables.getValue(table)["foreignKeys"]?.jsonArray.isNullOrEmpty(), table)
+            val columns = tables.getValue(table).getValue("fields").jsonArray.map { it.jsonObject.getValue("columnName").jsonPrimitive.content }
+            assertTrue("constraint" !in columns, "$table: `constraint` is an SQL keyword")
+        }
+        assertEquals(
+            listOf("package_name"),
+            tables.getValue("operator_apps").getValue("primaryKey").jsonObject.getValue("columnNames").jsonArray.map { it.jsonPrimitive.content },
+        )
     }
 
     @Test
@@ -157,6 +188,14 @@ class SchemaExportTest {
     @Test
     fun `the migration to version 4 runs exactly the exported statements of the tables it adds`() {
         assertEquals(exportedStatements(4, listOf("tasks", "agent_messages")), Migration3To4.statements)
+    }
+
+    @Test
+    fun `the migration to version 5 runs exactly the exported statements of the tables it adds`() {
+        assertEquals(
+            exportedStatements(5, listOf("permission_grants", "owner_requests", "shared_folders", "operator_apps")),
+            Migration4To5.statements,
+        )
     }
 
     @Test
@@ -225,6 +264,20 @@ class SchemaExportTest {
             setOf(
                 "agents", "agent_stats", "providers", "models", "ai_apps", "activity_events", "conversations", "conversation_entries",
                 "knowledge_spaces", "memories", "memory_links", "memory_embeddings",
+            ),
+            released.tables().keys,
+        )
+    }
+
+    @Test
+    fun `the schema of the released version 4 is still the one that was released`() {
+        // Release 0.4.0 created and migrated databases to exactly this schema.
+        val released = schema(4)
+        assertEquals("7d18931fa2031a623923c0f6f5803e29", released.getValue("identityHash").jsonPrimitive.content)
+        assertEquals(
+            setOf(
+                "agents", "agent_stats", "providers", "models", "ai_apps", "activity_events", "conversations", "conversation_entries",
+                "knowledge_spaces", "memories", "memory_links", "memory_embeddings", "tasks", "agent_messages",
             ),
             released.tables().keys,
         )

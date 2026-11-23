@@ -2,6 +2,8 @@ package com.aicontrolcenter.data
 
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ConversationId
+import com.aicontrolcenter.core.FolderId
+import com.aicontrolcenter.core.GrantId
 import com.aicontrolcenter.core.MemoryId
 import com.aicontrolcenter.core.MessageId
 import com.aicontrolcenter.core.ModelId
@@ -31,6 +33,12 @@ import com.aicontrolcenter.core.memory.Provenance
 import com.aicontrolcenter.core.memory.ProvenanceAction
 import com.aicontrolcenter.core.memory.ProvenanceEvent
 import com.aicontrolcenter.core.memory.ProvenanceOrigin
+import com.aicontrolcenter.core.operator.GrantScope
+import com.aicontrolcenter.core.operator.OperatorApp
+import com.aicontrolcenter.core.operator.OperatorCapabilities
+import com.aicontrolcenter.core.operator.OwnerRequestKind
+import com.aicontrolcenter.core.operator.OwnerRequestStatus
+import com.aicontrolcenter.core.operator.SharedFolder
 import com.aicontrolcenter.core.registry.AiAppCapability
 import com.aicontrolcenter.core.registry.AiAppStatus
 import com.aicontrolcenter.core.registry.CapabilityTier
@@ -52,13 +60,21 @@ import com.aicontrolcenter.core.tasks.TaskKind
 import com.aicontrolcenter.core.tasks.TaskRequester
 import com.aicontrolcenter.core.tasks.TaskStatus
 import com.aicontrolcenter.core.tasks.TaskUsage
+import com.aicontrolcenter.core.tools.CapabilityConstraint
+import com.aicontrolcenter.core.tools.RiskLevel
 import com.aicontrolcenter.data.db.AiccDatabase
+import com.aicontrolcenter.data.db.dao.OwnerRequestDao
+import com.aicontrolcenter.data.db.dao.PermissionGrantDao
 import com.aicontrolcenter.data.db.dao.TaskDao
 import com.aicontrolcenter.data.db.entity.AgentMessageEntity
 import com.aicontrolcenter.data.db.entity.KnowledgeSpaceEntity
 import com.aicontrolcenter.data.db.entity.MemoryEmbeddingEntity
 import com.aicontrolcenter.data.db.entity.MemoryEntity
 import com.aicontrolcenter.data.db.entity.MemoryLinkEntity
+import com.aicontrolcenter.data.db.entity.OperatorAppEntity
+import com.aicontrolcenter.data.db.entity.OwnerRequestEntity
+import com.aicontrolcenter.data.db.entity.PermissionGrantEntity
+import com.aicontrolcenter.data.db.entity.SharedFolderEntity
 import com.aicontrolcenter.data.db.entity.TaskEntity
 import com.aicontrolcenter.data.db.mapper.ColumnSerializers
 import com.aicontrolcenter.data.db.mapper.EmbeddingCodec
@@ -78,6 +94,7 @@ import com.aicontrolcenter.data.security.AndroidKeystoreVaultCipher
 import com.aicontrolcenter.data.security.VaultFileStore
 import com.aicontrolcenter.data.settings.DataStoreSettingsRepository
 import com.aicontrolcenter.data.settings.SettingsCodec
+import com.aicontrolcenter.testkit.contract.OperatorSamples
 import com.aicontrolcenter.testkit.contract.TaskSamples
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
@@ -143,6 +160,80 @@ class StoredNamesGoldenTest {
             "ASSIGNMENT", "ASSISTANCE_REQUEST", "ASSISTANCE_RESPONSE", "FINDINGS", "DELEGATION", "MEMORY_SHARE", "REVIEW_REQUEST",
             "REVIEW_RESULT", "COMPLETION", "FAILURE", "QUESTION", "ANSWER", "CANCEL", "STATUS",
         )
+        assertStoredNames<GrantScope>("ONCE", "TASK", "ALWAYS")
+        assertStoredNames<OwnerRequestKind>("PERMISSION", "APPROVAL")
+        assertStoredNames<OwnerRequestStatus>("PENDING", "APPROVED", "DENIED", "EXPIRED", "CANCELLED")
+        assertStoredNames<RiskLevel>("SAFE", "MODIFYING", "CONSEQUENTIAL")
+    }
+
+    @Test
+    fun `names of the operator tables and the stored names their statements spell out`() {
+        assertEquals(
+            listOf("permission_grants", "owner_requests", "shared_folders", "operator_apps"),
+            listOf(PermissionGrantEntity.TABLE, OwnerRequestEntity.TABLE, SharedFolderEntity.TABLE, OperatorAppEntity.TABLE),
+        )
+        assertEquals("status = '${OwnerRequestStatus.PENDING.name}'", OwnerRequestDao.IS_PENDING)
+        assertEquals("scope IN ('${GrantScope.TASK.name}', '${GrantScope.ONCE.name}')", PermissionGrantDao.TASK_BOUND)
+        assertTrue("scope = '${GrantScope.ONCE.name}'" in PermissionGrantDao.ONCE_OF_REQUEST, PermissionGrantDao.ONCE_OF_REQUEST)
+        // Grants name their capability and constraint in text; renaming either would orphan every grant the owner gave.
+        assertEquals("", CapabilityConstraint.None.stored)
+        assertEquals("folder:fld_reports", CapabilityConstraint.Folder(FolderId("fld_reports")).stored)
+        assertEquals("app:com.example.notes", CapabilityConstraint.App("com.example.notes").stored)
+        assertEquals(
+            listOf(
+                "workspace.read", "workspace.write", "folders.read", "folders.write", "media.read", "apps.open", "apps.compose",
+                "apps.manage", "web.read", "screen.read", "screen.operate", "scripts.js", "scripts.shell", "scripts.termux",
+            ),
+            listOf(
+                OperatorCapabilities.WORKSPACE_READ, OperatorCapabilities.WORKSPACE_WRITE, OperatorCapabilities.FOLDERS_READ,
+                OperatorCapabilities.FOLDERS_WRITE, OperatorCapabilities.MEDIA_READ, OperatorCapabilities.APPS_OPEN,
+                OperatorCapabilities.APPS_COMPOSE, OperatorCapabilities.APPS_MANAGE, OperatorCapabilities.WEB_READ,
+                OperatorCapabilities.SCREEN_READ, OperatorCapabilities.SCREEN_OPERATE, OperatorCapabilities.SCRIPTS_JS,
+                OperatorCapabilities.SCRIPTS_SHELL, OperatorCapabilities.SCRIPTS_TERMUX,
+            ).map { it.id },
+        )
+    }
+
+    @Test
+    fun `exact columns of the operator rows`() {
+        val s = OperatorSamples
+        assertEquals(
+            PermissionGrantEntity(
+                "grt_1", "agt_operator", "folders.read", "folder:fld_reports", "ONCE", "tsk_1", "req_for_grt_1", 1_000, 601_000, null, 1_200,
+            ),
+            s.grant("grt_1", GrantScope.ONCE).copy(consumedAt = 1_200).toEntity(),
+        )
+        assertEquals(
+            PermissionGrantEntity("grt_2", "agt_other", "web.read", "", "ALWAYS", null, null, 2_000, null, 2_500, null),
+            s.grant("grt_2", at = 2_000, agentId = s.otherAgent, capability = OperatorCapabilities.WEB_READ, constraint = CapabilityConstraint.None)
+                .copy(requestId = null, revokedAt = 2_500).toEntity(),
+        )
+        val request = s.request("req_1").copy(
+            status = OwnerRequestStatus.APPROVED, decidedAt = 1_500, decisionScope = GrantScope.TASK, decisionNote = "Only \"Reports\"",
+        )
+        assertEquals(
+            OwnerRequestEntity(
+                id = "req_1", kind = "PERMISSION", status = "APPROVED", agentId = "agt_operator", toolId = "folders.delete",
+                capability = "folders.write", constraintKey = "folder:fld_reports", risk = "MODIFYING",
+                summary = "Delete \"2024, Q1.csv\" in Reports",
+                detailsJson = """["Reports/2024, Q1.csv (12 KB)","","Line 2: \"quoted\"\nand a new line ✓"]""",
+                dataGoesTo = "Gmail", reason = "I need to \"tidy up\" the folder,\nas you asked 🙂", taskId = "tsk_1", rootId = "tsk_root",
+                conversationId = "cnv_1", createdAt = 1_000, expiresAt = 1_801_000, decidedAt = 1_500, decisionScope = "TASK",
+                decisionNote = "Only \"Reports\"", agentName = "Operator \"Ops\" 🤖", toolTitle = "Delete in a shared folder",
+                targetLabel = "Reports, 2024", delegationChainJson = """["agt_director","agt_other"]""",
+            ),
+            request.toEntity(),
+        )
+        assertEquals(request, request.toEntity().toDomain())
+        assertEquals(
+            SharedFolderEntity("fld_1", "content://tree/primary%3ADocuments", "Documents", 5, readOnly = true),
+            SharedFolder(FolderId("fld_1"), "content://tree/primary%3ADocuments", "Documents", 5, readOnly = true).toEntity(),
+        )
+        assertEquals(
+            OperatorAppEntity("com.example.notes", "Notes", 7, "ab".repeat(32)),
+            OperatorApp("com.example.notes", "Notes", 7, "ab".repeat(32)).toEntity(),
+        )
+        assertEquals(GrantId("grt_1"), s.grant("grt_1").toEntity().toDomain().id)
     }
 
     @Test
