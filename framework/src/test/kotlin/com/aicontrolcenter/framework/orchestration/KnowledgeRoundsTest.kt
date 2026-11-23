@@ -13,6 +13,7 @@ import com.aicontrolcenter.core.memory.MemoryKind
 import com.aicontrolcenter.core.memory.MemoryRecord
 import com.aicontrolcenter.core.memory.MemoryScope
 import com.aicontrolcenter.core.memory.MemoryService
+import com.aicontrolcenter.core.memory.changedFields
 import com.aicontrolcenter.core.tasks.AgentMessage
 import com.aicontrolcenter.core.tasks.MessageRepository
 import com.aicontrolcenter.core.tasks.MessageType
@@ -154,6 +155,73 @@ class KnowledgeRoundsTest {
         }
     }
 
+    /** Where a store fails with an error (not a death: the app goes on). */
+    private enum class Fault { SAVING_MARK, REMEMBER, UPDATE, NOTICE, PROMOTE, DONE, FINAL_WRITE, FINISH_READ }
+
+    /** The stores fail at [at] in the app's life [life], [times] times in all, as a full disk or a broken database would. */
+    private class Faults(val at: Fault, val times: Int = 1, val life: Int = 1) {
+        val hits = AtomicInteger()
+
+        fun check(life: Int, point: Fault) {
+            if (life == this.life && point == at && hits.get() < times) {
+                hits.incrementAndGet()
+                throw IllegalStateException("disk I/O error")
+            }
+        }
+    }
+
+    private class FaultyTasks(private val inner: TaskRepository, private val faults: Faults, private val life: Int) : TaskRepository by inner {
+        override suspend fun upsert(task: TaskRecord) {
+            if (task.kind == TaskKind.OBJECTIVE && task.status.isFinished) faults.check(life, Fault.FINAL_WRITE)
+            inner.upsert(task)
+        }
+
+        /** Reading the objective once its work and synthesis have finished (before it is stored as ended). */
+        override suspend fun get(id: TaskId): TaskRecord? {
+            val task = inner.get(id)
+            if (task?.kind == TaskKind.OBJECTIVE && task.status == TaskStatus.RUNNING && ObjectiveDriver.onlyBookkeeping(inner.getTree(id), id)) faults.check(life, Fault.FINISH_READ)
+            return task
+        }
+    }
+
+    private class FaultyMessages(private val inner: MessageRepository, private val faults: Faults, private val life: Int) : MessageRepository by inner {
+        override suspend fun append(message: AgentMessage) {
+            val record = message.from == Participant.System && message.type == MessageType.STATUS
+            if (record && message.body.startsWith(ObjectiveDriver.KNOWLEDGE_SAVING)) faults.check(life, Fault.SAVING_MARK)
+            if (record && message.body.startsWith(ObjectiveDriver.KNOWLEDGE_DONE)) faults.check(life, Fault.DONE)
+            if (KnowledgeKeeper.isNotice(message)) faults.check(life, Fault.NOTICE)
+            inner.append(message)
+        }
+    }
+
+    private class FaultyMemory(private val inner: MemoryService, private val faults: Faults, private val life: Int) : MemoryService by inner {
+        override suspend fun remember(actor: MemoryActor, draft: MemoryDraft): MemoryRecord {
+            if (draft.kind == MemoryKind.SUMMARY) faults.check(life, Fault.REMEMBER)
+            return inner.remember(actor, draft)
+        }
+
+        override suspend fun update(actor: MemoryActor, id: com.aicontrolcenter.core.MemoryId, change: MemoryChange): MemoryRecord {
+            faults.check(life, Fault.UPDATE)
+            return inner.update(actor, id, change)
+        }
+
+        override suspend fun promoteTaskMemory(actor: MemoryActor, taskId: TaskId, agentId: AgentId, minImportance: Double): List<MemoryRecord> {
+            faults.check(life, Fault.PROMOTE)
+            return inner.promoteTaskMemory(actor, taskId, agentId, minImportance)
+        }
+    }
+
+    /** The app's stores in its life [number]: they die where [life] says, and fail where [faults] (if any) say. */
+    private fun TeamFixture.lifeOrchestrator(
+        scope: CoroutineScope, number: Int, life: Life, tasks: TaskRepository, memory: MemoryService, hang: Hang, faults: Faults?, clock: Clock = world.clock,
+    ): DefaultOrchestrator {
+        val dyingTasks: TaskRepository = DyingTasks(tasks, life)
+        val dyingMessages: MessageRepository = DyingMessages(messages, life)
+        val dyingMemory: MemoryService = DyingMemory(memory, life, hang)
+        if (faults == null) return orchestrator(scope, dyingTasks, dyingMessages, dyingMemory, clock)
+        return orchestrator(scope, FaultyTasks(dyingTasks, faults, number), FaultyMessages(dyingMessages, faults, number), FaultyMemory(dyingMemory, faults, number), clock)
+    }
+
     private fun TestScope.app() = CoroutineScope(backgroundScope.coroutineContext + Job(backgroundScope.coroutineContext[Job]))
 
     /** The app's start-up recovery, run by the app: a life that dies during it (ending an objective early, say) hangs there, not in the test. */
@@ -178,8 +246,9 @@ class KnowledgeRoundsTest {
     /**
      * An objective of two tasks that saves knowledge (unless [save] is off), its work leaving task
      * memory (unless [notes] is off). The app lives [minutes] at a time and [dies] says where it
-     * dies; it is restarted (recovering, and resuming on its own) until the objective ends, then
-     * once more, which must change nothing. Returns the objective and the restarts.
+     * dies (and [faults], if any, where its stores fail); it is restarted (recovering, and
+     * resuming on its own) until the objective ends, then once more, which must change nothing.
+     * Returns the objective and the restarts.
      */
     private suspend fun TestScope.lives(
         team: TeamFixture,
@@ -187,13 +256,14 @@ class KnowledgeRoundsTest {
         hang: Hang = Hang.NONE,
         notes: Boolean = true,
         save: Boolean = true,
+        faults: Faults? = null,
         dies: (life: Int, at: Point) -> Boolean,
     ): Pair<TaskId, Int> {
         val tasks = if (notes) WorkingNotes(team.tasks, team.world.memory) else team.tasks
         var lives = 0
         fun orchestrator(scope: CoroutineScope): DefaultOrchestrator {
             val life = Life(++lives, dies)
-            return team.orchestrator(scope, DyingTasks(tasks, life), DyingMessages(team.messages, life), DyingMemory(team.world.memory, life, hang))
+            return team.lifeOrchestrator(scope, lives, life, tasks, team.world.memory, hang, faults)
         }
         team.script.plan = { _, _ -> ScriptStep.Reply(planJson(listOf(task("a", "Find apps", listOf("research")), task("b", "Compare apps", listOf("analysis"))))) }
         var app = app()
@@ -652,13 +722,15 @@ class KnowledgeRoundsTest {
     /**
      * An objective whose writer fails at first ([writerFailsFirst]) ends in the app's first life;
      * the app starts again and the owner runs the failed task again, which then works. The app
-     * dies where [dies] says, and is restarted (recovering) until the objective ends, then once
-     * more, which must change nothing. Its work leaves task memory in [memory].
+     * dies where [dies] says (and its stores fail where [faults], if any, say), and is restarted
+     * (recovering) until the objective ends, then once more, which must change nothing. Its work
+     * leaves task memory in [memory].
      */
     private suspend fun TestScope.runAgainInLives(
         team: TeamFixture,
         memory: FakeMemoryService = team.world.memory,
         clock: Clock = team.world.clock,
+        faults: Faults? = null,
         dies: (life: Int, at: Point) -> Boolean,
     ): TaskId {
         val allow = team.writerFailsFirst()
@@ -666,7 +738,7 @@ class KnowledgeRoundsTest {
         var lives = 0
         fun orchestrator(scope: CoroutineScope): DefaultOrchestrator {
             val life = Life(++lives, dies)
-            return team.orchestrator(scope, DyingTasks(tasks, life), DyingMessages(team.messages, life), DyingMemory(memory, life, Hang.NONE), clock)
+            return team.lifeOrchestrator(scope, lives, life, tasks, memory, Hang.NONE, faults, clock)
         }
         var app = app()
         val objective = orchestrator(app).startObjective("Research note apps", ObjectiveOptions(saveKnowledge = true))
@@ -868,5 +940,183 @@ class KnowledgeRoundsTest {
             ),
             team.notices(id),
         )
+    }
+
+    // 5. Only the owner's own text is the owner's version (probe n3c).
+
+    @Test
+    fun `a summary the owner only re-tagged or re-weighted is updated to a new result, while one whose content the owner changed is left as it is`() {
+        val edits = listOf(
+            "importance and tags" to listOf(MemoryChange(importance = 1.0, tags = setOf("objective", "summary", "favourite"))),
+            "title" to listOf(MemoryChange(title = "My favourite objective")),
+            "content and tags" to listOf(MemoryChange(content = "The owner's own words.", tags = setOf("favourite"))),
+            "content, then tags" to listOf(MemoryChange(content = "The owner's own words."), MemoryChange(tags = setOf("favourite"))),
+        )
+        for ((case, changes) in edits) runTest {
+            val team = TeamFixture(this).setUp()
+            val allow = team.writerFailsFirst()
+            val orchestrator = team.orchestrator(backgroundScope, tasks = WorkingNotes(team.tasks, team.world.memory))
+            val objective = orchestrator.startObjective("Research note apps", ObjectiveOptions(saveKnowledge = true))
+            team.settle()
+            val first = team.summaries().single()
+            assertTrue(first.content.endsWith("# Final v1"), case)
+            changes.forEach { team.world.memory.update(MemoryActor.Owner, first.id, it) }
+            val edited = team.summaries().single()
+            assertEquals(changes.size + 1, edited.revision, case)
+            allow()
+            orchestrator.retryTask(team.byTitle(objective.id, "Write notes").id)
+            team.settle()
+            val done = team.objective(objective.id)
+            val summary = team.summaries().single()
+            assertEquals("# Final v2", done.result, case)
+            if (changes.any { it.content != null }) {
+                assertEquals("Completed: 2 of 2 tasks produced results. ${ownersVersion(first.id.value)}", done.statusDetail, case)
+                assertEquals(edited, summary, case)
+                assertEquals(1, team.notices(objective.id).size, case)
+            } else {
+                // The Director's text, brought up to date; what the owner changed is kept.
+                assertEquals("Completed: 2 of 2 tasks produced results.", done.statusDetail, case)
+                assertTrue(summary.content.endsWith("# Final v2"), "$case: ${summary.content}")
+                assertEquals(edited.copy(content = summary.content, updatedAt = summary.updatedAt, revision = edited.revision + 1, history = summary.history), summary, case)
+                assertEquals(setOf("content"), summary.history.last().changedFields(), case)
+                assertEquals(
+                    listOf(
+                        "Saved a summary of this objective to its own memory (memory ${first.id.value}).",
+                        "Updated the summary of this objective in its own memory to final result 2 (memory ${first.id.value}).",
+                    ),
+                    team.notices(objective.id), case,
+                )
+            }
+            assertEquals(4, team.promoted().size, case)
+        }
+    }
+
+    // 6. A store error never costs a finished objective its result (probe verify4e, storeErrors).
+
+    @Test
+    fun `an error storing what finishing writes leaves the objective completed with its result, and its status says what of its knowledge is stored`() {
+        val error = "an error inside the app (IllegalStateException)"
+        /** What the objective's status says of its knowledge after an error at [fault]: from what is stored. */
+        suspend fun TeamFixture.noteAfter(fault: Fault): String? = when (fault) {
+            Fault.SAVING_MARK -> "${ObjectiveDriver.NOT_SAVED}: $error."
+            Fault.REMEMBER -> "${ObjectiveDriver.PARTLY_SAVED}: the team's task memories were kept, but no summary was saved: $error."
+            Fault.NOTICE -> "${ObjectiveDriver.SAVED}: the summary is in the Director's own memory (memory ${summaryId()})."
+            Fault.PROMOTE -> partly(summaryId(), error)
+            else -> null
+        }
+        val faults = listOf(Fault.SAVING_MARK, Fault.REMEMBER, Fault.NOTICE, Fault.PROMOTE, Fault.DONE, Fault.FINAL_WRITE)
+        // In a normal finish, and in a finish at start-up after the app died as it began saving.
+        for (startUp in listOf(false, true)) for (autoResume in listOf(true, false)) for (fault in faults) {
+            if (!startUp && !autoResume) continue
+            runTest {
+                val team = TeamFixture(this) { copy(autoResumeInterruptedTasks = autoResume, maxTaskAttempts = 2) }.setUp()
+                val failing = Faults(fault, life = if (startUp) 2 else 1)
+                val (id, restarts) = lives(team, faults = failing) { life, at -> startUp && life == 1 && at == Point.AFTER_SAVING_MARK }
+                val case = "$fault, ${if (startUp) "at start-up, auto-resume ${if (autoResume) "on" else "off"}" else "in a normal finish"}"
+                val ended = team.objective(id)
+                val note = team.noteAfter(fault)
+                assertEquals(1, failing.hits.get(), case)
+                assertEquals(if (startUp) 1 else 0, restarts, case)
+                assertEquals(TaskStatus.COMPLETED, ended.status, case)
+                assertEquals("# Final\nAll done.", ended.result, case)
+                assertEquals("Completed: 2 of 2 tasks produced results.${note?.let { " $it" }.orEmpty()}", ended.statusDetail, case)
+                assertEquals(1, team.ends(id), case)
+                assertEquals(0, team.logged(id, "Objective failed"), case)
+                assertEquals(0, team.logged(id, ObjectiveDriver.NOT_FINISHED), case)
+                if (fault == Fault.DONE) {
+                    assertEquals(1, team.logged(id, "Knowledge record not stored"), case)
+                    assertEquals(emptyList<String>(), team.records(id, ObjectiveDriver.KNOWLEDGE_DONE), case)
+                } else {
+                    assertEquals(listOf("Done saving what the team learned from final result 1${note?.let { ": $it" } ?: "."}"), team.records(id, ObjectiveDriver.KNOWLEDGE_DONE), case)
+                }
+                // The error itself is logged as a warning (a final write that works when tried again is not).
+                assertEquals(fault != Fault.FINAL_WRITE, team.world.log.all.any { it.rootTaskId == id && it.detail.contains("IllegalStateException") }, case)
+                if (fault == Fault.SAVING_MARK) assertEquals(4, team.unkept(id).size, "$case: the round ended at the error")
+            }
+        }
+    }
+
+    @Test
+    fun `an error updating the summary of a task run again, or telling of it, is said in the objective's status`() {
+        val error = "an error inside the app (IllegalStateException)"
+        for (fault in listOf(Fault.UPDATE, Fault.NOTICE)) runTest {
+            val team = TeamFixture(this) { copy(autoResumeInterruptedTasks = true) }.setUp()
+            val faults = Faults(fault, life = 2)
+            val id = runAgainInLives(team, faults = faults) { _, _ -> false }
+            val done = team.objective(id)
+            val summary = team.summaries().single()
+            assertEquals(1, faults.hits.get(), "$fault")
+            assertEquals("# Final v2", done.result, "$fault")
+            assertEquals(2, team.ends(id), "$fault")
+            val note = when (fault) {
+                Fault.UPDATE -> "${ObjectiveDriver.PARTLY_SAVED}: the team's task memories were kept, but the summary in the Director's own memory (memory ${summary.id.value}) was not updated to this result: $error."
+                else -> "${ObjectiveDriver.SAVED}: the summary is in the Director's own memory (memory ${summary.id.value})."
+            }
+            assertEquals("Completed: 2 of 2 tasks produced results. $note", done.statusDetail, "$fault")
+            assertTrue(summary.content.endsWith(if (fault == Fault.UPDATE) "# Final v1" else "# Final v2"), "$fault: ${summary.content}")
+            assertEquals(4, team.promoted().size, "$fault")
+        }
+    }
+
+    @Test
+    fun `an objective whose end cannot be stored is not failed, and is finished at the next start with its result`() {
+        // The final write fails twice (it is tried once more); or reading the store fails once its work and synthesis have finished.
+        for ((fault, times) in listOf(Fault.FINAL_WRITE to 2, Fault.FINISH_READ to 1)) for (autoResume in listOf(true, false)) runTest {
+            val team = TeamFixture(this) { copy(autoResumeInterruptedTasks = autoResume) }.setUp()
+            val faults = Faults(fault, times)
+            val case = "${faults.at}, auto-resume ${if (autoResume) "on" else "off"}"
+            val tasks = WorkingNotes(team.tasks, team.world.memory)
+            team.script.plan = { _, _ -> ScriptStep.Reply(planJson(listOf(task("a", "Find apps", listOf("research")), task("b", "Compare apps", listOf("analysis"))))) }
+            var app = app()
+            val objective = team.lifeOrchestrator(app, 1, Life(1) { _, _ -> false }, tasks, team.world.memory, Hang.NONE, faults)
+                .startObjective("Research note apps", ObjectiveOptions(saveKnowledge = true))
+            team.alive(5)
+            val left = team.objective(objective.id)
+            assertEquals(faults.times, faults.hits.get(), case)
+            assertEquals(TaskStatus.RUNNING, left.status, "$case: not failed, and its end not stored")
+            assertEquals(1, team.logged(objective.id, ObjectiveDriver.NOT_FINISHED), case)
+            assertEquals(0, team.logged(objective.id, "Objective failed"), case)
+            val calls = team.script.seen.size
+            app.cancel()
+            app = app()
+            restart(app, team.lifeOrchestrator(app, 2, Life(2) { _, _ -> false }, tasks, team.world.memory, Hang.NONE, faults))
+            team.alive(1)
+            val ended = team.objective(objective.id)
+            assertEquals(TaskStatus.COMPLETED, ended.status, case)
+            assertEquals("# Final\nAll done.", ended.result, case)
+            assertEquals("Completed: 2 of 2 tasks produced results.", ended.statusDetail, case)
+            assertEquals(calls, team.script.seen.size, "$case: no agent ran at start-up")
+            assertEquals(1, team.ends(objective.id), case)
+            assertEquals(1, team.logged(objective.id, ObjectiveDriver.FINISHED_AT_START_UP), case)
+            assertEquals(1, team.summaries().size, case)
+            assertEquals(4, team.promoted().size, case)
+            app.cancel()
+        }
+    }
+
+    // 7. What the owner stopped stays stopped.
+
+    @Test
+    fun `an objective the owner paused stays paused at start-up, even when one of its tasks reads as interrupted`() = runTest {
+        val team = TeamFixture(this) { copy(autoResumeInterruptedTasks = true) }.setUp()
+        team.script.plan = { _, _ -> ScriptStep.Reply(planJson(listOf(task("a", "Find apps", listOf("research")), task("b", "Compare apps", listOf("analysis"))))) }
+        team.script.work = { delay(10 * MINUTE_MS); ScriptStep.Reply("Found Alpha") }
+        val objective = team.start(options = ObjectiveOptions(saveKnowledge = true))
+        team.settle(MINUTE_MS)
+        team.orchestrator.pause(objective.id)
+        val paused = team.byTitle(objective.id, "Find apps")
+        assertEquals(TaskStatus.PAUSED, paused.status)
+        team.tasks.upsert(paused.copy(status = TaskStatus.INTERRUPTED))
+        val before = team.tree(objective.id)
+        val messages = team.messages(objective.id).size
+        val calls = team.script.seen.size
+        val app = app()
+        val recovered = team.orchestrator(app).recoverInterrupted()
+        team.alive(30)
+        assertEquals(emptyList<TaskId>(), recovered)
+        assertEquals(before, team.tree(objective.id), "the objective and its tasks are as the owner left them")
+        assertEquals(messages, team.messages(objective.id).size)
+        assertEquals(calls, team.script.seen.size, "no agent ran")
+        app.cancel()
     }
 }

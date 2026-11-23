@@ -31,6 +31,7 @@ import com.aicontrolcenter.core.memory.ProvenanceAction
 import com.aicontrolcenter.core.memory.ProvenanceEvent
 import com.aicontrolcenter.core.memory.ProvenanceOrigin
 import com.aicontrolcenter.core.memory.RecallQuery
+import com.aicontrolcenter.core.memory.editedNote
 import com.aicontrolcenter.core.memoryId
 import com.aicontrolcenter.core.registry.AgentRepository
 import com.aicontrolcenter.core.spaceId
@@ -122,17 +123,34 @@ class FakeMemoryService(
         return record
     }
 
-    /** As the memory store does, each change adds a revision and an entry to the history naming who made it. */
+    /**
+     * As the memory store does: a change that changes nothing returns the memory as it is; any
+     * other adds a revision and an entry to the history naming who made it and, in its note, the
+     * fields it changed ("content, tags changed").
+     */
     override suspend fun update(actor: MemoryActor, id: MemoryId, change: MemoryChange): MemoryRecord {
         val current = get(actor, id) ?: throw MemoryValidationException("There is no memory $id.")
         if (!access(actor).canWrite(current.scope)) throw MemoryPermissionException("${name(actor)} may not change that memory.")
         val now = clock.now()
         val by = (actor as? MemoryActor.Agent)?.profile?.id
-        val updated = current.copy(
+        val candidate = current.copy(
             title = change.title ?: current.title, content = change.content ?: current.content, kind = change.kind ?: current.kind,
             tags = change.tags ?: current.tags, importance = change.importance ?: current.importance,
+            confidence = change.confidence ?: current.confidence, tier = change.tier ?: current.tier,
+        )
+        val changed = listOfNotNull(
+            "title".takeIf { candidate.title != current.title },
+            "content".takeIf { candidate.content != current.content },
+            "kind".takeIf { candidate.kind != current.kind },
+            "tags".takeIf { candidate.tags != current.tags },
+            "importance".takeIf { candidate.importance != current.importance },
+            "confidence".takeIf { candidate.confidence != current.confidence },
+            "tier".takeIf { candidate.tier != current.tier },
+        )
+        if (changed.isEmpty()) return current
+        val updated = candidate.copy(
             updatedAt = now, revision = current.revision + 1,
-            history = current.history + ProvenanceEvent(ProvenanceAction.EDITED, if (by == null) ProvenanceOrigin.OWNER else ProvenanceOrigin.AGENT, by, now),
+            history = current.history + ProvenanceEvent(ProvenanceAction.EDITED, if (by == null) ProvenanceOrigin.OWNER else ProvenanceOrigin.AGENT, by, now, note = editedNote(changed)),
         )
         repository.upsert(updated)
         return updated

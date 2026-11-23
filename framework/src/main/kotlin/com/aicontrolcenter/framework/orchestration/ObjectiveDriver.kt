@@ -52,7 +52,11 @@ import kotlinx.coroutines.withTimeoutOrNull
  * Saving knowledge and announcing the ending happen once for each run, judged by the records of
  * that run, never by times or by the order of messages.
  *
- * Nothing that goes wrong inside escapes: an unexpected error fails this objective only.
+ * Nothing that goes wrong inside escapes: an unexpected error fails this objective only, unless
+ * its work and synthesis have finished: then a store error never costs it its result. An error
+ * while saving knowledge ends that round with a note saying what is stored; one in storing the
+ * final status is tried once more, and then the objective is left for the start-up recovery to
+ * finish (only bookkeeping is left, which runs no agent).
  */
 internal class ObjectiveDriver(
     private val ctx: OrchestrationContext,
@@ -312,7 +316,9 @@ internal class ObjectiveDriver(
      * the lock only when that is still all there is: returns false, ending nothing, when a task
      * was queued again meanwhile (the driver then goes on), true otherwise. Saving knowledge is
      * a bounded step of its own ([saveKnowledge]); the ending is announced right before the final
-     * status is written ([announce]). [atStartUp]: the log says it was finished at start-up.
+     * status is written ([announce]). A store error on that write is tried once more, and then
+     * the objective is left for the start-up recovery ([storeEnding]). [atStartUp]: the log says
+     * it was finished at start-up.
      */
     private suspend fun finish(rt: ObjectiveRuntime, atStartUp: Boolean = false): Boolean {
         val objective = ctx.tasks.get(rt.rootId)?.takeIf { it.status == TaskStatus.RUNNING } ?: return true
@@ -329,14 +335,37 @@ internal class ObjectiveDriver(
                 again = true
                 return@withLockNonCancellable null
             }
-            ended(current, outcome, note).also {
-                announce(it)
-                ctx.tasks.upsert(it)
-            }
+            ended(current, outcome, note).also { announce(it) }.takeIf { storeEnding(it) }
         }
         if (atStartUp && ended != null) ctx.journal.taskChanged(ended, FINISHED_AT_START_UP)
         return !again
     }
+
+    /**
+     * Stores the objective's final status ([ended]), trying once more after a store error. When
+     * that fails too, the objective is left as it is stored, running with only bookkeeping left,
+     * for the start-up recovery to finish ([leftForStartUp]); returns false then.
+     */
+    private suspend fun storeEnding(ended: TaskRecord): Boolean {
+        var error: Exception? = null
+        repeat(2) {
+            try {
+                ctx.tasks.upsert(ended)
+                return true
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                error = e
+            }
+        }
+        leftForStartUp(ended, error!!)
+        return false
+    }
+
+    /** Logs that an error ([e]) kept [objective] from being finished now: the start-up recovery finishes it, its result kept. */
+    private suspend fun leftForStartUp(objective: TaskRecord, e: Exception) = ctx.journal.warn(
+        objective.rootId, objective, NOT_FINISHED,
+        "An error inside the app (${e::class.simpleName}) kept \"${objective.title}\" from being finished. Its work is done and nothing of it is lost: only bookkeeping is left.",
+    )
 
     /**
      * Saves what the objective taught the team from its final document, the one of run [round]:
@@ -357,48 +386,65 @@ internal class ObjectiveDriver(
      *  - An attempt repeats nothing already stored ([KnowledgeKeeper]).
      *  - It runs within the objective's time left (and one task's time limit); with no time
      *    left, it is skipped.
+     *  - A store error ends it: it is logged, and the note says what is stored and that an error
+     *    stopped the rest ([failedWith]). The objective then finishes as it would have.
      * Returns the note for the objective's status when knowledge was not (fully) saved, or the
      * summary holds the owner's version, else null. The note says what is stored ([storedNote]).
      */
     private suspend fun saveKnowledge(objective: TaskRecord, outcome: Outcome, round: Int): String? {
         val document = outcome.document
         val written = outcome.written
-        val records = ctx.messages.list(objective.id).filter { it.from == Participant.System && it.type == MessageType.STATUS }
-        records.lastOrNull { isRecord(it.body, KNOWLEDGE_DONE, round) }?.let { return noteOf(it.body, round) }
-        val limits = ctx.limits(objective, ctx.settings.get())
-        val attempts = records.filter { isRecord(it.body, KNOWLEDGE_SAVING, round) }
-        val tried = attempts.size - records.count { isRecord(it.body, KNOWLEDGE_STOPPED, round) }
-        val left = (objective.deadlineAt ?: Long.MAX_VALUE) - ctx.clock.now()
-        val skipped = when {
-            left <= 0 -> "the objective had no time left"
-            tried >= limits.maxTaskAttempts -> "saving it was interrupted $tried time(s), and no attempts are left"
-            else -> null
+        val note = try {
+            val records = ctx.messages.list(objective.id).filter { it.from == Participant.System && it.type == MessageType.STATUS }
+            records.lastOrNull { isRecord(it.body, KNOWLEDGE_DONE, round) }?.let { return noteOf(it.body, round) }
+            val limits = ctx.limits(objective, ctx.settings.get())
+            val attempts = records.filter { isRecord(it.body, KNOWLEDGE_SAVING, round) }
+            val tried = attempts.size - records.count { isRecord(it.body, KNOWLEDGE_STOPPED, round) }
+            val left = (objective.deadlineAt ?: Long.MAX_VALUE) - ctx.clock.now()
+            val skipped = when {
+                left <= 0 -> "the objective had no time left"
+                tried >= limits.maxTaskAttempts -> "saving it was interrupted $tried time(s), and no attempts are left"
+                else -> null
+            }
+            if (skipped != null) return storedNote(objective, document, written, skipped)
+            // The summary's revision when the round began: read before its first attempt, then from that attempt's record.
+            val startRevision = when {
+                !written -> null
+                attempts.isEmpty() -> summaryRevision(objective)
+                else -> REVISION.find(attempts.first().body)?.groupValues?.get(1)?.toIntOrNull()
+            }
+            val revision = startRevision?.let { ", summary at revision $it" }.orEmpty()
+            ctx.journal.send(objective.id, objective, Participant.System, Participant.Owner, MessageType.STATUS, "$KNOWLEDGE_SAVING ${resultOf(round)} (attempt ${tried + 1} of ${limits.maxTaskAttempts}$revision).")
+            // What the attempt did; null: the round reached its time limit.
+            val saved = try {
+                withTimeoutOrNull(minOf(left, limits.taskTimeoutMs)) { knowledge.save(objective, document, written, finalResult(round), startRevision) }
+            } catch (e: CancellationException) {
+                withContext(NonCancellable) { recordIfStoppedByOwner(objective, round) }
+                throw e
+            }
+            when {
+                saved == null -> storedNote(objective, document, written, "saving it reached its time limit")
+                saved.error != null -> storedNote(objective, document, written, failedWith(saved.error), errored = true)
+                !written -> storedNote(objective, document, written, NOT_WRITTEN)
+                saved.ownersVersion -> storedNote(objective, document, written, null)
+                else -> null
+            }
+        } catch (e: Exception) {
+            rethrowIfCancelled(e)
+            ctx.journal.warn(objective.id, objective, "Knowledge not saved", "${failedWith(e).replaceFirstChar { it.uppercase() }} stopped saving what the team learned ${resultOf(round)}.")
+            storedNote(objective, document, written, failedWith(e), errored = true)
         }
-        if (skipped != null) return storedNote(objective, document, written, skipped)
-        // The summary's revision when the round began: read before its first attempt, then from that attempt's record.
-        val startRevision = when {
-            !written -> null
-            attempts.isEmpty() -> summaryRevision(objective)
-            else -> REVISION.find(attempts.first().body)?.groupValues?.get(1)?.toIntOrNull()
+        try {
+            ctx.journal.send(objective.id, objective, Participant.System, Participant.Owner, MessageType.STATUS, "$KNOWLEDGE_DONE ${resultOf(round)}${note?.let { ": $it" } ?: "."}")
+        } catch (e: Exception) {
+            rethrowIfCancelled(e) // the round ended all the same; without its record, a later finish saves again, repeating nothing
+            ctx.journal.warn(objective.id, objective, "Knowledge record not stored", "${failedWith(e).replaceFirstChar { it.uppercase() }} kept the end of saving what the team learned ${resultOf(round)} from being recorded. What was saved is kept.")
         }
-        val revision = startRevision?.let { ", summary at revision $it" }.orEmpty()
-        ctx.journal.send(objective.id, objective, Participant.System, Participant.Owner, MessageType.STATUS, "$KNOWLEDGE_SAVING ${resultOf(round)} (attempt ${tried + 1} of ${limits.maxTaskAttempts}$revision).")
-        // Whether the summary holds the owner's version; null: the round reached its time limit.
-        val ownersVersion = try {
-            withTimeoutOrNull(minOf(left, limits.taskTimeoutMs)) { knowledge.save(objective, document, written, finalResult(round), startRevision) }
-        } catch (e: CancellationException) {
-            withContext(NonCancellable) { recordIfStoppedByOwner(objective, round) }
-            throw e
-        }
-        val note = when {
-            ownersVersion == null -> storedNote(objective, document, written, "saving it reached its time limit")
-            !written -> storedNote(objective, document, written, NOT_WRITTEN)
-            ownersVersion -> storedNote(objective, document, written, null)
-            else -> null
-        }
-        ctx.journal.send(objective.id, objective, Participant.System, Participant.Owner, MessageType.STATUS, "$KNOWLEDGE_DONE ${resultOf(round)}${note?.let { ": $it" } ?: "."}")
         return note
     }
+
+    /** Why a store error ([e]) stopped saving knowledge, for its note: "an error inside the app (IllegalStateException)". */
+    private fun failedWith(e: Exception) = "an error inside the app (${e::class.simpleName})"
 
     /** The revision of the objective's summary, when one is stored; null when none is, or the store cannot tell. */
     private suspend fun summaryRevision(objective: TaskRecord): Int? = try {
@@ -428,10 +474,11 @@ internal class ObjectiveDriver(
      * The note on the knowledge stored for [document] ([written]: by the Director), after saving
      * stopped because of [why] (null: it ended, the summary holding the owner's version), from
      * what is stored; also logged as a warning when something was not saved. Null when all of it
-     * is stored all the same.
+     * is stored all the same ([errored]: an error stopped it, so the owner may not have been told
+     * of the summary in this round: the note then names it).
      */
-    private suspend fun storedNote(objective: TaskRecord, document: String, written: Boolean, why: String?): String? {
-        val note = noteOn(knowledge.stored(objective, document), why, written) ?: return null
+    private suspend fun storedNote(objective: TaskRecord, document: String, written: Boolean, why: String?, errored: Boolean = false): String? {
+        val note = noteOn(knowledge.stored(objective, document), why, written, errored) ?: return null
         note.warning?.let { ctx.journal.warn(objective.id, objective, it, note.text) }
         return note.text
     }
@@ -445,11 +492,14 @@ internal class ObjectiveDriver(
      * status says): nothing when everything is stored and the owner was told where the summary
      * is. Otherwise the note names the summary memory and where it is, says when it holds the
      * owner's version (which is as it should be), and says the task memories may not all have
-     * been kept unless the store shows they were.
+     * been kept unless the store shows they were. With no summary, it says the task memories
+     * were kept when there were some and all were (or the document was assembled, when none is
+     * left unkept). [errored]: an error stopped saving, which may have kept the owner from being
+     * told of the summary (in this round): the note names it.
      */
-    private fun noteOn(stored: KnowledgeKeeper.Stored, why: String?, written: Boolean = true): Note? {
+    private fun noteOn(stored: KnowledgeKeeper.Stored, why: String?, written: Boolean = true, errored: Boolean = false): Note? {
         val tail = why?.let { ": $it." } ?: "."
-        val summary = stored.summary ?: return if (!written && stored.kept == true) {
+        val summary = stored.summary ?: return if (stored.kept == true && (!written || stored.keptSome)) {
             Note("$PARTLY_SAVED: the team's task memories were kept, but no summary was saved$tail", PART_TITLE)
         } else {
             Note("$NOT_SAVED$tail", "Knowledge not saved")
@@ -457,7 +507,7 @@ internal class ObjectiveDriver(
         val named = "${stored.place} (memory ${summary.id.value})"
         val behind = if (stored.ownersVersion) "the summary in $named holds the owner's version" else "the summary in $named was not updated to this result"
         return when {
-            stored.current && stored.kept == true -> if (stored.told) null else Note("$SAVED: the summary is in $named.", null)
+            stored.current && stored.kept == true -> if (stored.told && !errored) null else Note("$SAVED: the summary is in $named.", null)
             stored.current -> Note("$PARTLY_SAVED: the summary was saved to $named, but the team's task memories may not all have been kept$tail", PART_TITLE)
             stored.ownersVersion && stored.kept == true -> Note("$SAVED: $behind.", null)
             stored.kept == true -> Note("$PARTLY_SAVED: the team's task memories were kept, but $behind$tail", PART_TITLE)
@@ -579,18 +629,30 @@ internal class ObjectiveDriver(
         }
     }
 
+    /**
+     * Fails the objective after an unexpected error ([e]), unless its work and synthesis have
+     * finished ([onlyBookkeeping]): such an objective keeps its result, left for the start-up
+     * recovery to finish ([leftForStartUp]).
+     */
     private suspend fun internalFailure(rt: ObjectiveRuntime, e: Exception) {
         val reason = "An error inside the app stopped this objective (${e::class.simpleName})."
+        var left: TaskRecord? = null
         val failed = rt.lock.withLockNonCancellable {
             val objective = ctx.tasks.get(rt.rootId)?.takeIf { !it.status.isFinished } ?: return@withLockNonCancellable null
             val now = ctx.clock.now()
-            val open = ctx.tasks.getTree(rt.rootId).filter { it.id != rt.rootId && !it.status.isFinished }
+            val tree = ctx.tasks.getTree(rt.rootId)
+            if (onlyBookkeeping(tree, rt.rootId)) {
+                left = objective
+                return@withLockNonCancellable null
+            }
+            val open = tree.filter { it.id != rt.rootId && !it.status.isFinished }
                 .map { it.copy(status = TaskStatus.CANCELLED, error = reason, finishedAt = now, updatedAt = now) }
             val updated = objective.copy(status = TaskStatus.FAILED, error = reason, statusDetail = reason, finishedAt = now, updatedAt = now)
             ctx.tasks.upsertAll(open + updated)
             updated
-        } ?: return
-        ctx.journal.taskChanged(failed, "Objective failed", Severity.ERROR)
+        }
+        left?.let { leftForStartUp(it, e) }
+        failed?.let { ctx.journal.taskChanged(it, "Objective failed", Severity.ERROR) }
     }
 
     private suspend fun isRunning(rootId: TaskId): Boolean = ctx.tasks.get(rootId)?.status == TaskStatus.RUNNING
@@ -627,6 +689,17 @@ internal class ObjectiveDriver(
 
         /** Opens the log entry of an objective the start-up recovery finished, only bookkeeping being left. */
         const val FINISHED_AT_START_UP = "Objective finished at start-up"
+
+        /** The warning logged when an error kept a finished objective's end from being stored: the start-up recovery finishes it. */
+        const val NOT_FINISHED = "Could not finish the objective; it will be finished at the next start"
+
+        /**
+         * What is left of an objective needs no agent and no model: it has a plan, and every task of
+         * it has finished, so its final document is written or can be assembled, and only saving
+         * knowledge, announcing the ending and storing it remain.
+         */
+        fun onlyBookkeeping(tree: List<TaskRecord>, rootId: TaskId): Boolean =
+            tree.any { it.kind == TaskKind.WORK || it.kind == TaskKind.SYNTHESIS } && tree.all { it.id == rootId || it.status.isFinished }
 
         /** Why a document assembled from the results has no summary saved from it. */
         const val NOT_WRITTEN = "the Director could not write the final document"

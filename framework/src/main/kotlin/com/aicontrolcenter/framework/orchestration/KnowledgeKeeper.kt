@@ -12,7 +12,9 @@ import com.aicontrolcenter.core.memory.MemoryRecord
 import com.aicontrolcenter.core.memory.MemoryScope
 import com.aicontrolcenter.core.memory.Provenance
 import com.aicontrolcenter.core.memory.ProvenanceAction
+import com.aicontrolcenter.core.memory.ProvenanceEvent
 import com.aicontrolcenter.core.memory.ProvenanceOrigin
+import com.aicontrolcenter.core.memory.changedFields
 import com.aicontrolcenter.core.tasks.AgentMessage
 import com.aicontrolcenter.core.tasks.MessageType
 import com.aicontrolcenter.core.tasks.Participant
@@ -29,9 +31,10 @@ import kotlinx.coroutines.flow.first
  *    write, or into its own memory when it may write no space. Whenever it does not hold what the
  *    final document's summary should be (a task run again gave another document, or an earlier
  *    update failed), that same memory is updated in place through the memory service (which
- *    keeps its history), never written twice; unless the owner edited it since the Director last
- *    wrote it: the owner's version is left as it is. Provenance names the objective and the
- *    Director's model. A document the Director could not write gives no summary.
+ *    keeps its history), never written twice; unless the owner changed its content since the
+ *    Director last wrote it: the owner's version is left as it is (a change of its importance,
+ *    tags, title or tier only is not). Provenance names the objective and the Director's model.
+ *    A document the Director could not write gives no summary.
  *  - Each agent's task memory of the objective's completed work is promoted into its long-term
  *    memory, as that agent, for every completed task each time (promoting again keeps nothing
  *    twice: the memory store expires what it promoted, in the same transaction as the copies).
@@ -44,7 +47,8 @@ import kotlinx.coroutines.flow.first
  * earlier attempt of the round updated it (its revision is past the one the round began with).
  *
  * Nothing here can fail the objective: a permission refusal or a store error is logged and
- * the objective finishes as it would have.
+ * the objective finishes as it would have; a store error is also returned ([Saved.error]), so
+ * that the objective's status can say what was not saved.
  */
 internal class KnowledgeKeeper(private val ctx: OrchestrationContext) {
 
@@ -62,7 +66,16 @@ internal class KnowledgeKeeper(private val ctx: OrchestrationContext) {
         val told: Boolean,
         /** No completed task's important task memory is left unkept; null when the store could not tell. */
         val kept: Boolean?,
+        /** The completed tasks had important task memory, and all of it was kept. */
+        val keptSome: Boolean = false,
     )
+
+    /**
+     * What an attempt to save did: whether the summary holds the owner's version (left as it
+     * is), and the first store error it met ([save] went on with the rest after it), if any. A
+     * permission refusal is not such an error: it is logged only.
+     */
+    class Saved(val ownersVersion: Boolean, val error: Exception?)
 
     /**
      * Saves what the objective taught the team, its final document being [document], in the
@@ -70,17 +83,21 @@ internal class KnowledgeKeeper(private val ctx: OrchestrationContext) {
      * so the summary is saved from it; an assembled document only has the team's task memories
      * kept. [startRevision]: the summary's revision when the round began (null: none was
      * stored), which tells a summary an earlier attempt of this round updated from one an
-     * earlier round left. Returns true when the summary holds the owner's version, left as it is.
+     * earlier round left. A step that fails is logged, and the others still run.
      */
-    suspend fun save(objective: TaskRecord, document: String, written: Boolean, result: String, startRevision: Int?): Boolean {
+    suspend fun save(objective: TaskRecord, document: String, written: Boolean, result: String, startRevision: Int?): Saved {
         val memory = ctx.memory ?: run {
             ctx.journal.warn(objective.id, objective, "Knowledge not saved", "Memory is not available in this build.")
-            return false
+            return Saved(false, null)
         }
-        val directorId = objective.assignee ?: return false
+        val directorId = objective.assignee ?: return Saved(false, null)
         val director = ctx.agents.get(directorId) ?: run {
             ctx.journal.warn(objective.id, objective, "Knowledge not saved", "The Director no longer exists.")
-            return false
+            return Saved(false, null)
+        }
+        var error: Exception? = null
+        fun failed(e: Exception) {
+            if (e !is MemoryPermissionException && error == null) error = e
         }
         var owners = false
         if (written) {
@@ -89,6 +106,7 @@ internal class KnowledgeKeeper(private val ctx: OrchestrationContext) {
             } catch (e: Exception) {
                 rethrowIfCancelled(e)
                 ctx.journal.warn(objective.id, objective, "Knowledge not saved", refusal(e), directorId)
+                failed(e)
             }
         }
         for ((task, agent) in keptWork(objective)) {
@@ -97,9 +115,10 @@ internal class KnowledgeKeeper(private val ctx: OrchestrationContext) {
             } catch (e: Exception) {
                 rethrowIfCancelled(e)
                 ctx.journal.warn(objective.id, task, "Task memory not kept", refusal(e), agent.id)
+                failed(e)
             }
         }
-        return owners
+        return Saved(owners, error)
     }
 
     /**
@@ -138,11 +157,18 @@ internal class KnowledgeKeeper(private val ctx: OrchestrationContext) {
         ctx.journal.send(objective.id, objective, from, Participant.Owner, MessageType.STATUS, body)
     }
 
-    /** The owner edited [summary] since its Director last did (its history, in order, says so; its first version is the Director's). */
+    /**
+     * The owner changed [summary]'s content since its Director last wrote it (its history, in
+     * order, says so; its first version is the Director's). Only edits that changed the content
+     * count: an owner who only changed its importance, tags, title or tier left the Director's
+     * text, which is then kept up to date. An edit whose note does not name its fields counts.
+     */
     private fun ownersVersion(summary: MemoryRecord, directorId: AgentId): Boolean {
-        val edits = summary.history.filter { it.action == ProvenanceAction.EDITED }
+        val edits = summary.history.filter { it.action == ProvenanceAction.EDITED && it.changedContent() }
         return edits.indexOfLast { it.byOrigin == ProvenanceOrigin.OWNER } > edits.indexOfLast { it.byOrigin == ProvenanceOrigin.AGENT && it.byAgentId == directorId }
     }
+
+    private fun ProvenanceEvent.changedContent(): Boolean = changedFields().let { it.isEmpty() || CONTENT in it }
 
     /** Writes the summary as the Director, into the first shared space it may write, else its own memory; null when it may write neither. */
     private suspend fun writeSummary(objective: TaskRecord, director: AgentProfile, content: String): MemoryRecord? {
@@ -189,40 +215,47 @@ internal class KnowledgeKeeper(private val ctx: OrchestrationContext) {
      * What is stored of the objective's knowledge against its final [document]: the summary,
      * whether it holds that document and the owner was told of it, and whether the team's
      * important task memories were all kept. Read for the objective's status when saving did not
-     * end; a store that fails to answer reads as nothing stored (and nothing known to be kept).
+     * end; a store that fails to answer reads as nothing stored (and nothing known to be kept, or
+     * told). It never fails but for cancellation.
      */
     suspend fun stored(objective: TaskRecord, document: String): Stored {
-        val summary = try {
-            savedSummary(objective)
-        } catch (e: Exception) {
-            rethrowIfCancelled(e)
-            null
-        }
-        val told = summary != null && objective.assignee?.let { director ->
-            ctx.messages.list(objective.id).any { it.from == Participant.Agent(director) && isNotice(it) && it.body.contains(noticeOf(summary.id.value)) }
+        val summary = orNull { savedSummary(objective) }
+        val told = summary != null && orNull {
+            objective.assignee?.let { director ->
+                ctx.messages.list(objective.id).any { it.from == Participant.Agent(director) && isNotice(it) && it.body.contains(noticeOf(summary.id.value)) }
+            }
         } == true
-        val place = summary?.let { placeOf(it.scope, "the Director's own memory") }.orEmpty()
+        val place = summary?.let { orNull { placeOf(it.scope, "the Director's own memory") } ?: "a shared space" }.orEmpty()
         val owners = summary != null && objective.assignee?.let { ownersVersion(summary, it) } == true
-        return Stored(summary, place, summary != null && same(summary.content, summary(objective, document)), owners, told, memoriesKept(objective))
+        val kept = memoriesKept(objective)
+        return Stored(summary, place, summary != null && same(summary.content, summary(objective, document)), owners, told, kept?.first, kept?.second == true)
+    }
+
+    private suspend fun <T> orNull(read: suspend () -> T): T? = try {
+        read()
+    } catch (e: Exception) {
+        rethrowIfCancelled(e)
+        null
     }
 
     /**
      * Whether no completed task of the objective has important task memory left unkept (what
-     * [save] promotes is expired once kept): true when there is none to keep; null when the store
-     * cannot tell. One query, by the tasks' scopes.
+     * [save] promotes is expired once kept): true when there is none to keep; and whether there
+     * was some, all of it kept. Null when the store cannot tell. One query, by the tasks' scopes.
      */
-    private suspend fun memoriesKept(objective: TaskRecord): Boolean? = try {
+    private suspend fun memoriesKept(objective: TaskRecord): Pair<Boolean, Boolean>? = orNull {
         val memory = ctx.memory
         val scopes = keptWork(objective).map<_, MemoryScope> { (task, agent) -> MemoryScope.Task(task.id, agent.id) }.toSet()
         when {
             memory == null -> null
-            scopes.isEmpty() -> true
-            else -> memory.observe(MemoryActor.Owner, MemoryFilter(scopes = scopes, excludeExpiredAt = ctx.clock.now())).first()
-                .none { it.importance >= KEEP_IMPORTANCE }
+            scopes.isEmpty() -> true to false
+            else -> {
+                val now = ctx.clock.now()
+                val important = memory.observe(MemoryActor.Owner, MemoryFilter(scopes = scopes)).first().filter { it.importance >= KEEP_IMPORTANCE }
+                val kept = important.none { !it.isExpired(now) }
+                kept to (kept && important.isNotEmpty())
+            }
         }
-    } catch (e: Exception) {
-        rethrowIfCancelled(e)
-        null
     }
 
     /** The objective's completed WORK tasks whose agent still exists, with that agent: the task memory [save] keeps. */
@@ -279,5 +312,8 @@ internal class KnowledgeKeeper(private val ctx: OrchestrationContext) {
         private const val HEADER_ROOM = 40
         private const val MAX_REASON = 300
         private const val IMPORTANCE = 0.7
+
+        /** The name of a memory's content among the fields an edit changed ([changedFields]). */
+        private const val CONTENT = "content"
     }
 }

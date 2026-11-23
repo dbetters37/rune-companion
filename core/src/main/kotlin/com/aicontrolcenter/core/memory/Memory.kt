@@ -105,6 +105,22 @@ data class ProvenanceEvent(
     val note: String? = null,
 )
 
+/** Ends the note of an EDITED event, after the names of the fields it changed: "content, tags changed" ([editedNote]). */
+const val EDITED_NOTE_SUFFIX = " changed"
+
+/** The note of an EDITED event that changed [fields] (their names, in the order given): "content, tags changed". */
+fun editedNote(fields: List<String>): String = fields.joinToString(", ") + EDITED_NOTE_SUFFIX
+
+/**
+ * The names of the fields this EDITED event changed, read from its note ([editedNote]): e.g.
+ * {"content", "tags"}. Empty when it is not an EDITED event or its note does not name them.
+ */
+fun ProvenanceEvent.changedFields(): Set<String> {
+    if (action != ProvenanceAction.EDITED) return emptySet()
+    val names = note?.takeIf { it.endsWith(EDITED_NOTE_SUFFIX) }?.removeSuffix(EDITED_NOTE_SUFFIX) ?: return emptySet()
+    return names.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+}
+
 /**
  * One remembered item. [provenance] describes how the text was first written and is copied
  * unchanged onto shared and promoted copies; what happened to the memory afterwards is

@@ -33,6 +33,7 @@ import com.aicontrolcenter.core.memory.Provenance
 import com.aicontrolcenter.core.memory.ProvenanceAction
 import com.aicontrolcenter.core.memory.ProvenanceOrigin
 import com.aicontrolcenter.core.memory.RecallQuery
+import com.aicontrolcenter.core.memory.editedNote
 import com.aicontrolcenter.core.memoryId
 import com.aicontrolcenter.core.registry.AgentRepository
 import com.aicontrolcenter.core.settings.SettingsRepository
@@ -200,7 +201,7 @@ class DefaultMemoryService(
             )
             val next = candidate.copy(
                 updatedAt = now, revision = current.revision + 1,
-                history = current.history + ctx.event(ProvenanceAction.EDITED, who, now, note = "${changed.joinToString(", ")} changed"),
+                history = current.history + ctx.event(ProvenanceAction.EDITED, who, now, note = editedNote(changed)),
             )
             repository.upsert(next)
             Triple(who, current, next)

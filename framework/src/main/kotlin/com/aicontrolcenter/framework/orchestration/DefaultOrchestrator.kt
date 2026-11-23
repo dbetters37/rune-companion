@@ -343,13 +343,15 @@ class DefaultOrchestrator(
             var bookkeeping = false
             val objective = rt.lock.withLockNonCancellable {
                 val objective = ctx.tasks.get(rootId) ?: return@withLockNonCancellable null
+                // The owner stopped it: it stays as the owner left it, whatever its tasks say.
+                if (objective.status == TaskStatus.PAUSED || objective.status == TaskStatus.CANCELLED) return@withLockNonCancellable null
                 val now = clock.now()
                 val limits = ctx.limits(objective, current)
                 val tree = ctx.tasks.getTree(rootId)
                 // Each task that was running used up the attempt the app stopped.
                 val interrupted = tree.filter { it.id != rootId && it.status in WORKING }.map { interrupted(it, limits.maxTaskAttempts, now) }
                 val byId = interrupted.associateBy { it.id }
-                bookkeeping = onlyBookkeeping(tree.map { byId[it.id] ?: it }, rootId)
+                bookkeeping = ObjectiveDriver.onlyBookkeeping(tree.map { byId[it.id] ?: it }, rootId)
                 val waiting = objective.status == TaskStatus.INTERRUPTED
                 if (waiting && !bookkeeping && objective.statusDetail?.endsWith(ENDING) != true) return@withLockNonCancellable null
                 val updated = if (objective.status.isFinished) objective else {
@@ -409,14 +411,6 @@ class DefaultOrchestrator(
         }
         return affected
     }
-
-    /**
-     * What is left of an objective needs no agent and no model: it has a plan, and every task of
-     * it has finished, so its final document is written or can be assembled, and only saving
-     * knowledge, announcing the ending and storing it remain.
-     */
-    private fun onlyBookkeeping(tree: List<TaskRecord>, rootId: TaskId): Boolean =
-        tree.any { it.kind == TaskKind.WORK || it.kind == TaskKind.SYNTHESIS } && tree.all { it.id == rootId || it.status.isFinished }
 
     /**
      * How often the objective was interrupted while nothing but itself was running
