@@ -21,20 +21,16 @@ internal object PromptedToolsFormat {
     private const val CALL_CLOSE = "</tool_call>"
 
     /*
-     * What turns text into a call, for [PromptedToolCallParser] or for [ToolCallStreamFilter]:
-     * the tags of the formats models use, Mistral's bracket marker, code fences, and JSON or
-     * "Action:" lines at the start of a line. Quoted content (tool output, the arguments of
-     * earlier calls) is rendered so that none of them occurs in it: a model that repeats what a
-     * tool returned must not thereby make a call the tool's output chose.
+     * The explicit call markers: the tags of the formats models use and Mistral's bracket
+     * marker. Inside tool output they are defused, so a result can neither close its own block
+     * nor hold a marked call that a model repeating it word for word would make. Everything else
+     * in tool output (code fences, JSON lines, "Action:" lines) reaches the model unchanged, so
+     * a file it reads can be written back as it was: a call it repeats from there, in any form
+     * and however re-encoded, is caught by [EchoGuard] instead, which is the primary defence.
      */
     private val CALL_TAG = Regex("<(/?)(tool_?call|function|tool_use|tool_result)", RegexOption.IGNORE_CASE)
     private val BRACKET_MARKER = Regex("\\[(?=TOOL_CALLS])", RegexOption.IGNORE_CASE)
-    private val FENCE = Regex("`{3,}")
-    private val LINE_START_TRIGGER = Regex("(?im)^([ \\t]*)(?=[{\\[]|Action( Input)?[ \\t]*:)")
     private val UNSAFE_NAME_CHARACTER = Regex("[^A-Za-z0-9_.\\-]")
-
-    /** Invisible to a reader, but not a space: a line that starts with it no longer starts with what follows. */
-    private const val LINE_BREAKER = "\u200B"
 
     fun offersTools(request: ChatRequest): Boolean = request.tools.isNotEmpty() && request.toolChoice != ToolChoice.NONE
 
@@ -81,7 +77,7 @@ internal object PromptedToolsFormat {
     /**
      * Tool output is wrapped in tags the model was told to treat as data. Inside the output,
      * every call or result tag is defused, so a result can neither close its own block nor
-     * contain a call that a model repeating it would make (see the note on [CALL_TAG]).
+     * contain a marked call (see the note on [CALL_TAG]).
      */
     fun renderResults(results: List<ToolResultContent>): String = results.joinToString("\n\n") { result ->
         val status = if (result.isError) " status=\"error\"" else ""
@@ -89,12 +85,10 @@ internal object PromptedToolsFormat {
         "<tool_result name=\"$name\"$status>\n${quote(result.content)}\n</tool_result>"
     }
 
-    /** [text] with nothing left in it that the parser or the stream filter would take for the start of a call. */
+    /** [text] with its call and result tags and bracket markers defused, and nothing else changed. */
     fun quote(text: String): String {
-        var out = CALL_TAG.replace(text) { "&lt;" + it.groupValues[1] + it.groupValues[2] }
-        out = BRACKET_MARKER.replace(out, "&#91;")
-        out = FENCE.replace(out) { fence -> "\\`".repeat(fence.value.length) }
-        return LINE_START_TRIGGER.replace(out) { it.groupValues[1] + LINE_BREAKER }
+        val out = CALL_TAG.replace(text) { "&lt;" + it.groupValues[1] + it.groupValues[2] }
+        return BRACKET_MARKER.replace(out, "&#91;")
     }
 
     private const val MAX_NAME_LENGTH = 64

@@ -83,8 +83,21 @@ internal class ToolArguments private constructor(val arguments: JsonObject, val 
             is JsonArray -> notAnObject(element, raw ?: element.toString())
         }
 
+        /**
+         * Arguments that arrived as a JSON value where the protocol allows only a string holding
+         * JSON or an object, as in OpenAI-compatible `function.arguments`. Any other value, null
+         * included, is reported: it is not a call's arguments, and reading it as "none" would
+         * run a tool the model never gave arguments to.
+         */
+        fun fromStrictElement(element: JsonElement): ToolArguments = when {
+            element is JsonObject -> checked(element, null)
+            element is JsonPrimitive && element.isString -> fromText(element.content)
+            else -> notAnObject(element, element.toString())
+        }
+
         private fun notAnObject(element: JsonElement, raw: String): ToolArguments {
             val kind = when (element) {
+                is JsonNull -> "null"
                 is JsonArray -> "a JSON array"
                 is JsonPrimitive -> if (element.isString) "a JSON string" else "a single JSON value"
                 else -> "something else"

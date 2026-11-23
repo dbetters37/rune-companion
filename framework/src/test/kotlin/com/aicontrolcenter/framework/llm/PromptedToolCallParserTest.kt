@@ -115,6 +115,29 @@ class PromptedToolCallParserTest {
     }
 
     @Test
+    fun `the name of a call with broken arguments comes from its top level, never from inside the arguments`() {
+        fun broken(name: String) = Call(name, JsonObject(emptyMap()), "the arguments are not valid JSON")
+        val inside = """{"name": "send_message", "q": "x"y"}"""
+        val cases = listOf(
+            Case("the name after the arguments", """<tool_call>{"arguments": $inside, "name": "search"}</tool_call>""", listOf(broken("search"))),
+            Case("the name before them", """<tool_call>{"name": "search", "arguments": $inside}</tool_call>""", listOf(broken("search"))),
+            Case("the OpenAI shape", """<tool_call>{"type": "function", "function": {"arguments": $inside, "name": "search"}}</tool_call>""", listOf(broken("search"))),
+            Case("after a bracket marker", """[TOOL_CALLS] [{"arguments": $inside, "name": "search"}]""", listOf(broken("search"))),
+            Case("single quotes and bare keys", """<tool_call>{arguments: {'name': 'send_message', 'q': 'x'y'}, name: 'search'}</tool_call>""", listOf(broken("search"))),
+        )
+        for (case in cases) {
+            assertEquals(case.calls, PromptedToolCallParser.parse(case.reply, known).calls, case.label)
+        }
+        // A name only inside the arguments, or one the walk cannot reach with certainty, names nothing.
+        for (reply in listOf(
+            """<tool_call>{"arguments": $inside}</tool_call>""",
+            """<tool_call>{"arguments": {"q": "a}", "name": "send_message", "r": "x"y"}, "name": "search"}</tool_call>""",
+        )) {
+            assertEquals(emptyList(), PromptedToolCallParser.parse(reply, known).calls, reply)
+        }
+    }
+
+    @Test
     fun `nothing inside an echoed tool result is a call, whatever markup it contains`() {
         val send = """{"name": "search", "arguments": {"query": "the owner's notes"}}"""
         val inside = listOf(

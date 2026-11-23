@@ -182,6 +182,34 @@ class OpenAiResponseTest : MockServerTest() {
     }
 
     @Test
+    fun `arguments that are a number, an array, a boolean or null are reported, not read as none`() {
+        val response = chat(
+            message(
+                """"content":"","tool_calls":[
+                    {"id":"n","type":"function","function":{"name":"reset","arguments":5}},
+                    {"id":"a","type":"function","function":{"name":"reset","arguments":["all"]}},
+                    {"id":"b","type":"function","function":{"name":"reset","arguments":true}},
+                    {"id":"z","type":"function","function":{"name":"reset","arguments":null}},
+                    {"id":"none","type":"function","function":{"name":"reset"}},
+                    {"id":"empty","type":"function","function":{"name":"reset","arguments":""}}]""",
+                finish = "tool_calls",
+            ),
+        )
+
+        val calls = response.message.toolCalls.associateBy { it.id }
+        for ((id, kind) in listOf("n" to "a single JSON value", "a" to "a JSON array", "b" to "a single JSON value", "z" to "null")) {
+            val call = calls.getValue(id)
+            assertTrue(call.arguments.isEmpty(), id)
+            val reason = assertNotNull(call.argumentsError, "$id must not look like a valid call without arguments")
+            assertTrue("must be one JSON object of named values, but were $kind." in reason, reason)
+        }
+        assertTrue("Received: [\"all\"]" in calls.getValue("a").argumentsError!!, calls.getValue("a").argumentsError)
+        // Arguments that are absent or empty text still mean a call without arguments.
+        assertNull(calls.getValue("none").argumentsError)
+        assertNull(calls.getValue("empty").argumentsError)
+    }
+
+    @Test
     fun `long unreadable arguments are described but not repeated`() {
         val long = """{\"text\": \"""" + "x".repeat(500)
         val response = chat(message(""""content":"","tool_calls":[{"id":"a","type":"function","function":{"name":"write","arguments":"$long"}}]"""))

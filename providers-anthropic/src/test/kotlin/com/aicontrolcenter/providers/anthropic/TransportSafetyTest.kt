@@ -105,6 +105,34 @@ internal class TransportSafetyTest : MockApiTest() {
     }
 
     @Test
+    fun `a dual-stack name is reached through its local addresses only`() {
+        val lan = InetAddress.getByName("192.168.1.10")
+        val uniqueLocal = InetAddress.getByName("fd12:3456::10")
+        val global = InetAddress.getByName("2a02:8070::10")
+        assertEquals(listOf(lan, uniqueLocal), LocalityDns(resolver("claude.lan", lan, uniqueLocal, global)).lookup("claude.lan"))
+
+        // End to end, with this machine standing in for the LAN address.
+        enqueueJson(messageJson(TEXT_REPLY))
+        val loopback = Dns.SYSTEM.lookup("localhost")
+        val adapter = adapterAt("http://claude.lan:${server.port}", resolver("claude.lan", global, *loopback.toTypedArray()))
+
+        assertEquals("Hello there.", runBlocking { adapter.client.chat(request) }.message.text)
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun `a local-network name with only public addresses is still refused`() {
+        val publicOnly = resolver("claude.lan", InetAddress.getByName("2a02:8070::10"), InetAddress.getByName("8.8.8.8"))
+        val adapter = adapterAt("http://claude.lan:${server.port}", publicOnly)
+
+        val error = assertFailsWith<LlmException.Network> { runBlocking { adapter.client.chat(request) } }
+
+        assertEquals("claude.lan resolved to an address outside your local network; the request was not sent.", error.message)
+        assertEquals(0, server.requestCount)
+        assertFailsWith<LocalityRefusedException> { LocalityDns(publicOnly).lookup("claude.lan") }
+    }
+
+    @Test
     fun `a system proxy is not used for an address on this device`() {
         val proxy = otherServer()
         proxy.enqueue(MockResponse.Builder().code(502).body("the proxy saw the request").build())

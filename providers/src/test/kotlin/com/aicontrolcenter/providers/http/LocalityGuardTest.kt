@@ -15,6 +15,7 @@ import okhttp3.Dns
 import okhttp3.OkHttpClient
 import org.junit.Test
 import java.io.IOException
+import java.net.ConnectException
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Proxy
@@ -22,6 +23,7 @@ import java.net.ProxySelector
 import java.net.Socket
 import java.net.SocketAddress
 import java.net.URI
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import javax.net.SocketFactory
 import kotlin.test.assertEquals
@@ -79,7 +81,7 @@ class LocalityGuardTest : MockServerTest() {
     }
 
     @Test
-    fun `every resolved address must match the claimed locality`() {
+    fun `only the resolved addresses inside the claimed locality are used`() {
         val local = LocalityDns(
             Dns { host ->
                 when (host) {
@@ -95,12 +97,66 @@ class LocalityGuardTest : MockServerTest() {
         assertEquals(4, local.lookup("tailnet.home.arpa").size)
         assertEquals(2, local.lookup("localhost").size)
 
-        val mixed = assertFailsWith<LocalityRefusedException> { local.lookup("mixed.lan") }
-        assertEquals(Locality.LOCAL_NETWORK, mixed.claimed)
+        assertEquals(listOf(address("192.168.1.20")), local.lookup("mixed.lan"))
         // A loopback name must stay on the device; a LAN address is not good enough.
         val onDevice = LocalityDns(resolver("localhost", address("192.168.1.5")))
         val refused = assertFailsWith<LocalityRefusedException> { onDevice.lookup("localhost") }
         assertEquals("localhost resolved to an address outside your device; the request was not sent.", refused.message)
+    }
+
+    /**
+     * Records the addresses a client tries to connect to. [reachable] is connected, through to
+     * the test server; any other address fails as an unreachable host would.
+     */
+    private class RecordingSocketFactory(private val reachable: InetAddress, private val server: InetSocketAddress) : SocketFactory() {
+        val attempted: MutableList<InetAddress> = CopyOnWriteArrayList()
+
+        override fun createSocket(): Socket = object : Socket() {
+            override fun connect(endpoint: SocketAddress, timeout: Int) {
+                val address = (endpoint as InetSocketAddress).address
+                attempted += address
+                if (address != reachable) throw ConnectException("$address is unreachable in this test")
+                super.connect(server, timeout)
+            }
+        }
+
+        override fun createSocket(host: String?, port: Int): Socket = unused()
+        override fun createSocket(host: String?, port: Int, localHost: InetAddress?, localPort: Int): Socket = unused()
+        override fun createSocket(host: InetAddress?, port: Int): Socket = unused()
+        override fun createSocket(address: InetAddress?, port: Int, localAddress: InetAddress?, localPort: Int): Socket = unused()
+        private fun unused(): Nothing = throw UnsupportedOperationException("OkHttp creates unconnected sockets")
+    }
+
+    @Test
+    fun `a dual-stack name is reached through its local addresses only`() {
+        enqueue(ok)
+        val lan = address("192.168.1.10")
+        val uniqueLocal = address("fd12:3456::10")
+        val global = address("2a02:8070::10")
+        val dns = resolver("ollama.lan", lan, uniqueLocal, global)
+        val sockets = RecordingSocketFactory(reachable = lan, server = InetSocketAddress(InetAddress.getByName(server.hostName), server.port))
+        val shared = OkHttpClient.Builder().dns(dns).socketFactory(sockets).build()
+        val client = OllamaAdapterFactory(shared).create(connection(ProviderKind.OLLAMA, baseUrl = "http://ollama.lan:${server.port}")).client
+
+        assertEquals("ok", runBlocking { client.chat(simpleRequest("llama3.2")) }.message.text)
+
+        assertEquals(listOf(lan, uniqueLocal), LocalityDns(dns).lookup("ollama.lan"))
+        assertTrue(lan in sockets.attempted, "connected through ${sockets.attempted}")
+        assertTrue(sockets.attempted.all { it == lan || it == uniqueLocal }, "the global address must never be tried: ${sockets.attempted}")
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun `a local-network name with only public addresses is still refused`() {
+        val sockets = CountingSocketFactory()
+        val shared = OkHttpClient.Builder().dns(resolver("ollama.lan", address("2a02:8070::10"), address("8.8.8.8"))).socketFactory(sockets).build()
+        val client = OllamaAdapterFactory(shared).create(connection(ProviderKind.OLLAMA, baseUrl = "http://ollama.lan:${server.port}")).client
+
+        val error = failsWith<LlmException.Network> { runBlocking { client.chat(simpleRequest("llama3.2")) } }
+
+        assertEquals("ollama.lan resolved to an address outside your local network; the request was not sent.", error.message)
+        assertEquals(0, sockets.created.get())
+        assertEquals(0, server.requestCount)
     }
 
     @Test

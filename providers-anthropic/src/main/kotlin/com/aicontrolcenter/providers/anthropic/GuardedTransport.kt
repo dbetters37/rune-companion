@@ -39,15 +39,18 @@ import kotlin.jvm.optionals.getOrNull
  *    the conversation to a host that no policy check and no egress record has seen; it is
  *    reported as a rejected request instead (see [ErrorMapper]).
  *  - Names resolve through [LocalityDns]: an address that claims this device or the local
- *    network is refused before a connection is opened unless it really resolves there.
+ *    network is connected only to what it really resolves to there, and refused before a
+ *    connection is opened when it resolves nowhere there.
  *  - Such addresses never go through a system or Wi-Fi proxy ([LocalityProxySelector]).
+ *  - OkHttp never sends a request a second time on its own ([singleSend]): the SDK's
+ *    transport already turned off recovery from connection failures, but left request bodies
+ *    repeatable, so OkHttp still repeated a call after a 503 that asked for no delay.
  *
  * The SDK's transport accepts neither a resolver nor a proxy selector, which is why it is
  * replaced rather than configured.
  *
- * As in the SDK's transport, OkHttp does not silently repeat a request after a connection
- * failure; whether to try again is decided above this class, and by default only by the
- * framework (see [AnthropicOptions.maxRetries]).
+ * Whether to try again is decided above this class, and by default only by the framework (see
+ * [AnthropicOptions.maxRetries]).
  */
 internal class GuardedTransport(
     private val backend: Backend,
@@ -66,6 +69,7 @@ internal class GuardedTransport(
         .followSslRedirects(false)
         .dns(LocalityDns(resolver))
         .proxySelector(LocalityProxySelector())
+        .singleSend()
         .build()
         // Every request goes to the same host, so the per-host limit is raised to the overall one.
         .apply { dispatcher.maxRequestsPerHost = dispatcher.maxRequests }
@@ -205,7 +209,8 @@ internal class GuardedTransport(
 
                 override fun contentLength(): Long = length
 
-                override fun isOneShot(): Boolean = !source.repeatable()
+                // Even when the SDK could write it again: only the framework decides to send a request twice.
+                override fun isOneShot(): Boolean = true
 
                 override fun writeTo(sink: BufferedSink) = source.writeTo(sink.outputStream())
             }

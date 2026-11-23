@@ -164,6 +164,42 @@ class OpenAiStreamTest : MockServerTest() {
     }
 
     @Test
+    fun `streamed arguments that are not a string or an object are reported on the call`() {
+        for ((value, kind) in listOf("7" to "a single JSON value", "[1,2]" to "a JSON array", "false" to "a single JSON value", "null" to "null")) {
+            enqueueSse(
+                delta(""""tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"reset","arguments":$value}}]"""),
+                delta("", finish = "tool_calls"),
+                "[DONE]",
+            )
+            val chunks = stream()
+
+            val call = assertIs<ChatChunk.ToolCall>(chunks.single { it is ChatChunk.ToolCall }).call
+            assertTrue(call.arguments.isEmpty(), value)
+            val reason = assertNotNull(call.argumentsError, "arguments $value must not look like a valid call without arguments")
+            assertTrue("but were $kind." in reason, reason)
+            assertEquals(listOf(call), chunks.completed().response.message.toolCalls)
+        }
+    }
+
+    @Test
+    fun `a wrong kind of value spoils streamed arguments, a null fragment beside text does not`() {
+        enqueueSse(
+            delta(""""tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":null}}]"""),
+            delta(""""tool_calls":[{"index":0,"function":{"arguments":"{\"city\": \"Oslo\"}"}}]"""),
+            delta(""""tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"name":"get_weather","arguments":"{\"city\": "}}]"""),
+            delta(""""tool_calls":[{"index":1,"function":{"arguments":3}}]"""),
+            delta(""""tool_calls":[{"index":1,"function":{"arguments":"\"Bergen\"}"}}]"""),
+            delta("", finish = "tool_calls"),
+            "[DONE]",
+        )
+        val (named, spoiled) = stream().completed().response.message.toolCalls
+
+        assertEquals(ToolCallRequest("call_1", "get_weather", json("""{"city":"Oslo"}""").jsonObject), named)
+        assertTrue(spoiled.arguments.isEmpty())
+        assertTrue("but were a single JSON value." in assertNotNull(spoiled.argumentsError), spoiled.argumentsError)
+    }
+
+    @Test
     fun `an event that is not json is a malformed response`() {
         enqueueSse(delta(""""content":"It is """"), "<html>gateway error</html>")
         failsWith<LlmException.MalformedResponse> { stream() }

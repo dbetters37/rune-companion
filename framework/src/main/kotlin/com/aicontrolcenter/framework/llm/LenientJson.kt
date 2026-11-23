@@ -155,7 +155,8 @@ internal class LenientJson private constructor(
         private const val MAX_DEPTH = 48
         private const val OPENING_QUOTES = "\"'\u201C\u201D\u2018\u2019"
 
-        private fun closersFor(open: Char): String = when (open) {
+        /** The characters that close a string opened by [open]. */
+        fun closersFor(open: Char): String = when (open) {
             '"' -> "\""
             '\'' -> "'"
             '\u201C', '\u201D' -> "\u201D\u201C\""

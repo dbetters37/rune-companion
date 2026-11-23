@@ -42,12 +42,15 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.job
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -69,7 +72,9 @@ import kotlinx.coroutines.withContext
  *    for the owner and are never sent to a model.
  *  - Text that is still arriving is gathered per turn and published to [liveTurns] at most
  *    every [LIVE_TEXT_INTERVAL_MS], and at once whenever the phase changes or a reply is
- *    complete, so a long reply costs time in proportion to its length.
+ *    complete, so a long reply costs time in proportion to its length. Text held back by that
+ *    interval is published when it is over even if nothing more arrives, so the preview never
+ *    lags behind a reply that pauses.
  *
  * Registered as an [AgentDeletionListener], it stops the turns of a deleted agent and removes
  * its conversations.
@@ -209,7 +214,14 @@ class DefaultAgentChat(
         val request = AgentRunRequest(agent, modelId, ConversationHistory.toMessages(conversations.getEntries(id)))
         tooLongFor(model, agent, request)?.let { return failed(id, agent.id, it, retryable = false, log = true) }
 
-        val run = runner.run(request, Recorder(id))
+        val run = coroutineScope {
+            val recorder = Recorder(id, timers = this)
+            try {
+                runner.run(request, recorder)
+            } finally {
+                recorder.stop()
+            }
+        }
         return when (run.end) {
             RunEnd.COMPLETED -> completed(run)
             RunEnd.TRUNCATED -> {
@@ -248,9 +260,12 @@ class DefaultAgentChat(
 
     /**
      * Stores the turn as it unfolds and mirrors it into [liveTurns]. One per turn, called by the
-     * runner in order from the turn's coroutine, so its buffers need no lock.
+     * runner in order from the turn's coroutine. Text held back by the publishing interval is
+     * published by a timer in [timers] once the interval has passed, so a reply that pauses is
+     * shown up to where it paused; the timer runs apart from the turn, hence [lock].
      */
-    private inner class Recorder(private val id: ConversationId) : AgentRunListener {
+    private inner class Recorder(private val id: ConversationId, private val timers: CoroutineScope) : AgentRunListener {
+        private val lock = Any()
         private val text = StringBuilder()
         private val reasoning = StringBuilder()
 
@@ -259,46 +274,75 @@ class DefaultAgentChat(
         private var behind = false
         private var publishedAt = 0L
 
-        override suspend fun onModelCall(number: Int) {
+        /** Publishes what is held back once the interval has passed; set while something is held back. */
+        private var flush: Job? = null
+
+        override suspend fun onModelCall(number: Int) = synchronized(lock) {
             clearBuffers()
             show { it.copy(phase = TurnPhase.WAITING_FOR_MODEL, partialText = "", partialReasoning = "", activeTool = null, modelCalls = number) }
         }
 
-        override suspend fun onTextDelta(delta: String) {
+        override suspend fun onTextDelta(delta: String) = synchronized(lock) {
             text.append(delta)
             arrived()
         }
 
-        override suspend fun onReasoningDelta(delta: String) {
+        override suspend fun onReasoningDelta(delta: String) = synchronized(lock) {
             reasoning.append(delta)
             arrived()
         }
 
         override suspend fun onMessage(message: ChatMessage, modelName: String?, usage: TokenUsage?) {
             // The reply is complete (or cut short): show all of it before the stored message takes its place.
-            if (behind) publish()
+            synchronized(lock) { if (behind) publish() }
             withContext(NonCancellable) { store(id, message, modelName, usage) }
             if (message.role == ChatRole.ASSISTANT) {
-                clearBuffers()
-                show { it.copy(partialText = "", partialReasoning = "") }
+                synchronized(lock) {
+                    clearBuffers()
+                    show { it.copy(partialText = "", partialReasoning = "") }
+                }
             }
         }
 
-        override suspend fun onToolStarted(call: ToolCallRequest, spec: ToolSpec?) {
+        override suspend fun onToolStarted(call: ToolCallRequest, spec: ToolSpec?) = synchronized(lock) {
             if (behind) publish()
             receiving = false
             show { it.copy(phase = TurnPhase.RUNNING_TOOL, activeTool = call, toolCalls = it.toolCalls + 1) }
         }
 
-        override suspend fun onToolFinished(execution: ToolExecution) = show { it.copy(activeTool = null) }
+        override suspend fun onToolFinished(execution: ToolExecution) = synchronized(lock) { show { it.copy(activeTool = null) } }
 
-        /** Publishes at once when this starts the receiving phase, otherwise at most once per interval. */
+        /** Ends the timer; called when the turn ends, however it ends. */
+        fun stop() = synchronized(lock) { cancelFlush() }
+
+        /**
+         * Publishes at once when this starts the receiving phase or the interval has passed since
+         * the last publication; otherwise makes sure the timer publishes it when the interval is over.
+         */
         private fun arrived() {
             behind = true
-            if (!receiving || System.nanoTime() - publishedAt >= LIVE_TEXT_INTERVAL_NS) publish()
+            val since = System.nanoTime() - publishedAt
+            when {
+                !receiving || since >= LIVE_TEXT_INTERVAL_NS -> publish()
+                flush == null -> {
+                    val waitMs = ((LIVE_TEXT_INTERVAL_NS - since + NANOS_PER_MS - 1) / NANOS_PER_MS).coerceAtLeast(1)
+                    flush = timers.launch {
+                        delay(waitMs)
+                        val self = coroutineContext.job
+                        synchronized(lock) {
+                            // A timer that was replaced while it waited for the lock leaves the publishing to its successor.
+                            if (flush === self) {
+                                flush = null
+                                if (behind) publish()
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         private fun publish() {
+            cancelFlush()
             val partialText = text.toString()
             val partialReasoning = reasoning.toString()
             receiving = true
@@ -312,6 +356,12 @@ class DefaultAgentChat(
             reasoning.setLength(0)
             receiving = false
             behind = false
+            cancelFlush()
+        }
+
+        private fun cancelFlush() {
+            flush?.cancel()
+            flush = null
         }
 
         private fun show(change: (LiveTurn) -> LiveTurn) = live.update { it.change(id, change) }
@@ -370,7 +420,8 @@ class DefaultAgentChat(
 
         /** How often text that is still arriving is published to [liveTurns]: smooth to watch, and cheap for long replies. */
         private const val LIVE_TEXT_INTERVAL_MS = 75L
-        private const val LIVE_TEXT_INTERVAL_NS = LIVE_TEXT_INTERVAL_MS * 1_000_000
+        private const val NANOS_PER_MS = 1_000_000L
+        private const val LIVE_TEXT_INTERVAL_NS = LIVE_TEXT_INTERVAL_MS * NANOS_PER_MS
         private const val AUTO_TITLE_LENGTH = 48
         private const val DEFAULT_REPLY_ROOM = 512
         private const val CONVERSATION_GONE = "That conversation no longer exists."

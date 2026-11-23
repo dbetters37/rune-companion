@@ -39,6 +39,8 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
@@ -334,6 +336,46 @@ class AgentChatTest {
         assertTrue(snapshots < 1_000, "snapshots are published at a bounded rate, not once per delta: $snapshots in $tookMs ms")
         assertEquals(full, lastText, "the last text published is the whole reply")
         assertTrue(tookMs < 5_000, "200,000 one-character deltas took $tookMs ms")
+        assertTrue(world.chat.liveTurns.value.isEmpty())
+    }
+
+    @Test
+    fun `text held back by the publishing interval is shown when the reply pauses, and the timer ends with the turn`() = runTest {
+        val world = TestWorld(scope = this)
+        val gate = CompletableDeferred<Unit>()
+        val client = StreamingClient { _, index ->
+            flow {
+                if (index == 1) {
+                    // Only reasoning, then a failure: no reply is stored, so nothing but the end of the turn stops the timer.
+                    emit(ChatChunk.Reasoning("Thinking"))
+                    emit(ChatChunk.Reasoning(" hard"))
+                    throw LlmException.InvalidRequest("The server dropped the reply.")
+                }
+                emit(ChatChunk.Text("Hel"))
+                // Well inside the interval after the first delta: held back.
+                emit(ChatChunk.Text("lo"))
+                gate.await()
+                emit(ChatChunk.Text("."))
+                emit(ChatChunk.Completed(ChatResponse(ChatMessage.assistant("Hello."), FinishReason.STOP, TokenUsage(10, 5), "scripted-1")))
+            }
+        }
+        val conversation = world.conversation(client)
+        fun live() = world.chat.liveTurns.value.getValue(conversation.id)
+
+        val paused = async { world.chat.send(conversation.id, "Hi") }
+        runCurrent()
+        assertEquals("Hel", live().partialText, "the first delta is shown at once")
+        advanceTimeBy(200)
+        runCurrent()
+        assertEquals(TurnPhase.RECEIVING, live().phase)
+        assertEquals("Hello", live().partialText, "the model paused: what it had sent is shown anyway")
+        gate.complete(Unit)
+        assertIs<TurnResult.Completed>(paused.await())
+
+        // A turn that fails while reasoning is held back does not wait for the timer, which ends with it.
+        val startedAt = currentTime
+        assertIs<TurnResult.Failed>(world.chat.send(conversation.id, "Again"))
+        assertEquals(startedAt, currentTime, "the turn ended without waiting out the interval")
         assertTrue(world.chat.liveTurns.value.isEmpty())
     }
 

@@ -284,6 +284,38 @@ class ProviderManagerTest {
     }
 
     @Test
+    fun `another scheme or port is another endpoint, so the stored key must be entered again for it`() = runTest {
+        val reenter = listOf(ProviderValidationIssue(ProviderField.API_KEY, "Enter the API key again for the new address."))
+        fun draft(name: String, url: String, key: String? = null) = ProviderDraft(name, ProviderKind.OPENAI_COMPATIBLE, url, apiKey = key)
+
+        val box = manager.addProvider(draft("Box", "https://192.168.1.5:8443/v1", secret))
+        val phone = manager.addProvider(draft("Phone", "http://127.0.0.1:1234/v1", secret))
+        val moves = listOf(
+            box to "http://192.168.1.5:8443/v1", // https to http: the key would cross the Wi-Fi in clear text
+            box to "https://192.168.1.5:9443/v1",
+            box to "https://192.168.1.5/v1", // the default port, 443, is another port too
+            phone to "http://127.0.0.1:8080/v1", // another port on this phone is another app
+            phone to "https://127.0.0.1:1234/v1",
+        )
+        for ((provider, url) in moves) {
+            val move = draft(provider.name, url)
+            assertEquals(reenter, manager.validate(move, editing = provider.id), url)
+            assertEquals(reenter, assertFailsWith<ProviderValidationException>(url) { manager.updateProvider(provider.id, move) }.issues)
+            assertEquals(provider, world.providers.get(provider.id), "nothing changed: $url")
+            assertEquals(secret, world.vault.get(provider.apiKeyAlias!!))
+        }
+
+        // The same endpoint written differently is no move: the default port spelled out, another path.
+        val openAi = manager.addProvider(draft("OpenAI", "https://api.openai.com/v1", secret))
+        assertTrue(manager.validate(draft("OpenAI", "https://api.openai.com:443/v1"), editing = openAi.id).isEmpty())
+        assertTrue(manager.validate(draft("Phone", "http://127.0.0.1:1234/v2"), editing = phone.id).isEmpty())
+        // With the key entered again, the move is fine.
+        val moved = manager.updateProvider(box.id, draft("Box", "http://192.168.1.5:8443/v1", "sk-test-key-for-the-plain-port"))
+        assertEquals("http://192.168.1.5:8443/v1", moved.baseUrl)
+        assertEquals("sk-test-key-for-the-plain-port", world.vault.get(moved.apiKeyAlias!!))
+    }
+
+    @Test
     fun `changing how a provider is reached re-derives its locality and forgets the old connection's status`() = runTest {
         val provider = manager.addProvider(server(baseUrl = "http://127.0.0.1:8080/v1"))
         manager.checkProvider(provider.id)

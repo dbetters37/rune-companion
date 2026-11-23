@@ -72,19 +72,20 @@ internal class LocalityRefusedException(val host: String, val claimed: Locality)
 }
 
 /**
- * Resolves names with [resolver] and refuses, before any connection is made, a name whose
- * address text claims this device or the local network but which resolves, even in part, to
- * an address outside it. Cloud names are not restricted.
+ * Resolves names with [resolver] and holds a name whose address text claims this device or the
+ * local network to it: only the resolved addresses inside that place are returned, and the name
+ * is refused, before any connection is made, when none are. Cloud names are not restricted.
  *
- * Every resolved address must match, not just one: OkHttp may try any of them.
+ * OkHttp connects only to the addresses returned here, so leaving the others out is as safe as
+ * refusing the name, and keeps working on dual-stack home networks, where a LAN name usually
+ * also resolves to the machine's global IPv6 address.
  */
 internal class LocalityDns(val resolver: Dns = Dns.SYSTEM) : Dns {
     override fun lookup(hostname: String): List<InetAddress> {
         val claimed = localityOfHost(hostname)
         val addresses = resolver.lookup(hostname)
         if (claimed == Locality.CLOUD) return addresses
-        if (addresses.any { !isWithin(it, claimed) }) throw LocalityRefusedException(hostname, claimed)
-        return addresses
+        return addresses.filter { isWithin(it, claimed) }.ifEmpty { throw LocalityRefusedException(hostname, claimed) }
     }
 }
 

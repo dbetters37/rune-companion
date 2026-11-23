@@ -194,6 +194,38 @@ internal class StreamingTest : MockApiTest() {
     }
 
     @Test
+    fun `a streamed call whose start input is not an object and gets no deltas is reported, not run with empty input`() {
+        enqueueSse(
+            start(),
+            blockStart(0, """{"type":"tool_use","id":"toolu_str","name":"reset","input":"everything"}"""),
+            blockStop(0),
+            blockStart(1, """{"type":"tool_use","id":"toolu_arr","name":"reset","input":["all"]}"""),
+            blockStop(1),
+            blockStart(2, """{"type":"tool_use","id":"toolu_num","name":"reset","input":5}"""),
+            blockStop(2),
+            blockStart(3, """{"type":"tool_use","id":"toolu_bool","name":"reset","input":true}"""),
+            blockStop(3),
+            blockStart(4, """{"type":"tool_use","id":"toolu_none","name":"get_time","input":{}}"""),
+            blockStop(4),
+            messageDelta("tool_use"),
+            messageStop,
+        )
+
+        val chunks = collect()
+
+        assertEquals(listOf("toolu_none"), chunks.filterIsInstance<ChatChunk.ToolCall>().map { it.call.id }, "a broken call is not announced early")
+        val calls = assertIs<ChatChunk.Completed>(chunks.last()).response.message.toolCalls.associateBy { it.id }
+        for ((id, kind) in listOf("toolu_str" to "a JSON string", "toolu_arr" to "a JSON array", "toolu_num" to "a single JSON value", "toolu_bool" to "a single JSON value")) {
+            val call = calls.getValue(id)
+            assertTrue(call.arguments.isEmpty(), id)
+            val reason = assertNotNull(call.argumentsError, "$id must not look like a valid call without arguments")
+            assertTrue("must be one JSON object of named values, but were $kind." in reason, reason)
+        }
+        assertTrue("Received: \"everything\"" in calls.getValue("toolu_str").argumentsError!!)
+        assertNull(calls.getValue("toolu_none").argumentsError, "an empty object is a call without arguments")
+    }
+
+    @Test
     fun `a refusal in mid-stream completes as refused with the explanation`() {
         enqueueSse(
             start(model = "claude-fable-5-2"),

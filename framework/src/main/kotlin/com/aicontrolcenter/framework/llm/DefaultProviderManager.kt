@@ -201,7 +201,7 @@ class DefaultProviderManager(
 
     private suspend fun check(provider: ModelProvider): ProviderHealth {
         blockedByLocalOnly(provider)?.let { return ProviderHealth(provider.status, it) }
-        val health = probe(provider)
+        val health = probe(provider) ?: return ProviderHealth(provider.status, localOnlyRefusal(provider))
         val before = connections.storeStatus(provider.id, health.status, health.message) ?: return health
         if (before.status != health.status) {
             val detail = "${provider.name}: ${health.status.label}" + (health.message?.let { " ($it)" } ?: "")
@@ -211,14 +211,21 @@ class DefaultProviderManager(
         return health
     }
 
-    /** Asks the adapter for the provider's health. Never throws, and never lets the key into the message. */
-    private suspend fun probe(provider: ModelProvider): ProviderHealth {
+    /**
+     * Asks the adapter for the provider's health. Never throws, and never lets the key into the
+     * message. Null when the record the lease was built from (see [ProviderConnections.acquire]),
+     * which an edit may have moved off this device, is one local-only mode keeps away from.
+     */
+    private suspend fun probe(read: ModelProvider): ProviderHealth? {
         val lease = try {
-            connections.acquire(provider)
+            connections.acquire(read)
         } catch (e: LlmException) {
             // Nothing was sent: the adapter was never asked.
             return ProviderHealth(statusOf(e), e.message)
         }
+        // Where the check really goes, with the key stored for exactly that address.
+        val provider = lease.provider
+        if (blockedByLocalOnly(provider) != null) return null
         var outcome = "stopped before it finished"
         try {
             val health = try {
@@ -267,20 +274,21 @@ class DefaultProviderManager(
     }
 
     private suspend fun blockedByLocalOnly(provider: ModelProvider): String? =
-        if (provider.effectiveLocality.leavesDevice && settings.get().localOnlyMode) {
-            "Local-only mode is on, so ${provider.name} was not contacted."
-        } else {
-            null
-        }
+        if (provider.effectiveLocality.leavesDevice && settings.get().localOnlyMode) localOnlyRefusal(provider) else null
+
+    private fun localOnlyRefusal(provider: ModelProvider) = "Local-only mode is on, so ${provider.name} was not contacted."
 
     override suspend fun detectLocalServers(): List<DetectedServer> = localServers.detect()
 
     // ---- models ----
 
     override suspend fun refreshModels(id: ProviderId): ModelSyncReport {
-        val provider = providers.get(id) ?: throw IllegalArgumentException(PROVIDER_GONE)
+        val read = providers.get(id) ?: throw IllegalArgumentException(PROVIDER_GONE)
+        blockedByLocalOnly(read)?.let { throw LlmException.BlockedByPolicy(it) }
+        val lease = connections.acquire(read)
+        // An edit may have landed since the read above: the listing goes where the lease's record says, with its key.
+        val provider = lease.provider
         blockedByLocalOnly(provider)?.let { throw LlmException.BlockedByPolicy(it) }
-        val lease = connections.acquire(provider)
         var outcome = "stopped before it finished"
         val listed = try {
             lease.adapter.listModels().also { outcome = if (it.size == 1) "1 model listed" else "${it.size} models listed" }

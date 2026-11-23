@@ -70,13 +70,13 @@ class ErrorMappingTest : MockServerTest() {
 
     @Test
     fun `408 and 504 are timeouts`() {
-        // OkHttp itself repeats a request once after a 408, as HTTP allows; the second answer is what gets mapped.
-        repeat(2) { enqueue("""{"error":{"message":"the request was not received in time"}}""", 408) }
+        // OkHttp would repeat a request once after a 408, as HTTP allows; here only the framework repeats anything.
+        enqueue("""{"error":{"message":"the request was not received in time"}}""", 408)
         assertTrue(failsWith<LlmException.Timeout> { chat() }.retryable)
-        assertEquals(2, server.requestCount)
+        assertEquals(1, server.requestCount)
         enqueue("""{"error":{"message":"upstream timed out"}}""", 504)
         assertTrue(failsWith<LlmException.Timeout> { chat() }.retryable)
-        assertEquals(3, server.requestCount)
+        assertEquals(2, server.requestCount)
     }
 
     @Test

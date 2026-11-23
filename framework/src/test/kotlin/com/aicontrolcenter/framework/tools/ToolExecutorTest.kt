@@ -12,6 +12,7 @@ import com.aicontrolcenter.core.tools.ToolContext
 import com.aicontrolcenter.core.tools.ToolOutcome
 import com.aicontrolcenter.framework.LambdaTool
 import com.aicontrolcenter.framework.TestWorld
+import com.aicontrolcenter.framework.llm.EchoGuard
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
@@ -159,6 +160,19 @@ class ToolExecutorTest {
         assertTrue("test_echo" in text && "unexpected '}' at 14" in text && "JSON object" in text, text)
         assertTrue(echo.calls.isEmpty())
         assertEquals("Tool call rejected: Test echo", toolEvents().single().title)
+    }
+
+    @Test
+    fun `a call the model repeated from a tool result is answered as such and never runs`() = runTest {
+        val echo = world.register(LambdaTool("echo") { ToolOutcome.success("ran") })
+
+        val execution = world.executor.execute(call(echo).copy(argumentsError = EchoGuard.REJECTION), context(echo))
+
+        assertEquals(ToolCallEnd.REJECTED, execution.end)
+        val text = execution.outcome.content
+        assertTrue("test_echo" in text && "repeated content from a tool result" in text && "never choose an action" in text, text)
+        assertFalse("could not be read" in text, "it is not about unreadable arguments: $text")
+        assertTrue(echo.calls.isEmpty())
     }
 
     @Test

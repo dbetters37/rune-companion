@@ -38,6 +38,9 @@ import kotlinx.coroutines.withContext
  *    sending of the prompt and is checked again in full: model, provider, local-only mode and
  *    the connection lease are re-read before every attempt, and if anything about where or how
  *    the call would go has changed (address, kind, headers, key), it is not sent again.
+ *  - Where a call goes, and with which key, is decided by the record its lease was built from
+ *    ([ProviderLease.provider]), not by an earlier read that an edit may have overtaken; policy
+ *    is applied to that record too, and the call is logged as going where it says.
  *  - A streamed call is retried only while nothing has been passed on: once text has been
  *    shown, repeating the call would show it twice.
  *  - Exactly one activity event is written per call, whether it succeeded, failed, was refused
@@ -128,39 +131,55 @@ class DefaultModelGateway(
         }
     }
 
-    /** Applies policy and prepares the call. Every refusal is logged and thrown as [LlmException.BlockedByPolicy]. */
+    /**
+     * Applies policy and prepares the call. Every refusal is logged and thrown as [LlmException.BlockedByPolicy].
+     *
+     * The provider record is read here to refuse early, but the call is decided by the record
+     * the lease was built from: an edit may land between this read and [ProviderConnections.acquire],
+     * and the lease pairs the key with the record it was stored for. So every provider refusal is
+     * applied again to that record, and the call is logged as going where that record says.
+     */
     private suspend fun open(modelId: ModelId, request: ChatRequest, context: CallContext, streamed: Boolean): Route {
         val model = models.get(modelId) ?: refuse(modelId, context, "The model assigned here is no longer registered.")
         if (!model.enabled) refuse(modelId, context, "Model ${model.displayName} is disabled.")
-        val provider = providers.get(model.providerId)
+        val read = providers.get(model.providerId)
             ?: refuse(modelId, context, "The provider of ${model.displayName} is no longer registered.")
-        if (!provider.enabled) refuse(modelId, context, "Provider ${provider.name} is disabled.")
-        val locality = provider.effectiveLocality
-        if (locality.leavesDevice && settings.get().localOnlyMode) {
-            refuse(modelId, context, "Local-only mode is on and ${provider.name} would send data off this device.")
-        }
+        providerRefusal(read)?.let { refuse(modelId, context, it) }
 
         val prompted = needsPromptedTools(model, request)
         val wireRequest = request.copy(
             model = model.modelName,
             maxOutputTokens = clampOutput(request.maxOutputTokens, model.capabilities.maxOutputTokens),
         )
-        val egress = if (locality.leavesDevice) {
-            EgressInfo(provider.destinationHost(), locality, provider.id, context.purpose, wireRequest.approximateBytes())
-        } else {
-            null
+        fun callTo(provider: ModelProvider): ModelCall {
+            val locality = provider.effectiveLocality
+            val egress = if (locality.leavesDevice) {
+                EgressInfo(provider.destinationHost(), locality, provider.id, context.purpose, wireRequest.approximateBytes())
+            } else {
+                null
+            }
+            return ModelCall(
+                model, provider, context, startedAt = clock.now(), streamed = streamed, promptedTools = prompted,
+                messageCount = request.messages.size, toolCount = request.tools.size, egress = egress,
+            )
         }
-        val call = ModelCall(
-            model, provider, context, startedAt = clock.now(), streamed = streamed, promptedTools = prompted,
-            messageCount = request.messages.size, toolCount = request.tools.size, egress = egress,
-        )
         val lease = try {
-            connections.acquire(provider)
+            connections.acquire(read)
         } catch (e: LlmException) {
-            throw fail(call, e)
+            throw fail(callTo(read), e)
         }
+        // Nothing has been sent yet: a refusal here costs nothing but the adapter that was built.
+        providerRefusal(lease.provider)?.let { refuse(modelId, context, it) }
         val client = if (prompted) PromptedToolsClient(lease.adapter.client) else lease.adapter.client
-        return Route(call, lease, client, wireRequest)
+        return Route(callTo(lease.provider), lease, client, wireRequest)
+    }
+
+    /** Why policy forbids calling [provider] now, or null when it allows it. */
+    private suspend fun providerRefusal(provider: ModelProvider): String? = when {
+        !provider.enabled -> "Provider ${provider.name} is disabled."
+        provider.effectiveLocality.leavesDevice && settings.get().localOnlyMode ->
+            "Local-only mode is on and ${provider.name} would send data off this device."
+        else -> null
     }
 
     /**
@@ -182,11 +201,8 @@ class DefaultModelGateway(
         val model = models.get(modelId) ?: return "The model assigned here is no longer registered."
         if (!model.enabled) return "Model ${model.displayName} is disabled."
         val provider = providers.get(model.providerId) ?: return "The provider of ${model.displayName} is no longer registered."
-        if (!provider.enabled) return "Provider ${provider.name} is disabled."
+        providerRefusal(provider)?.let { return it }
         val locality = provider.effectiveLocality
-        if (locality.leavesDevice && settings.get().localOnlyMode) {
-            return "Local-only mode is on and ${provider.name} would send data off this device."
-        }
         val changed = "The settings of ${provider.name} changed while the call was waiting to be repeated."
         val sameModel = model.providerId == before.model.providerId && model.modelName == before.model.modelName &&
             model.capabilities == before.model.capabilities
@@ -200,7 +216,8 @@ class DefaultModelGateway(
             return e.message ?: changed
         }
         // The cache hands out the same lease only while record and key are unchanged.
-        return if (lease === route.lease) null else changed
+        if (lease !== route.lease) return changed
+        return providerRefusal(lease.provider)
     }
 
     /**

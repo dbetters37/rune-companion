@@ -32,10 +32,12 @@ data class HttpTimeouts(
  * refused before a connection is opened. Such addresses also never go through a proxy
  * ([LocalityProxySelector]); the app's proxy, or the system's, is used for cloud hosts only.
  *
- * OkHttp's own recovery is left on. It re-sends a request whose pooled connection the server
- * had already closed, which would otherwise surface as a network failure after every idle
- * period, and it repeats a request once after a 408. Every other retry decision belongs to the
- * framework, which sees the mapped [com.aicontrolcenter.core.llm.LlmException].
+ * OkHttp never sends a request a second time on its own ([singleSend]): not after a failed or
+ * stale pooled connection, not after a 408, and not after a 503 that asks for an immediate
+ * repeat. Each of those surfaces as the mapped [com.aicontrolcenter.core.llm.LlmException], and
+ * whether to try again is decided by the framework, which checks policy and records the
+ * transfer each time. A pooled connection the server closed while idle can therefore fail a
+ * call with [com.aicontrolcenter.core.llm.LlmException.Network], which is retryable.
  */
 internal fun providerHttpClient(shared: OkHttpClient?, timeouts: HttpTimeouts): OkHttpClient {
     // A client built here and passed back in is not checked twice.
@@ -56,5 +58,6 @@ internal fun providerHttpClient(shared: OkHttpClient?, timeouts: HttpTimeouts): 
         // OkHttp consults the selector only while no fixed proxy is set.
         .proxy(null)
         .proxySelector(proxySelector)
+        .singleSend()
         .build()
 }

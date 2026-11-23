@@ -2,6 +2,25 @@ package com.aicontrolcenter.framework.llm
 
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ModelId
+import com.aicontrolcenter.core.ProviderId
+import com.aicontrolcenter.core.activity.ActivityRecorder
+import com.aicontrolcenter.core.llm.ProviderAdapter
+import com.aicontrolcenter.core.llm.ProviderDraft
+import com.aicontrolcenter.core.llm.ProviderHealth
+import com.aicontrolcenter.core.llm.RemoteModel
+import com.aicontrolcenter.core.registry.ProviderRepository
+import com.aicontrolcenter.core.security.SecretVault
+import com.aicontrolcenter.testkit.FakeClock
+import com.aicontrolcenter.testkit.FakeProviderAdapterFactory
+import com.aicontrolcenter.testkit.InMemoryActivityLog
+import com.aicontrolcenter.testkit.InMemoryModelRepository
+import com.aicontrolcenter.testkit.InMemoryProviderRepository
+import com.aicontrolcenter.testkit.InMemorySecretVault
+import com.aicontrolcenter.testkit.InMemorySettingsRepository
+import com.aicontrolcenter.testkit.SequentialIdGenerator
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.yield
+import java.util.concurrent.CopyOnWriteArrayList
 import com.aicontrolcenter.core.activity.ActivityType
 import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.llm.CallContext
@@ -425,5 +444,144 @@ class ModelGatewayTest {
         assertFailsWith<LlmException.BlockedByPolicy> { world.connections.acquire(provider) }
 
         assertTrue(world.factories.getValue(ProviderKind.OPENAI_COMPATIBLE).connections.isEmpty(), "no adapter was even built")
+    }
+
+    // ---- a key goes only where it was saved for ----
+
+    private val keyA = "sk-test-key-for-host-a-000001"
+    private val keyB = "sk-test-key-for-host-b-000002"
+    private val toB = ProviderDraft("Cloud", ProviderKind.OPENAI_COMPATIBLE, "https://b.example.com/v1", apiKey = keyB)
+
+    @Test
+    fun `an edit that lands while a call is being prepared never pairs a key with an address it was not saved for`() = runTest {
+        // The edit lands after the gateway read the record and before the lease is built.
+        for (streamed in listOf(false, true)) {
+            Racing().run {
+                val (provider, model) = cloud(keyA)
+                providers.afterGet = { manager.updateProvider(provider.id, toB) }
+                call(model.id, streamed)
+                assertEquals(listOf("https://b.example.com/v1 $keyB chat"), sent, "streamed: $streamed - the new key, to the address it was entered with")
+                assertEquals(listOf("b.example.com"), modelCalls().map { it.egress?.destinationHost }, "logged as going where it went")
+            }
+        }
+        // The edit is attempted between the lease's read of the record and its read of the key: it waits.
+        Racing().run {
+            val (provider, model) = cloud(keyA)
+            vault.beforeGet = {
+                launch { manager.updateProvider(provider.id, toB) }
+                yield()
+            }
+            call(model.id, streamed = false)
+            assertEquals(listOf("https://a.example.com/v1 $keyA chat"), sent, "the old key, to the old address")
+            assertEquals(listOf("a.example.com"), modelCalls().map { it.egress?.destinationHost })
+
+            advanceUntilIdle()
+            assertEquals("https://b.example.com/v1", providers.get(provider.id)?.baseUrl, "the edit went through after the read")
+            call(model.id, streamed = false)
+            assertEquals("https://b.example.com/v1 $keyB chat", sent.last())
+        }
+        // The edit moves the provider off the phone while local-only mode is on: policy applies to what the lease was built from.
+        Racing().run {
+            settings.update { it.copy(localOnlyMode = true) }
+            val (provider, model) = cloud(keyA, baseUrl = "http://127.0.0.1:8080/v1")
+            providers.afterGet = { manager.updateProvider(provider.id, toB) }
+            val error = assertFailsWith<LlmException.BlockedByPolicy> { call(model.id, streamed = false) }
+            assertTrue("Local-only mode is on" in error.message.orEmpty(), error.message)
+            assertTrue(sent.isEmpty(), "nothing left the phone: $sent")
+            assertEquals("Model call blocked", modelCalls().single().title)
+        }
+    }
+
+    @Test
+    fun `a check or a listing that an edit overtakes goes where the lease's record says, is logged so, and respects local-only mode`() = runTest {
+        Racing().run {
+            val (provider, _) = cloud(keyA)
+            providers.afterGet = { manager.updateProvider(provider.id, toB) }
+            manager.checkProvider(provider.id)
+            providers.afterGet = { manager.updateProvider(provider.id, toB.copy(baseUrl = "https://c.example.com/v1", apiKey = keyA)) }
+            manager.refreshModels(provider.id)
+
+            assertEquals(listOf("https://b.example.com/v1 $keyB check", "https://c.example.com/v1 $keyA list"), sent)
+            val contacts = log.all.filter { it.egress != null }.map { it.title to it.egress?.destinationHost }
+            assertEquals(listOf("Provider checked" to "b.example.com", "Model list requested" to "c.example.com"), contacts)
+        }
+        Racing().run {
+            settings.update { it.copy(localOnlyMode = true) }
+            val (checked, _) = cloud(keyA, baseUrl = "http://127.0.0.1:8080/v1", name = "Checked")
+            val (listed, _) = cloud(keyA, baseUrl = "http://127.0.0.1:8081/v1", name = "Listed")
+            providers.afterGet = { manager.updateProvider(checked.id, toB.copy(name = "Checked")) }
+            val health = manager.checkProvider(checked.id)
+            assertTrue("Local-only mode is on" in health.message.orEmpty(), health.message)
+            providers.afterGet = { manager.updateProvider(listed.id, toB.copy(name = "Listed", baseUrl = "https://c.example.com/v1")) }
+            assertFailsWith<LlmException.BlockedByPolicy> { manager.refreshModels(listed.id) }
+            assertEquals("https://c.example.com/v1", providers.get(listed.id)?.baseUrl, "the edit did land before the listing")
+            assertTrue(sent.isEmpty(), "nothing left the phone: $sent")
+        }
+    }
+
+    /** A provider repository that runs [afterGet] once, after its next read and before handing back what it read. */
+    private class HookedProviders(private val inner: InMemoryProviderRepository = InMemoryProviderRepository()) : ProviderRepository by inner {
+        var afterGet: (suspend () -> Unit)? = null
+
+        override suspend fun get(id: ProviderId): ModelProvider? {
+            val read = inner.get(id)
+            afterGet?.let {
+                afterGet = null
+                it()
+            }
+            return read
+        }
+    }
+
+    /** A vault that runs [beforeGet] once, before its next read. */
+    private class HookedVault(private val inner: InMemorySecretVault = InMemorySecretVault()) : SecretVault by inner {
+        var beforeGet: (suspend () -> Unit)? = null
+
+        override suspend fun get(alias: String): String? {
+            beforeGet?.let {
+                beforeGet = null
+                it()
+            }
+            return inner.get(alias)
+        }
+    }
+
+    /** Gateway and manager over hooked storage, with adapters that note the address, the key and the request of everything sent. */
+    private class Racing {
+        val providers = HookedProviders()
+        val vault = HookedVault()
+        val models = InMemoryModelRepository()
+        val settings = InMemorySettingsRepository()
+        val log = InMemoryActivityLog()
+        val clock = FakeClock(autoAdvanceMs = 1)
+        val ids = SequentialIdGenerator()
+        val sent = CopyOnWriteArrayList<String>()
+        private val factory = FakeProviderAdapterFactory(ProviderKind.OPENAI_COMPATIBLE) { connection ->
+            val to = "${connection.provider.baseUrl} ${connection.apiKey}"
+            object : ProviderAdapter {
+                override suspend fun checkHealth(): ProviderHealth = ProviderHealth(ConnectionStatus.ONLINE).also { sent += "$to check" }
+                override suspend fun listModels(): List<RemoteModel> = emptyList<RemoteModel>().also { sent += "$to list" }
+                override val client = ScriptedLlmClient("scripted-1") { _, _ ->
+                    sent += "$to chat"
+                    ScriptStep.Reply("answer")
+                }
+            }
+        }
+        val connections = ProviderConnections(providers, vault, listOf(factory), clock)
+        private val activity = ActivityRecorder(log, ids, clock)
+        val manager = DefaultProviderManager(providers, models, settings, vault, connections, activity, ids, clock)
+        val gateway = DefaultModelGateway(providers, models, settings, connections, activity, clock, RetryPolicy.NONE)
+
+        suspend fun cloud(key: String, baseUrl: String = "https://a.example.com/v1", name: String = "Cloud"): Pair<ModelProvider, ModelDescriptor> {
+            val provider = manager.addProvider(ProviderDraft(name, ProviderKind.OPENAI_COMPATIBLE, baseUrl, apiKey = key))
+            return provider to manager.addModel(provider.id, "scripted-1", null, ModelCapabilities(toolCalling = true))
+        }
+
+        suspend fun call(model: ModelId, streamed: Boolean) {
+            val ask = ChatRequest(messages = listOf(ChatMessage.user("Hello there")))
+            if (streamed) gateway.chatStream(model, ask).toList() else gateway.chat(model, ask)
+        }
+
+        fun modelCalls() = log.all.filter { it.type == ActivityType.MODEL_CALL }
     }
 }

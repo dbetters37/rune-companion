@@ -18,9 +18,10 @@ import java.net.URISyntaxException
  * lenient one must agree on the host: an address written to look local to one and remote to
  * the other is refused.
  *
- * The text is only half of it: when the connection is made, [LocalityDns] refuses a name that
- * resolves outside the device or local network its address claims, and such addresses never
- * go through a proxy ([LocalityProxySelector]).
+ * The text is only half of it: when the connection is made, [LocalityDns] connects a name
+ * only to the addresses it resolves to inside the device or local network its address claims,
+ * and refuses it when there are none; such addresses never go through a proxy
+ * ([LocalityProxySelector]).
  */
 internal class Endpoint private constructor(private val base: HttpUrl) {
     val host: String get() = base.host

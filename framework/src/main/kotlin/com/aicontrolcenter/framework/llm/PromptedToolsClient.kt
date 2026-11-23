@@ -8,6 +8,7 @@ import com.aicontrolcenter.core.llm.LlmClient
 import com.aicontrolcenter.core.llm.ToolCallRequest
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.serialization.json.JsonObject
 import java.util.UUID
 
 /**
@@ -20,6 +21,11 @@ import java.util.UUID
  * ignores the format still answers, it just cannot use tools. A marked call whose arguments
  * cannot be read is passed on as a call with [ToolCallRequest.argumentsError] set, which the
  * tool executor answers with the reason, so the model can write it again.
+ *
+ * A call the model repeated from a tool result, or from what an earlier call quoted, is never
+ * run, however it was re-encoded on the way ([EchoGuard]): it is passed on empty, with
+ * [EchoGuard.REJECTION] as its arguments error, and the tool executor answers it with an error
+ * saying why. Tool output is data and must never choose an action.
  */
 class PromptedToolsClient(
     private val delegate: LlmClient,
@@ -72,7 +78,14 @@ class PromptedToolsClient(
             truncated = response.finishReason == FinishReason.LENGTH,
         )
         if (parsed.calls.isEmpty()) return response
-        val calls = parsed.calls.map { ToolCallRequest(newCallId(), it.name, it.arguments, argumentsError = it.argumentsError) }
+        val echoes = EchoGuard.of(request)
+        val calls = parsed.calls.mapIndexed { index, call ->
+            if (echoes.repeats(parsed.written[index])) {
+                ToolCallRequest(newCallId(), call.name, JsonObject(emptyMap()), argumentsError = EchoGuard.REJECTION)
+            } else {
+                ToolCallRequest(newCallId(), call.name, call.arguments, argumentsError = call.argumentsError)
+            }
+        }
         // The provider's own form of the message no longer matches what the framework keeps.
         val message = response.message.copy(text = parsed.text, toolCalls = calls, providerData = null)
         return response.copy(message = message, finishReason = FinishReason.TOOL_CALLS)

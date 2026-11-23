@@ -100,8 +100,8 @@ internal object ProviderDraftValidator {
             if (entered.length > MAX_KEY_LENGTH) return "That is too long to be an API key."
         }
         // A key is used only with the endpoint it was entered for: keeping it while the provider is
-        // pointed at another host, or turned into another kind of service, would hand it to that one.
-        // An in-process kind sends it nowhere.
+        // pointed at another scheme, host or port, or turned into another kind of service, would hand
+        // it to that one (or, from https to http, to anyone on the network). An in-process kind sends it nowhere.
         if (draft.apiKey == null && storedKey && current != null && !draft.kind.runsInProcess && retargets(current, draft)) {
             return KEY_FOR_NEW_ADDRESS
         }
@@ -112,9 +112,12 @@ internal object ProviderDraftValidator {
         return if (vendorCloud && !willHaveKey) "This provider needs an API key." else null
     }
 
-    /** Whether [draft] sends requests to another host than [current], or speaks another provider's protocol there. */
+    /**
+     * Whether [draft] sends requests to another endpoint than [current] (another scheme, host or
+     * port; the path does not matter), or speaks another provider's protocol there.
+     */
     private fun retargets(current: ModelProvider, draft: ProviderDraft): Boolean =
-        current.kind != draft.kind || endpointHost(current.kind, current.baseUrl) != endpointHost(draft.kind, normaliseBaseUrl(draft.baseUrl))
+        current.kind != draft.kind || endpointOf(current.kind, current.baseUrl) != endpointOf(draft.kind, normaliseBaseUrl(draft.baseUrl))
 
     private fun headerProblems(headers: Map<String, String>): List<String> {
         val problems = ArrayList<String>()

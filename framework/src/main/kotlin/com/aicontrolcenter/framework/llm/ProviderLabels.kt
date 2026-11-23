@@ -69,3 +69,20 @@ internal fun ModelProvider.destinationHost(): String = endpointHost(kind, baseUr
 /** The host requests of a provider of [kind] at [baseUrl] go to, or null when the address cannot be read. */
 internal fun endpointHost(kind: ProviderKind, baseUrl: String?): String? =
     hostOfUrl(baseUrl) ?: kind.defaultHost?.takeIf { baseUrl.isNullOrBlank() }
+
+/** Where requests go, as far as a key is concerned: a different scheme, host or port is a different server. */
+internal data class Endpoint(val scheme: String, val host: String, val port: Int)
+
+/**
+ * The endpoint requests of a provider of [kind] at [baseUrl] go to, or null when the address
+ * cannot be read. The port is explicit (80 or 443 when the address names none), and a blank
+ * address of a vendor kind is that vendor's default endpoint.
+ */
+internal fun endpointOf(kind: ProviderKind, baseUrl: String?): Endpoint? {
+    if (baseUrl.isNullOrBlank()) return kind.defaultHost?.let { Endpoint("https", it, 443) }
+    val host = hostOfUrl(baseUrl) ?: return null
+    val uri = URI(baseUrl.trim())
+    val scheme = uri.scheme.lowercase()
+    val port = if (uri.port >= 0) uri.port else if (scheme == "https") 443 else 80
+    return Endpoint(scheme, host, port)
+}

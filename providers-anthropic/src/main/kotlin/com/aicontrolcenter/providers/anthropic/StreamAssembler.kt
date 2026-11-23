@@ -12,6 +12,7 @@ import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlin.jvm.optionals.getOrNull
@@ -125,11 +126,22 @@ internal class StreamAssembler {
          * object produce no chunk: they may have been cut off by the token limit, which only
          * the stop reason that follows will tell. They are kept as [argumentsError], which the
          * completed response reports on the call when the model did stop to have it run.
+         *
+         * Without deltas the start event's input is the arguments, read as in a non-streamed
+         * reply: an object is used, none (or null) means no arguments, and any other value is
+         * an [argumentsError], not a call with empty input.
          */
         fun close(): ChatChunk? {
             if (start.blockType != "tool_use") return null
             if (inputJson.isBlank()) {
-                input = start["input"] as? JsonObject ?: JsonObject(emptyMap())
+                when (val given = start["input"]) {
+                    is JsonObject -> input = given
+                    null, is JsonNull -> input = JsonObject(emptyMap())
+                    else -> {
+                        argumentsError = ToolArgumentErrors.describe(given.toString(), given)
+                        return null
+                    }
+                }
             } else {
                 val raw = inputJson.toString()
                 val parsed = try {

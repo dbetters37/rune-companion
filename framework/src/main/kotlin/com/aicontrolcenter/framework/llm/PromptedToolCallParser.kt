@@ -22,13 +22,27 @@ import kotlinx.serialization.json.JsonPrimitive
  * becoming the answer.
  *
  * Nothing inside a `<tool_result>` block of the reply counts: that is the model repeating what
- * a tool returned, and tool output is data, never a call.
+ * a tool returned, and tool output is data, never a call. A call repeated without those tags is
+ * found as a call; [Parsed.written] gives the text it was written as, for [EchoGuard] to compare
+ * with the request's tool output.
  */
 internal object PromptedToolCallParser {
     data class Call(val name: String, val arguments: JsonObject, val argumentsError: String? = null)
 
     /** [text] is the reply without the call blocks that were understood. */
-    data class Parsed(val text: String, val calls: List<Call>)
+    data class Parsed(val text: String, val calls: List<Call>) {
+        /**
+         * For each of [calls], the texts of the reply it was written as: its whole block, and
+         * every JSON object in the block that reads as this very call. Not part of equality.
+         */
+        var written: List<List<String>> = calls.map { emptyList() }
+            private set
+
+        constructor(text: String, calls: List<Call>, written: List<List<String>>) : this(text, calls) {
+            require(written.size == calls.size)
+            this.written = written
+        }
+    }
 
     private class Block(val start: Int, val end: Int, val calls: List<Call>)
 
@@ -46,11 +60,13 @@ internal object PromptedToolCallParser {
 
     private val NAME_KEYS = listOf("name", "tool", "tool_name", "function", "function_name")
 
-    /** A tool's name in JSON too broken to read, for telling the model which call was not understood. */
-    private val NAME_IN_BROKEN_JSON = Regex("(?<![A-Za-z0-9_])[\"']?(?:name|tool|tool_name|function_name|function)[\"']?\\s*:\\s*[\"']([A-Za-z0-9_.\\-]{1,64})[\"']")
+    /** Keys under which a call's name may sit one level down, in JSON too broken to read. */
+    private val NESTING_KEYS = setOf("function", "tool_calls", "tool_call")
+    private const val QUOTES = "\"'\u201C\u201D\u2018\u2019"
     private val RESULT_OPEN = Regex("<tool_results?\\b", RegexOption.IGNORE_CASE)
     private val RESULT_CLOSE = Regex("</tool_results?\\s*>", RegexOption.IGNORE_CASE)
     private const val NOT_JSON = "the arguments are not valid JSON"
+    private const val MAX_ECHO_SCAN = 20_000
     private const val NOT_AN_OBJECT = "the arguments are not a JSON object"
     private val ARGUMENT_KEYS = listOf("arguments", "args", "parameters", "params", "input", "tool_input", "action_input")
 
@@ -73,7 +89,28 @@ internal object PromptedToolCallParser {
             from = block.end
         }
         text.append(reply, from, reply.length)
-        return Parsed(BLANK_LINES.replace(text, "\n\n").trim(), blocks.flatMap { it.calls })
+        val written = blocks.flatMap { block ->
+            val blockText = source.substring(block.start, block.end)
+            block.calls.map { call -> listOf(blockText) + objectsReadingAs(call, blockText) }
+        }
+        return Parsed(BLANK_LINES.replace(text, "\n\n").trim(), blocks.flatMap { it.calls }, written)
+    }
+
+    /**
+     * The JSON objects in [text] that read as [call]: the call's own object inside an array, a
+     * wrapper or a block of several, as the model wrote it. Bounded in size; the block itself is
+     * always compared in full.
+     */
+    private fun objectsReadingAs(call: Call, text: String): List<String> {
+        if (call.argumentsError != null || text.length > MAX_ECHO_SCAN) return emptyList()
+        val found = ArrayList<String>()
+        var at = text.indexOf('{')
+        while (at >= 0) {
+            val read = LenientJson.readAt(text, at, allowUnclosed = false)
+            if (read != null && (read.element as? JsonObject)?.let(::toCall) == call) found += text.substring(at, read.end)
+            at = text.indexOf('{', at + 1)
+        }
+        return found
     }
 
     /**
@@ -171,9 +208,100 @@ internal object PromptedToolCallParser {
         listOfNotNull(TAG_OPEN.find(reply, from), FUNCTION_TAG.find(reply, from), BRACKET_MARKER.find(reply, from))
             .minOfOrNull { it.range.first } ?: reply.length
 
-    /** A call for the first tool named in [text], whose JSON could not be read, or null when no tool is named. */
-    private fun brokenCall(text: String): Call? =
-        NAME_IN_BROKEN_JSON.find(text)?.let { Call(it.groupValues[1], JsonObject(emptyMap()), NOT_JSON) }
+    /** A call for the tool [text] names at its top level, whose JSON could not be read, or null when it names none there. */
+    private fun brokenCall(text: String): Call? = topLevelName(text, 0, 0)?.let { Call(it, JsonObject(emptyMap()), NOT_JSON) }
+
+    /**
+     * The tool name among the top-level members of the object (or the first object of the
+     * array) at the start of [text], whose JSON is broken somewhere. A name inside "arguments" or
+     * any other member's value is never taken: it is not the call's. Only the OpenAI shape and
+     * wrappers ("function", "tool_calls") are looked into, one level down. Members are walked one
+     * by one; once the walk loses its place in the broken JSON, null rather than a guess.
+     */
+    private fun topLevelName(text: String, from: Int, depth: Int): String? {
+        var i = indexOfNonSpace(text, from)
+        if (i >= 0 && text[i] == '[') i = indexOfNonSpace(text, i + 1)
+        if (i < 0 || text[i] != '{') return null
+        i++
+        while (true) {
+            while (i < text.length && (text[i].isWhitespace() || text[i] == ',')) i++
+            if (i >= text.length || text[i] == '}') return null
+            val key: String
+            if (text[i] in QUOTES) {
+                val end = stringEnd(text, i) ?: return null
+                key = text.substring(i + 1, end - 1)
+                i = end
+            } else {
+                val start = i
+                while (i < text.length && (text[i].isLetterOrDigit() || text[i] == '_' || text[i] == '-')) i++
+                if (i == start) return null
+                key = text.substring(start, i)
+            }
+            i = indexOfNonSpace(text, i)
+            if (i < 0 || (text[i] != ':' && text[i] != '=')) return null
+            i = indexOfNonSpace(text, i + 1)
+            if (i < 0) return null
+            if (key in NAME_KEYS && text[i] in QUOTES) {
+                val end = stringEnd(text, i) ?: return null
+                val name = text.substring(i + 1, end - 1).trim()
+                if (TOOL_NAME.matches(name)) return name
+                i = end
+            } else {
+                if (key in NESTING_KEYS && depth == 0 && (text[i] == '{' || text[i] == '[')) {
+                    topLevelName(text, i, depth + 1)?.let { return it }
+                }
+                i = valueEnd(text, i) ?: return null
+            }
+            // After a member comes the next one or the end of the object; anything else means the walk is lost.
+            i = indexOfNonSpace(text, i)
+            if (i < 0 || (text[i] != ',' && text[i] != '}')) return null
+        }
+    }
+
+    /** Index just past the value that starts at [at] in broken JSON, or null when its end cannot be told. */
+    private fun valueEnd(text: String, at: Int): Int? = when (val c = text[at]) {
+        in QUOTES -> stringEnd(text, at)
+        '{', '[' -> LenientJson.readAt(text, at, allowUnclosed = false)?.end ?: closingIndex(text, at, c, strings = true) ?: closingIndex(text, at, c, strings = false)
+        else -> {
+            var i = at
+            while (i < text.length && text[i] != ',' && text[i] != '}' && text[i] != ']' && !text[i].isWhitespace()) i++
+            i
+        }
+    }
+
+    /**
+     * Index just past the bracket that closes the one at [at], counting only brackets of its own
+     * kind; with [strings], brackets inside quoted strings are skipped. Null when it is never closed.
+     */
+    private fun closingIndex(text: String, at: Int, open: Char, strings: Boolean): Int? {
+        val close = if (open == '{') '}' else ']'
+        var depth = 0
+        var i = at
+        while (i < text.length) {
+            val c = text[i]
+            when {
+                strings && c in QUOTES -> {
+                    i = stringEnd(text, i) ?: return null
+                    continue
+                }
+                c == open -> depth++
+                c == close -> if (--depth == 0) return i + 1
+            }
+            i++
+        }
+        return null
+    }
+
+    /** Index just past the string whose opening quote is at [at], as [LenientJson] reads it, or null when it is never closed. */
+    private fun stringEnd(text: String, at: Int): Int? {
+        val closers = LenientJson.closersFor(text[at])
+        var i = at + 1
+        while (i < text.length) {
+            val c = text[i++]
+            if (c == '\\') i++ else if (c in closers) return i
+        }
+        return null
+    }
 
     private fun fenced(reply: String, knownTools: Set<String>): List<Block> =
         FENCE.findAll(reply).mapNotNull { fence ->

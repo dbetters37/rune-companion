@@ -34,6 +34,8 @@ import java.util.UUID
  *    position, and a new `id` at an index already in use starts a new call, because some
  *    servers number every parallel call 0.
  *  - Arguments may be a JSON string, a string holding a JSON string, or already an object.
+ *    Any other JSON value (a number, a boolean, an array, or null and nothing else) is not
+ *    arguments, and the call is reported with [ToolCallRequest.argumentsError].
  *  - Usage arrives in a final chunk without choices, on the last content chunk, or under
  *    `x_groq`.
  *
@@ -66,8 +68,25 @@ internal class OpenAiReplyAssembler(
         var id = ""
         var name = ""
         val arguments = StringBuilder()
+        var sawText = false
         var argumentsObject: JsonObject? = null
+
+        /** The first value given as arguments that is neither a string nor an object nor null. */
+        var argumentsInvalid: JsonElement? = null
+        var sawNull = false
         val extras = LinkedHashMap<String, JsonElement>()
+
+        /**
+         * A wrong kind of value spoils the call whatever else arrives. A null fragment adds
+         * nothing, so a stream that sends one beside the name and the arguments in later
+         * fragments still works; a call whose arguments were null and nothing else is reported
+         * like any other value that is not an object.
+         */
+        fun parsedArguments(): ToolArguments {
+            argumentsInvalid?.let { return ToolArguments.fromStrictElement(it) }
+            argumentsObject?.let { return ToolArguments.fromElement(it) }
+            return if (sawNull && !sawText) ToolArguments.fromStrictElement(JsonNull) else ToolArguments.fromText(arguments.toString())
+        }
     }
 
     /**
@@ -132,9 +151,16 @@ internal class OpenAiReplyAssembler(
             // The name comes whole in the first fragment; a server repeating it must not double it.
             function.string("name")?.let { if (it != call.name) call.name += it }
             when (val arguments = function["arguments"]) {
+                null -> Unit
                 is JsonObject -> call.argumentsObject = arguments
-                is JsonPrimitive -> if (arguments.isString) call.arguments.append(arguments.content)
-                else -> Unit
+                is JsonNull -> call.sawNull = true
+                is JsonPrimitive -> if (arguments.isString) {
+                    call.sawText = true
+                    call.arguments.append(arguments.content)
+                } else if (call.argumentsInvalid == null) {
+                    call.argumentsInvalid = arguments
+                }
+                is JsonArray -> if (call.argumentsInvalid == null) call.argumentsInvalid = arguments
             }
         }
         for ((key, value) in OpenAiEcho.extrasOf(fragment)) call.extras.putIfAbsent(key, value)
@@ -198,7 +224,7 @@ internal class OpenAiReplyAssembler(
     private fun parseCalls(reported: FinishReason): List<Pair<ToolCallRequest, Map<String, JsonElement>>> {
         val result = ArrayList<Pair<ToolCallRequest, Map<String, JsonElement>>>(calls.size)
         for ((position, call) in calls.withIndex()) {
-            val arguments = call.argumentsObject?.let { ToolArguments.fromElement(it) } ?: ToolArguments.fromText(call.arguments.toString())
+            val arguments = call.parsedArguments()
             if (call.name.isBlank() || arguments.error != null) {
                 // Output that hit the token limit ends mid-call; the rest of the reply is still good.
                 if (reported == FinishReason.LENGTH && position == calls.lastIndex) continue
