@@ -27,6 +27,8 @@ import com.aicontrolcenter.core.memory.MemoryService
 import com.aicontrolcenter.core.memory.MemoryTier
 import com.aicontrolcenter.core.memory.MemoryValidationException
 import com.aicontrolcenter.core.memory.Provenance
+import com.aicontrolcenter.core.memory.ProvenanceAction
+import com.aicontrolcenter.core.memory.ProvenanceEvent
 import com.aicontrolcenter.core.memory.ProvenanceOrigin
 import com.aicontrolcenter.core.memory.RecallQuery
 import com.aicontrolcenter.core.memoryId
@@ -120,13 +122,17 @@ class FakeMemoryService(
         return record
     }
 
+    /** As the memory store does, each change adds a revision and an entry to the history naming who made it. */
     override suspend fun update(actor: MemoryActor, id: MemoryId, change: MemoryChange): MemoryRecord {
         val current = get(actor, id) ?: throw MemoryValidationException("There is no memory $id.")
         if (!access(actor).canWrite(current.scope)) throw MemoryPermissionException("${name(actor)} may not change that memory.")
+        val now = clock.now()
+        val by = (actor as? MemoryActor.Agent)?.profile?.id
         val updated = current.copy(
             title = change.title ?: current.title, content = change.content ?: current.content, kind = change.kind ?: current.kind,
             tags = change.tags ?: current.tags, importance = change.importance ?: current.importance,
-            updatedAt = clock.now(), revision = current.revision + 1,
+            updatedAt = now, revision = current.revision + 1,
+            history = current.history + ProvenanceEvent(ProvenanceAction.EDITED, if (by == null) ProvenanceOrigin.OWNER else ProvenanceOrigin.AGENT, by, now),
         )
         repository.upsert(updated)
         return updated

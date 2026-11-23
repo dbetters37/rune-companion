@@ -53,7 +53,11 @@ import kotlinx.coroutines.launch
  *    and every task that was running counts the interrupted run as one of its attempts. A crash
  *    while no task runs (while knowledge is saved, say) counts too: the objective is restarted
  *    at most [MAX_RESTARTS_WITHOUT_PROGRESS] times in a row without progress, then ended from
- *    what exists.
+ *    what exists. An objective with only bookkeeping left (no agent or model work: its final
+ *    document is written or can be assembled) is finished at start-up, whatever the setting for
+ *    resuming: it runs no agent and sends nothing off the device.
+ *  - Running a task again starts a new run of the objective, counted by its attempt: its
+ *    ending is announced again, once ([ObjectiveDriver]).
  *  - Agents run through [AgentRunner] with briefs written by [BriefWriter], so every protection
  *    of a run (per-task model and tool call limits, time limit, tool authorisation, content as
  *    data) applies to orchestrated work exactly as to a chat.
@@ -153,8 +157,11 @@ class DefaultOrchestrator(
 
     override suspend fun resume(rootId: TaskId) = resume(rootId, byOwner = true)
 
-    /** Resumes for the owner, or (after a crash, with auto-resume on) for the system, which is then what the record says. */
-    private suspend fun resume(rootId: TaskId, byOwner: Boolean) {
+    /**
+     * Resumes for the owner, or (after a crash, with auto-resume on or only bookkeeping left) for
+     * the system, which is then what the record says. [atStartUp]: only bookkeeping is left.
+     */
+    private suspend fun resume(rootId: TaskId, byOwner: Boolean, atStartUp: Boolean = false) {
         val rt = runtimes.of(rootId)
         if (rt.isDriven) return
         val outcome = rt.lock.withLockNonCancellable {
@@ -187,7 +194,7 @@ class DefaultOrchestrator(
             journal.send(rootId, resumed, Participant.System, director(resumed), MessageType.STATUS, "Resumed automatically after the interruption.")
         }
         journal.taskChanged(resumed, "Objective resumed")
-        launch(rootId)
+        launch(rootId, atStartUp)
     }
 
     override suspend fun cancel(rootId: TaskId) {
@@ -267,7 +274,7 @@ class DefaultOrchestrator(
             val changes = ArrayList<TaskRecord>()
             if (current.kind != TaskKind.OBJECTIVE) {
                 changes += current.copy(
-                    status = TaskStatus.QUEUED, attempt = current.attempt + 1, revisionRound = 0, finishedAt = null, updatedAt = now,
+                    status = TaskStatus.QUEUED, attempt = if (current.kind == TaskKind.SYNTHESIS) 0 else current.attempt + 1, revisionRound = 0, finishedAt = null, updatedAt = now,
                     statusDetail = "Runs again at the owner's request.",
                 )
                 // Tasks that never started because this one did not complete get their chance again.
@@ -284,20 +291,21 @@ class DefaultOrchestrator(
                         }
                     }
                 }
-                // The final result must take the new result into account.
+                // The final result must take the new result into account: the new run's synthesis has the attempts of a run.
                 tree.firstOrNull { it.kind == TaskKind.SYNTHESIS && it.id != current.id && it.status != TaskStatus.QUEUED }?.let {
-                    changes += it.copy(status = TaskStatus.QUEUED, attempt = it.attempt + 1, finishedAt = null, statusDetail = "Waits for the task run again.", updatedAt = now)
+                    changes += it.copy(status = TaskStatus.QUEUED, attempt = 0, finishedAt = null, statusDetail = "Waits for the task run again.", updatedAt = now)
                 }
             }
-            val objectiveNow = if (current.kind == TaskKind.OBJECTIVE || objective.status.isFinished) {
+            // A new run (the objective's attempt counts them), whose ending is announced again. A stopped objective keeps its time left.
+            val objectiveNow = if (objective.status.isFinished) {
                 objective.copy(
-                    status = if (objective.status.isFinished) TaskStatus.RUNNING else objective.status, attempt = objective.attempt + if (current.kind == TaskKind.OBJECTIVE) 1 else 0,
+                    status = TaskStatus.RUNNING, attempt = objective.attempt + 1,
                     error = null, finishedAt = null, deadlineAt = now + limits.objectiveTimeoutMs, statusDetail = "Reopened by the owner.", updatedAt = now,
                 )
-            } else objective
-            // Stored before the objective reopens: its next ending is announced again, also after a crash right after this ([ObjectiveDriver.announce]).
-            journal.send(task.rootId, current, Participant.Owner, director(objectiveNow), MessageType.STATUS, ObjectiveDriver.runAgain(current.title))
+            } else objective.copy(attempt = objective.attempt + 1)
             ctx.tasks.upsertAll(changes + objectiveNow)
+            // Stored once the new run is: a request that is in the conversation has been acted on.
+            journal.send(task.rootId, current, Participant.Owner, director(objectiveNow), MessageType.STATUS, ObjectiveDriver.runAgain(current.title))
             changes.mapNotNull { rt.taskJobs[it.id] }.forEach { it.cancel() }
             objectiveNow
         } ?: return
@@ -322,7 +330,8 @@ class DefaultOrchestrator(
     }
 
     override suspend fun recoverInterrupted(): List<TaskId> {
-        val stuck = ctx.tasks.withStatus(WORKING)
+        // What was running, and objectives an earlier recovery left interrupted: those with only bookkeeping left, or being ended, are finished now.
+        val stuck = ctx.tasks.withStatus(WORKING + TaskStatus.INTERRUPTED)
         val roots = stuck.map { it.rootId }.distinct().filter { runtimes.existing(it)?.isDriven != true }
         val current = settings.get()
         val autoResume = current.autoResumeInterruptedTasks
@@ -331,6 +340,7 @@ class DefaultOrchestrator(
             val rt = runtimes.of(rootId)
             var planningFailed = false
             var endEarly: String? = null
+            var bookkeeping = false
             val objective = rt.lock.withLockNonCancellable {
                 val objective = ctx.tasks.get(rootId) ?: return@withLockNonCancellable null
                 val now = clock.now()
@@ -338,6 +348,10 @@ class DefaultOrchestrator(
                 val tree = ctx.tasks.getTree(rootId)
                 // Each task that was running used up the attempt the app stopped.
                 val interrupted = tree.filter { it.id != rootId && it.status in WORKING }.map { interrupted(it, limits.maxTaskAttempts, now) }
+                val byId = interrupted.associateBy { it.id }
+                bookkeeping = onlyBookkeeping(tree.map { byId[it.id] ?: it }, rootId)
+                val waiting = objective.status == TaskStatus.INTERRUPTED
+                if (waiting && !bookkeeping && objective.statusDetail?.endsWith(ENDING) != true) return@withLockNonCancellable null
                 val updated = if (objective.status.isFinished) objective else {
                     // The time left is what it had at its last stored write: the time the app was not running does not count.
                     val stoppedAt = if (objective.status in WORKING) tree.maxOf { it.updatedAt } else objective.updatedAt
@@ -351,11 +365,13 @@ class DefaultOrchestrator(
                     } else {
                         // Nothing but the objective itself was running (finishing, say, or between two steps): no task's attempt
                         // counts this one, so the interruptions in a row with no progress between them are counted, and capped.
-                        val idle = objective.status in WORKING && !planning && interrupted.isEmpty()
+                        // A recovery that died ending it (or finishing it) left it interrupted: that counts as another interruption.
+                        val idle = (objective.status in WORKING || waiting) && !planning && interrupted.isEmpty()
                         val inARow = if (idle) idleInterruptions(rootId) + 1 else 0
                         if (inARow > MAX_RESTARTS_WITHOUT_PROGRESS) endEarly = "the objective was interrupted $inARow times in a row without progress"
                         val then = when {
-                            endEarly != null -> "Ending it from what exists."
+                            endEarly != null -> ENDING
+                            bookkeeping -> "Only bookkeeping is left: finishing it now."
                             autoResume -> "Resuming."
                             else -> "Resume it to continue."
                         }
@@ -385,10 +401,22 @@ class DefaultOrchestrator(
             journal.taskChanged(objective, "Objective interrupted", Severity.WARNING)
             journal.send(rootId, objective, Participant.System, Participant.Owner, MessageType.STATUS, objective.statusDetail.orEmpty())
             val why = endEarly
-            if (why != null) driver.conclude(rt, why) else if (autoResume) resume(rootId, byOwner = false)
+            when {
+                why != null -> driver.conclude(rt, why)
+                bookkeeping -> resume(rootId, byOwner = false, atStartUp = true)
+                autoResume -> resume(rootId, byOwner = false)
+            }
         }
         return affected
     }
+
+    /**
+     * What is left of an objective needs no agent and no model: it has a plan, and every task of
+     * it has finished, so its final document is written or can be assembled, and only saving
+     * knowledge, announcing the ending and storing it remain.
+     */
+    private fun onlyBookkeeping(tree: List<TaskRecord>, rootId: TaskId): Boolean =
+        tree.any { it.kind == TaskKind.WORK || it.kind == TaskKind.SYNTHESIS } && tree.all { it.id == rootId || it.status.isFinished }
 
     /**
      * How often the objective was interrupted while nothing but itself was running
@@ -408,9 +436,10 @@ class DefaultOrchestrator(
     /**
      * Starts the objective's job unless one is driving it. When one is, it is told to look again
      * before it ends ([ObjectiveRuntime.anotherPass]), so a command that arrives while the job is
-     * winding down (writing its last records, say) is never lost.
+     * winding down (writing its last records, say) is never lost. [atStartUp]: only bookkeeping
+     * is left, which the job's first pass finishes ([ObjectiveDriver.drive]).
      */
-    private fun launch(rootId: TaskId) {
+    private fun launch(rootId: TaskId, atStartUp: Boolean = false) {
         val rt = runtimes.of(rootId)
         synchronized(rt) {
             if (rt.isDriven) {
@@ -421,8 +450,10 @@ class DefaultOrchestrator(
             rt.anotherPass = false
             val job = objectives.launch(start = CoroutineStart.LAZY) {
                 val self = coroutineContext.job
+                var first = true
                 do {
-                    driver.drive(rt)
+                    driver.drive(rt, atStartUp && first)
+                    first = false
                     val again = synchronized(rt) {
                         val more = rt.job === self && rt.anotherPass
                         rt.anotherPass = false
@@ -488,6 +519,9 @@ class DefaultOrchestrator(
         const val CANCELLED_BY_OWNER = "Cancelled by the owner."
         const val INTERRUPTED = "Interrupted: the app stopped while this was running."
         const val IDLE_INTERRUPTION = "Interrupted while no task was running"
+
+        /** Ends the status of an objective the recovery ends from what exists. */
+        const val ENDING = "Ending it from what exists."
 
         /** An objective interrupted again and again while no task ran, with no progress between, is restarted at most this many times in a row. */
         const val MAX_RESTARTS_WITHOUT_PROGRESS = 3

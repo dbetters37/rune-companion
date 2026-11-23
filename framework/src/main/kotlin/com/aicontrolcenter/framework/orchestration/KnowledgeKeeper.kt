@@ -1,5 +1,6 @@
 package com.aicontrolcenter.framework.orchestration
 
+import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.agents.AgentProfile
 import com.aicontrolcenter.core.memory.MemoryActor
 import com.aicontrolcenter.core.memory.MemoryChange
@@ -10,6 +11,7 @@ import com.aicontrolcenter.core.memory.MemoryPermissionException
 import com.aicontrolcenter.core.memory.MemoryRecord
 import com.aicontrolcenter.core.memory.MemoryScope
 import com.aicontrolcenter.core.memory.Provenance
+import com.aicontrolcenter.core.memory.ProvenanceAction
 import com.aicontrolcenter.core.memory.ProvenanceOrigin
 import com.aicontrolcenter.core.tasks.AgentMessage
 import com.aicontrolcenter.core.tasks.MessageType
@@ -24,19 +26,22 @@ import kotlinx.coroutines.flow.first
  * Saves what an objective taught the team, when the owner allowed it for that objective:
  *  - The Director keeps one SUMMARY memory of the objective's final document, as itself (so its
  *    memory policy decides where it may write): first saved into the first shared space it may
- *    write, or into its own memory when it may write no space. When a task run again gives the
- *    objective another final document, that same memory is updated in place through the memory
- *    service (which keeps its history), never written twice. Provenance names the objective and
- *    the Director's model.
+ *    write, or into its own memory when it may write no space. Whenever it does not hold what the
+ *    final document's summary should be (a task run again gave another document, or an earlier
+ *    update failed), that same memory is updated in place through the memory service (which
+ *    keeps its history), never written twice; unless the owner edited it since the Director last
+ *    wrote it: the owner's version is left as it is. Provenance names the objective and the
+ *    Director's model. A document the Director could not write gives no summary.
  *  - Each agent's task memory of the objective's completed work is promoted into its long-term
  *    memory, as that agent, for every completed task each time (promoting again keeps nothing
  *    twice: the memory store expires what it promoted, in the same transaction as the copies).
  *
  * [ObjectiveDriver] saves once for each final result (a round) and again after an attempt the
  * app stopped. Saving again repeats nothing, judged by what is stored: the summary stored for the
- * objective ([savedSummary]) is found and only changed when the final document did; and the
- * Director's message about it ([isNotice]) is sent when the owner has not been told where it is
- * yet, or (once in a round) that it was updated.
+ * objective ([savedSummary]) is found and only changed when it does not hold what it should; and
+ * the Director's message about it ([isNotice]) is sent when the owner has not been told where it
+ * is yet, or (once in a round, the message naming the round) that it was updated, also when an
+ * earlier attempt of the round updated it (its revision is past the one the round began with).
  *
  * Nothing here can fail the objective: a permission refusal or a store error is logged and
  * the objective finishes as it would have.
@@ -51,6 +56,8 @@ internal class KnowledgeKeeper(private val ctx: OrchestrationContext) {
         val place: String,
         /** The summary holds that final document. */
         val current: Boolean,
+        /** The owner edited the summary since the Director last wrote it: it is left as it is. */
+        val ownersVersion: Boolean,
         /** The Director told the owner where the summary is. */
         val told: Boolean,
         /** No completed task's important task memory is left unkept; null when the store could not tell. */
@@ -58,21 +65,31 @@ internal class KnowledgeKeeper(private val ctx: OrchestrationContext) {
     )
 
     /**
-     * Saves what the objective taught the team, its final document being [document]. [changed]:
-     * that document is not the one the objective last ended with (only then is a stored summary
-     * changed). [since]: when this round of saving began (its first attempt), which tells a
-     * summary changed by an earlier attempt of this round from one an earlier round left.
+     * Saves what the objective taught the team, its final document being [document], in the
+     * round that [result] names ("final result 2"). [written]: the Director wrote the document,
+     * so the summary is saved from it; an assembled document only has the team's task memories
+     * kept. [startRevision]: the summary's revision when the round began (null: none was
+     * stored), which tells a summary an earlier attempt of this round updated from one an
+     * earlier round left. Returns true when the summary holds the owner's version, left as it is.
      */
-    suspend fun save(objective: TaskRecord, document: String, changed: Boolean, since: Long) {
-        val memory = ctx.memory ?: return ctx.journal.warn(objective.id, objective, "Knowledge not saved", "Memory is not available in this build.")
-        val directorId = objective.assignee ?: return
-        val director = ctx.agents.get(directorId)
-            ?: return ctx.journal.warn(objective.id, objective, "Knowledge not saved", "The Director no longer exists.")
-        try {
-            saveSummary(objective, director, summary(objective, document), changed, since)
-        } catch (e: Exception) {
-            rethrowIfCancelled(e)
-            ctx.journal.warn(objective.id, objective, "Knowledge not saved", refusal(e), directorId)
+    suspend fun save(objective: TaskRecord, document: String, written: Boolean, result: String, startRevision: Int?): Boolean {
+        val memory = ctx.memory ?: run {
+            ctx.journal.warn(objective.id, objective, "Knowledge not saved", "Memory is not available in this build.")
+            return false
+        }
+        val directorId = objective.assignee ?: return false
+        val director = ctx.agents.get(directorId) ?: run {
+            ctx.journal.warn(objective.id, objective, "Knowledge not saved", "The Director no longer exists.")
+            return false
+        }
+        var owners = false
+        if (written) {
+            try {
+                owners = saveSummary(objective, director, summary(objective, document), result, startRevision)
+            } catch (e: Exception) {
+                rethrowIfCancelled(e)
+                ctx.journal.warn(objective.id, objective, "Knowledge not saved", refusal(e), directorId)
+            }
         }
         for ((task, agent) in keptWork(objective)) {
             try {
@@ -82,39 +99,49 @@ internal class KnowledgeKeeper(private val ctx: OrchestrationContext) {
                 ctx.journal.warn(objective.id, task, "Task memory not kept", refusal(e), agent.id)
             }
         }
+        return owners
     }
 
     /**
      * Saves the summary ([content]) unless one is stored for the objective already; updates a
-     * stored one that holds another final document when [changed]; then tells the owner, unless
-     * that was said.
+     * stored one that does not hold [content], unless it holds the owner's version (returns
+     * true then, changing nothing); then tells the owner, unless that was said.
      */
-    private suspend fun saveSummary(objective: TaskRecord, director: AgentProfile, content: String, changed: Boolean, since: Long) {
-        val memory = ctx.memory ?: return
+    private suspend fun saveSummary(objective: TaskRecord, director: AgentProfile, content: String, result: String, startRevision: Int?): Boolean {
+        val memory = ctx.memory ?: return false
         val from = Participant.Agent(director.id)
         val stored = savedSummary(objective)
         if (stored == null) {
-            writeSummary(objective, director, content)?.let { send(objective, from, SAVED_SUMMARY, it) }
-            return
+            writeSummary(objective, director, content)?.let { send(objective, from, it, null) }
+            return false
         }
+        if (ownersVersion(stored, director.id)) return !same(stored.content, content)
         val notices = ctx.messages.list(objective.id).filter { it.from == from && isNotice(it) && it.body.contains(noticeOf(stored.id.value)) }
-        val toldThisRound = notices.any { it.at > since }
+        val toldThisRound = notices.any { it.body.startsWith(UPDATED_SUMMARY) && it.body.endsWith(" to $result ${noticeOf(stored.id.value)}.") }
         when {
-            changed && !same(stored.content, content) -> {
+            !same(stored.content, content) -> {
                 val updated = memory.update(MemoryActor.Agent(director), stored.id, MemoryChange(content = content))
-                if (!toldThisRound) send(objective, from, UPDATED_SUMMARY, updated)
+                if (!toldThisRound) send(objective, from, updated, result)
             }
             // Nothing to write: the summary holds what it should. The message about it may be missing (an attempt the app stopped).
-            notices.isEmpty() -> send(objective, from, SAVED_SUMMARY, stored)
-            stored.updatedAt > since && !toldThisRound -> send(objective, from, UPDATED_SUMMARY, stored)
+            notices.isEmpty() -> send(objective, from, stored, null)
+            startRevision != null && stored.revision > startRevision && !toldThisRound -> send(objective, from, stored, result)
         }
+        return false
     }
 
-    private suspend fun send(objective: TaskRecord, from: Participant, opener: String, summary: MemoryRecord) {
+    /** Tells the owner where [summary] was saved, or ([result] given) that it was updated to that final result. */
+    private suspend fun send(objective: TaskRecord, from: Participant, summary: MemoryRecord, result: String?) {
         val where = placeOf(summary.scope, "its own memory")
-        val body = if (opener == SAVED_SUMMARY) "$SAVED_SUMMARY $where ${noticeOf(summary.id.value)}."
-        else "$UPDATED_SUMMARY $where to the new final result ${noticeOf(summary.id.value)}."
+        val body = if (result == null) "$SAVED_SUMMARY $where ${noticeOf(summary.id.value)}."
+        else "$UPDATED_SUMMARY $where to $result ${noticeOf(summary.id.value)}."
         ctx.journal.send(objective.id, objective, from, Participant.Owner, MessageType.STATUS, body)
+    }
+
+    /** The owner edited [summary] since its Director last did (its history, in order, says so; its first version is the Director's). */
+    private fun ownersVersion(summary: MemoryRecord, directorId: AgentId): Boolean {
+        val edits = summary.history.filter { it.action == ProvenanceAction.EDITED }
+        return edits.indexOfLast { it.byOrigin == ProvenanceOrigin.OWNER } > edits.indexOfLast { it.byOrigin == ProvenanceOrigin.AGENT && it.byAgentId == directorId }
     }
 
     /** Writes the summary as the Director, into the first shared space it may write, else its own memory; null when it may write neither. */
@@ -175,7 +202,8 @@ internal class KnowledgeKeeper(private val ctx: OrchestrationContext) {
             ctx.messages.list(objective.id).any { it.from == Participant.Agent(director) && isNotice(it) && it.body.contains(noticeOf(summary.id.value)) }
         } == true
         val place = summary?.let { placeOf(it.scope, "the Director's own memory") }.orEmpty()
-        return Stored(summary, place, summary != null && same(summary.content, summary(objective, document)), told, memoriesKept(objective))
+        val owners = summary != null && objective.assignee?.let { ownersVersion(summary, it) } == true
+        return Stored(summary, place, summary != null && same(summary.content, summary(objective, document)), owners, told, memoriesKept(objective))
     }
 
     /**
@@ -230,7 +258,7 @@ internal class KnowledgeKeeper(private val ctx: OrchestrationContext) {
         /** Opens the Director's message saying where the summary was saved. */
         const val SAVED_SUMMARY = "Saved a summary of this objective to"
 
-        /** Opens the Director's message saying the summary was updated to a new final result. */
+        /** Opens the Director's message saying the summary was updated to a new final result, which it names. */
         const val UPDATED_SUMMARY = "Updated the summary of this objective in"
 
         /** Task memory at least this important is kept when an objective's knowledge is saved (the memory service's own default). */

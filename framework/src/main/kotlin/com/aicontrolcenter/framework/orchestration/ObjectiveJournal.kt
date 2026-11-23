@@ -41,7 +41,7 @@ internal class ObjectiveJournal(
     private val ids: IdGenerator,
     private val clock: Clock,
 ) {
-    /** Stores a message and logs it. Returns the stored message. */
+    /** Stores a message and logs it. Returns the stored message. [id]: the message's own id, when it must be known before (the store keeps one message per id). */
     suspend fun send(
         rootId: TaskId,
         task: TaskRecord?,
@@ -51,9 +51,10 @@ internal class ObjectiveJournal(
         body: String,
         hop: Int = 0,
         replyTo: MessageId? = null,
+        id: MessageId? = null,
     ): AgentMessage = withContext(NonCancellable) {
         val message = AgentMessage(
-            id = ids.messageId(), rootId = rootId, taskId = task?.id, from = from, to = to, type = type,
+            id = id ?: ids.messageId(), rootId = rootId, taskId = task?.id, from = from, to = to, type = type,
             body = StoredText.capChars(body.trim(), MAX_BODY), replyTo = replyTo, hop = hop, at = clock.now(),
         )
         messages.append(message)
