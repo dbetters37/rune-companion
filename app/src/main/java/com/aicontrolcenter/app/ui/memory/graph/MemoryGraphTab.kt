@@ -207,15 +207,15 @@ private fun SelectedNodeCard(selected: SelectedNodeUi, onOpen: () -> Unit, onClo
         border = BorderStroke(1.dp, appColors.hairlineStrong),
         shadowElevation = 2.dp,
     ) {
-        Column(Modifier.padding(start = Spacing.md, end = Spacing.xs, top = Spacing.sm, bottom = Spacing.md)) {
-            Row(verticalAlignment = Alignment.Top) {
+        Column(Modifier.padding(start = Spacing.md, end = Spacing.xs, top = Spacing.xs, bottom = Spacing.md)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     selected.title,
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f).padding(top = Spacing.sm),
+                    modifier = Modifier.weight(1f),
                 )
                 IconButton(onClick = onClose) { Icon(AppIcons.Close, contentDescription = "Clear selection") }
             }

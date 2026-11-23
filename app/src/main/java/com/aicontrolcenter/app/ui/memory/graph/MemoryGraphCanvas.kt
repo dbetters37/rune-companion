@@ -152,9 +152,11 @@ fun MemoryGraphCanvas(
             }
         }.sortedWith(compareByDescending<Int> { it == selectedIndex }.thenByDescending { render.nodes[it].weight }).take(MAX_LABELS)
         val taken = ArrayList<Rect>()
+        // Labels also keep clear of other memories, so a label never hides a node someone wants to tap.
+        val nodeAreas = render.nodes.mapIndexed { i, n -> Rect(points[i], n.radiusDp.dp.toPx() + 2.dp.toPx()) }
         labelled.forEach { index ->
             val node = render.nodes[index]
-            val placed = drawLabel(measurer, node.label, points[index], node.radiusDp.dp.toPx(), labelStyle, scheme.surface, index == selectedIndex, taken)
+            val placed = drawLabel(measurer, node.label, points[index], node.radiusDp.dp.toPx(), labelStyle, scheme.surface, index == selectedIndex, taken + nodeAreas)
             if (placed != null) taken += placed
         }
     }

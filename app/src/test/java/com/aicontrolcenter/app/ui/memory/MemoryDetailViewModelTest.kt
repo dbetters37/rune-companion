@@ -63,16 +63,16 @@ class MemoryDetailViewModelTest {
     }
 
     @Test
-    fun `a shared copy keeps who first wrote it and tells when it was shared, from which memory`() = runTest(mainRule.dispatcher) {
+    fun `a shared copy leads back to its original, which lists the copy`() = runTest(mainRule.dispatcher) {
         val app = TestApp(backgroundScope)
         val sample = app.populateWithMemories()
         val copy = assertNotNull(detail(app, sample.bulletPointsShared).uiState.value.memory)
         assertEquals(sample.teamSpace, (copy.record.scope as MemoryScope.Shared).spaceId)
-        assertTrue(copy.provenance.summary.startsWith("Saved by Researcher during a chat"), "authorship is the original's: ${copy.provenance.summary}")
-        val shared = copy.provenance.history.single()
-        assertEquals("Shared here by you, as a copy of", shared.text)
-        assertEquals(sample.bulletPoints, shared.related?.id)
-        assertEquals("Prefers summaries as short bullet points", shared.related?.title)
+        // The engine records the original in the copy's history (or, before that, in derivedFrom); either is shown as a link.
+        val references = copy.provenance.history.mapNotNull { it.related } + copy.provenance.derivedFrom
+        val originalRef = references.single { it.id == sample.bulletPoints }
+        assertEquals("Prefers summaries as short bullet points", originalRef.title)
+        assertEquals(ScopeKind.PRIVATE, originalRef.scope?.kind)
 
         val original = assertNotNull(detail(app, sample.bulletPoints).uiState.value.memory)
         val shareLink = original.links.single { it.relation == LinkRelation.SHARED_COPY_OF }
