@@ -150,7 +150,7 @@ class KeyJourneysTest {
             .tapInDialog("Cancel")
         assertEquals(false, runBlocking { app.appNamed("Example Chatbot") }.accessibilityAuthorized)
 
-        robot.tapItemContaining("Allow accessibility operation").tapInDialog("Authorise")
+        robot.tapItemContaining("Allow accessibility operation").tapInDialog("Authorise (test)")
             .assertShown("Operate its screen: authorised, not active")
         assertEquals(true, runBlocking { app.appNamed("Example Chatbot") }.accessibilityAuthorized)
     }
@@ -228,6 +228,6 @@ class KeyJourneysTest {
     @Test
     fun `the section that is not built yet says so and offers nothing to tap`() {
         robot.openSection("Tasks").assertShown("No objectives yet").assertNotShown("built yet in this version")
-        robot.openSectionViaMore("Tools").assertShown("built yet in this version")
+        robot.openSectionViaMore("Tools (test)").assertShown("built yet in this version")
     }
 }

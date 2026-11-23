@@ -29,6 +29,7 @@ import com.aicontrolcenter.app.ui.components.SwitchRow
 import com.aicontrolcenter.app.ui.components.TintedChip
 import com.aicontrolcenter.app.ui.components.explanation
 import com.aicontrolcenter.app.ui.components.label
+import com.aicontrolcenter.app.ui.components.testLabel
 import com.aicontrolcenter.app.ui.components.toStatusLabel
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.OpenInNew
@@ -255,7 +256,7 @@ internal fun RegistrySettingsSection(
             )
             RowDivider()
             SwitchRow(
-                title = "Allow accessibility operation",
+                title = testLabel("Allow accessibility operation"),
                 description = if (app.status == AiAppStatus.INSTALLED) {
                     "Your permission for agents to operate this app's screen. It has no effect until the " +
                         "operator service exists and both operator switches are on."

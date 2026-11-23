@@ -206,8 +206,8 @@ private fun OrchestrationSection(settings: FrameworkSettings, actions: SettingsA
         SectionHeader("Orchestration limits")
         AppCard {
             Text(
-                "Loop and runaway protection for agent runs. Model calls, tool calls and the task time-out already " +
-                    "apply to every chat turn; the others take effect when the Director runs objectives in a later version.",
+                "Loop and runaway protection for agent runs. Model calls, tool calls and the task time-out apply to every " +
+                    "chat turn and task; the others apply when the Director runs objectives. A limit marked (test) has no effect yet.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = Spacing.sm),

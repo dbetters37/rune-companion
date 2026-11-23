@@ -43,6 +43,7 @@ import com.aicontrolcenter.app.ui.components.ScreenScaffold
 import com.aicontrolcenter.app.ui.components.icon
 import com.aicontrolcenter.app.ui.components.label
 import com.aicontrolcenter.app.ui.components.readableWidth
+import com.aicontrolcenter.app.ui.components.testLabel
 import com.aicontrolcenter.app.ui.icons.Activity
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.Egress
@@ -201,7 +202,8 @@ private fun ActivityFilters(
                 FilterChip(
                     selected = type in filter.types,
                     onClick = { onToggleType(type) },
-                    label = { Text(type.label) },
+                    // Nothing records approval events until approval requests exist.
+                    label = { Text(if (type == ActivityType.APPROVAL) testLabel(type.label) else type.label) },
                     leadingIcon = { Icon(type.icon, contentDescription = null, modifier = Modifier.size(18.dp)) },
                     colors = filterColors,
                 )

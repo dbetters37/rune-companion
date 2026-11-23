@@ -37,6 +37,7 @@ import com.aicontrolcenter.app.ui.components.EmptyState
 import com.aicontrolcenter.app.ui.components.ScreenScaffold
 import com.aicontrolcenter.app.ui.components.SectionHeader
 import com.aicontrolcenter.app.ui.components.readableWidth
+import com.aicontrolcenter.app.ui.components.testLabel
 import com.aicontrolcenter.app.ui.icons.Accessibility
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.Apps
@@ -176,7 +177,7 @@ fun AiAppDetailScreen(state: AiAppDetailUiState, actions: AiAppDetailActions) {
                     "of that is in place this only records your decision.\n\n" +
                     "You can revoke it here at any time. It is withdrawn automatically if a different app appears " +
                     "under this package name.",
-                confirmLabel = "Authorise",
+                confirmLabel = testLabel("Authorise"),
                 icon = AppIcons.Accessibility,
                 cautionary = true,
                 onConfirm = {

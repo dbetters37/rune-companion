@@ -24,6 +24,7 @@ import com.aicontrolcenter.app.ui.components.ScreenScaffold
 import com.aicontrolcenter.app.ui.components.SectionHeader
 import com.aicontrolcenter.app.ui.components.StatusChip
 import com.aicontrolcenter.app.ui.components.readableWidth
+import com.aicontrolcenter.app.ui.components.testLabel
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.Tools
 import com.aicontrolcenter.app.ui.theme.Spacing
@@ -37,7 +38,7 @@ enum class PlannedSection(
     val dependsOn: String,
 ) {
     TOOLS(
-        title = "Tools",
+        title = testLabel("Tools"),
         summary = "Where you will decide what each agent is allowed to do, tool by tool.",
         willShow = listOf(
             "Every tool agents can use, and what it can touch",

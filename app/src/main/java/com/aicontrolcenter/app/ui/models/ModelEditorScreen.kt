@@ -14,11 +14,16 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -34,11 +39,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.aicontrolcenter.app.di.LocalAppGraph
+import com.aicontrolcenter.app.ui.components.AgentAvatar
 import com.aicontrolcenter.app.ui.components.AppCard
 import com.aicontrolcenter.app.ui.components.AppTextField
 import com.aicontrolcenter.app.ui.components.ConfirmDialog
@@ -54,6 +62,8 @@ import com.aicontrolcenter.app.ui.components.TintedChip
 import com.aicontrolcenter.app.ui.components.icon
 import com.aicontrolcenter.app.ui.components.label
 import com.aicontrolcenter.app.ui.components.readableWidth
+import com.aicontrolcenter.app.ui.components.testLabel
+import com.aicontrolcenter.app.ui.icons.Agent
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.ModelChip
 import com.aicontrolcenter.app.ui.icons.Sparkle
@@ -61,6 +71,7 @@ import com.aicontrolcenter.app.ui.theme.MonoTextStyle
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.app.ui.theme.appColors
+import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.registry.CapabilityTier
 import com.aicontrolcenter.core.registry.ModelSource
@@ -68,7 +79,7 @@ import com.aicontrolcenter.core.registry.ModelSource
 @Composable
 fun ModelEditorRoute(modelId: ModelId, onBack: () -> Unit) {
     val graph = LocalAppGraph.current
-    val viewModel = viewModel { ModelEditorViewModel(modelId, graph.registryDirectory, graph.providerManager) }
+    val viewModel = viewModel { ModelEditorViewModel(modelId, graph.registryDirectory, graph.providerManager, graph.agentManager) }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     LaunchedEffect(state.removed) { if (state.removed) onBack() }
     ModelEditorScreen(state, viewModel, onBack)
@@ -109,7 +120,7 @@ internal fun ModelEditorScreen(state: ModelEditorUiState, viewModel: ModelEditor
                     .padding(start = Spacing.screen, end = Spacing.screen, top = Spacing.xs, bottom = Spacing.xl),
                 verticalArrangement = Arrangement.spacedBy(Spacing.md),
             ) {
-                ModelHeader(state, viewModel::setEnabled)
+                ModelHeader(state, viewModel::setEnabled, viewModel::openUseForAgents)
                 if (state.isSimulator) {
                     InfoBanner(
                         title = SIMULATOR_LABEL,
@@ -168,6 +179,15 @@ internal fun ModelEditorScreen(state: ModelEditorUiState, viewModel: ModelEditor
             onDismiss = { confirmRemove = false },
         )
     }
+    state.useForAgents?.let { open ->
+        UseForAgentsDialog(
+            modelName = state.draft.displayName.ifBlank { state.wireName },
+            state = open,
+            onToggle = viewModel::toggleAgentChoice,
+            onConfirm = viewModel::useForChosenAgents,
+            onDismiss = viewModel::dismissUseForAgents,
+        )
+    }
     if (confirmDiscard) {
         ConfirmDialog(
             title = "Discard changes?",
@@ -186,7 +206,7 @@ internal fun ModelEditorScreen(state: ModelEditorUiState, viewModel: ModelEditor
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ModelHeader(state: ModelEditorUiState, onSetEnabled: (Boolean) -> Unit) {
+private fun ModelHeader(state: ModelEditorUiState, onSetEnabled: (Boolean) -> Unit, onUseForAgents: () -> Unit) {
     AppCard {
         Text(state.wireName, style = MonoTextStyle, color = MaterialTheme.colorScheme.onSurface)
         Text(
@@ -209,6 +229,14 @@ private fun ModelHeader(state: ModelEditorUiState, onSetEnabled: (Boolean) -> Un
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = Spacing.sm),
         )
+        OutlinedButton(
+            onClick = onUseForAgents,
+            enabled = state.agentCount > 0,
+            modifier = Modifier.padding(top = Spacing.sm).heightIn(min = 48.dp),
+        ) {
+            Icon(AppIcons.Agent, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+            Text("Use for agents…", modifier = Modifier.padding(start = 8.dp))
+        }
         RowDivider(Modifier.padding(top = Spacing.md))
         SwitchRow(
             title = "Enabled",
@@ -262,14 +290,14 @@ private fun CapabilitiesEditor(state: ModelEditorUiState, viewModel: ModelEditor
                 )
                 RowDivider()
                 SwitchRow(
-                    title = "Vision",
+                    title = testLabel("Vision"),
                     description = "Accepts images.",
                     checked = caps.vision,
                     onCheckedChange = { on -> viewModel.setCapabilities { it.copy(vision = on) } },
                 )
                 RowDivider()
-                TierPicker("Reasoning", caps.reasoning, viewModel::setReasoning)
-                TierPicker("Coding", caps.coding, viewModel::setCoding)
+                TierPicker(testLabel("Reasoning"), caps.reasoning, viewModel::setReasoning)
+                TierPicker(testLabel("Coding"), caps.coding, viewModel::setCoding)
                 RowDivider()
                 AppTextField(
                     value = state.draft.contextWindowText,
@@ -308,6 +336,96 @@ private fun TierPicker(title: String, selected: CapabilityTier, onSelect: (Capab
                     label = { Text(tier.name.lowercase().replaceFirstChar(Char::uppercase)) },
                 )
             }
+        }
+    }
+}
+
+/**
+ * Chooses the agents that should run on this model: every agent, the Director first, all ticked
+ * to begin with, each with the model it uses now. A model they could not run on is still
+ * offered, with the reason, as the agent editor does.
+ */
+@Composable
+private fun UseForAgentsDialog(
+    modelName: String,
+    state: UseForAgentsUi,
+    onToggle: (AgentId) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(AppIcons.Agent, contentDescription = null, tint = MaterialTheme.colorScheme.secondary) },
+        title = { Text("Use $modelName for…") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                Text(
+                    "It becomes the primary model of each agent you tick. Their fallback models are kept.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                state.warning?.let {
+                    InfoBanner(
+                        title = it.title,
+                        text = it.text,
+                        tone = if (it.blocksRunning) StatusTone.UNAVAILABLE else StatusTone.ATTENTION,
+                    )
+                }
+                LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
+                    items(state.choices, key = { it.id.value }) { choice ->
+                        AgentChoiceRow(
+                            choice,
+                            checked = choice.id in state.selected,
+                            enabled = !state.isAssigning && !choice.alreadyUsesThis,
+                            onToggle = { onToggle(choice.id) },
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm, enabled = !state.isAssigning && state.selected.isNotEmpty()) {
+                Text(
+                    when (val count = state.changeCount) {
+                        0 -> "Done"
+                        1 -> "Use for 1 agent"
+                        else -> "Use for $count agents"
+                    },
+                )
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !state.isAssigning) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun AgentChoiceRow(choice: AgentChoiceUi, checked: Boolean, enabled: Boolean, onToggle: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .toggleable(value = checked, enabled = enabled, role = Role.Checkbox, onValueChange = { onToggle() })
+            .heightIn(min = 56.dp)
+            .padding(vertical = Spacing.xs),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+    ) {
+        Checkbox(checked = checked, onCheckedChange = null, enabled = enabled)
+        AgentAvatar(choice.name, choice.colorIndex, size = 32.dp)
+        Column(Modifier.weight(1f)) {
+            Text(
+                choice.name,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                if (choice.isDirector) "Designated Director · ${choice.currentModel}" else choice.currentModel,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }

@@ -170,6 +170,14 @@ class ModelsAndChatScreenshotTest {
         shoot("p2_model_editor_3_simulator")
     }
 
+    @Test
+    fun modelUseForAgents() {
+        val robot = app().openSectionViaMore("Models").tap("Models · 5").tapItemContaining("Llama 3.2 3B").tap("Use for agents…")
+        shootScreen("p2_model_editor_4_use_for_agents")
+        robot.tapItemContaining("Writer").tapInDialog("Use for 4 agents")
+        shoot("p2_model_editor_5_used_for_agents")
+    }
+
     // --- Agents ---
 
     @Test

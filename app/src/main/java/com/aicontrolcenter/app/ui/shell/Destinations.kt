@@ -4,6 +4,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.navigation.NavDestination
 import androidx.navigation.NavDestination.Companion.hasRoute
 import com.aicontrolcenter.app.ui.agents.AgentStatusFilter
+import com.aicontrolcenter.app.ui.components.testLabel
 import com.aicontrolcenter.app.ui.icons.Activity
 import com.aicontrolcenter.app.ui.icons.Agent
 import com.aicontrolcenter.app.ui.icons.AppIcons
@@ -93,7 +94,7 @@ enum class Section(val title: String, val description: String) {
     MODELS("Models", "Providers, models and installed AI apps"),
     TASKS("Tasks", "Objectives and the work done on them"),
     MEMORY("Memory", "What agents remember and share"),
-    TOOLS("Tools", "What agents are allowed to do"),
+    TOOLS(testLabel("Tools"), "What agents are allowed to do"),
     ACTIVITY("Activity", "Communication, actions and history"),
     SETTINGS("Settings", "Framework limits, privacy and security"),
     ;

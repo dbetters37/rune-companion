@@ -26,12 +26,14 @@ import com.aicontrolcenter.app.ui.components.AppCard
 import com.aicontrolcenter.app.ui.components.NeutralChip
 import com.aicontrolcenter.app.ui.components.ScreenScaffold
 import com.aicontrolcenter.app.ui.components.readableWidth
+import com.aicontrolcenter.app.ui.components.testLabel
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.ChevronRight
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.core.agents.AgentManager
 import com.aicontrolcenter.core.agents.AgentTemplate
 import com.aicontrolcenter.core.agents.label
+import com.aicontrolcenter.framework.agents.AgentTemplates
 
 /** Exposes the framework's built-in templates. They are static, so there is nothing to observe. */
 class AgentTemplatesViewModel(agentManager: AgentManager) : ViewModel() {
@@ -73,7 +75,8 @@ fun AgentTemplatesScreen(
                         AgentAvatar(template.title, template.draft.colorIndex)
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
                             Text(
-                                template.title,
+                                // Its phone tools (files, documents, apps, the workspace) do not exist yet.
+                                if (template.id == AgentTemplates.OPERATOR) testLabel(template.title) else template.title,
                                 style = MaterialTheme.typography.titleMedium,
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
