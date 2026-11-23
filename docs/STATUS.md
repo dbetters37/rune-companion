@@ -234,8 +234,112 @@ What the review found and what was fixed:
 - Deleting a space while editing an agent's memory settings at the same moment can lose one of
   the two changes.
 
-## Next: Phase 4
+## Phase 4: the Director and multi-agent work (complete)
 
-The Director and multi-agent work: give the Director an objective; it plans tasks, assigns
-them to agents, collects and reviews results, resolves disagreements, and delivers a final
-result, with live monitoring, interruption and loop protection.
+### What works
+
+- **Objectives.** In Tasks, give the Director an objective. Choose whether results are
+  reviewed and whether what was learned is saved to a shared space (only offered when the
+  Director may write one, which the form names). Before you start, the form says which models
+  the team will use, whether any of them is off the phone, and which agents cannot run.
+- **The Director's nine steps.** It interprets the objective, writes a plan of tasks with
+  completion criteria and dependencies, picks an agent for each task by skills, current load
+  and reliability (never an agent that cannot run), assigns the work, collects results, has
+  the results it marked important reviewed by a different agent, sends revisions back or
+  decides itself when reviewer and author keep disagreeing, writes the final document, and
+  saves a summary to memory when you allowed it.
+- **Agents work together.** Inside a task an agent can ask a teammate a question or delegate
+  a sub-task, when its delegation settings allow it. Every exchange is a stored message:
+  assignment, question, answer, delegation, review request and result, memory share,
+  completion, failure.
+- **Loop protection.** Limits on delegation depth, on delegating back to an agent already in
+  the chain, on the third near-identical request to the same agent, on tasks and messages per
+  objective, on model calls, tool calls, attempts and revision rounds per task, on time per
+  task and per objective, and on restarts that make no progress. A reached limit is shown as
+  such. Finished work is kept and used; a result its reviewer rejected is not.
+- **Watching and stepping in.** Pause, resume (with the time the objective had left), cancel
+  (with confirmation), run a single task again, run an objective again, or delete it. The
+  objective screen has four tabs: the plan as a tree with attempts, revisions and verdicts; the
+  conversation between agents, filterable by message type; the execution log, including every
+  point where data left the phone; and the result, rendered as Markdown with Copy and Share.
+  Each task has its own screen with its instructions, result, reviews, messages and the
+  agent's full transcript.
+- **Running with the screen off.** While an objective runs, a notification shows its progress
+  and a Pause button. The app asks for the notification permission once, the first time.
+- **Crash recovery.** Work is saved step by step. Work found running after a crash is marked
+  interrupted and waits for you to resume it, or continues by itself when "Resume interrupted
+  tasks" is on in Settings. A step that keeps crashing is retried a bounded number of times.
+  An objective with only bookkeeping left (no agent work) is finished at the next start either
+  way.
+- **Knowledge.** The Director's summary of an objective is saved once and updated in place
+  when a task is run again and the result changes. A summary whose text you edited is left
+  as you wrote it. The objective's status says exactly what was and was not saved.
+- **Dashboard.** "Working now" shows each agent's task and current step, and messages between
+  agents pulse along the edges of the network.
+- **Simulator.** With no model configured, the built-in simulator plays every role, so an
+  objective can be tried end to end offline. Its plans and documents are labelled as simulated.
+
+### How it was verified
+
+| Check | Result |
+|---|---|
+| Unit and UI tests, all modules | 1,497 pass on a fresh run: core 11, test kit 64, framework 356, memory 107, providers 202, Claude adapter 89, data 297, device 85, app 286. The app and framework suites were re-run several times with no flaky results |
+| Storage | The Room task and message stores pass the same contract suites as the reference implementation. Migrations 3 → 4, 1 → 4 step by step, and 1 → 4 directly were tested with data in every table |
+| Orchestrator | The whole Director flow runs in tests on the simulator and on scripted model replies: planning, retries, reviews, revisions, arbitration, delegation, limits, pause, cancel, run again and recovery |
+| Crash simulation | An independent harness killed the app at each of 15 points while an objective finished, once or every time, under different limits and settings, plus store errors at every write: several hundred scenarios. Across all of them no summary or announcement was duplicated, every objective that could finish finished, and recovery never started agent work you had not allowed |
+| Independent review | An adversarial review of the orchestrator found 11 problems (1 critical, 6 major). Six rounds of fixes followed, each checked by separate verifiers who re-ran the earlier reproductions and wrote new ones |
+
+What the review found and what was fixed:
+
+- A crash or a pause and resume restarted the objective's clock and did not count the
+  interrupted run, so a step that kept crashing could run forever. Interrupted runs now count
+  as attempts, the time left is kept, and restarts without progress are capped.
+- An objective limit (time, messages) threw away results that were already finished and
+  failed the objective. Finished results are now kept and used; a result its reviewer rejected
+  is not, and one still waiting for changes is used with the reviewer's issues attached.
+- Briefs had no size budget, so a large set of results could fail an objective whose work all
+  completed. Every brief now has a budget, and long results are shortened with a note.
+- Running a task again while the objective was finishing could be lost; a delegated task could
+  be left running when the task that delegated it stopped; a teammate's error text reached
+  the next brief unquoted; questions to teammates were not counted against the asking task's
+  limits. All fixed.
+- Plan problems were not bounded and a plan with more reviews than the task limit allows
+  failed. Reviews are now kept in plan order while they fit, and the rest are named as not
+  reviewed.
+- The fix rounds then hardened the end of an objective: the summary is never saved twice even
+  if the app dies mid-save, the end is announced exactly once, and a storage error while
+  finishing no longer turns a finished objective into a failed one.
+
+### Not verified
+
+- How well real models plan, review and arbitrate. The pipeline was exercised with the
+  simulator and with scripted model replies, not with live providers. Small local models are
+  expected to struggle with the Director role.
+- Long objectives on a phone with aggressive battery management. The foreground service was
+  started on the emulator, not on a physical device.
+- Nothing has run on a physical phone.
+
+### Known rough edges
+
+- The task lists on the objective screens reload whole tasks, results included, whenever any
+  task changes. Objectives with many large results will make those screens slow. Scheduled for
+  Phase 6.
+- An objective runs at most 2 tasks at the same time by default ("Tasks at once" in
+  Settings > Orchestration limits). Reviews take places from the same task limit as the work.
+- The notification is started only while the app is on screen, as Android requires. An
+  objective resumed automatically after a crash gets its notification once you open the app.
+- If the app is killed at the exact moment an objective ends, again and again, the activity
+  log can show "Objective completed" more than once. The message to you is sent once.
+- Records of saved knowledge number results by run ("final result 3"), so numbers can skip
+  when a run ended without a result.
+- If you edit the Director's summary and another agent then rewrites it, the summary is left
+  as the agent wrote it, and the status still says it holds your version.
+- If saving knowledge is refused because the Director lost access to the space, the refusal is
+  logged, but the objective's status does not mention it.
+
+## Next: Phase 5
+
+The phone operator: a permission broker with per-agent, per-capability grants and an approval
+screen, file and document tools in the app's workspace and in folders you choose, opening apps
+and links, scripts in a sandbox, and the accessibility operator for apps you authorise, with
+confirmation before anything consequential.
