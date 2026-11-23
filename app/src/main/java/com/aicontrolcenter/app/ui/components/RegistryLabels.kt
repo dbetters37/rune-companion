@@ -63,11 +63,20 @@ val UnavailableReason.label: String
         UnavailableReason.BLOCKED_BY_LOCAL_ONLY_MODE -> "Blocked by local-only mode"
     }
 
+/** The locality badge. Where text sent to something at this locality ends up, in as few words as is honest. */
 val Locality.label: String
     get() = when (this) {
-        Locality.ON_DEVICE -> "On device"
+        Locality.ON_DEVICE -> "On this device"
         Locality.LOCAL_NETWORK -> "Local network"
-        Locality.CLOUD -> "Cloud"
+        Locality.CLOUD -> "Cloud: leaves this device"
+    }
+
+/** Completes "Your messages …": where the text of a conversation goes. */
+val Locality.destinationPhrase: String
+    get() = when (this) {
+        Locality.ON_DEVICE -> "stays on this device"
+        Locality.LOCAL_NETWORK -> "leaves this device (local network)"
+        Locality.CLOUD -> "leaves this device (cloud)"
     }
 
 /** What using something at this locality means for the owner's data. */
@@ -153,6 +162,9 @@ val ProviderKind.label: String
         ProviderKind.ON_DEVICE -> "On-device runtime"
         ProviderKind.SIMULATOR -> "Simulator"
     }
+
+/** Shown wherever the built-in simulator or its model appears, so it is never mistaken for intelligence. */
+const val SIMULATOR_LABEL = "Simulator: not a real model"
 
 fun ConnectionStatus.toStatusLabel(): StatusLabel = when (this) {
     ConnectionStatus.UNKNOWN -> StatusLabel("Not checked", StatusTone.DISABLED)

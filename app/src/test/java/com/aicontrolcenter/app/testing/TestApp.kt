@@ -3,6 +3,11 @@ package com.aicontrolcenter.app.testing
 import com.aicontrolcenter.app.di.AppGraph
 import com.aicontrolcenter.app.di.Ports
 import com.aicontrolcenter.core.agents.AgentKind
+import com.aicontrolcenter.core.llm.LlmException
+import com.aicontrolcenter.core.llm.ProviderAdapter
+import com.aicontrolcenter.core.llm.ProviderHealth
+import com.aicontrolcenter.core.registry.ConnectionStatus
+import com.aicontrolcenter.core.registry.ProviderKind
 import com.aicontrolcenter.core.registry.AgentEntry
 import com.aicontrolcenter.core.registry.AiApp
 import com.aicontrolcenter.core.registry.AiAppCapability
@@ -18,6 +23,10 @@ import com.aicontrolcenter.testkit.FakeDeviceInspector
 import com.aicontrolcenter.testkit.InMemoryActivityLog
 import com.aicontrolcenter.testkit.InMemoryAgentRepository
 import com.aicontrolcenter.testkit.InMemoryAiAppRepository
+import com.aicontrolcenter.testkit.InMemoryConversationRepository
+import com.aicontrolcenter.testkit.FakeProviderAdapter
+import com.aicontrolcenter.testkit.FakeProviderAdapterFactory
+import com.aicontrolcenter.framework.llm.SimulatorProviderFactory
 import com.aicontrolcenter.testkit.InMemoryModelRepository
 import com.aicontrolcenter.testkit.InMemoryProviderRepository
 import com.aicontrolcenter.testkit.InMemorySecretVault
@@ -28,6 +37,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * The real composition root over in-memory ports: everything a test needs to drive the app the
@@ -40,6 +50,8 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
     val providers = InMemoryProviderRepository()
     val models = InMemoryModelRepository()
     val aiApps = InMemoryAiAppRepository()
+    val conversations = InMemoryConversationRepository()
+    val vault = InMemorySecretVault()
     val activityLog = InMemoryActivityLog()
     val settings = InMemorySettingsRepository(settings)
     val scanner = FakeAiAppScanner()
@@ -58,9 +70,10 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
         providers = providers,
         models = models,
         aiApps = aiApps,
+        conversations = conversations,
         activityLog = activityLog,
         settings = this.settings,
-        secretVault = InMemorySecretVault(),
+        secretVault = vault,
         aiAppScanner = object : AiAppScanner {
             override suspend fun scanForAiApps() = failOr { scanner.scanForAiApps() }
             override suspend fun listInstalledApps() = failOr { scanner.listInstalledApps() }
@@ -73,7 +86,23 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
         packageChanges = packageChanges,
     )
 
-    val graph = AppGraph(ports, scope)
+    /**
+     * The adapter each fake provider factory hands out, by the provider's base URL (an empty key
+     * for providers without one); anything else gets [fallbackAdapter]. Nothing reaches a network.
+     */
+    val adaptersByUrl = ConcurrentHashMap<String, ProviderAdapter>()
+    var fallbackAdapter: () -> ProviderAdapter = {
+        FakeProviderAdapter(
+            health = ProviderHealth(ConnectionStatus.OFFLINE, "Nothing is listening at that address."),
+            listError = LlmException.Network("Could not reach the server."),
+        )
+    }
+    val factories: Map<ProviderKind, FakeProviderAdapterFactory> =
+        listOf(ProviderKind.OPENAI_COMPATIBLE, ProviderKind.ANTHROPIC, ProviderKind.GEMINI, ProviderKind.OLLAMA).associateWith { kind ->
+            FakeProviderAdapterFactory(kind) { connection -> adaptersByUrl[connection.provider.baseUrl.orEmpty()] ?: fallbackAdapter() }
+        }
+
+    val graph = AppGraph(ports, scope, factories.values.toList() + SimulatorProviderFactory(chunkDelayMs = 0))
 
     private inline fun <T> failOr(block: () -> T): T = scanFailure?.let { throw it } ?: block()
 

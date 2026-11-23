@@ -5,6 +5,7 @@ import com.aicontrolcenter.core.IdGenerator
 import com.aicontrolcenter.core.RandomIdGenerator
 import com.aicontrolcenter.core.WallClock
 import com.aicontrolcenter.core.activity.ActivityLog
+import com.aicontrolcenter.core.chat.ConversationRepository
 import com.aicontrolcenter.core.device.DeviceInspector
 import com.aicontrolcenter.core.registry.AgentRepository
 import com.aicontrolcenter.core.registry.AiAppLauncher
@@ -30,6 +31,8 @@ data class Ports(
     val providers: ProviderRepository,
     val models: ModelRepository,
     val aiApps: AiAppRepository,
+    /** Direct conversations between the owner and an agent, with every message and tool result. */
+    val conversations: ConversationRepository,
     val activityLog: ActivityLog,
     val settings: SettingsRepository,
     val secretVault: SecretVault,

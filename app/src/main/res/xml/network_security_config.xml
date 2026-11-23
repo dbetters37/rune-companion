@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     Plain http is permitted at the platform level because model servers on this phone and on the
+     local network (Ollama, LM Studio, llama.cpp) usually speak nothing else, and their addresses
+     (127.0.0.1, 192.168.x.x, *.local) cannot be listed in advance.
+
+     This does not open plain http to the internet: the framework itself refuses it. The provider
+     form rejects an http:// address unless it is a loopback or private address, and the HTTP
+     adapters refuse to send a request over plain http to anything classified as cloud
+     (LlmException.BlockedByPolicy). Everything on the internet goes over https with the system's
+     trusted certificate authorities only; user-installed CAs are not trusted.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

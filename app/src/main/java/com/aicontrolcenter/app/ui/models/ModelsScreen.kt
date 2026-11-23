@@ -28,30 +28,57 @@ import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.Help
 import com.aicontrolcenter.app.ui.theme.appColors
 import com.aicontrolcenter.core.AiAppId
+import com.aicontrolcenter.core.ModelId
+import com.aicontrolcenter.core.ProviderId
+import com.aicontrolcenter.core.llm.DetectedServer
+
+/** Where the Models section leads. Supplied by the navigation shell. */
+class ModelsNavigation(
+    val onOpenApp: (AiAppId) -> Unit,
+    val onRegisterManually: () -> Unit,
+    val onOpenConcepts: () -> Unit,
+    val onAddProvider: () -> Unit,
+    val onOpenProvider: (ProviderId) -> Unit,
+    val onOpenModel: (ModelId) -> Unit,
+    /** Opens the provider form pre-filled for a server found on this phone. */
+    val onAddDetected: (DetectedServer) -> Unit,
+)
 
 @Composable
-fun ModelsRoute(
-    initialTab: ModelsTab,
-    onOpenApp: (AiAppId) -> Unit,
-    onRegisterManually: () -> Unit,
-    onOpenConcepts: () -> Unit,
-) {
+fun ModelsRoute(initialTab: ModelsTab, navigation: ModelsNavigation) {
     val graph = LocalAppGraph.current
-    val viewModel = viewModel { ModelsViewModel(graph.registryDirectory, graph.aiAppRegistry) }
+    val viewModel = viewModel {
+        ModelsViewModel(graph.registryDirectory, graph.aiAppRegistry, graph.providerManager, graph.clock)
+    }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var tab by rememberSaveable { mutableStateOf(initialTab) }
     ModelsScreen(
         state = state,
         selectedTab = tab,
         onSelectTab = { tab = it },
-        onScan = viewModel::scanDevice,
-        onOpenApp = onOpenApp,
-        onConfirmApp = viewModel::confirm,
-        onRegisterManually = onRegisterManually,
-        onOpenConcepts = onOpenConcepts,
-        onMessageShown = viewModel::messageShown,
+        actions = ModelsActions(
+            onScan = viewModel::scanDevice,
+            onConfirmApp = viewModel::confirm,
+            onSetModelEnabled = viewModel::setModelEnabled,
+            onAddModel = viewModel::addModel,
+            onFindServers = viewModel::findLocalServers,
+            onDismissDetection = viewModel::dismissDetection,
+            onMessageShown = viewModel::messageShown,
+        ),
+        navigation = navigation,
     )
 }
+
+/** What the Models screen asks its view model to do. */
+class ModelsActions(
+    val onScan: () -> Unit,
+    val onConfirmApp: (AiAppId) -> Unit,
+    val onSetModelEnabled: (ModelId, Boolean) -> Unit,
+    val onAddModel: (ProviderId, String) -> Unit,
+    val onFindServers: () -> Unit,
+    val onDismissDetection: () -> Unit,
+    val onMessageShown: () -> Unit,
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -59,22 +86,18 @@ fun ModelsScreen(
     state: ModelsUiState,
     selectedTab: ModelsTab,
     onSelectTab: (ModelsTab) -> Unit,
-    onScan: () -> Unit,
-    onOpenApp: (AiAppId) -> Unit,
-    onConfirmApp: (AiAppId) -> Unit,
-    onRegisterManually: () -> Unit,
-    onOpenConcepts: () -> Unit,
-    onMessageShown: () -> Unit,
+    actions: ModelsActions,
+    navigation: ModelsNavigation,
 ) {
     ScreenScaffold(
         title = "Models",
         actions = {
-            IconButton(onClick = onOpenConcepts) {
+            IconButton(onClick = navigation.onOpenConcepts) {
                 Icon(AppIcons.Help, contentDescription = "AI application, model or agent: what is the difference?")
             }
         },
         message = state.message,
-        onMessageShown = onMessageShown,
+        onMessageShown = actions.onMessageShown,
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             PrimaryTabRow(
@@ -85,7 +108,7 @@ fun ModelsScreen(
                 ModelsTab.entries.forEach { tab ->
                     val count = when (tab) {
                         ModelsTab.PROVIDERS -> state.providers.size
-                        ModelsTab.MODELS -> state.models.size
+                        ModelsTab.MODELS -> state.modelCount
                         ModelsTab.APPS -> state.apps.size
                     }
                     Tab(
@@ -101,20 +124,42 @@ fun ModelsScreen(
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
             } else {
                 when (selectedTab) {
-                    ModelsTab.PROVIDERS -> ProvidersTab(state.providers)
-                    ModelsTab.MODELS -> ModelsListTab(state.models)
+                    ModelsTab.PROVIDERS -> ProvidersTab(
+                        providers = state.providers,
+                        isSearching = state.detection == DetectionUi.Searching,
+                        onAddProvider = navigation.onAddProvider,
+                        onFindServers = actions.onFindServers,
+                        onOpenProvider = navigation.onOpenProvider,
+                    )
+                    ModelsTab.MODELS -> ModelsListTab(
+                        groups = state.groups,
+                        onOpenModel = navigation.onOpenModel,
+                        onSetEnabled = actions.onSetModelEnabled,
+                        onAddModel = actions.onAddModel,
+                        onAddProvider = navigation.onAddProvider,
+                    )
                     ModelsTab.APPS -> AiAppsTab(
                         apps = state.apps,
                         isScanning = state.isScanning,
                         lastScan = state.lastScan,
-                        onScan = onScan,
-                        onOpenApp = onOpenApp,
-                        onConfirmApp = onConfirmApp,
-                        onRegisterManually = onRegisterManually,
-                        onOpenConcepts = onOpenConcepts,
+                        onScan = actions.onScan,
+                        onOpenApp = navigation.onOpenApp,
+                        onConfirmApp = actions.onConfirmApp,
+                        onRegisterManually = navigation.onRegisterManually,
+                        onOpenConcepts = navigation.onOpenConcepts,
                     )
                 }
             }
         }
+    }
+    state.detection?.let { detection ->
+        LocalServersDialog(
+            detection = detection,
+            onAdd = { server ->
+                actions.onDismissDetection()
+                navigation.onAddDetected(server)
+            },
+            onDismiss = actions.onDismissDetection,
+        )
     }
 }

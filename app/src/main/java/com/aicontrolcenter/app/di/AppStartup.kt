@@ -6,6 +6,7 @@ import com.aicontrolcenter.core.activity.ActivityRecorder
 import com.aicontrolcenter.core.activity.ActivityType
 import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.agents.AgentManager
+import com.aicontrolcenter.core.llm.ProviderManager
 import com.aicontrolcenter.core.registry.AiAppRegistry
 import com.aicontrolcenter.core.settings.SettingsRepository
 import kotlinx.coroutines.CancellationException
@@ -29,6 +30,7 @@ class AppStartup(
     private val scope: CoroutineScope,
     private val agentManager: AgentManager,
     private val aiAppRegistry: AiAppRegistry,
+    private val providerManager: ProviderManager,
     private val settings: SettingsRepository,
     private val activityLog: ActivityLog,
     private val activityRecorder: ActivityRecorder,
@@ -37,15 +39,25 @@ class AppStartup(
 ) {
     private var initialJob: Job? = null
     private var foregroundRefresh: Job? = null
+    private var providerCheck: Job? = null
+
+    /** When the last check of every provider started, or null before the first one. */
+    @Volatile
+    private var lastProviderCheckAt: Long? = null
 
     @Synchronized
     fun start(): Job {
         initialJob?.let { return it }
         val job = scope.launch {
+            // First, so the simulator is there for the starter team and for "Try with the simulator".
+            step("Could not register the built-in simulator") { providerManager.ensureBuiltIns() }
             step("Could not create the starter team") { agentManager.ensureDefaults() }
             step("Could not refresh AI app statuses") { aiAppRegistry.refreshStatuses() }
         }
         initialJob = job
+        // A stored status can be days old, and an offline or rejected one keeps agents from running
+        // until something re-checks it. Network calls can take long, so they never hold up the start.
+        checkProviders(after = job)
         // Conflated: a bulk update fires many broadcasts, and one re-check after them is enough.
         scope.launch {
             packageChanges.conflate().collect {
@@ -60,13 +72,30 @@ class AppStartup(
         return job
     }
 
-    /** Re-checks registered apps unless a re-check from an earlier foregrounding is still running. */
+    /**
+     * Re-checks registered apps unless a re-check from an earlier foregrounding is still running,
+     * and re-checks the providers when their last check is older than [PROVIDER_RECHECK_MS].
+     */
     @Synchronized
     fun onAppForegrounded() {
         val initial = initialJob ?: return
-        if (!initial.isCompleted || foregroundRefresh?.isActive == true) return
-        foregroundRefresh = scope.launch {
-            step("Could not refresh AI app statuses") { aiAppRegistry.refreshStatuses() }
+        if (!initial.isCompleted) return
+        if (foregroundRefresh?.isActive != true) {
+            foregroundRefresh = scope.launch {
+                step("Could not refresh AI app statuses") { aiAppRegistry.refreshStatuses() }
+            }
+        }
+        val last = lastProviderCheckAt
+        if (last == null || clock.now() - last >= PROVIDER_RECHECK_MS) checkProviders(after = initial)
+    }
+
+    @Synchronized
+    private fun checkProviders(after: Job) {
+        if (providerCheck?.isActive == true) return
+        lastProviderCheckAt = clock.now()
+        providerCheck = scope.launch {
+            after.join()
+            step("Could not check the model providers") { providerManager.checkAllProviders() }
         }
     }
 
@@ -100,7 +129,10 @@ class AppStartup(
         }
     }
 
-    private companion object {
-        const val MILLIS_PER_DAY = 24L * 60 * 60 * 1000
+    companion object {
+        private const val MILLIS_PER_DAY = 24L * 60 * 60 * 1000
+
+        /** Provider status older than this is checked again when the app returns to the foreground. */
+        const val PROVIDER_RECHECK_MS = 10L * 60 * 1000
     }
 }

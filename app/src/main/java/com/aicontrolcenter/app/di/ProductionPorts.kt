@@ -24,6 +24,7 @@ fun createProductionPorts(context: Context): Ports {
         providers = data.providers,
         models = data.models,
         aiApps = data.aiApps,
+        conversations = data.conversations,
         activityLog = data.activityLog,
         settings = data.settings,
         secretVault = data.secretVault,
