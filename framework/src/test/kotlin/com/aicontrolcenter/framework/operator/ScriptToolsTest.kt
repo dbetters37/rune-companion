@@ -21,7 +21,7 @@ class ScriptToolsTest {
         assertRisk(RiskLevel.MODIFYING, assessment)
         assertPrepared(assessment)
         assertTrue("Code: \"console.log('n', input.n)⏎\ninput.n * 2\"" in assessment.preview, assessment.preview)
-        assertTrue("Input: \"{\"n\":21}\"" in assessment.preview, assessment.preview)
+        assertTrue("Input (JSON): {\"n\":21}" in assessment.preview, assessment.preview)
         assertTrue("no access to files" in assessment.summary)
         assertTrue(outcome.ok)
         assertEquals("Result: 42\n--- console ---\nn 21", outcome.content)
@@ -94,7 +94,8 @@ class ScriptToolsTest {
         f.termux.availability = TermuxAvailability.READY
         val (assessment, outcome) = f.run("termux.run", "command" to "python3 --version")
         assertRisk(RiskLevel.CONSEQUENTIAL, assessment)
-        assertEquals("the Termux app", assessment.dataGoesTo)
+        assertEquals("the Termux app, and any address its command connects to (it can use the internet)", assessment.dataGoesTo)
+        assertTrue(assessment.details.any { "keeps running the command" in it }, assessment.preview)
         assertTrue(outcome.ok)
         PreparedActionChecks.assertRefusesAfterChange(
             f.tool("termux.run"), json("command" to "ls"), f.context,

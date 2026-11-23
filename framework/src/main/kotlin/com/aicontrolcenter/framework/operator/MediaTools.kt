@@ -112,11 +112,8 @@ internal class MediaCopyToWorkspace(private val d: OperatorToolDependencies) : O
         return assessment(
             summary,
             prepared(check = { target.changeTo(WorkspaceStates.of(d.workspace, to), q(to.value)) }) {
-                val file = when (val r = d.workspace.resolve(to)) {
-                    is DocResult.Ok -> r.value
-                    else -> return@prepared ToolOutcome.failure(OperatorText.problem(r, "Copying to ${q(to.value)}"))
-                }
-                when (val r = d.media.copyToWorkspace(id, file, d.limits.maxCopyBytes)) {
+                // Through the workspace, so its size limits, lock and change signal apply to the copy.
+                when (val r = d.workspace.receive(to, d.limits.maxCopyBytes) { file, max -> d.media.copyToWorkspace(id, file, max) }) {
                     is DocResult.Ok -> ToolOutcome.success("Copied ${id.value} to ${q(to.value)} (${size(r.value)}).")
                     else -> ToolOutcome.failure(OperatorText.problem(r, "Copying ${id.value}"))
                 }

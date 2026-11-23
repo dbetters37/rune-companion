@@ -258,8 +258,8 @@ internal fun JsonObjectBuilder.stringArrayProp(name: String, description: String
 
 /** Text helpers shared by the operator tools. */
 internal object OperatorText {
-    /** A model-chosen value as the owner must see it: exact and quoted. */
-    fun q(value: String): String = "\"${PreviewText.exact(value)}\""
+    /** A model-chosen value as the owner must see it: exact and quoted, with no quote inside it that could pass for the end ([PreviewText.quoted]). */
+    fun q(value: String): String = PreviewText.quoted(value)
 
     /** A workspace or folder path for messages; the top level is named as such. */
     fun path(path: RelativePath, root: String = "the workspace"): String = if (path.isRoot) "the top level of $root" else q(path.value)

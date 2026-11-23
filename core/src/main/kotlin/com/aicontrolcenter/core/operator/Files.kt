@@ -91,7 +91,11 @@ data class WorkspaceHit(val path: RelativePath, val line: Int? = null, val excer
  * Trash format: [trash] moves the item to `.trash/<id>/<name>` and writes `.trash/<id>.json`
  * holding its [TrashItem]; [restore] moves it back to [TrashItem.originalPath] (missing parent
  * folders recreated; [DocResult.AlreadyExists] if something is there now); [emptyTrash] deletes
- * both.
+ * both. A file that [write], [move] or [import] replaces is put in the trash the same way first,
+ * so replacing a file can be undone like trashing it.
+ *
+ * Every write into the workspace goes through this service, gateways' included ([receive]), so
+ * the size limits, the change signal and the serialisation of changes hold for every caller.
  */
 interface Workspace {
     /** Increases after every change, from any caller, so screens can refresh. */
@@ -105,7 +109,10 @@ interface Workspace {
     /** At most [maxBytes] starting at byte [offset]. */
     suspend fun read(path: RelativePath, offset: Long, maxBytes: Long): DocResult<FileContent>
 
-    /** Creates the file (missing parents included), or replaces it when [overwrite]; else [DocResult.AlreadyExists]. */
+    /**
+     * Creates the file (missing parents included), or replaces it when [overwrite], keeping the
+     * replaced file in the trash; else [DocResult.AlreadyExists].
+     */
     suspend fun write(path: RelativePath, bytes: ByteArray, overwrite: Boolean): DocResult<DocumentEntry>
 
     /** Appends to the file, creating it if missing. */
@@ -120,7 +127,10 @@ interface Workspace {
     /** Creates the folder and missing parents; an existing folder is returned as is. */
     suspend fun makeFolder(path: RelativePath): DocResult<DocumentEntry>
 
-    /** Renames or moves; never onto an existing entry unless [overwrite], and never a folder into itself. */
+    /**
+     * Renames or moves; never onto an existing entry unless [overwrite] (a file it replaces is
+     * kept in the trash), and never a folder into itself.
+     */
     suspend fun move(from: RelativePath, to: RelativePath, overwrite: Boolean): DocResult<DocumentEntry>
 
     /** Moves a file or folder to the trash. */
@@ -137,10 +147,28 @@ interface Workspace {
     /** Names, then text lines of UTF-8 files, containing [query] (case-insensitive), under [under]. */
     suspend fun search(query: String, under: RelativePath, maxResults: Int): DocResult<List<WorkspaceHit>>
 
-    /** Copies [source] (a document the owner chose) to [path], at most [maxBytes]. */
+    /** Copies [source] (a document the owner chose) to [path], at most [maxBytes]; a file it replaces is kept in the trash. */
     suspend fun import(path: RelativePath, source: InputStream, maxBytes: Long, overwrite: Boolean): DocResult<DocumentEntry>
 
-    /** The checked file for a gateway call (share, install, copy target, screenshot, shell directory). */
+    /**
+     * Lets a gateway create the new file [path] itself (a copy from a shared folder or the photo
+     * library, a screenshot) under the workspace's rules: [path] must be free
+     * ([DocResult.AlreadyExists] otherwise, and [write] is not called); changes are held back
+     * while [write] runs; [write] gets the checked file and the most it may write (the smaller of
+     * [maxBytes], the per-file limit and the room left); a file it leaves that breaks a size
+     * limit is removed ([DocResult.TooLarge], or a full-workspace [DocResult.Failed]); and
+     * listeners of [changes] are told. Returns what [write] returned otherwise.
+     */
+    suspend fun <T> receive(path: RelativePath, maxBytes: Long, write: suspend (target: WorkspaceFile, maxBytes: Long) -> DocResult<T>): DocResult<T>
+
+    /**
+     * Tells listeners of [changes] that something outside this service may have changed files
+     * (a shell command the owner approved). Returns why the workspace is now over its total size
+     * limit, as a sentence, or null when it is within it.
+     */
+    suspend fun changedOutside(): String?
+
+    /** The checked file for a gateway call that reads (share, install) or runs in it (shell directory). */
     suspend fun resolve(path: RelativePath): DocResult<WorkspaceFile>
 
     /** Constants. */

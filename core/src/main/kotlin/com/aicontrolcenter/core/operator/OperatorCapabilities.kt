@@ -35,7 +35,8 @@ object OperatorCapabilities {
         ),
         CapabilityInfo(
             WORKSPACE_WRITE, "Change the workspace",
-            "Create, edit, move and trash files in the agents' workspace. Emptying the trash always asks you first.",
+            "Create, edit, move and trash files in the agents' workspace. A file that is replaced is kept in the workspace trash. " +
+                "Emptying the trash always asks you first, and so does changing more than 20 existing files within 10 minutes.",
             ToolCategory.WORKSPACE, grantedByDefault = false,
         ),
         CapabilityInfo(
@@ -45,7 +46,8 @@ object OperatorCapabilities {
         ),
         CapabilityInfo(
             FOLDERS_WRITE, "Change a shared folder",
-            "Create, rename and copy files in one folder you picked. Deleting always asks you first. Given per folder.",
+            "Create, rename and copy files in one folder you picked. Replacing or deleting a file always asks you first, " +
+                "because shared folders have no trash. Given per folder.",
             ToolCategory.FILES, grantedByDefault = false, constrainedBy = ConstraintKind.FOLDER,
         ),
         CapabilityInfo(
@@ -55,7 +57,8 @@ object OperatorCapabilities {
         ),
         CapabilityInfo(
             APPS_OPEN, "Open apps and links",
-            "Open installed apps, web pages and app links.",
+            "Open installed apps, web pages and map links. Other app links (payment, call or chat links) ask you first. " +
+                "Blocked in local-only mode for links.",
             ToolCategory.APPS, grantedByDefault = false,
         ),
         CapabilityInfo(
@@ -90,12 +93,14 @@ object OperatorCapabilities {
         ),
         CapabilityInfo(
             SCRIPTS_SHELL, "Run shell commands",
-            "Run commands in the workspace with Android's shell. You approve each command.",
+            "Run commands in the workspace with Android's shell. You approve each command. A command can use the internet, " +
+                "so this is blocked in local-only mode.",
             ToolCategory.SCRIPTS, grantedByDefault = false,
         ),
         CapabilityInfo(
             SCRIPTS_TERMUX, "Run Termux commands",
-            "Run commands in the Termux app, with everything Termux can reach. You approve each command.",
+            "Run commands in the Termux app, with everything Termux can reach, the internet included. You approve each command. " +
+                "Blocked in local-only mode.",
             ToolCategory.SCRIPTS, grantedByDefault = false,
         ),
     )

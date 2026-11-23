@@ -237,14 +237,10 @@ internal class ScreenScreenshot(private val d: OperatorToolDependencies) : Opera
         return assessment(
             summary,
             prepared(check = { ScreenTools.frontChange(d, front.packageName) ?: target.changeTo(WorkspaceStates.of(d.workspace, to), q(to.value)) }) { ctx ->
-                to.parent?.takeIf { !it.isRoot }?.let { parent ->
-                    (d.workspace.makeFolder(parent) as? DocResult.Ok) ?: return@prepared ToolOutcome.failure("The folder ${q(parent.value)} could not be created.")
-                }
-                val file = when (val r = d.workspace.resolve(to)) {
-                    is DocResult.Ok -> r.value
-                    else -> return@prepared ToolOutcome.failure(OperatorText.problem(r, "Saving to ${q(to.value)}"))
-                }
-                when (val r = d.screen.screenshot(ctx.agent.name, front.packageName, file)) {
+                // Through the workspace, so its size limits, lock and change signal apply to the picture.
+                val saved = d.workspace.receive(to, d.limits.maxCopyBytes) { file, _ -> DocResult.Ok(d.screen.screenshot(ctx.agent.name, front.packageName, file)) }
+                when (val r = (saved as? DocResult.Ok)?.value) {
+                    null -> ToolOutcome.failure(OperatorText.problem(saved, "Saving to ${q(to.value)}"))
                     is ScreenResult.Ok -> ToolOutcome.success("Saved a screenshot of ${front.label} as ${q(to.value)} (${r.value.widthPx}×${r.value.heightPx}, ${OperatorText.size(r.value.sizeBytes)}).")
                     else -> ToolOutcome.failure(ScreenTools.problem(r, "Taking the screenshot"))
                 }

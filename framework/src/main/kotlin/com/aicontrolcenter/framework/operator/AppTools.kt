@@ -6,10 +6,13 @@ import com.aicontrolcenter.core.operator.EmailDraft
 import com.aicontrolcenter.core.operator.LinkPolicy
 import com.aicontrolcenter.core.registry.InstalledAppInfo
 import com.aicontrolcenter.core.tools.ActionAssessment
+import com.aicontrolcenter.core.tools.RiskLevel
 import com.aicontrolcenter.core.tools.Tool
 import com.aicontrolcenter.core.tools.ToolContext
 import com.aicontrolcenter.core.tools.ToolOutcome
 import com.aicontrolcenter.framework.operator.OperatorText.q
+import com.aicontrolcenter.framework.tools.SelfLimitingTool
+import kotlinx.coroutines.withTimeoutOrNull
 import com.aicontrolcenter.framework.operator.OperatorText.size
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.addJsonObject
@@ -124,19 +127,55 @@ internal class AppsOpen(private val d: OperatorToolDependencies) : OperatorTool(
 /** apps.open_link */
 internal class AppsOpenLink(private val d: OperatorToolDependencies) : OperatorTool(
     "apps.open_link", "Open a link",
-    "Opens a web address or an app link (geo:, market: and similar) in the app that handles it. Email, text and phone links " +
-        "are prepared with the compose and dial tools instead.",
+    "Opens a web address, a map link (geo:) or another app's link in the app that handles it. Links other than http, https and " +
+        "geo (payment, call, meeting or chat links …) need the owner's approval every time. Email, text and phone links are prepared " +
+        "with the compose and dial tools instead.",
     objectSchema("link") { stringProp("link", "The link, e.g. \"https://example.com/page\" or \"geo:48.85,2.35\".") },
 ) {
     override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
         val link = AppTools.link(d, Args(arguments).text("link", LinkPolicy.MAX_LENGTH)!!, webOnly = false)
-        val goesTo = link.host ?: "the app that opens ${link.scheme}: links"
+        val web = link.scheme == "http" || link.scheme == "https"
+        val plain = link.scheme in LinkPolicy.PLAIN_SCHEMES
+        val handlers = d.apps.linkHandlers(link.link)
+        val opener = when (handlers.size) {
+            0 -> null
+            1 -> AppTools.label(handlers[0], handlers[0].packageName)
+            else -> "the app you choose (" + handlers.take(MAX_NAMED).joinToString(", ") { AppTools.label(it, it.packageName) } +
+                (if (handlers.size > MAX_NAMED) " and ${handlers.size - MAX_NAMED} more" else "") + ")"
+        }
+        // A web address goes to its host; any other link goes to the app that opens it, whatever its "host" part says (upi://pay?… is not sent to "pay").
+        val goesTo = if (web) link.host!! else opener ?: "the app that opens ${link.scheme}: links"
+        val details = listOfNotNull(
+            "Link: ${q(link.link)}",
+            if (opener != null) "Opens in: $opener" else "No app on this phone opens ${link.scheme}: links now, so nothing may happen.",
+            if (plain) null else "A ${link.scheme}: link can make the app that opens it act at once (place a call, start a payment, send a " +
+                "message, join a meeting), depending on that app, so you approve every such link.",
+            "The address is sent to $goesTo.",
+        )
+        val pinned = handlers.map { it.packageName }.toSet()
         return assessment(
-            "Open the link ${q(link.link)}",
-            prepared { AppTools.answer(d.apps.openLink(link.link), "The link opened. What happens there is not reported back.") },
-            listOf("Link: ${q(link.link)}", "The address is sent to $goesTo."),
+            "Open the link ${q(link.link)}" + (opener?.let { " in $it" } ?: ""),
+            prepared(check = {
+                if (d.apps.linkHandlers(link.link).map { it.packageName }.toSet() != pinned) "the apps that open this link changed" else null
+            }) { ctx ->
+                val result = d.apps.openLink(link.link)
+                if (result == AppActionResult.Started) {
+                    d.egress.handedOver(
+                        ctx, "Link opened in another app", "An agent opened ${q(link.link.take(300))}" + (opener?.let { " in $it" } ?: "") + ".",
+                        if (web || pinned.size != 1) OperatorEgress.toHost(if (web) link.host else goesTo, "a link opened by an agent")
+                        else OperatorEgress.toApp(pinned.single(), "a link opened by an agent"),
+                    )
+                }
+                AppTools.answer(result, "The link opened. What happens there is not reported back.")
+            },
+            details,
+            risk = if (plain) RiskLevel.MODIFYING else RiskLevel.CONSEQUENTIAL,
             dataGoesTo = goesTo,
         )
+    }
+
+    private companion object {
+        const val MAX_NAMED = 5
     }
 }
 
@@ -150,7 +189,13 @@ internal class BrowserOpen(private val d: OperatorToolDependencies) : OperatorTo
         val link = AppTools.link(d, Args(arguments).text("url", LinkPolicy.MAX_LENGTH)!!, webOnly = true)
         return assessment(
             "Open ${q(link.link)} in the browser",
-            prepared { AppTools.answer(d.apps.openInBrowser(link.link), "The page opened in the browser. What happens there is not reported back.") },
+            prepared { ctx ->
+                val result = d.apps.openInBrowser(link.link)
+                if (result == AppActionResult.Started) {
+                    d.egress.handedOver(ctx, "Web page opened in the browser", "An agent opened ${q(link.link.take(300))} in the browser.", OperatorEgress.toHost(link.host, "a web address opened by an agent"))
+                }
+                AppTools.answer(result, "The page opened in the browser. What happens there is not reported back.")
+            },
             listOf("Address: ${q(link.link)}", "The browser sends the address to ${link.host}."),
             dataGoesTo = link.host,
         )
@@ -264,12 +309,28 @@ internal class AppsDial(private val d: OperatorToolDependencies) : OperatorTool(
     }
 }
 
+/**
+ * How long install and uninstall run, on their own clock rather than the executor's per-call
+ * limit: they wait for the owner on Android's confirmation ([AppActions.OUTCOME_WAIT_MS], time
+ * the gateway does not count against the task's limits), plus [HANDOVER_MS] to hand the app to
+ * Android. Cut short, the call says the outcome is unknown, never that it timed out unchanged.
+ */
+internal object AppChanges {
+    const val HANDOVER_MS = 60_000L
+    const val LIMIT_MS = com.aicontrolcenter.core.operator.AppActions.OUTCOME_WAIT_MS + HANDOVER_MS
+
+    suspend fun bounded(what: String, block: suspend () -> AppActionResult): AppActionResult =
+        withTimeoutOrNull(LIMIT_MS) { block() } ?: AppActionResult.OutcomeUnknown(
+            "the $what did not finish within ${LIMIT_MS / 1000} s; Android's confirmation may still be open. Check the phone before trying again.",
+        )
+}
+
 /** apps.install */
 internal class AppsInstall(private val d: OperatorToolDependencies) : OperatorTool(
     "apps.install", "Install an app",
     "Asks Android to install an app from an .apk file in the workspace. The owner approves here, then Android asks again.",
     objectSchema("path") { stringProp("path", "The .apk file in the workspace.") },
-) {
+), SelfLimitingTool {
     override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
         val path = Args(arguments).entryPath("path")
         if (!path.name.lowercase(Locale.ROOT).endsWith(".apk")) throw ToolCallRejected("Only .apk files can be installed.")
@@ -290,7 +351,7 @@ internal class AppsInstall(private val d: OperatorToolDependencies) : OperatorTo
                         is DocResult.Ok -> r.value
                         else -> return@prepared ToolOutcome.failure(OperatorText.problem(r, "Installing ${q(path.value)}"))
                     }
-                    AppTools.answer(d.apps.install(apk), "Android's install screen opened; the owner confirms it there.")
+                    AppTools.answer(AppChanges.bounded("installation") { d.apps.install(apk) }, "Android's install screen opened; the owner confirms it there.")
                 },
                 details,
                 dataGoesTo = "Android's package installer",
@@ -304,7 +365,7 @@ internal class AppsUninstall(private val d: OperatorToolDependencies) : Operator
     "apps.uninstall", "Remove an app",
     "Asks Android to remove an app. The owner approves here, then Android asks again. Protected and system apps are refused.",
     objectSchema("package") { stringProp("package", "The app's package name.") },
-) {
+), SelfLimitingTool {
     override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
         val pkg = Args(arguments).requireString("package").trim().also(AppTools::checkPackageName)
         AppTools.checkNotProtected(d, pkg)
@@ -312,7 +373,7 @@ internal class AppsUninstall(private val d: OperatorToolDependencies) : Operator
         return assessment(
             "Remove the app ${AppTools.label(app, pkg)} from this phone",
             prepared(check = { if (app != null && AppTools.launchable(d, pkg) == null) "the app $pkg is no longer installed" else null }) {
-                AppTools.answer(d.apps.uninstall(pkg), "Android's removal screen opened; the owner confirms it there.")
+                AppTools.answer(AppChanges.bounded("removal") { d.apps.uninstall(pkg) }, "Android's removal screen opened; the owner confirms it there.")
             },
             listOf("App: ${AppTools.label(app, pkg)}", "Its data on this phone is deleted with it.", "Android asks you to confirm again."),
             dataGoesTo = "Android's package installer",

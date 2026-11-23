@@ -25,7 +25,7 @@ import kotlin.test.assertTrue
 class SystemShellRunnerTest {
     private val root: File = Files.createTempDirectory("aicc-shell-ws").toFile()
     private val tmp: File = Files.createTempDirectory("aicc-shell-tmp").toFile()
-    private val runner = SystemShellRunner(tempDir = { tmp }, shell = "/bin/sh")
+    private val runner = SystemShellRunner(tempDir = { tmp }, shell = "/bin/sh", setsid = HOST_SETSID)
     private val limits = CommandLimits(timeoutMs = 10_000, maxOutputChars = 1_000)
 
     private fun dir(path: String = ""): WorkspaceFile {
@@ -128,7 +128,55 @@ class SystemShellRunnerTest {
         assertIs<CommandOutcome.Failed>(runner.run("x".repeat(SystemShellRunner.MAX_COMMAND_CHARS + 1), dir(), limits))
         val missing = (WorkspaceFile.resolve(root, RelativePath.of("not/there")) as DocResult.Ok).value
         assertTrue("not/there" in assertIs<CommandOutcome.Failed>(runner.run("echo hi", missing, limits)).reason)
-        val noShell = SystemShellRunner(tempDir = { tmp }, shell = "/nonexistent/sh")
+        val noShell = SystemShellRunner(tempDir = { tmp }, shell = "/nonexistent/sh", setsid = HOST_SETSID)
         assertTrue("could not be started" in assertIs<CommandOutcome.Failed>(noShell.run("echo hi", dir(), limits)).reason)
+    }
+
+    @Test
+    fun `work a command leaves running in the background is stopped when it ends`() = runBlocking {
+        val project = dir("bg")
+        // The "&" is built at run time, as an obfuscated command would; the tool's text check cannot see it.
+        val command = "eval \"(/bin/sleep 2; echo alive > late.txt) \$(printf '\\046')\"; echo started"
+        val started = System.nanoTime()
+
+        val out = finished(runner.run(command, project, limits))
+
+        assertEquals("started\n", out.stdout)
+        assertTrue(out.stoppedLeftovers, "the call says it stopped what was left running")
+        assertTrue((System.nanoTime() - started) / 1_000_000 < 1_900, "the call does not wait for the background job")
+        Thread.sleep(3_000)
+        assertFalse(File(project.file, "late.txt").exists(), "the background job did not outlive the call")
+    }
+
+    @Test
+    fun `background work is stopped at the time limit too, even if it ignores hangups`() = runBlocking {
+        val project = dir("bg-limit")
+        val command = "(trap '' HUP TERM INT; /bin/sleep 2; echo alive > late.txt) & while :; do :; done"
+
+        assertIs<CommandOutcome.TimedOut>(runner.run(command, project, CommandLimits(timeoutMs = 500, maxOutputChars = 1_000)))
+
+        Thread.sleep(3_000)
+        assertFalse(File(project.file, "late.txt").exists())
+    }
+
+    @Test
+    fun `a finished command that left nothing running says so`() = runBlocking {
+        assertFalse(finished(runner.run("echo done", dir(), limits)).stoppedLeftovers)
+    }
+
+    @Test
+    fun `without setsid nothing runs, since background work could not be stopped`() = runBlocking {
+        val project = dir("no-setsid")
+        val noSetsid = SystemShellRunner(tempDir = { tmp }, shell = "/bin/sh", setsid = "/nonexistent/setsid")
+
+        val out = assertIs<CommandOutcome.Unavailable>(noSetsid.run("echo hi > ran.txt", project, limits))
+
+        assertTrue("setsid" in out.reason)
+        assertFalse(File(project.file, "ran.txt").exists())
+    }
+
+    private companion object {
+        /** util-linux's setsid stands in for toybox's on the build machine. */
+        const val HOST_SETSID = "/usr/bin/setsid"
     }
 }

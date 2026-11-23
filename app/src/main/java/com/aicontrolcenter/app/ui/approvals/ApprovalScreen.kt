@@ -208,7 +208,8 @@ private fun WhatItDoes(request: RequestUi) {
                     }
                 }
                 Text(
-                    "Shown exactly as the agent gave it. Highlighted marks stand for line breaks, tabs, runs of spaces and hidden characters.",
+                    "Shown exactly as the agent gave it. Highlighted marks stand for line breaks, tabs, repeated characters, quote marks inside " +
+                        "a quoted value (⟨\"⟩) and hidden characters.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

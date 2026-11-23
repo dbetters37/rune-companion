@@ -382,16 +382,17 @@ fun hiddenCharacterWarning(texts: List<String>): String? {
 }
 
 /**
- * Where [text] holds one of [PreviewText]'s markers (⏎ and ⏎×N, ⇥, ␣ and ␣×N, ⟨U+XXXX⟩) or a
- * named one (⟨hidden: …⟩), as ranges in order, so a screen can draw them apart from the text
- * around them.
+ * Where [text] holds one of [PreviewText]'s markers (⏎ and ⏎×N, ⇥, ␣ and ␣×N, ⟨U+XXXX⟩ and
+ * ⟨U+XXXX⟩×N, a quote inside a value ⟨"⟩, a repeated character's ⟨×N⟩, a combining-mark count)
+ * or a named one (⟨hidden: …⟩), as ranges in order, so a screen can draw them apart from the
+ * text around them.
  */
 fun previewMarks(text: String): List<IntRange> = MARKER.findAll(text).map { it.range }.toList()
 
 /** True when [text] shows a hidden character (⟨U+XXXX⟩ or ⟨hidden: …⟩), as opposed to only line breaks or spaces. */
 fun hasHiddenMark(text: String): Boolean = HIDDEN_MARK.containsMatchIn(text)
 
-private val MARKER = Regex("""⏎(?:×\d+)?|⇥|␣(?:×\d+)?|⟨U\+[0-9A-F]{4,6}⟩|⟨hidden: [a-z -]+⟩""")
+private val MARKER = Regex("""⏎(?:×\d+)?|⇥|␣(?:×\d+)?|(?:⟨U\+[0-9A-F]{4,6}⟩|⟨hidden: [a-z -]+⟩)(?:×\d+)?|⟨"⟩|⟨×\d+⟩|⟨\d+ more combining marks⟩""")
 private val HIDDEN_MARK = Regex("""⟨U\+[0-9A-F]{4,6}⟩|⟨hidden: [a-z -]+⟩""")
 private val CODE_MARK = Regex("""⟨U\+([0-9A-F]{4,6})⟩""")
 

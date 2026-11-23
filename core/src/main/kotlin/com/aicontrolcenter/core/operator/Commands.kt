@@ -13,13 +13,17 @@ data class CommandLimits(
 
 /** How a command ended. */
 sealed interface CommandOutcome {
-    /** Ran to the end. [truncated]: some output was cut at the limit. */
+    /**
+     * Ran to the end. [truncated]: some output was cut at the limit. [stoppedLeftovers]: it left
+     * processes running (in the background), and they were stopped when it ended.
+     */
     data class Finished(
         val exitCode: Int,
         val stdout: String,
         val stderr: String,
         val truncated: Boolean,
         val durationMs: Long,
+        val stoppedLeftovers: Boolean = false,
     ) : CommandOutcome
 
     /** Stopped at the time limit; what it printed until then. */
@@ -35,7 +39,11 @@ sealed interface CommandOutcome {
 /**
  * Android's own shell (`/system/bin/sh -c <command>`) as this app's user, in a workspace
  * directory, with a stripped environment (`:device`). The command is passed as one argument,
- * never split or re-quoted. Cancelling the caller kills the process.
+ * never split or re-quoted. It runs in a session and process group of its own, and when it
+ * ends, reaches its time limit or the caller is cancelled, the whole group is killed: nothing it
+ * started outlives the call unless it left the group itself (which the tool refuses to ask for:
+ * `setsid`, `nohup`, `&`, job control). Where that cannot be arranged, nothing runs
+ * ([CommandOutcome.Unavailable]).
  */
 fun interface ShellRunner {
     suspend fun run(command: String, workingDirectory: WorkspaceFile, limits: CommandLimits): CommandOutcome

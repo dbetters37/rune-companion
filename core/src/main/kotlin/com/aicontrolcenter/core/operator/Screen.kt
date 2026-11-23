@@ -296,7 +296,7 @@ object ScreenPreview {
     fun nameOf(element: ScreenElement): String {
         val name = listOf(element.text, element.description, element.label, element.hint, element.resourceId?.substringAfter(":id/"))
             .firstOrNull { !it.isNullOrBlank() }
-        return if (name == null) "unlabelled ${element.role}" else "${element.role} \"${PreviewText.exact(name)}\""
+        return if (name == null) "unlabelled ${element.role}" else "${element.role} ${PreviewText.quoted(name)}"
     }
 
     /**
@@ -305,14 +305,14 @@ object ScreenPreview {
      * never in a snapshot), so the owner sees what a "Send" would send.
      */
     fun details(appLabel: String, element: ScreenElement, snapshot: ScreenSnapshot?, consequential: Boolean): List<String> = buildList {
-        val title = snapshot?.windowTitle?.let { ", window \"${PreviewText.exact(it)}\"" } ?: ""
+        val title = snapshot?.windowTitle?.let { ", window ${PreviewText.quoted(it)}" } ?: ""
         add("App: ${PreviewText.exact(appLabel)} (${element.packageName})$title")
         add("Control: ${nameOf(element)}")
         element.context?.takeIf { it.isNotBlank() }?.let { add("Where: ${PreviewText.exact(it)}") }
         if (consequential && snapshot != null) {
             for (field in snapshot.elements.filter { it.editable && !it.text.isNullOrEmpty() }) {
                 val name = field.hint ?: field.description ?: field.resourceId?.substringAfter(":id/") ?: "field ${field.number}"
-                add("Field \"${PreviewText.exact(name)}\" contains: \"${PreviewText.exact(field.text!!)}\"")
+                add("Field ${PreviewText.quoted(name)} contains: ${PreviewText.quoted(field.text!!)}")
             }
         }
     }

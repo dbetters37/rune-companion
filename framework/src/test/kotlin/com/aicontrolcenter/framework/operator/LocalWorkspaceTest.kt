@@ -187,14 +187,84 @@ class LocalWorkspaceTest {
     }
 
     @Test
-    fun `an import counts once against the total, and replacing with less always fits`() = runTest {
+    fun `an import counts once against the total, and a file it replaces is kept in the trash and still counts`() = runTest {
         repeat(5) { ok(workspace.write(p("f$it.bin"), ByteArray(900), false)) }
         ok(workspace.import(p("in.bin"), ByteArrayInputStream(ByteArray(400)), 1_000, false))
         val full = workspace.import(p("in2.bin"), ByteArrayInputStream(ByteArray(200)), 1_000, false)
         assertIs<DocResult.Failed>(full)
         assertFalse(File(rootDir, "in2.bin").exists())
+        // The replaced file goes to the trash, so even a smaller replacement needs room for both.
+        assertIs<DocResult.Failed>(workspace.import(p("in.bin"), ByteArrayInputStream(ByteArray(300)), 1_000, true))
+        assertEquals(400L, File(rootDir, "in.bin").length())
+        ok(workspace.trash(p("f0.bin")))
+        ok(workspace.emptyTrash(null))
         assertEquals(300L, ok(workspace.import(p("in.bin"), ByteArrayInputStream(ByteArray(300)), 1_000, true)).sizeBytes)
-        assertEquals(4_800L, workspace.usedBytes(), "no staged copy is left behind")
+        assertTrue(File(rootDir, ".trash/.staging").list().orEmpty().isEmpty(), "no staged copy is left behind")
+        val records = File(rootDir, ".trash").listFiles { it: File -> it.name.endsWith(".json") }.orEmpty().sumOf { it.length() }
+        assertEquals(4_300L, workspace.usedBytes() - records, "the replaced 400 bytes are in the trash")
+        assertEquals(listOf("in.bin" to 400L), ok(workspace.listTrash()).map { it.originalPath to it.sizeBytes })
+    }
+
+    @Test
+    fun `a file replaced by a write or a move is kept in the trash and can be restored`() = runTest {
+        ok(workspace.write(p("notes/thesis.md"), "four years of work".toByteArray(), false))
+        ok(workspace.write(p("notes/thesis.md"), ByteArray(0), overwrite = true))
+        assertEquals(0L, File(rootDir, "notes/thesis.md").length())
+        val kept = ok(workspace.listTrash()).single()
+        assertEquals("notes/thesis.md", kept.originalPath)
+        assertEquals("four years of work", File(rootDir, ".trash/${kept.id}/thesis.md").readText())
+
+        ok(workspace.write(p("draft.md"), "draft".toByteArray(), false))
+        ok(workspace.write(p("final.md"), "final".toByteArray(), false))
+        ok(workspace.move(p("draft.md"), p("final.md"), overwrite = true))
+        assertEquals("draft", File(rootDir, "final.md").readText())
+        val movedOver = ok(workspace.listTrash()).first { it.originalPath == "final.md" }
+        assertEquals("final", File(rootDir, ".trash/${movedOver.id}/final.md").readText())
+
+        // Restoring needs the place free: the replacement is moved away first, then the old file comes back.
+        assertIs<DocResult.AlreadyExists>(workspace.restore(kept.id))
+        ok(workspace.trash(p("notes/thesis.md")))
+        ok(workspace.restore(kept.id))
+        assertEquals("four years of work", File(rootDir, "notes/thesis.md").readText())
+    }
+
+    @Test
+    fun `a gateway write goes through the limits, the lock and the change signal`() = runTest {
+        val before = workspace.changes.first()
+        val copied = workspace.receive(p("in/photo.jpg"), 50_000) { target, max ->
+            assertEquals(1_000L, max, "the per-file limit, not the caller's")
+            target.file.writeBytes(ByteArray(600))
+            DocResult.Ok(600L)
+        }
+        assertEquals(600L, ok(copied))
+        assertTrue(workspace.changes.first() > before, "screens are told")
+        assertIs<DocResult.AlreadyExists>(workspace.receive<Long>(p("in/photo.jpg"), 50_000) { _, _ -> error("not called for a taken name") })
+
+        // A gateway that writes more than it was allowed: the file is removed.
+        val tooBig = workspace.receive(p("big.jpg"), 50_000) { target, _ -> target.file.writeBytes(ByteArray(1_500)); DocResult.Ok(1_500L) }
+        assertIs<DocResult.TooLarge>(tooBig)
+        assertFalse(File(rootDir, "big.jpg").exists())
+
+        // The room left bounds what it may write; past it, the copy is removed and the workspace reported full.
+        repeat(4) { ok(workspace.write(p("f$it.bin"), ByteArray(1_000), false)) }
+        val room = workspace.receive(p("more.jpg"), 50_000) { target, max ->
+            assertEquals(5_000L - 4_600L, max)
+            target.file.writeBytes(ByteArray(500))
+            DocResult.Ok(500L)
+        }
+        assertIs<DocResult.Failed>(room)
+        assertTrue("full" in (room as DocResult.Failed).reason)
+        assertFalse(File(rootDir, "more.jpg").exists())
+        assertIs<DocResult.NotAllowed>(workspace.receive<Long>(p(".trash/x"), 10) { _, _ -> error("not called") })
+    }
+
+    @Test
+    fun `a change from outside is announced and a workspace over its limit is reported`() = runTest {
+        val before = workspace.changes.first()
+        assertNull(workspace.changedOutside())
+        assertTrue(workspace.changes.first() > before)
+        File(rootDir, "made-by-a-shell.bin").writeBytes(ByteArray(6_000))
+        assertTrue("full" in workspace.changedOutside()!!)
     }
 
     @Test

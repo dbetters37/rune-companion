@@ -15,6 +15,8 @@ import com.aicontrolcenter.app.testing.raise
 import com.aicontrolcenter.app.testing.sampleApproval
 import com.aicontrolcenter.app.testing.samplePermission
 import com.aicontrolcenter.core.RequestId
+import com.aicontrolcenter.core.operator.DeviceAccess
+import com.aicontrolcenter.core.operator.DeviceAccessState
 import com.aicontrolcenter.core.operator.DocResult
 import com.aicontrolcenter.core.operator.GrantScope
 import com.aicontrolcenter.core.operator.OperatorCapabilities
@@ -75,7 +77,7 @@ class ToolsJourneysTest {
             .assertShown("tools agents can be given")
             .assertShown("Phone operator is off in Settings")
             .tap("Workspace")
-            .assertShown("Creates a text file in the workspace, or replaces one.")
+            .assertShown("Creates a text file in the workspace, or replaces one. A replaced file goes to the workspace trash.")
             .assertShown("Permission: Change the workspace · Needs your permission")
         robot.tapIcon("Open Operator")
             .assertShown("Carries out approved actions")
@@ -174,6 +176,31 @@ class ToolsJourneysTest {
             .waitUntil { runBlocking { robot.app.operatorApps.get("org.example.notes") } == null }
             .scrollListTo("No apps authorised")
         assertEquals(emptyList(), robot.grants())
+    }
+
+    @Test
+    fun `the tools list says what Android must allow for photos, installs and Termux, and opens the setting`() {
+        val robot = app { systemScreens.access[DeviceAccess.MEDIA] = DeviceAccessState.SELECTED_ONLY }
+            .openSectionViaMore("Tools")
+            .scrollListTo("Allowed for the photos and videos you selected only.")
+            .assertShown("Change selection")
+            .scrollListTo("Install unknown apps (Android setting)")
+            .assertShown("Off, so \"Install an app\" cannot ask Android to install anything.")
+            .tap("Open Android's setting")
+        val opened = robot.startedActivity()
+        assertEquals(TestSystemScreens.ACCESS_SETTINGS, opened.action)
+        assertEquals(DeviceAccess.INSTALL_UNKNOWN_APPS.name, opened.getStringExtra(TestSystemScreens.ACCESS))
+
+        // Termux's permission is asked with Android's own dialog, here answered yes.
+        robot.app.systemScreens.access[DeviceAccess.TERMUX_RUN_COMMAND] = DeviceAccessState.NOT_ALLOWED
+        robot.scrollListTo("Run commands in Termux (Termux permission)")
+            .assertShown("Not allowed yet, so Termux commands cannot run.")
+        robot.app.systemScreens.access[DeviceAccess.TERMUX_RUN_COMMAND] = DeviceAccessState.ALLOWED
+        pickers.next = mapOf("com.termux.permission.RUN_COMMAND" to true)
+        robot.tap("Allow Termux commands").waitUntilShown("allow-external-apps=true")
+        @Suppress("UNCHECKED_CAST")
+        assertEquals(listOf("com.termux.permission.RUN_COMMAND"), (pickers.launched.last() as Array<String>).toList())
+        robot.assertNotShown("Allow Termux commands")
     }
 
     @Test

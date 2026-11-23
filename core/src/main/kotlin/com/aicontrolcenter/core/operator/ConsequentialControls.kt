@@ -10,8 +10,14 @@ import java.util.Locale
  * owner one extra confirmation.
  */
 object ConsequentialControls {
-    /** Overwriting or deleting more than this many files in one call is consequential. */
+    /**
+     * Replacing, editing or deleting more than this many existing files is consequential: counted
+     * per agent and task over [BULK_WINDOW_MS], not per call, so many small calls add up.
+     */
     const val BULK_FILE_LIMIT: Int = 20
+
+    /** The sliding window over which [BULK_FILE_LIMIT] is counted: 10 minutes. */
+    const val BULK_WINDOW_MS: Long = 10 * 60_000L
 
     /** Word stems that mark a control as consequential when found in its text, description or view id. */
     val WORDS: List<String> = listOf(

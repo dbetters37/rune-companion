@@ -115,7 +115,11 @@ class OperatorPoliciesTest {
             setOf("workspace.empty_trash", "folders.delete", "apps.install", "apps.uninstall", "scripts.run_shell", "termux.run"),
             all.filter { it.risk == RiskLevel.CONSEQUENTIAL }.map { it.id.value }.toSet(),
         )
-        assertEquals(setOf("web.read_page", "browser.open", "apps.open_link"), all.filter { it.sendsDataOffDevice }.map { it.id.value }.toSet())
+        // The shell and Termux can use the network, so local-only mode blocks them too.
+        assertEquals(
+            setOf("web.read_page", "browser.open", "apps.open_link", "scripts.run_shell", "termux.run"),
+            all.filter { it.sendsDataOffDevice }.map { it.id.value }.toSet(),
+        )
         assertEquals(Capabilities.BASIC_INFO, OperatorTools.info(ToolId("permissions.request"))?.capability)
         assertTrue(all.filter { "copy_to_workspace" in it.id.value || it.id.value == "screen.screenshot" }.all { it.rule?.contains("Never overwrites") == true })
         assertEquals(RiskLevel.CONSEQUENTIAL, OperatorTools.riskOf(OperatorCapabilities.APPS_MANAGE))
