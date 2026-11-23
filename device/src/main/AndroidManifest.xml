@@ -44,6 +44,49 @@
             <action android:name="android.service.voice.VoiceInteractionService" />
         </intent>
 
+        <!-- Screen operator: the home screen app, so a HOME action is checked like any other app. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
+        <!--
+            Screen operator: apps that handle these system screens are never operated
+            (ConsequentialControls.PROTECTED_HANDLER_ACTIONS, resolved by ProtectedPackagesResolver).
+        -->
+        <intent>
+            <action android:name="android.settings.SETTINGS" />
+        </intent>
+        <intent>
+            <action android:name="android.settings.ACCESSIBILITY_SETTINGS" />
+        </intent>
+        <intent>
+            <action android:name="android.settings.SECURITY_SETTINGS" />
+        </intent>
+        <intent>
+            <action android:name="android.settings.APPLICATION_DETAILS_SETTINGS" />
+            <data android:scheme="package" />
+        </intent>
+        <intent>
+            <action android:name="android.settings.MANAGE_UNKNOWN_APP_SOURCES" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.INSTALL_PACKAGE" />
+            <data android:scheme="content" android:mimeType="application/vnd.android.package-archive" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.UNINSTALL_PACKAGE" />
+            <data android:scheme="package" />
+        </intent>
+        <intent>
+            <action android:name="android.content.pm.action.REQUEST_PERMISSIONS" />
+        </intent>
+        <intent>
+            <action android:name="android.app.action.ADD_DEVICE_ADMIN" />
+        </intent>
+        <intent>
+            <action android:name="android.app.action.SET_NEW_PASSWORD" />
+        </intent>
+
         <!-- Cloud assistants and AI browsers (CloudAiApps.kt). -->
         <package android:name="com.openai.chatgpt" />
         <package android:name="com.openai.sora" />
@@ -109,4 +152,30 @@
         <package android:name="com.google.android.aicore" />
         <package android:name="com.termux.api" />
     </queries>
+
+    <application>
+        <!--
+            The screen operator (Tools > Screen control). Only the system can bind it
+            (BIND_ACCESSIBILITY_SERVICE), and only after the owner switches it on in Android's
+            accessibility settings. It declares no gestures, no key filtering and
+            isAccessibilityTool="false": see res/xml/operator_accessibility_service.xml.
+        -->
+        <service
+            android:name="com.aicontrolcenter.device.screen.OperatorAccessibilityService"
+            android:exported="true"
+            android:label="@string/operator_a11y_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/operator_accessibility_service" />
+        </service>
+
+        <!-- The Stop action of an "operating" notification. Not exported: only this app's own PendingIntent reaches it. -->
+        <receiver
+            android:name="com.aicontrolcenter.device.screen.ScreenStopReceiver"
+            android:exported="false" />
+    </application>
 </manifest>

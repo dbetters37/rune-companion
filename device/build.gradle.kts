@@ -35,6 +35,8 @@ dependencies {
     api(project(":core"))
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.core.ktx)
+    // The owner's screen-operator Stop survives restarts.
+    implementation(libs.androidx.datastore.preferences)
 
     testImplementation(project(":testkit"))
     // The registry is exercised against the real scanner to prove the two fit together.

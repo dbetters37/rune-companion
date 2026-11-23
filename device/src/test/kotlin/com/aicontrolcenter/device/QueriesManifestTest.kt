@@ -17,7 +17,7 @@ import kotlin.test.assertTrue
  */
 class QueriesManifestTest {
 
-    private data class IntentQuery(val action: String, val categories: Set<String>, val mimeType: String?)
+    private data class IntentQuery(val action: String, val categories: Set<String>, val mimeType: String?, val scheme: String? = null)
 
     private val manifest: Element = run {
         val path = System.getProperty("aicc.deviceManifest") ?: "src/main/AndroidManifest.xml"
@@ -42,6 +42,7 @@ class QueriesManifestTest {
             action = actions.single(),
             categories = intent.children("category").mapNotNull { it.android("name") }.toSet(),
             mimeType = intent.children("data").singleOrNull()?.android("mimeType"),
+            scheme = intent.children("data").singleOrNull()?.android("scheme"),
         )
     }
 
@@ -57,7 +58,7 @@ class QueriesManifestTest {
 
     @Test
     fun `intent entries are exactly the intents the code queries device-wide`() {
-        val queriedByCode = QueriedIntent.entries.map { IntentQuery(it.action, setOfNotNull(it.category), it.mimeType) }
+        val queriedByCode = QueriedIntent.entries.map { IntentQuery(it.action, setOfNotNull(it.category), it.mimeType, it.scheme) }
         assertEquals(queriedByCode.size, queriedByCode.toSet().size, "duplicate queried intents")
         assertEquals(intentQueries.size, intentQueries.toSet().size, "duplicate <intent> entries")
         assertEquals(queriedByCode.toSet(), intentQueries.toSet())
@@ -75,6 +76,18 @@ class QueriesManifestTest {
                 IntentQuery("android.intent.action.ASSIST", emptySet(), null),
                 IntentQuery("android.intent.action.VOICE_COMMAND", emptySet(), null),
                 IntentQuery("android.service.voice.VoiceInteractionService", emptySet(), null),
+                // Screen operator: the home screen app and the handlers of protected system screens.
+                IntentQuery("android.intent.action.MAIN", setOf("android.intent.category.HOME"), null),
+                IntentQuery("android.settings.SETTINGS", emptySet(), null),
+                IntentQuery("android.settings.ACCESSIBILITY_SETTINGS", emptySet(), null),
+                IntentQuery("android.settings.SECURITY_SETTINGS", emptySet(), null),
+                IntentQuery("android.settings.APPLICATION_DETAILS_SETTINGS", emptySet(), null, "package"),
+                IntentQuery("android.settings.MANAGE_UNKNOWN_APP_SOURCES", emptySet(), null),
+                IntentQuery("android.intent.action.INSTALL_PACKAGE", emptySet(), "application/vnd.android.package-archive", "content"),
+                IntentQuery("android.intent.action.UNINSTALL_PACKAGE", emptySet(), null, "package"),
+                IntentQuery("android.content.pm.action.REQUEST_PERMISSIONS", emptySet(), null),
+                IntentQuery("android.app.action.ADD_DEVICE_ADMIN", emptySet(), null),
+                IntentQuery("android.app.action.SET_NEW_PASSWORD", emptySet(), null),
             ),
             intentQueries.toSet(),
         )
@@ -85,6 +98,15 @@ class QueriesManifestTest {
         val permissions = manifest.children("uses-permission").mapNotNull { it.android("name") }
         assertEquals(listOf("android.permission.QUERY_ADVANCED_PROTECTION_MODE"), permissions)
         assertFalse("android.permission.QUERY_ALL_PACKAGES" in permissions)
-        assertTrue(manifest.children("application").isEmpty(), "the device library declares no components")
+        // The only components: the screen operator's accessibility service and its Stop receiver.
+        val application = manifest.children("application").single()
+        assertEquals(
+            listOf(
+                "service:com.aicontrolcenter.device.screen.OperatorAccessibilityService",
+                "receiver:com.aicontrolcenter.device.screen.ScreenStopReceiver",
+            ),
+            (0 until application.childNodes.length).map { application.childNodes.item(it) }.filterIsInstance<Element>()
+                .map { "${it.tagName}:${it.android("name")}" },
+        )
     }
 }
