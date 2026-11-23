@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    What WorkspaceFileProvider may serve: the agents' workspace (files/workspace) and nothing
+    else of this app's storage. A file is served only to the app the owner shares it with.
+-->
+<paths>
+    <files-path name="workspace" path="workspace/" />
+</paths>

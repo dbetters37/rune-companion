@@ -33,6 +33,8 @@ kotlin {
 
 dependencies {
     api(project(":core"))
+    // Custom Tabs for AppActions.openInBrowser (the owner's own browser session, not a WebView).
+    implementation(libs.androidx.browser)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.core.ktx)
 

@@ -3,9 +3,35 @@
 
     <!--
         Normal (install-time) permission, Android 16+: lets the device report say whether
-        Advanced Protection mode is on. It is the only permission this module requests.
+        Advanced Protection mode is on.
     -->
     <uses-permission android:name="android.permission.QUERY_ADVANCED_PROTECTION_MODE" />
+
+    <!--
+        Phone operator (operator/PhoneOperatorLayer). Each permission serves one gateway, and every
+        use is behind the owner's grants and approvals in the framework. Deliberately not
+        requested: MANAGE_EXTERNAL_STORAGE (owner-picked folders through the Storage Access
+        Framework need no permission), SEND_SMS and CALL_PHONE (messages and calls only open
+        prefilled), QUERY_ALL_PACKAGES, and UPDATE_PACKAGES_WITHOUT_USER_ACTION (every install
+        shows Android's confirmation).
+    -->
+    <!-- MediaStoreLibrary, Android 13+: photos and videos (runtime permissions the owner grants). -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <!-- MediaStoreLibrary, Android 14+: the owner may allow only the items they select. Declared so that choice is honoured as partial access. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+    <!-- MediaStoreLibrary, Android 9 to 12: the old storage read permission covers photos and videos. -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <!-- AppActions.install: a PackageInstaller session; the owner's "Install unknown apps" switch and Android's confirmation still apply. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- AppActions.uninstall: PackageInstaller.uninstall, always with Android's own confirmation. -->
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+    <!-- TermuxRunner: Termux's RUN_COMMAND; the owner grants it in this app's Android permissions. -->
+    <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+    <!-- AppActions: the "Tap to open" notification when Android blocks a start from the background. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!--
         Package visibility (Android 11+). Everything the device layer asks PackageManager is
@@ -19,6 +45,36 @@
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <!--
+            Phone operator hand-overs (HandoverQuery): apps that open web links, browsers with
+            Custom Tabs, and apps that take a prefilled email, text message or phone number, so a
+            hand-over is checked for a protected taker before it starts.
+        -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="http" />
+        </intent>
+        <intent>
+            <action android:name="android.support.customtabs.action.CustomTabsService" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SENDTO" />
+            <data android:scheme="mailto" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SENDTO" />
+            <data android:scheme="smsto" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.DIAL" />
+            <data android:scheme="tel" />
         </intent>
         <!-- Capability probes. -->
         <intent>
@@ -108,5 +164,40 @@
         <!-- Not AI apps; their presence is reported as a device feature (CompanionPackages). -->
         <package android:name="com.google.android.aicore" />
         <package android:name="com.termux.api" />
+
+        <!--
+            Protected packages (ConsequentialControls.PROTECTED_PACKAGES, except the framework
+            package "android", which every app sees): visible so that a hand-over one of them
+            would take is recognised and refused. They are never opened or operated.
+        -->
+        <package android:name="com.android.systemui" />
+        <package android:name="com.android.settings" />
+        <package android:name="com.android.permissioncontroller" />
+        <package android:name="com.google.android.permissioncontroller" />
+        <package android:name="com.android.packageinstaller" />
+        <package android:name="com.google.android.packageinstaller" />
+        <package android:name="com.android.intentresolver" />
+        <package android:name="com.android.credentialmanager" />
+        <package android:name="com.google.android.gms" />
+        <package android:name="com.miui.securitycenter" />
+        <package android:name="com.miui.packageinstaller" />
+        <package android:name="com.lbe.security.miui" />
+        <package android:name="com.huawei.systemmanager" />
     </queries>
+
+    <application>
+        <!--
+            workspace.export: serves workspace files (res/xml/workspace_share_paths.xml) to the one
+            app the owner shares them with, read-only and only for that hand-off.
+        -->
+        <provider
+            android:name="com.aicontrolcenter.device.operator.apps.WorkspaceFileProvider"
+            android:authorities="${applicationId}.workspace"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/workspace_share_paths" />
+        </provider>
+    </application>
 </manifest>
