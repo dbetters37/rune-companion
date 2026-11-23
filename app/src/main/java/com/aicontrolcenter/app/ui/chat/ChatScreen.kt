@@ -57,7 +57,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.aicontrolcenter.app.di.LocalAppGraph
 import com.aicontrolcenter.app.ui.components.AgentAvatar
-import com.aicontrolcenter.app.ui.components.AppTextField
+import com.aicontrolcenter.app.ui.components.InlineTextEntry
 import com.aicontrolcenter.app.ui.components.ConfirmDialog
 import com.aicontrolcenter.app.ui.components.EmptyState
 import com.aicontrolcenter.app.ui.components.InfoBanner
@@ -79,6 +79,9 @@ import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.app.ui.theme.appColors
 import com.aicontrolcenter.core.ConversationId
+import com.aicontrolcenter.core.ProviderId
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.ui.text.style.TextAlign
 
 class ChatActions(
     val onBack: () -> Unit,
@@ -88,11 +91,12 @@ class ChatActions(
     val onRename: (String) -> Unit,
     val onDelete: () -> Unit,
     val onCheckProvider: () -> Unit,
+    val onOpenProvider: (ProviderId) -> Unit,
     val onMessageShown: () -> Unit,
 )
 
 @Composable
-fun ChatRoute(conversationId: ConversationId, onBack: () -> Unit) {
+fun ChatRoute(conversationId: ConversationId, onBack: () -> Unit, onOpenProvider: (ProviderId) -> Unit) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel {
         ChatViewModel(conversationId, graph.registryDirectory, graph.agentChat, graph.toolRegistry, graph.providerManager)
@@ -109,6 +113,7 @@ fun ChatRoute(conversationId: ConversationId, onBack: () -> Unit) {
             onRename = viewModel::rename,
             onDelete = viewModel::delete,
             onCheckProvider = viewModel::checkProvider,
+            onOpenProvider = onOpenProvider,
             onMessageShown = viewModel::messageShown,
         ),
     )
@@ -161,22 +166,26 @@ fun ChatScreen(state: ChatUiState, actions: ChatActions) {
                 modifier = Modifier.padding(padding),
             )
             else -> Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
+                if (renaming) {
+                    InlineTextEntry(
+                        title = "Rename conversation",
+                        label = "Title",
+                        confirmLabel = "Rename",
+                        initial = state.title,
+                        onConfirm = {
+                            renaming = false
+                            actions.onRename(it)
+                        },
+                        onDismiss = { renaming = false },
+                        modifier = Modifier.readableWidth().padding(horizontal = Spacing.screen, vertical = Spacing.sm),
+                    )
+                }
                 Transcript(state, actions, Modifier.weight(1f))
                 Composer(state, actions)
             }
         }
     }
 
-    if (renaming) {
-        RenameDialog(
-            current = state.title,
-            onRename = {
-                renaming = false
-                actions.onRename(it)
-            },
-            onDismiss = { renaming = false },
-        )
-    }
     if (confirmDelete) {
         ConfirmDialog(
             title = "Delete this conversation?",
@@ -210,14 +219,17 @@ private fun Transcript(state: ChatUiState, actions: ChatActions, modifier: Modif
         if (state.items.isEmpty() && state.live == null) {
             item(key = "intro") { Intro(state) }
         }
-        items(state.items, key = { it.key }) { item ->
+        itemsIndexed(state.items, key = { _, item -> item.key }) { index, item ->
             when (item) {
                 is TranscriptItem.Owner -> OwnerBubble(item.text)
-                is TranscriptItem.Agent -> AgentTurn(state, item)
+                // One avatar per run of agent messages, so a turn with tool calls reads as one speaker.
+                is TranscriptItem.Agent -> AgentTurn(state, item, showAvatar = state.items.getOrNull(index - 1) !is TranscriptItem.Agent)
                 is TranscriptItem.Notice -> NoticeRow(item, state, actions, isLast = item === state.items.last())
             }
         }
-        state.live?.let { live -> item(key = "live") { LiveReply(state, live) } }
+        state.live?.let { live ->
+            item(key = "live") { LiveReply(state, live, showAvatar = state.items.lastOrNull() !is TranscriptItem.Agent) }
+        }
         item(key = "end") { Spacer(Modifier.size(1.dp)) }
     }
 }
@@ -232,10 +244,13 @@ private fun Intro(state: ChatUiState) {
         AgentAvatar(state.agentName, state.agentColorIndex, size = 56.dp)
         Text("Talk to ${state.agentName}", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
         Text(
-            state.destination?.let { "Replies come from ${it.modelName}. Everything you write here is kept on this phone with the conversation." }
-                ?: "Everything you write here is kept on this phone with the conversation.",
+            buildString {
+                state.destination?.let { append("Replies come from ${it.modelName}. ") }
+                append("The conversation is stored on this phone; where each message is sent is shown above the input.")
+            },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
             modifier = Modifier.widthIn(max = 360.dp),
         )
     }
@@ -263,8 +278,8 @@ private fun OwnerBubble(text: String) {
 
 /** The agent's side: avatar, reasoning, text, tool calls and the footer, aligned to the start. */
 @Composable
-private fun AgentTurn(state: ChatUiState, item: TranscriptItem.Agent) {
-    AgentColumn(state) {
+private fun AgentTurn(state: ChatUiState, item: TranscriptItem.Agent, showAvatar: Boolean) {
+    AgentColumn(state, showAvatar) {
         item.reasoning?.let { ReasoningSummary(it, live = false) }
         if (item.text.isNotBlank()) AgentBubble(item.text)
         item.toolCalls.forEach { ToolCallRow(it) }
@@ -273,9 +288,9 @@ private fun AgentTurn(state: ChatUiState, item: TranscriptItem.Agent) {
 }
 
 @Composable
-private fun AgentColumn(state: ChatUiState, content: @Composable () -> Unit) {
+private fun AgentColumn(state: ChatUiState, showAvatar: Boolean, content: @Composable () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(end = 24.dp), horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-        AgentAvatar(state.agentName, state.agentColorIndex, size = 32.dp)
+        if (showAvatar) AgentAvatar(state.agentName, state.agentColorIndex, size = 32.dp) else Spacer(Modifier.size(32.dp))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) { content() }
     }
 }
@@ -298,7 +313,7 @@ private fun AgentBubble(text: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun ReasoningSummary(text: String, live: Boolean) {
+private fun ReasoningSummary(text: String, live: Boolean, answering: Boolean = false) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     Column(Modifier.animateContentSize()) {
         Row(
@@ -311,7 +326,11 @@ private fun ReasoningSummary(text: String, live: Boolean) {
         ) {
             Icon(AppIcons.Lightbulb, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(16.dp))
             Text(
-                if (live) "Thinking…" else "Reasoning summary",
+                when {
+                    live && !answering -> "Thinking…"
+                    live -> "Reasoning so far"
+                    else -> "Reasoning summary"
+                },
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -419,14 +438,25 @@ private fun NoticeRow(item: TranscriptItem.Notice, state: ChatUiState, actions: 
             NoticeKind.FAILURE -> InfoBanner(title = "The turn failed", text = item.text, tone = StatusTone.UNAVAILABLE)
         }
         if (isLast && state.checkProviderId != null && state.blockedReason == null) {
-            CheckProviderButton(state, actions)
+            ProviderActions(state, actions)
+        }
+    }
+}
+
+/** Check the provider again (a stale or passing problem), or open it (a key to replace, an address to fix). */
+@Composable
+private fun ProviderActions(state: ChatUiState, actions: ChatActions) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+        CheckProviderButton(state, actions, Modifier.weight(1f, fill = false))
+        state.checkProviderId?.let { id ->
+            androidx.compose.material3.TextButton(onClick = { actions.onOpenProvider(id) }) { Text("Open provider") }
         }
     }
 }
 
 @Composable
-private fun CheckProviderButton(state: ChatUiState, actions: ChatActions) {
-    FilledTonalButton(onClick = actions.onCheckProvider, enabled = !state.isCheckingProvider) {
+private fun CheckProviderButton(state: ChatUiState, actions: ChatActions, modifier: Modifier = Modifier) {
+    FilledTonalButton(onClick = actions.onCheckProvider, enabled = !state.isCheckingProvider, modifier = modifier) {
         if (state.isCheckingProvider) {
             CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
         } else {
@@ -442,9 +472,9 @@ private fun CheckProviderButton(state: ChatUiState, actions: ChatActions) {
 }
 
 @Composable
-private fun LiveReply(state: ChatUiState, live: LiveTurnUi) {
-    AgentColumn(state) {
-        if (live.partialReasoning.isNotEmpty()) ReasoningSummary(live.partialReasoning, live = true)
+private fun LiveReply(state: ChatUiState, live: LiveTurnUi, showAvatar: Boolean) {
+    AgentColumn(state, showAvatar) {
+        if (live.partialReasoning.isNotEmpty()) ReasoningSummary(live.partialReasoning, live = true, answering = live.partialText.isNotEmpty())
         if (live.partialText.isNotEmpty()) AgentBubble(live.partialText)
         Row(
             modifier = Modifier.heightIn(min = 32.dp).semantics { liveRegion = LiveRegionMode.Polite },
@@ -471,7 +501,7 @@ private fun Composer(state: ChatUiState, actions: ChatActions) {
                 val blocked = state.blockedReason
                 if (blocked != null) {
                     InfoBanner(title = "Cannot send", text = blocked, tone = StatusTone.UNAVAILABLE)
-                    if (state.checkProviderId != null) CheckProviderButton(state, actions)
+                    if (state.checkProviderId != null) ProviderActions(state, actions)
                 } else {
                     InputRow(state, actions)
                 }
@@ -550,16 +580,4 @@ private fun InputRow(state: ChatUiState, actions: ChatActions) {
             }
         }
     }
-}
-
-@Composable
-private fun RenameDialog(current: String, onRename: (String) -> Unit, onDismiss: () -> Unit) {
-    var title by rememberSaveable { mutableStateOf(current) }
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Rename conversation") },
-        text = { AppTextField(value = title, onValueChange = { title = it }, label = "Title") },
-        confirmButton = { androidx.compose.material3.TextButton(onClick = { onRename(title) }, enabled = title.isNotBlank()) { Text("Rename") } },
-        dismissButton = { androidx.compose.material3.TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
 }

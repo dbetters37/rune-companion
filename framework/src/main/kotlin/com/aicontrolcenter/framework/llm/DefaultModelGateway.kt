@@ -34,7 +34,10 @@ import kotlinx.coroutines.withContext
  * are not obvious from there:
  *
  *  - Policy is checked on every call against the registry as it is now, so disabling a model
- *    or switching on local-only mode takes effect immediately, even mid-turn.
+ *    or switching on local-only mode takes effect immediately, even mid-turn. A retry is a new
+ *    sending of the prompt and is checked again in full: model, provider, local-only mode and
+ *    the connection lease are re-read before every attempt, and if anything about where or how
+ *    the call would go has changed (address, kind, headers, key), it is not sent again.
  *  - A streamed call is retried only while nothing has been passed on: once text has been
  *    shown, repeating the call would show it twice.
  *  - Exactly one activity event is written per call, whether it succeeded, failed, was refused
@@ -64,6 +67,7 @@ class DefaultModelGateway(
         val call = route.call
         try {
             while (true) {
+                if (call.attempts > 0) confirmRetry(route, modelId)
                 call.attempts++
                 call.sent = true
                 var response: ChatResponse? = null
@@ -91,6 +95,7 @@ class DefaultModelGateway(
         val call = route.call
         try {
             while (true) {
+                if (call.attempts > 0) confirmRetry(route, modelId)
                 call.attempts++
                 call.sent = true
                 var passedOn = false
@@ -156,6 +161,46 @@ class DefaultModelGateway(
         }
         val client = if (prompted) PromptedToolsClient(lease.adapter.client) else lease.adapter.client
         return Route(call, lease, client, wireRequest)
+    }
+
+    /**
+     * Runs before every attempt after the first. The pause before a retry can last seconds, and
+     * the owner may have switched on local-only mode, disabled or removed the model or provider,
+     * or changed its address or key in the meantime: each of [open]'s refusals is applied again,
+     * and the lease is acquired again so that a changed key or record shows. The retry goes out
+     * only to the same endpoint, with the same key, through the same adapter; otherwise the call
+     * ends here as blocked and its event says why.
+     */
+    private suspend fun confirmRetry(route: Route, modelId: ModelId) {
+        val reason = retryRefusal(route, modelId) ?: return
+        bestEffort { journal.retryBlocked(route.call, reason, elapsed(route.call)) }
+        throw LlmException.BlockedByPolicy("$reason The call was not repeated.")
+    }
+
+    private suspend fun retryRefusal(route: Route, modelId: ModelId): String? {
+        val before = route.call
+        val model = models.get(modelId) ?: return "The model assigned here is no longer registered."
+        if (!model.enabled) return "Model ${model.displayName} is disabled."
+        val provider = providers.get(model.providerId) ?: return "The provider of ${model.displayName} is no longer registered."
+        if (!provider.enabled) return "Provider ${provider.name} is disabled."
+        val locality = provider.effectiveLocality
+        if (locality.leavesDevice && settings.get().localOnlyMode) {
+            return "Local-only mode is on and ${provider.name} would send data off this device."
+        }
+        val changed = "The settings of ${provider.name} changed while the call was waiting to be repeated."
+        val sameModel = model.providerId == before.model.providerId && model.modelName == before.model.modelName &&
+            model.capabilities == before.model.capabilities
+        val old = before.provider
+        val sameEndpoint = provider.kind == old.kind && provider.baseUrl == old.baseUrl && provider.extraHeaders == old.extraHeaders &&
+            provider.apiKeyAlias == old.apiKeyAlias && locality == old.effectiveLocality
+        if (!sameModel || !sameEndpoint) return changed
+        val lease = try {
+            connections.acquire(provider)
+        } catch (e: LlmException) {
+            return e.message ?: changed
+        }
+        // The cache hands out the same lease only while record and key are unchanged.
+        return if (lease === route.lease) null else changed
     }
 
     /**

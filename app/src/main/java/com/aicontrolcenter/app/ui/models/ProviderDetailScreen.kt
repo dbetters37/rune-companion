@@ -160,7 +160,7 @@ fun ProviderDetailScreen(state: ProviderDetailUiState, actions: ProviderDetailAc
                     )
                 }
                 ConnectionActions(state, actions)
-                ModelsSection(provider, actions, onAddModel = { addingModel = true })
+                ModelsSection(provider, actions, addingModel = addingModel, onAddingModelChange = { addingModel = it })
                 if (!provider.row.isSimulator) {
                     ManageProvider(onEdit = actions.onEdit, onRemove = { confirmRemove = true })
                 }
@@ -182,21 +182,12 @@ fun ProviderDetailScreen(state: ProviderDetailUiState, actions: ProviderDetailAc
             onDismiss = { confirmRemove = false },
         )
     }
-    if (addingModel && provider != null) {
-        AddModelDialog(
-            providerName = provider.name,
-            onAdd = {
-                actions.onAddModel(it)
-                addingModel = false
-            },
-            onDismiss = { addingModel = false },
-        )
-    }
 }
 
 /** Says exactly who loses what, by name, before anything is removed. */
 internal fun removalMessage(provider: ProviderDetailUi): String = buildString {
-    append("Its ${plural(provider.models.size, "model")} and its stored API key are removed from this phone. ")
+    append("Its ${plural(provider.models.size, "model")}")
+    append(if (provider.row.keyStored == true) " and its stored API key are removed from this phone. " else " are removed from this phone. ")
     val dependents = provider.dependents
     if (dependents.leftWithoutModel.isNotEmpty()) {
         append(namesSentence(dependents.leftWithoutModel)).append(" would be left without a model and could not run until you assign another one. ")
@@ -328,13 +319,28 @@ private fun SyncReportCard(report: SyncReportUi) {
 }
 
 @Composable
-private fun ModelsSection(provider: ProviderDetailUi, actions: ProviderDetailActions, onAddModel: () -> Unit) {
+private fun ModelsSection(
+    provider: ProviderDetailUi,
+    actions: ProviderDetailActions,
+    addingModel: Boolean,
+    onAddingModelChange: (Boolean) -> Unit,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
         SectionHeader(
             "Models · ${provider.models.size}",
-            actionLabel = if (provider.row.isSimulator) null else "Add model",
-            onAction = onAddModel,
+            actionLabel = if (provider.row.isSimulator || addingModel) null else "Add model",
+            onAction = { onAddingModelChange(true) },
         )
+        if (addingModel) {
+            AddModelCard(
+                providerName = provider.name,
+                onAdd = {
+                    actions.onAddModel(it)
+                    onAddingModelChange(false)
+                },
+                onDismiss = { onAddingModelChange(false) },
+            )
+        }
         if (provider.models.isEmpty()) {
             InfoBanner(text = "No models yet. Refresh the list, or add a model by the name the provider expects.")
         }

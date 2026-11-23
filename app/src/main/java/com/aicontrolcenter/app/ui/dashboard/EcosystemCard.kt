@@ -78,6 +78,7 @@ internal fun EcosystemSummarySection(
                 accent = MaterialTheme.colorScheme.secondary,
                 onClick = onOpenModels,
                 modifier = Modifier.weight(1f),
+                caption = "${summary.modelsInUse} in use",
             )
             StatTile(
                 value = summary.providerCount.toString(),
@@ -86,6 +87,12 @@ internal fun EcosystemSummarySection(
                 accent = MaterialTheme.colorScheme.secondary,
                 onClick = onOpenProviders,
                 modifier = Modifier.weight(1f),
+                caption = if (summary.providerProblems > 0) {
+                    if (summary.providerProblems == 1) "1 problem" else "${summary.providerProblems} problems"
+                } else {
+                    "${summary.providersOnline} online"
+                },
+                captionColor = if (summary.providerProblems > 0) appColors.attention else MaterialTheme.colorScheme.onSurfaceVariant,
             )
             StatTile(
                 value = summary.installedApps.toString(),
@@ -94,6 +101,7 @@ internal fun EcosystemSummarySection(
                 accent = MaterialTheme.colorScheme.tertiary,
                 onClick = onOpenApps,
                 modifier = Modifier.weight(1f),
+                caption = "installed",
             )
         }
     }

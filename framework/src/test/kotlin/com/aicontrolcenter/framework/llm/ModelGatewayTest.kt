@@ -17,6 +17,8 @@ import com.aicontrolcenter.core.llm.ToolDefinition
 import com.aicontrolcenter.core.registry.ConnectionStatus
 import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.registry.ModelCapabilities
+import com.aicontrolcenter.core.registry.ModelDescriptor
+import com.aicontrolcenter.core.registry.ModelProvider
 import com.aicontrolcenter.core.registry.ProviderKind
 import com.aicontrolcenter.framework.StreamingClient
 import com.aicontrolcenter.framework.TestWorld
@@ -334,5 +336,94 @@ class ModelGatewayTest {
         val event = modelCalls().single()
         assertEquals("Model call cancelled", event.title)
         assertEquals("api.example.com", event.egress?.destinationHost)
+    }
+    /**
+     * A cloud call whose first attempt is rate-limited; while it fails, [change] is made, as the
+     * owner might during the pause. Returns the world, the model and what the call ended with.
+     */
+    private suspend fun retryAfter(streamed: Boolean, change: suspend TestWorld.(ModelProvider, ModelDescriptor) -> Unit): Triple<TestWorld, ScriptedLlmClient, Result<String>> {
+        val world = TestWorld()
+        lateinit var provider: ModelProvider
+        lateinit var model: ModelDescriptor
+        val client = ScriptedLlmClient { _, attempt ->
+            if (attempt == 0) {
+                world.change(provider, model)
+                ScriptStep.Fail(LlmException.RateLimited("slow down"))
+            } else {
+                ScriptStep.Reply("sent again")
+            }
+        }
+        provider = world.provider(FakeProviderAdapter(client = client), baseUrl = "https://api.example.com/v1", apiKey = secret)
+        model = world.model(provider)
+        val outcome = runCatching {
+            if (streamed) {
+                (world.gateway.chatStream(model.id, ask).toList().last() as ChatChunk.Completed).response.message.text
+            } else {
+                world.gateway.chat(model.id, ask).message.text
+            }
+        }
+        return Triple(world, client, outcome)
+    }
+
+    @Test
+    fun `a retry is checked again in full and not sent when policy, the registry, the address or the key changed during the pause`() = runTest {
+        val changes: List<Pair<String, suspend TestWorld.(ModelProvider, ModelDescriptor) -> Unit>> = listOf(
+            "local-only mode switched on" to { _, _ -> settings.update { it.copy(localOnlyMode = true) } },
+            "model disabled" to { _, m -> providerManager.setModelEnabled(m.id, false) },
+            "model removed" to { _, m -> providerManager.removeModel(m.id) },
+            "provider disabled" to { p, _ -> providerManager.setProviderEnabled(p.id, false) },
+            "provider removed, with its key" to { p, _ -> providerManager.removeProvider(p.id) },
+            "key replaced" to { p, _ -> vault.put(p.apiKeyAlias!!, "sk-test-replacement-key") },
+            "key deleted" to { p, _ -> vault.delete(p.apiKeyAlias!!) },
+            "address changed" to { p, _ -> providers.upsert(providers.get(p.id)!!.copy(baseUrl = "https://elsewhere.example.com/v1")) },
+            "headers changed" to { p, _ -> providers.upsert(providers.get(p.id)!!.copy(extraHeaders = mapOf("X-Title" to "Other"))) },
+        )
+        for (streamed in listOf(false, true)) {
+            for ((label, change) in changes) {
+                val (world, client, outcome) = retryAfter(streamed, change)
+                val case = "$label (streamed: $streamed)"
+
+                val error = outcome.exceptionOrNull()
+                assertTrue(error is LlmException.BlockedByPolicy, "$case: $error")
+                assertTrue("not repeated" in error.message.orEmpty(), case)
+                assertEquals(1, client.requests.size, "$case: the prompt was not sent again")
+                val event = world.events(ActivityType.MODEL_CALL).single()
+                assertEquals("Model call blocked", event.title, case)
+                assertEquals(1, event.data!!.getValue("attempts").jsonPrimitive.int, case)
+                assertEquals("api.example.com", event.egress?.destinationHost, "$case: the first attempt did leave the device")
+                assertFalse(secret in world.logText(), case)
+            }
+        }
+    }
+
+    @Test
+    fun `what does not change where or how a call goes does not stop its retry`() = runTest {
+        val (world, client, outcome) = retryAfter(streamed = false) { p, _ -> connections.storeStatus(p.id, ConnectionStatus.OFFLINE, "seen by another call") }
+        assertEquals("sent again", outcome.getOrThrow())
+        assertEquals(2, client.requests.size)
+        assertEquals(2, world.events(ActivityType.MODEL_CALL).single().data!!.getValue("attempts").jsonPrimitive.int)
+    }
+
+    @Test
+    fun `the size of what left the device counts every attempt that was sent`() = runTest {
+        val client = ScriptedLlmClient.script(ScriptStep.Reply("first"), ScriptStep.Fail(LlmException.Overloaded("busy")), ScriptStep.Reply("second"))
+        val model = world.model(world.provider(FakeProviderAdapter(client = client), baseUrl = "https://api.example.com/v1"))
+
+        world.gateway.chat(model.id, ask)
+        world.gateway.chat(model.id, ask)
+
+        val (once, twice) = modelCalls().map { assertNotNull(it.egress?.approxBytes) }
+        assertTrue(once > 0)
+        assertEquals(2 * once, twice)
+    }
+
+    @Test
+    fun `a removed provider's adapter does not come back into the cache through a record read before the removal`() = runTest {
+        val provider = world.provider(baseUrl = "https://api.example.com/v1", apiKey = secret)
+        world.providerManager.removeProvider(provider.id)
+
+        assertFailsWith<LlmException.BlockedByPolicy> { world.connections.acquire(provider) }
+
+        assertTrue(world.factories.getValue(ProviderKind.OPENAI_COMPATIBLE).connections.isEmpty(), "no adapter was even built")
     }
 }

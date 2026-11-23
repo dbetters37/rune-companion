@@ -149,12 +149,11 @@ private fun ProviderCard(provider: ProviderRowUi, onClick: () -> Unit) {
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     TintedChip(provider.locality.label, appColors.locality(provider.locality), icon = provider.locality.icon)
-                    provider.keyNote?.let { note ->
-                        if (provider.keyMissing) {
-                            TintedChip(note, appColors.attention, icon = AppIcons.Key)
-                        } else {
-                            NeutralChip(note, icon = AppIcons.Key)
-                        }
+                    // In the list only what matters: a stored key, or a missing one a cloud service needs.
+                    if (provider.keyMissing) {
+                        TintedChip(provider.keyNote ?: "No API key stored", appColors.attention, icon = AppIcons.Key)
+                    } else if (provider.keyStored == true) {
+                        NeutralChip(provider.keyNote ?: "API key stored", icon = AppIcons.Key)
                     }
                 }
                 provider.statusMessage?.let {
@@ -201,7 +200,19 @@ internal fun ModelsListTab(
         }
         groups.forEach { group ->
             item(key = "group:${group.providerId.value}") {
-                GroupHeader(group, onAddModel = { addingTo = group.providerId.value })
+                GroupHeader(group, adding = addingTo == group.providerId.value, onAddModel = { addingTo = group.providerId.value })
+            }
+            if (addingTo == group.providerId.value) {
+                item(key = "add:${group.providerId.value}") {
+                    AddModelCard(
+                        providerName = group.providerName,
+                        onAdd = { name ->
+                            onAddModel(group.providerId, name)
+                            addingTo = null
+                        },
+                        onDismiss = { addingTo = null },
+                    )
+                }
             }
             if (group.models.isEmpty()) {
                 item(key = "empty:${group.providerId.value}") {
@@ -218,21 +229,10 @@ internal fun ModelsListTab(
             }
         }
     }
-    val group = groups.firstOrNull { it.providerId.value == addingTo }
-    if (group != null) {
-        AddModelDialog(
-            providerName = group.providerName,
-            onAdd = { name ->
-                onAddModel(group.providerId, name)
-                addingTo = null
-            },
-            onDismiss = { addingTo = null },
-        )
-    }
 }
 
 @Composable
-private fun GroupHeader(group: ProviderGroupUi, onAddModel: () -> Unit) {
+private fun GroupHeader(group: ProviderGroupUi, adding: Boolean, onAddModel: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(top = Spacing.sm),
         verticalAlignment = Alignment.CenterVertically,
@@ -253,7 +253,7 @@ private fun GroupHeader(group: ProviderGroupUi, onAddModel: () -> Unit) {
                 color = appColors.locality(group.locality),
             )
         }
-        if (!group.isSimulator) {
+        if (!group.isSimulator && !adding) {
             TextButton(onClick = onAddModel) {
                 Icon(AppIcons.Add, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
                 Text("Add model", modifier = Modifier.padding(start = 6.dp))
@@ -300,7 +300,7 @@ internal fun ModelCard(model: ModelRowUi, onClick: () -> Unit, onSetEnabled: (Bo
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        "Used by ${plural(model.agentsUsing, "agent")}",
+                        if (model.agentsUsing == 0) "Not used by any agent" else "Used by ${plural(model.agentsUsing, "agent")}",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f),

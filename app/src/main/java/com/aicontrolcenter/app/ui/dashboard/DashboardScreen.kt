@@ -21,7 +21,13 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.aicontrolcenter.app.di.LocalAppGraph
-import com.aicontrolcenter.app.ui.components.InfoBanner
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import com.aicontrolcenter.app.ui.agents.summariseNames
+import com.aicontrolcenter.app.ui.components.ConfirmDialog
+import com.aicontrolcenter.app.ui.icons.AppIcons
+import com.aicontrolcenter.app.ui.icons.Sparkle
 import com.aicontrolcenter.app.ui.components.ScreenScaffold
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
@@ -37,13 +43,22 @@ data class DashboardNavigation(
     val onOpenProviders: () -> Unit,
     val onOpenApps: () -> Unit,
     val onSeeAllActivity: () -> Unit,
+    val onAddProvider: () -> Unit,
+    val onOpenProvider: (com.aicontrolcenter.core.ProviderId) -> Unit,
 )
 
 @Composable
 fun DashboardRoute(navigation: DashboardNavigation) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel {
-        DashboardViewModel(graph.registryDirectory, graph.activityLog, graph.aiAppRegistry, graph.clock)
+        DashboardViewModel(
+            directory = graph.registryDirectory,
+            activityLog = graph.activityLog,
+            aiAppRegistry = graph.aiAppRegistry,
+            clock = graph.clock,
+            monitor = graph.activityMonitor,
+            agentManager = graph.agentManager,
+        )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     DashboardScreen(
@@ -51,6 +66,7 @@ fun DashboardRoute(navigation: DashboardNavigation) {
         navigation = navigation,
         onSelectNode = viewModel::selectNode,
         onScan = viewModel::scanForApps,
+        onTrySimulator = viewModel::trySimulator,
         onMessageShown = viewModel::messageShown,
     )
 }
@@ -64,8 +80,10 @@ fun DashboardScreen(
     navigation: DashboardNavigation,
     onSelectNode: (String?) -> Unit,
     onScan: () -> Unit,
+    onTrySimulator: () -> Unit,
     onMessageShown: () -> Unit,
 ) {
+    var confirmSimulator by rememberSaveable { mutableStateOf(false) }
     ScreenScaffold(title = "Dashboard", message = state.message, onMessageShown = onMessageShown) { padding ->
         if (state.isLoading) {
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
@@ -85,8 +103,17 @@ fun DashboardScreen(
                 )
             }
             val notice: @Composable () -> Unit = {
-                state.setupNotice?.let { InfoBanner(text = it, tone = StatusTone.INFO) }
+                state.quickStart?.let {
+                    QuickStartCard(
+                        quickStart = it,
+                        isAssigning = state.isAssigning,
+                        onConnectProvider = navigation.onAddProvider,
+                        onAssignModel = { navigation.onOpenAttention(AttentionTarget.Agents) },
+                        onTrySimulator = { confirmSimulator = true },
+                    )
+                }
             }
+            val working: @Composable () -> Unit = { WorkingNowSection(state.working, navigation.onOpenAgent) }
             val attention: @Composable () -> Unit = { AttentionSection(state.attention, navigation.onOpenAttention) }
             val network: @Composable () -> Unit = {
                 NetworkCard(
@@ -117,6 +144,7 @@ fun DashboardScreen(
                         notice()
                         summary()
                         attention()
+                        working()
                         actions()
                     }
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Spacing.md)) {
@@ -132,11 +160,29 @@ fun DashboardScreen(
                     notice()
                     summary()
                     attention()
+                    working()
                     network()
                     actions()
                     activity()
                 }
             }
         }
+    }
+    val quickStart = state.quickStart
+    if (confirmSimulator && quickStart != null) {
+        ConfirmDialog(
+            title = "Try with the simulator?",
+            message = "${summariseNames(quickStart.agentsWithoutModel)} will use the built-in simulator. It is not a real " +
+                "model: it answers offline with scripted replies that say they are simulated, so you can try chat, tools and " +
+                "the activity log without connecting anything. Nothing leaves this phone. Assign a real model to each agent later.",
+            confirmLabel = "Use the simulator",
+            icon = AppIcons.Sparkle,
+            cautionary = true,
+            onConfirm = {
+                confirmSimulator = false
+                onTrySimulator()
+            },
+            onDismiss = { confirmSimulator = false },
+        )
     }
 }

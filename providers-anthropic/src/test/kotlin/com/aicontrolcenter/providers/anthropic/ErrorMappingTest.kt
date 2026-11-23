@@ -125,27 +125,38 @@ internal class ErrorMappingTest : MockApiTest() {
     }
 
     @Test
-    fun `the SDK's own retries still run before an error is reported`() {
+    fun `the SDK's own retries run when opted into`() {
         val quick = mapOf("retry-after-ms" to "1")
         enqueueError(529, "overloaded_error", "Overloaded", quick)
         enqueueError(500, "api_error", "Internal server error", quick)
         enqueueJson(messageJson(TEXT_REPLY))
 
-        val response = runBlocking { adapter(AnthropicOptions()).client.chat(request) }
+        val response = runBlocking { adapter(AnthropicOptions(maxRetries = 2)).client.chat(request) }
 
         assertEquals("Hello there.", response.message.text)
         assertEquals(3, server.requestCount)
     }
 
     @Test
-    fun `retries are bounded and not spent on errors that cannot improve`() {
+    fun `opted-in retries are bounded and not spent on errors that cannot improve`() {
         repeat(3) { enqueueError(529, "overloaded_error", "Overloaded", mapOf("retry-after-ms" to "1")) }
-        failure<LlmException.Overloaded>(AnthropicOptions())
+        failure<LlmException.Overloaded>(AnthropicOptions(maxRetries = 2))
         assertEquals(3, server.requestCount, "the first attempt and the SDK's two retries")
 
         enqueueError(400, "invalid_request_error", "bad")
-        failure<LlmException.InvalidRequest>(AnthropicOptions())
+        failure<LlmException.InvalidRequest>(AnthropicOptions(maxRetries = 2))
         assertEquals(4, server.requestCount, "a rejected request is not repeated")
+    }
+
+    @Test
+    fun `by default the SDK sends a failed call exactly once, leaving retries to the framework`() {
+        repeat(3) { enqueueError(429, "rate_limit_error", "Rate limit exceeded.", mapOf("retry-after" to "0")) }
+
+        val error = failure<LlmException.RateLimited>(AnthropicOptions())
+
+        assertTrue(error.retryable, "the framework may still decide to try again")
+        assertEquals(1, server.requestCount, "one call, one request")
+        assertEquals(null, AnthropicOptions().maxRetries)
     }
 
     @Test

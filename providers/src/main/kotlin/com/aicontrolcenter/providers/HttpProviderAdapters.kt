@@ -16,8 +16,9 @@ import okhttp3.OkHttpClient
  */
 object HttpProviderAdapters {
     /**
-     * @param client the app's OkHttpClient, to share its connection pool, dispatcher, proxy and
-     *   interceptors. Timeouts and the redirect policy are set by this module regardless. When
+     * @param client the app's OkHttpClient, to share its connection pool, dispatcher, resolver
+     *   and interceptors, and its proxy for cloud hosts. Timeouts, the redirect policy and the
+     *   locality checks are set by this module regardless (see `providerHttpClient`). When
      *   null, a client is created for the three factories to share.
      */
     fun factories(client: OkHttpClient? = null, timeouts: HttpTimeouts = HttpTimeouts()): List<ProviderAdapterFactory> {

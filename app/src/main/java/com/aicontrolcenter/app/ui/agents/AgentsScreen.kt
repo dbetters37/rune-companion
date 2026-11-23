@@ -37,6 +37,19 @@ import com.aicontrolcenter.app.ui.icons.Agent
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.ModelId
+import com.aicontrolcenter.core.registry.Locality
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.compositeOver
+import com.aicontrolcenter.app.ui.components.AppCard
+import com.aicontrolcenter.app.ui.components.ConfirmDialog
+import com.aicontrolcenter.app.ui.components.SIMULATOR_LABEL
+import com.aicontrolcenter.app.ui.components.label
+import com.aicontrolcenter.app.ui.theme.appColors
 import com.aicontrolcenter.core.agents.AgentKind
 import com.aicontrolcenter.core.agents.label
 
@@ -45,12 +58,16 @@ fun AgentsRoute(
     initialStatusFilter: AgentStatusFilter,
     onOpenAgent: (AgentId) -> Unit,
     onNewAgent: () -> Unit,
+    onAddProvider: () -> Unit,
 ) {
     val graph = LocalAppGraph.current
-    val viewModel = viewModel { AgentsViewModel(graph.registryDirectory, initialStatusFilter) }
+    val viewModel = viewModel { AgentsViewModel(graph.registryDirectory, initialStatusFilter, graph.agentManager) }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     AgentsScreen(
         state = state,
+        onAssignModel = viewModel::assignToAgentsWithoutModel,
+        onAddProvider = onAddProvider,
+        onMessageShown = viewModel::messageShown,
         onQueryChange = viewModel::setQuery,
         onRoleFilterChange = viewModel::setRoleFilter,
         onStatusFilterChange = viewModel::setStatusFilter,
@@ -63,6 +80,9 @@ fun AgentsRoute(
 @Composable
 fun AgentsScreen(
     state: AgentsUiState,
+    onAssignModel: (ModelId) -> Unit,
+    onAddProvider: () -> Unit,
+    onMessageShown: () -> Unit,
     onQueryChange: (String) -> Unit,
     onRoleFilterChange: (AgentKind?) -> Unit,
     onStatusFilterChange: (AgentStatusFilter) -> Unit,
@@ -72,6 +92,8 @@ fun AgentsScreen(
 ) {
     ScreenScaffold(
         title = "Agents",
+        message = state.message,
+        onMessageShown = onMessageShown,
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = onNewAgent,
@@ -110,6 +132,11 @@ fun AgentsScreen(
                     contentPadding = PaddingValues(start = Spacing.screen, end = Spacing.screen, top = Spacing.sm, bottom = 96.dp),
                     verticalArrangement = Arrangement.spacedBy(Spacing.md),
                 ) {
+                    if (state.withoutModel.isNotEmpty()) {
+                        item(key = "without-model") {
+                            WithoutModelCard(state, onAssignModel, onAddProvider)
+                        }
+                    }
                     items(state.rows, key = { it.id.value }) { row ->
                         AgentRowCard(row, onClick = { onOpenAgent(row.id) })
                     }
@@ -188,5 +215,75 @@ private fun FilterRow(label: String, content: @Composable () -> Unit) {
             modifier = Modifier.padding(end = Spacing.xs),
         )
         content()
+    }
+}
+
+/** Offers the common first step: one model for every agent that has none. */
+@Composable
+private fun WithoutModelCard(state: AgentsUiState, onAssignModel: (ModelId) -> Unit, onAddProvider: () -> Unit) {
+    var picking by rememberSaveable { mutableStateOf(false) }
+    var chosen by rememberSaveable { mutableStateOf<String?>(null) }
+    val count = state.withoutModel.size
+    AppCard(containerColor = appColors.info.copy(alpha = 0.08f).compositeOver(MaterialTheme.colorScheme.surface)) {
+        Text(
+            if (count == 1) "${state.withoutModel.single()} has no model" else "$count agents have no model",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            (if (count == 1) "It cannot run until it has one." else summariseNames(state.withoutModel) + " cannot run until each has one."),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 2.dp),
+        )
+        if (state.assignableModels.isEmpty()) {
+            OutlinedButton(onClick = onAddProvider, modifier = Modifier.padding(top = Spacing.md).heightIn(min = 48.dp)) {
+                Text("Connect a model provider")
+            }
+        } else {
+            OutlinedButton(
+                onClick = { picking = true },
+                enabled = !state.isAssigning,
+                modifier = Modifier.padding(top = Spacing.md).heightIn(min = 48.dp),
+            ) { Text("Assign a model to agents without one") }
+        }
+    }
+    if (picking) {
+        ModelPickerDialog(
+            title = "Model for agents without one",
+            models = state.assignableModels,
+            selectedId = null,
+            onPick = {
+                picking = false
+                chosen = it.value
+            },
+            onDismiss = { picking = false },
+        )
+    }
+    val option = state.assignableModels.firstOrNull { it.id.value == chosen }
+    if (option != null) {
+        ConfirmDialog(
+            title = if (option.isSimulator) "Use the simulator?" else "Assign ${option.name}?",
+            message = buildString {
+                if (option.isSimulator) {
+                    append("${summariseNames(state.withoutModel)} will use the built-in simulator. It is not a real model: it answers ")
+                    append("offline with scripted replies labelled as simulated, for trying agents out. Nothing leaves this phone. ")
+                } else {
+                    append("${summariseNames(state.withoutModel)} will use ${option.name} from ${option.providerName}. ")
+                    when (option.locality) {
+                        Locality.CLOUD -> append("What you send these agents will leave this device, to a service on the internet. ")
+                        Locality.LOCAL_NETWORK -> append("What you send these agents will leave this device, to a machine on your network. ")
+                        else -> append("What you send them stays on this device. ")
+                    }
+                }
+                append("Agents that already have a model keep it.")
+            },
+            confirmLabel = if (option.isSimulator) "Use the simulator" else "Assign",
+            onConfirm = {
+                chosen = null
+                onAssignModel(option.id)
+            },
+            onDismiss = { chosen = null },
+        )
     }
 }

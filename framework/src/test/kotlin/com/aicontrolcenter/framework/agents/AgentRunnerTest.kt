@@ -33,6 +33,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.JsonObject
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -191,6 +192,71 @@ class AgentRunnerTest {
         assertTrue(wipe.calls.isEmpty(), "a model that obeys the injected text still cannot use a tool the agent does not have")
         val refusal = toolResults(result.produced).last()
         assertTrue(refusal.isError && "not switched on" in refusal.content, refusal.content)
+    }
+
+    @Test
+    fun `a call whose arguments could not be read is answered with the reason and the model goes on`() = runTest {
+        val broken = ToolCallRequest("call_1", "clock_now", JsonObject(emptyMap()), argumentsError = "the arguments are not valid JSON")
+        val client = ScriptedLlmClient.script(ScriptStep.Calls(listOf(broken)), ScriptStep.Calls(listOf(call("call_2"))), ScriptStep.Reply("It is late."))
+
+        val result = world.runner.run(request(client))
+
+        assertEquals(RunEnd.COMPLETED, result.end)
+        val (answered, ran) = toolResults(result.produced)
+        assertTrue(answered.isError && "clock_now" in answered.content && "not valid JSON" in answered.content, answered.content)
+        assertTrue(!ran.isError, ran.content)
+        assertEquals(3, result.modelCalls)
+    }
+
+    @Test
+    fun `a tool switched off mid-turn is refused from its next call on`() = runTest {
+        var agentId = AgentId("")
+        val counter = world.register(LambdaTool("count") {
+            // The owner switches the tool off while it runs for the first time.
+            world.agents.upsert(world.agents.get(agentId)!!.copy(toolIds = setOf(ClockTool.ID)))
+            ToolOutcome.success("counted")
+        })
+        val client = ScriptedLlmClient.script(
+            ScriptStep.Calls(listOf(call("a", "test_count"))), ScriptStep.Calls(listOf(call("b", "test_count"), call("c"))), ScriptStep.Reply("Done."),
+        )
+        val request = request(client, tools = setOf(ClockTool.ID, counter.spec.id))
+        agentId = request.agent.id
+
+        val result = world.runner.run(request)
+
+        assertEquals(RunEnd.COMPLETED, result.end)
+        assertEquals(1, counter.calls.size, "the second call was not run")
+        val results = toolResults(result.produced)
+        assertEquals(listOf(false, true, false), results.map { it.isError })
+        assertTrue("not switched on for Scout" in results[1].content, results[1].content)
+    }
+
+    @Test
+    fun `an agent switched off or deleted mid-turn is stopped by its owner, and the calls it still wanted are answered`() = runTest {
+        val changes: List<Pair<String, suspend (AgentId) -> Unit>> = listOf(
+            "switched off" to { id -> world.agents.upsert(world.agents.get(id)!!.copy(enabled = false)) },
+            "deleted" to { id -> world.agents.delete(id) },
+        )
+        for ((label, change) in changes) {
+            var agentId = AgentId("")
+            val stopper = world.register(LambdaTool("stop_$label".replace(" ", "_")) {
+                change(agentId)
+                ToolOutcome.success("done")
+            })
+            val client = ScriptedLlmClient.script(ScriptStep.Calls(listOf(call("a", stopper.spec.functionName), call("b"))), ScriptStep.Reply("never asked"))
+            val request = request(client, tools = setOf(ClockTool.ID, stopper.spec.id))
+            agentId = request.agent.id
+
+            val result = world.runner.run(request)
+
+            assertEquals(RunEnd.STOPPED_BY_OWNER, result.end, label)
+            assertTrue(label in result.notice.orEmpty() && "Scout" in result.notice.orEmpty(), result.notice)
+            assertEquals(1, client.requests.size, "$label: the model was not called again")
+            val (ran, notRun) = toolResults(result.produced)
+            assertTrue(!ran.isError)
+            assertTrue(notRun.isError && "not run" in notRun.content && label in notRun.content, notRun.content)
+            assertEquals(1, result.toolCalls)
+        }
     }
 
     @Test

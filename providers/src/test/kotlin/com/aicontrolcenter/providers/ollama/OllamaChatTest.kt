@@ -26,6 +26,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import org.junit.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -138,6 +139,40 @@ class OllamaChatTest : MockServerTest() {
         assertEquals("call_given", calls[2].id)
         assertTrue(calls.take(2).all { it.id.startsWith("call_") && it.id.length > 10 })
         assertEquals(3, calls.map { it.id }.distinct().size, "every call can be paired with its result")
+    }
+
+    @Test
+    fun `a call whose arguments are not an object is reported on the call, plain and streamed`() {
+        val plain = chat(
+            """{"model":"llama3.2","message":{"role":"assistant","content":"","tool_calls":[
+                 {"id":"call_a","function":{"name":"get_weather","arguments":"{'city': 'Oslo'}"}},
+                 {"id":"call_b","function":{"name":"get_time","arguments":["UTC"]}},
+                 {"id":"call_c","function":{"name":"get_weather","arguments":"{\"city\":\"Bergen\"}"}}]},
+                "done":true,"done_reason":"stop"}""",
+        )
+        val (quoted, array, encoded) = plain.message.toolCalls
+        assertEquals(FinishReason.TOOL_CALLS, plain.finishReason)
+        assertTrue(quoted.arguments.isEmpty())
+        assertTrue("not valid JSON" in assertNotNull(quoted.argumentsError))
+        assertTrue("{'city': 'Oslo'}" in quoted.argumentsError!!, "short arguments are quoted back")
+        assertTrue("JSON object" in assertNotNull(array.argumentsError))
+        assertEquals(ToolCallRequest("call_c", "get_weather", json("""{"city":"Bergen"}""").jsonObject), encoded)
+
+        val chunks = stream(
+            """{"model":"m","message":{"role":"assistant","content":"","tool_calls":[{"id":"call_x","function":{"name":"get_weather","arguments":"{\"city\": "}}]},"done":false}""",
+            """{"model":"m","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop"}""",
+        )
+        val streamed = (chunks.single { it is ChatChunk.ToolCall } as ChatChunk.ToolCall).call
+        assertEquals("get_weather", streamed.name)
+        assertTrue("not valid JSON" in assertNotNull(streamed.argumentsError))
+        assertEquals(listOf(streamed), chunks.completed().response.message.toolCalls)
+    }
+
+    @Test
+    fun `a call without a name is still a malformed reply`() {
+        failsWith<LlmException.MalformedResponse> {
+            chat("""{"model":"m","message":{"role":"assistant","content":"","tool_calls":[{"function":{"arguments":{}}}]},"done":true}""")
+        }
     }
 
     @Test

@@ -20,6 +20,7 @@ import com.aicontrolcenter.core.agents.ValidationIssue
 import com.aicontrolcenter.core.agents.toDraft
 import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.registry.RegistryDirectory
+import com.aicontrolcenter.core.registry.RegistrySnapshot
 import com.aicontrolcenter.core.registry.effectiveLocality
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -41,6 +42,31 @@ data class ModelOptionUi(
     val note: String? = null,
     val isSimulator: Boolean = false,
 )
+
+/** Every registered model as a picker option, with its provider, where prompts go, and what is wrong with it. */
+internal fun RegistrySnapshot.modelOptions(): List<ModelOptionUi> = models.map { model ->
+    val provider = provider(model)
+    ModelOptionUi(
+        id = model.id,
+        name = model.displayName,
+        providerName = provider?.name ?: "Unregistered provider",
+        locality = provider?.effectiveLocality,
+        note = when {
+            !model.enabled -> "Disabled"
+            provider == null -> "Provider missing"
+            !provider.enabled -> "Provider disabled"
+            model.status == ModelStatus.UNAVAILABLE -> "No longer listed"
+            else -> null
+        },
+        isSimulator = model.isSimulator,
+    )
+}
+
+/** A tool's description is written for the model; the owner gets its first sentence, which says what it does. */
+internal fun firstSentence(text: String): String {
+    val end = text.indexOf(". ")
+    return if (end < 0) text.trim() else text.substring(0, end + 1).trim()
+}
 
 /** A registered tool as the editor offers it. */
 @Immutable
@@ -108,7 +134,7 @@ class AgentEditorViewModel(
     private val state = MutableStateFlow(
         AgentEditorUiState(
             isNew = editingId == null,
-            tools = tools.sortedBy { it.title }.map { ToolOptionUi(it.id, it.title, it.description, it.risk, it.sendsDataOffDevice) },
+            tools = tools.sortedBy { it.title }.map { ToolOptionUi(it.id, it.title, firstSentence(it.description), it.risk, it.sendsDataOffDevice) },
         ),
     )
     val uiState: StateFlow<AgentEditorUiState> = state.asStateFlow()
@@ -120,26 +146,7 @@ class AgentEditorViewModel(
     init {
         viewModelScope.launch { load() }
         viewModelScope.launch {
-            directory.observe().collect { snapshot ->
-                val options = snapshot.models.map { model ->
-                    val provider = snapshot.provider(model)
-                    ModelOptionUi(
-                        id = model.id,
-                        name = model.displayName,
-                        providerName = provider?.name ?: "Unregistered provider",
-                        locality = provider?.effectiveLocality,
-                        note = when {
-                            !model.enabled -> "Disabled"
-                            provider == null -> "Provider missing"
-                            !provider.enabled -> "Provider disabled"
-                            model.status == ModelStatus.UNAVAILABLE -> "No longer listed"
-                            else -> null
-                        },
-                        isSimulator = model.isSimulator,
-                    )
-                }
-                state.update { it.copy(models = options) }
-            }
+            directory.observe().collect { snapshot -> state.update { it.copy(models = snapshot.modelOptions()) } }
         }
     }
 

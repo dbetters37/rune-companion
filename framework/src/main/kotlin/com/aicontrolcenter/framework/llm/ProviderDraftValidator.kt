@@ -31,11 +31,15 @@ internal object ProviderDraftValidator {
     /** Headers the HTTP client sets itself; overriding them breaks requests in ways that are hard to trace. */
     private val MANAGED_HEADERS = setOf("host", "content-length", "content-type", "transfer-encoding", "connection")
 
+    /** Shown when an edit would send the stored key somewhere it was not entered for. */
+    const val KEY_FOR_NEW_ADDRESS = "Enter the API key again for the new address."
+
     /**
      * @param others every other registered provider (the one being edited excluded)
      * @param storedKey whether the provider being edited already has a key in the vault
+     * @param current the provider being edited, as stored; null when adding one
      */
-    fun validate(draft: ProviderDraft, others: List<ModelProvider>, storedKey: Boolean): List<ProviderValidationIssue> {
+    fun validate(draft: ProviderDraft, others: List<ModelProvider>, storedKey: Boolean, current: ModelProvider? = null): List<ProviderValidationIssue> {
         val issues = ArrayList<ProviderValidationIssue>()
         fun issue(field: ProviderField, message: String) {
             issues += ProviderValidationIssue(field, message)
@@ -48,7 +52,7 @@ internal object ProviderDraftValidator {
             others.any { nameKey(it.name) == nameKey(name) } -> issue(ProviderField.NAME, "Another provider is already called \"$name\".")
         }
         baseUrlProblem(draft.kind, draft.baseUrl)?.let { issue(ProviderField.BASE_URL, it) }
-        apiKeyProblem(draft, storedKey)?.let { issue(ProviderField.API_KEY, it) }
+        apiKeyProblem(draft, storedKey, current)?.let { issue(ProviderField.API_KEY, it) }
         headerProblems(draft.extraHeaders).forEach { issue(ProviderField.HEADERS, it) }
         return issues
     }
@@ -88,12 +92,18 @@ internal object ProviderDraftValidator {
         return null
     }
 
-    private fun apiKeyProblem(draft: ProviderDraft, storedKey: Boolean): String? {
+    private fun apiKeyProblem(draft: ProviderDraft, storedKey: Boolean, current: ModelProvider?): String? {
         val entered = normaliseKey(draft.apiKey)
         if (entered != null) {
             if (draft.kind.runsInProcess) return "This kind of provider does not use an API key."
             if (entered.any { it.isWhitespace() || it.isISOControl() }) return "The key contains spaces or line breaks. Paste it again."
             if (entered.length > MAX_KEY_LENGTH) return "That is too long to be an API key."
+        }
+        // A key is used only with the endpoint it was entered for: keeping it while the provider is
+        // pointed at another host, or turned into another kind of service, would hand it to that one.
+        // An in-process kind sends it nowhere.
+        if (draft.apiKey == null && storedKey && current != null && !draft.kind.runsInProcess && retargets(current, draft)) {
+            return KEY_FOR_NEW_ADDRESS
         }
         // A null key keeps the stored one when editing; an empty one removes it.
         val willHaveKey = entered != null || (draft.apiKey == null && storedKey)
@@ -101,6 +111,10 @@ internal object ProviderDraftValidator {
             Locality.infer(draft.kind, normaliseBaseUrl(draft.baseUrl)) == Locality.CLOUD
         return if (vendorCloud && !willHaveKey) "This provider needs an API key." else null
     }
+
+    /** Whether [draft] sends requests to another host than [current], or speaks another provider's protocol there. */
+    private fun retargets(current: ModelProvider, draft: ProviderDraft): Boolean =
+        current.kind != draft.kind || endpointHost(current.kind, current.baseUrl) != endpointHost(draft.kind, normaliseBaseUrl(draft.baseUrl))
 
     private fun headerProblems(headers: Map<String, String>): List<String> {
         val problems = ArrayList<String>()

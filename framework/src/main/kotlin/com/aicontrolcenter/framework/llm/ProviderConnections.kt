@@ -56,8 +56,8 @@ class ProviderConnections(
 
     /**
      * The adapter for [provider], created or replaced as needed.
-     * @throws LlmException when no adapter exists for the kind, the key cannot be read, or the
-     * adapter cannot be built from the record.
+     * @throws LlmException when no adapter exists for the kind, the key cannot be read, the
+     * adapter cannot be built from the record, or the provider is no longer registered.
      */
     suspend fun acquire(provider: ModelProvider): ProviderLease {
         val factory = factories[provider.kind] ?: throw LlmException.Unsupported(
@@ -66,6 +66,12 @@ class ProviderConnections(
         val key = readKey(provider)
         val shape = Shape(provider.kind, provider.name, provider.baseUrl, provider.extraHeaders, provider.apiKeyAlias)
         return cacheLock.withLock {
+            // A caller may hold a record read before the provider was removed. Removal deletes the record
+            // first and evicts afterwards, under this lock: so a provider that is still registered here is
+            // evicted after this, and one that is gone must not get an adapter back into the cache.
+            if (providers.get(provider.id) == null) {
+                throw LlmException.BlockedByPolicy("${provider.name} is no longer registered.")
+            }
             val current = open[provider.id]
             if (current != null && current.shape == shape && current.key == key) return@withLock current.lease
             val adapter = try {
@@ -84,7 +90,7 @@ class ProviderConnections(
     /** A throw-away adapter that is not cached, for probing an address that is not registered. Null when the kind has no factory. */
     fun openUncached(connection: ProviderConnection): ProviderAdapter? = factories[connection.provider.kind]?.create(connection)
 
-    /** Closes and forgets the adapter of a provider that was removed. */
+    /** Closes and forgets the adapter of a provider that was removed. Call it after the record has been deleted. */
     suspend fun evict(id: ProviderId) {
         cacheLock.withLock { open.remove(id) }?.let { closeQuietly(it.lease.adapter) }
     }

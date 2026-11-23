@@ -157,7 +157,11 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
             )
         }
         composable<ChatRoute> { entry ->
-            ChatScreenRoute(conversationId = ConversationId(entry.toRoute<ChatRoute>().conversationId), onBack = back)
+            ChatScreenRoute(
+                conversationId = ConversationId(entry.toRoute<ChatRoute>().conversationId),
+                onBack = back,
+                onOpenProvider = openProvider,
+            )
         }
         composable<ModelsRoute> { entry ->
             ModelsScreenRoute(

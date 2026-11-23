@@ -49,6 +49,7 @@ import com.aicontrolcenter.app.ui.components.readableWidth
 import com.aicontrolcenter.app.ui.icons.Agent
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.Copy
+import com.aicontrolcenter.app.ui.icons.Forum
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.core.AgentId
@@ -57,6 +58,7 @@ import com.aicontrolcenter.core.agents.label
 /** What the detail screen can ask for. */
 class AgentDetailActions(
     val onBack: () -> Unit,
+    val onChat: () -> Unit,
     val onEdit: () -> Unit,
     val onDuplicate: () -> Unit,
     val onSetEnabled: (Boolean) -> Unit,
@@ -73,9 +75,12 @@ fun AgentDetailRoute(
     onEdit: (AgentId) -> Unit,
     onOpenAgent: (AgentId) -> Unit,
     onOpenModels: () -> Unit,
+    onChat: (AgentId) -> Unit,
 ) {
     val graph = LocalAppGraph.current
-    val viewModel = viewModel { AgentDetailViewModel(agentId, graph.registryDirectory, graph.agentManager) }
+    val viewModel = viewModel {
+        AgentDetailViewModel(agentId, graph.registryDirectory, graph.agentManager, graph.activityMonitor, graph.toolRegistry.all().map { it.spec })
+    }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     LaunchedEffect(state.deleted) { if (state.deleted) onBack() }
     LaunchedEffect(state.duplicateId) {
@@ -88,6 +93,7 @@ fun AgentDetailRoute(
         state = state,
         actions = AgentDetailActions(
             onBack = onBack,
+            onChat = { onChat(agentId) },
             onEdit = { onEdit(agentId) },
             onDuplicate = viewModel::duplicate,
             onSetEnabled = viewModel::setEnabled,
@@ -141,6 +147,7 @@ fun AgentDetailScreen(state: AgentDetailUiState, actions: AgentDetailActions) {
                 InstructionsSection(agent)
                 ResponsibilitiesSection(agent)
                 ModelSection(agent, actions.onOpenModels)
+                ToolsSection(agent)
                 PolicySections(agent)
                 TrackRecordSection(agent)
                 ManageSection(
@@ -207,6 +214,7 @@ private fun AgentHeader(agent: AgentDetailUi, isBusy: Boolean, actions: AgentDet
                         TintedChip("Designated Director", MaterialTheme.colorScheme.primary, icon = AppIcons.Star)
                     }
                     StatusChip(agent.status.text, agent.status.tone)
+                    agent.liveActivity?.let { StatusChip("Working: $it", StatusTone.WORKING) }
                 }
             }
         }
@@ -218,11 +226,15 @@ private fun AgentHeader(agent: AgentDetailUi, isBusy: Boolean, actions: AgentDet
                 modifier = Modifier.padding(top = Spacing.md),
             )
         }
+        Button(onClick = actions.onChat, modifier = Modifier.fillMaxWidth().padding(top = Spacing.lg).heightIn(min = 52.dp)) {
+            Icon(AppIcons.Forum, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+            Text("Chat", modifier = Modifier.padding(start = 8.dp))
+        }
         Row(
-            modifier = Modifier.fillMaxWidth().padding(top = Spacing.lg),
+            modifier = Modifier.fillMaxWidth().padding(top = Spacing.md),
             horizontalArrangement = Arrangement.spacedBy(Spacing.md),
         ) {
-            Button(onClick = actions.onEdit, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
+            OutlinedButton(onClick = actions.onEdit, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
                 Icon(AppIcons.Edit, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
                 Text("Edit", modifier = Modifier.padding(start = 8.dp))
             }

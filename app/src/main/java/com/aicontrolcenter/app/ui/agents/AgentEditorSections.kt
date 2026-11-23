@@ -31,6 +31,7 @@ import com.aicontrolcenter.app.ui.components.icon
 import com.aicontrolcenter.app.ui.components.label
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.core.tools.RiskLevel
+import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.app.ui.components.RowDivider
 import com.aicontrolcenter.app.ui.components.SectionHeader
 import com.aicontrolcenter.app.ui.components.StepperRow
@@ -167,8 +168,9 @@ private fun ModelWarning(model: ModelOptionUi) {
         )
         locality != null && locality.leavesDevice -> InfoBanner(
             title = "Leaves this device",
-            text = "What this agent is given, including your messages, is sent to ${model.providerName} " +
-                "(${locality.label.lowercase()}). Local-only mode blocks it.",
+            text = "What this agent is given, including your messages, is sent to ${model.providerName}, " +
+                (if (locality == Locality.CLOUD) "a service on the internet." else "a machine on your network.") +
+                " Local-only mode blocks it.",
             tone = StatusTone.ATTENTION,
             icon = locality.icon,
         )

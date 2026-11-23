@@ -4,6 +4,13 @@ import com.aicontrolcenter.app.ui.components.plural
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.AiAppId
+import com.aicontrolcenter.core.ProviderId
+import com.aicontrolcenter.app.ui.agents.summariseNames
+import com.aicontrolcenter.app.ui.models.hasAddress
+import com.aicontrolcenter.app.ui.models.isSimulator
+import com.aicontrolcenter.core.registry.ConnectionStatus
+import com.aicontrolcenter.core.registry.Locality
+import com.aicontrolcenter.core.registry.effectiveLocality
 import com.aicontrolcenter.core.agents.AgentAvailability
 import com.aicontrolcenter.core.agents.AgentKind
 import com.aicontrolcenter.core.agents.UnavailableReason
@@ -22,6 +29,8 @@ sealed interface AttentionTarget {
     data object Agents : AttentionTarget
 
     data class AiApp(val id: AiAppId) : AttentionTarget
+
+    data class Provider(val id: ProviderId) : AttentionTarget
 }
 
 /** Something in the registry the owner should look at, with the place to fix it. */
@@ -35,38 +44,68 @@ data class AttentionItem(
 )
 
 /**
- * True while the registry holds no model at all. An agent without a model is then the expected
- * state of an unfinished setup, not a fault the owner can fix, so it is explained once (see
- * [setupNotice]) instead of being listed per agent.
+ * True while the registry holds no real model, only the built-in simulator (or nothing). An
+ * agent without a model is then the expected state of an unfinished setup, not a fault: the
+ * dashboard's quick-start card deals with it instead of one attention item per agent.
  */
-val RegistrySnapshot.awaitingFirstModel: Boolean get() = models.isEmpty()
-
-/**
- * The one sentence that explains why no agent can run while no model is registered, or null
- * when that is not the situation. Connecting a provider is not possible in this version, so
- * the sentence says what comes next rather than telling the owner to do something.
- */
-fun RegistrySnapshot.setupNotice(): String? =
-    if (awaitingFirstModel && agents.any { it.unavailableReason == UnavailableReason.NO_MODEL_ASSIGNED }) {
-        SETUP_NOTICE
-    } else {
-        null
-    }
-
-const val SETUP_NOTICE = "Agents need a model to work. Connecting model providers is the next stage of this build."
+val RegistrySnapshot.awaitingFirstModel: Boolean get() = models.none { !it.isSimulator }
 
 /**
  * Derives the "needs attention" list from the registry. It is a pure function of the snapshot,
  * so the dashboard and the navigation badges can never disagree about what needs attention.
  *
  * Only things the owner can act on are listed. Order: the Director first (nothing works without
- * it), then other agents, then apps. An agent the owner disabled on purpose is not reported,
- * and neither is a missing model while [awaitingFirstModel].
+ * it), then providers (one broken provider stops every agent on it), then other agents, then
+ * apps. An agent or provider the owner disabled on purpose is not reported, and neither is a
+ * missing model while [awaitingFirstModel].
  */
 fun RegistrySnapshot.attentionItems(): List<AttentionItem> = buildList {
     addAll(directorItems())
+    addAll(providerItems())
     addAll(agentItems())
     addAll(appItems())
+}
+
+private fun RegistrySnapshot.providerItems(): List<AttentionItem> = buildList {
+    for (provider in providers) {
+        if (!provider.enabled || provider.isSimulator) continue
+        // Local-only mode keeps it from being contacted at all; its last status says nothing new.
+        if (settings.localOnlyMode && provider.effectiveLocality.leavesDevice) continue
+        val target = AttentionTarget.Provider(provider.id)
+        val name = provider.name
+        when (provider.status) {
+            ConnectionStatus.OFFLINE -> add(
+                AttentionItem(
+                    "provider-offline:${provider.id}", StatusTone.UNAVAILABLE, "$name is offline",
+                    (provider.statusMessage ?: "It could not be reached at the last check.") + " Agents that use it cannot run until it is checked again.",
+                    target,
+                ),
+            )
+            ConnectionStatus.AUTH_ERROR -> add(
+                AttentionItem(
+                    "provider-auth:${provider.id}", StatusTone.UNAVAILABLE, "$name rejected its key",
+                    "Agents that use it cannot run. Enter a valid API key on its page.", target,
+                ),
+            )
+            ConnectionStatus.ERROR -> add(
+                AttentionItem(
+                    "provider-error:${provider.id}", StatusTone.ATTENTION, "$name reported an error",
+                    provider.statusMessage ?: "Its last check failed. Check it again on its page.", target,
+                ),
+            )
+            ConnectionStatus.UNKNOWN, ConnectionStatus.ONLINE -> Unit
+        }
+        if (provider.apiKeyAlias == null && provider.kind.hasAddress && provider.effectiveLocality == Locality.CLOUD &&
+            provider.status != ConnectionStatus.AUTH_ERROR
+        ) {
+            add(
+                AttentionItem(
+                    "provider-no-key:${provider.id}", StatusTone.ATTENTION, "$name has no API key",
+                    "Cloud services almost always need one. Add it on the provider's page.", target,
+                ),
+            )
+        }
+    }
 }
 
 private fun RegistrySnapshot.directorItems(): List<AttentionItem> {
@@ -97,6 +136,12 @@ private fun RegistrySnapshot.directorItems(): List<AttentionItem> {
             ),
         )
         is AgentAvailability.Unavailable -> when {
+            availability.reason == UnavailableReason.MODEL_NOT_REGISTERED -> listOf(
+                AttentionItem(
+                    "director-model-removed", StatusTone.UNAVAILABLE, "The Director's model was removed",
+                    "$name cannot receive objectives until you assign another model to it.", target,
+                ),
+            )
             availability.reason != UnavailableReason.NO_MODEL_ASSIGNED -> listOf(
                 AttentionItem("director-unavailable", StatusTone.UNAVAILABLE, "The Director cannot run", availability.detail, target),
             )
@@ -119,10 +164,15 @@ private fun RegistrySnapshot.agentItems(): List<AttentionItem> {
     return buildList {
         // Faults first: they are worse than a setup that was never finished.
         otherwiseUnavailable.forEach {
+            val unavailable = it.availability as AgentAvailability.Unavailable
+            val modelRemoved = unavailable.reason == UnavailableReason.MODEL_NOT_REGISTERED
             add(
                 AttentionItem(
-                    "agent-unavailable:${it.profile.id}", StatusTone.UNAVAILABLE, "${it.profile.name} cannot run",
-                    (it.availability as AgentAvailability.Unavailable).detail, AttentionTarget.Agent(it.profile.id),
+                    id = "agent-unavailable:${it.profile.id}",
+                    tone = StatusTone.UNAVAILABLE,
+                    title = if (modelRemoved) "${it.profile.name}'s model was removed" else "${it.profile.name} cannot run",
+                    detail = if (modelRemoved) "It cannot run until you assign another model to it." else unavailable.detail,
+                    target = AttentionTarget.Agent(it.profile.id),
                 ),
             )
         }
@@ -185,9 +235,3 @@ private fun RegistrySnapshot.appItems(): List<AttentionItem> = buildList {
 private val AgentEntry.unavailableReason: UnavailableReason?
     get() = (availability as? AgentAvailability.Unavailable)?.reason
 
-/** "Researcher, Analyst and Writer" / "Researcher, Analyst and 3 others". */
-private fun summariseNames(names: List<String>): String = when {
-    names.size <= 1 -> names.joinToString()
-    names.size <= 3 -> names.dropLast(1).joinToString(", ") + " and " + names.last()
-    else -> names.take(2).joinToString(", ") + " and ${names.size - 2} others"
-}

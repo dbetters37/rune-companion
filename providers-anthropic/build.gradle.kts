@@ -19,6 +19,9 @@ dependencies {
     api(project(":core"))
     // The official SDK is confined to this module; nothing else in the app sees its types.
     implementation(libs.anthropic.java)
+    // The adapter brings its own transport for the SDK (GuardedTransport), which needs a resolver
+    // and a proxy selector the SDK's OkHttp transport cannot be given. Internal to this module.
+    implementation(libs.okhttp)
     testImplementation(project(":testkit"))
     testImplementation(libs.okhttp.mockwebserver)
 }

@@ -6,7 +6,13 @@ import com.aicontrolcenter.app.testing.activeIn
 import com.aicontrolcenter.app.ui.shell.Section
 import com.aicontrolcenter.app.ui.shell.ShellViewModel
 import com.aicontrolcenter.app.ui.theme.StatusTone
+import com.aicontrolcenter.app.testing.GatedLlmClient
+import com.aicontrolcenter.app.testing.serveModel
 import com.aicontrolcenter.core.ModelId
+import com.aicontrolcenter.core.ProviderId
+import com.aicontrolcenter.core.registry.Locality
+import com.aicontrolcenter.framework.llm.Simulator
+import kotlinx.coroutines.launch
 import com.aicontrolcenter.core.registry.AiAppStatus
 import com.aicontrolcenter.core.registry.ConnectionStatus
 import com.aicontrolcenter.testkit.Samples
@@ -26,6 +32,7 @@ class DashboardViewModelTest {
 
     private fun TestScope.dashboard(app: TestApp) = DashboardViewModel(
         app.graph.registryDirectory, app.graph.activityLog, app.graph.aiAppRegistry, app.clock, ZoneOffset.UTC,
+        monitor = app.graph.activityMonitor, agentManager = app.graph.agentManager,
     ).also { it.uiState.activeIn(backgroundScope) }
 
     @Test
@@ -35,7 +42,10 @@ class DashboardViewModelTest {
         val state = dashboard(app).uiState.value
 
         assertFalse(state.isLoading)
-        assertEquals(SETUP_NOTICE, state.setupNotice)
+        val quickStart = assertNotNull(state.quickStart, "agents without a model get one-tap help")
+        assertEquals(6, quickStart.agentsWithoutModel.size)
+        assertFalse(quickStart.hasRealModels)
+        assertFalse(quickStart.simulatorAvailable, "the simulator is registered at start, which this test skipped")
         assertEquals(emptyList(), state.attention)
         with(state.summary) {
             assertEquals(6, agentCount)
@@ -60,7 +70,7 @@ class DashboardViewModelTest {
         assertFalse(state.isLoading)
         assertEquals(0, state.summary.agentCount)
         assertNull(state.summary.director)
-        assertNull(state.setupNotice, "there is no agent that would need a model")
+        assertNull(state.quickStart, "there is no agent that would need a model")
         assertEquals(emptyList(), state.attention, "with nobody to direct, a missing Director is not a problem yet")
         assertEquals(emptyList(), state.network.nodes)
         assertEquals(emptyList(), state.recentActivity)
@@ -76,11 +86,11 @@ class DashboardViewModelTest {
 
         val state = dashboard(app).uiState.value
         assertEquals(
-            listOf("The Director has no model", "Analyst cannot run", "4 agents have no model"),
+            listOf("The Director has no model", "Home server rejected its key", "Analyst cannot run", "4 agents have no model"),
             state.attention.map { it.title },
         )
         assertEquals(
-            listOf(StatusTone.ATTENTION, StatusTone.UNAVAILABLE, StatusTone.ATTENTION),
+            listOf(StatusTone.ATTENTION, StatusTone.UNAVAILABLE, StatusTone.UNAVAILABLE, StatusTone.ATTENTION),
             state.attention.map { it.tone },
         )
         assertEquals("Researcher, Writer and 2 others cannot run until each has a model.", state.attention.last().detail)
@@ -93,7 +103,7 @@ class DashboardViewModelTest {
         app.registerSampleModel()
         val state = dashboard(app).uiState.value
 
-        assertNull(state.setupNotice)
+        assertEquals(true, state.quickStart?.hasRealModels)
         val director = app.director().profile
         assertEquals(
             listOf(
@@ -264,5 +274,101 @@ class DashboardViewModelTest {
         assertEquals("Starter team created", rows.first().event.title)
         assertEquals("Operator", rows[1].agentName)
         assertTrue(rows.zipWithNext().all { (newer, older) -> newer.event.at >= older.event.at })
+    }
+
+    @Test
+    fun `try with the simulator gives every agent without a model the simulator`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.graph.start().join()
+        app.registerSampleModel()
+        app.graph.agentManager.assignModel(app.agentNamed("Writer").profile.id, ModelId("mdl_sample"))
+        val viewModel = dashboard(app)
+        val quickStart = assertNotNull(viewModel.uiState.value.quickStart)
+        assertTrue(quickStart.simulatorAvailable)
+        assertTrue(quickStart.hasRealModels)
+        assertEquals(5, quickStart.agentsWithoutModel.size)
+
+        viewModel.trySimulator()
+        assertNull(viewModel.uiState.value.quickStart, "every agent has a model now")
+        assertEquals(ModelId("mdl_sample"), app.agentNamed("Writer").profile.modelId, "a model the owner chose is kept")
+        val others = app.agents.getAll().filter { it.name != "Writer" }
+        assertTrue(others.all { it.modelId == Simulator.MODEL_ID })
+        assertTrue(assertNotNull(viewModel.uiState.value.message).text.endsWith("now use the simulator. Open an agent and tap Chat to try it."))
+        assertTrue(app.agentNamed("Researcher").availability.isReady, "the simulator can answer at once")
+    }
+
+    @Test
+    fun `the simulator is not offered when it is switched off`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.graph.start().join()
+        app.graph.providerManager.setModelEnabled(Simulator.MODEL_ID, false)
+        val viewModel = dashboard(app)
+        assertFalse(assertNotNull(viewModel.uiState.value.quickStart).simulatorAvailable)
+        viewModel.trySimulator()
+        assertEquals("The simulator is switched off. Switch it on under Models first.", viewModel.uiState.value.message?.text)
+        assertTrue(app.agents.getAll().all { it.modelId == null })
+    }
+
+    @Test
+    fun `provider problems and removed models need attention, and the summary counts providers by state`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.graph.agentManager.ensureDefaults()
+        app.providers.upsert(Samples.provider(id = "prv_ok", name = "Desk PC"))
+        app.providers.upsert(Samples.provider(id = "prv_down", name = "Laptop", status = ConnectionStatus.OFFLINE, createdAt = 2_000).copy(statusMessage = "Connection refused."))
+        app.providers.upsert(
+            Samples.provider(id = "prv_cloud", name = "Hosted", baseUrl = "https://api.example.com/v1", locality = Locality.CLOUD, status = ConnectionStatus.UNKNOWN, createdAt = 3_000)
+                .copy(apiKeyAlias = null),
+        )
+        app.models.upsert(Samples.model(providerId = "prv_ok"))
+        val researcher = app.agentNamed("Researcher").profile
+        app.graph.agentManager.assignModel(researcher.id, ModelId("mdl_sample"))
+        app.models.delete(ModelId("mdl_sample"))
+
+        val state = dashboard(app).uiState.value
+        val titles = state.attention.map { it.title }
+        assertTrue("Laptop is offline" in titles, titles.toString())
+        assertTrue("Hosted has no API key" in titles, titles.toString())
+        assertTrue("Researcher's model was removed" in titles, titles.toString())
+        assertEquals(AttentionTarget.Provider(ProviderId("prv_down")), state.attention.first { it.title == "Laptop is offline" }.target)
+        assertTrue(state.attention.first { it.title == "Laptop is offline" }.detail.startsWith("Connection refused."))
+        assertTrue(titles.indexOf("Laptop is offline") < titles.indexOf("Researcher's model was removed"), "providers before agents")
+        with(state.summary) {
+            assertEquals(3, providerCount)
+            assertEquals(1, providersOnline)
+            assertEquals(1, providerProblems)
+        }
+        assertEquals(mapOf(Section.MODELS to 2), ShellViewModel.badgesFor(state.attention).filterKeys { it == Section.MODELS })
+
+        app.settings.update { it.copy(localOnlyMode = true) }
+        val local = dashboard(app).uiState.value.attention.map { it.title }
+        assertFalse("Laptop is offline" in local, "local-only mode blocks it anyway; its old status is not news")
+        assertFalse("Hosted has no API key" in local)
+    }
+
+    @Test
+    fun `agents at work are listed with what they are doing and pulse in the network`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.graph.start().join()
+        val client = GatedLlmClient(listOf("Thinking it over", " and done."))
+        val model = app.serveModel(client)
+        val researcher = app.agentNamed("Researcher").profile
+        app.graph.agentManager.assignModel(researcher.id, model.id)
+        app.graph.agentManager.assignModel(app.director().profile.id, model.id)
+        val viewModel = dashboard(app)
+        assertEquals(emptyList(), viewModel.uiState.value.working)
+
+        val conversation = app.graph.agentChat.startConversation(researcher.id)
+        backgroundScope.launch { app.graph.agentChat.send(conversation.id, "Look into it") }
+        val working = viewModel.uiState.value.working.single()
+        assertEquals("Researcher", working.name)
+        assertEquals("Writing a reply", working.detail)
+        val node = assertNotNull(viewModel.uiState.value.network.node(researcher.id.value))
+        assertTrue(node.working)
+        assertEquals(StatusTone.WORKING, node.status.tone)
+        assertEquals(listOf(researcher.id.value), viewModel.uiState.value.network.pulses.map { it.fromId })
+
+        client.release()
+        assertEquals(emptyList(), viewModel.uiState.value.working)
+        assertEquals(emptyList(), viewModel.uiState.value.network.pulses)
     }
 }

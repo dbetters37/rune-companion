@@ -11,12 +11,18 @@ import com.aicontrolcenter.core.registry.ModelCapabilities
 import com.anthropic.models.models.ModelInfo
 import com.anthropic.models.models.ModelListParams
 import kotlinx.coroutines.CancellationException
+import okhttp3.Dns
 import kotlin.jvm.optionals.getOrNull
 
 /** One Anthropic provider connection: its chat client, model listing and health check. */
-internal class AnthropicAdapter(connection: ProviderConnection, options: AnthropicOptions) : ProviderAdapter {
+internal class AnthropicAdapter(
+    connection: ProviderConnection,
+    options: AnthropicOptions,
+    /** Name resolution under the locality check; replaced only by tests. */
+    resolver: Dns = Dns.SYSTEM,
+) : ProviderAdapter {
     private val providerName = connection.provider.name
-    private val sdk = SdkClient(connection, options)
+    private val sdk = SdkClient(connection, options, resolver)
 
     override val client: LlmClient = AnthropicLlmClient(sdk, options)
 

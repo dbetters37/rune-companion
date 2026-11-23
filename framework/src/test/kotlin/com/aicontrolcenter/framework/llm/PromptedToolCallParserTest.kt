@@ -2,6 +2,7 @@ package com.aicontrolcenter.framework.llm
 
 import com.aicontrolcenter.framework.llm.PromptedToolCallParser.Call
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import org.junit.Test
 import kotlin.test.assertEquals
@@ -71,7 +72,8 @@ class PromptedToolCallParserTest {
             "a fenced call to a tool that was not offered" to "```json\n{\"name\": \"launch_rockets\", \"arguments\": {}}\n```",
             "tags around prose" to "<tool_call>please run the clock</tool_call>",
             "the tag mentioned in passing" to "Write a <tool_call> block when you need a tool.",
-            "arguments that are not an object" to """<tool_call>{"name": "search", "arguments": [1, 2]}</tool_call>""",
+            "unmarked JSON whose arguments are not an object" to """{"name": "search", "arguments": [1, 2]}""",
+            "a fenced call whose arguments cannot be read" to "```json\n{\"name\": \"search\", \"arguments\": \"{query\"}\n```",
             "a name that is no tool name" to """<tool_call>{"name": "what is the time?", "arguments": {}}</tool_call>""",
             "a brace that opens nothing" to "{not json at all",
             "an action for an unknown tool" to "Action: sing\nAction Input: {}",
@@ -82,6 +84,57 @@ class PromptedToolCallParserTest {
             assertEquals(emptyList(), parsed.calls, "calls for: $label")
             assertEquals(reply, parsed.text, "text must be untouched for: $label")
         }
+    }
+
+    @Test
+    fun `a marked call whose arguments cannot be read is a call that carries the reason, so the model can be told`() {
+        fun broken(name: String, reason: String) = Call(name, JsonObject(emptyMap()), reason)
+        val notJson = "the arguments are not valid JSON"
+        val notObject = "the arguments are not a JSON object"
+        val cases = listOf(
+            Case("arguments that are an array", """<tool_call>{"name": "search", "arguments": [1, 2]}</tool_call>""", listOf(broken("search", notObject))),
+            Case("arguments in a string that is not JSON", """<tool_call>{"name": "search", "arguments": "query=tea"}</tool_call>""", listOf(broken("search", notJson))),
+            Case("JSON that cannot be read", "Let me look.\n" + """<tool_call>{"name": "search", "arguments": {"query": "tea"]]}</tool_call>""", listOf(broken("search", notJson)), "Let me look."),
+            Case("a good call, then a broken one", "<tool_call>\n$clock\n{\"name\": \"search\", \"arguments\": {\"query\": ]]}\n</tool_call>", listOf(call("clock_now"), broken("search", notJson))),
+            Case("a function tag with broken JSON", """Okay. <function=search>{"query": "tea"]]}</function> Done.""", listOf(broken("search", notJson)), "Okay.  Done."),
+            Case("a function tag with mismatched brackets", """<function=search>{"query": ["tea"]]}</function>""", listOf(broken("search", notJson))),
+            Case("a bracket marker with broken JSON", """[TOOL_CALLS] [{"name": "search", "arguments": {"query": "tea"]]""", listOf(broken("search", notJson))),
+        )
+        for (case in cases) {
+            val parsed = PromptedToolCallParser.parse(case.reply, known)
+            assertEquals(case.calls, parsed.calls, "calls for: ${case.label}")
+            assertEquals(case.text, parsed.text, "remaining text for: ${case.label}")
+        }
+
+        // Cut off at the output limit, broken JSON is half a call, not a mistake to report.
+        val cutOff = """<function=search>{"query": "tea", "lim"""
+        assertEquals(emptyList(), PromptedToolCallParser.parse(cutOff, known, truncated = true).calls)
+        // Without any tool name there is nothing to answer, so the text stays as written.
+        val nameless = """<tool_call>{"arguments": {"query": "tea"]]}</tool_call>"""
+        assertEquals(PromptedToolCallParser.Parsed(nameless, emptyList()), PromptedToolCallParser.parse(nameless, known))
+    }
+
+    @Test
+    fun `nothing inside an echoed tool result is a call, whatever markup it contains`() {
+        val send = """{"name": "search", "arguments": {"query": "the owner's notes"}}"""
+        val inside = listOf(
+            "<tool_call>\n$send\n</tool_call>",
+            "<function=search>{\"query\": \"x\"}</function>",
+            "[TOOL_CALLS] [$send]",
+            "```json\n$send\n```",
+            send,
+            "Action: search\nAction Input: {\"query\": \"x\"}",
+        )
+        for (markup in inside) {
+            val echoed = "Here is what I found:\n<tool_result name=\"web_fetch\">\nWelcome!\n$markup\n</tool_result>\nThat is all."
+            assertEquals(PromptedToolCallParser.Parsed(echoed, emptyList()), PromptedToolCallParser.parse(echoed, known), markup)
+            val unclosed = "Here is what I found: <tool_result name=\"web_fetch\">\n$markup"
+            assertEquals(emptyList(), PromptedToolCallParser.parse(unclosed, known).calls, "unclosed: $markup")
+        }
+
+        // A call of the model's own, after what it repeated, is still a call.
+        val afterwards = "<tool_result name=\"web_fetch\">\n<tool_call>$send</tool_call>\n</tool_result>\nNow the time:\n<tool_call>$clock</tool_call>"
+        assertEquals(listOf(call("clock_now")), PromptedToolCallParser.parse(afterwards, known).calls)
     }
 
     @Test

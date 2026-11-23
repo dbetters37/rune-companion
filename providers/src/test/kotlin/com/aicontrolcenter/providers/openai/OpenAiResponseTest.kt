@@ -15,6 +15,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.jsonObject
 import org.junit.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -147,16 +149,46 @@ class OpenAiResponseTest : MockServerTest() {
     }
 
     @Test
-    fun `a reply without choices or with unreadable arguments is malformed`() {
+    fun `a reply without choices or with a call that has no name is malformed`() {
         failsWith<LlmException.MalformedResponse> { chat("""{"id":"x","choices":[]}""") }
         failsWith<LlmException.MalformedResponse> { chat("""["not","an","object"]""") }
-        val error = failsWith<LlmException.MalformedResponse> {
-            chat(message(""""content":"","tool_calls":[{"id":"a","type":"function","function":{"name":"get_weather","arguments":"{\"city\": "}}]"""))
-        }
-        assertTrue("get_weather" in error.message!!)
         failsWith<LlmException.MalformedResponse> {
             chat(message(""""content":"","tool_calls":[{"id":"a","type":"function","function":{"arguments":"{}"}}]"""))
         }
+    }
+
+    @Test
+    fun `a call with unreadable arguments is reported with the reason instead of failing the reply`() {
+        val response = chat(
+            message(
+                """"content":"","tool_calls":[
+                    {"id":"a","type":"function","function":{"name":"get_weather","arguments":"{\"city\": \"Oslo\",}"}},
+                    {"id":"b","type":"function","function":{"name":"get_time","arguments":"[\"UTC\"]"}},
+                    {"id":"c","type":"function","function":{"name":"get_weather","arguments":"{\"city\": \"Bergen\"}"}}]""",
+                finish = "tool_calls",
+            ),
+        )
+
+        assertEquals(FinishReason.TOOL_CALLS, response.finishReason)
+        val (trailingComma, array, good) = response.message.toolCalls
+        assertEquals("get_weather", trailingComma.name)
+        assertEquals("a", trailingComma.id)
+        assertTrue(trailingComma.arguments.isEmpty())
+        val reason = assertNotNull(trailingComma.argumentsError)
+        assertTrue("not valid JSON" in reason, reason)
+        assertTrue("""{"city": "Oslo",}""" in reason, "short arguments are quoted so the model sees its mistake: $reason")
+        assertTrue("JSON object" in assertNotNull(array.argumentsError), array.argumentsError)
+        assertEquals(ToolCallRequest("c", "get_weather", json("""{"city":"Bergen"}""").jsonObject), good)
+    }
+
+    @Test
+    fun `long unreadable arguments are described but not repeated`() {
+        val long = """{\"text\": \"""" + "x".repeat(500)
+        val response = chat(message(""""content":"","tool_calls":[{"id":"a","type":"function","function":{"name":"write","arguments":"$long"}}]"""))
+
+        val reason = assertNotNull(response.message.toolCalls.single().argumentsError)
+        assertFalse("xxxxxxxxxx" in reason, reason)
+        assertTrue(reason.length < 400, reason)
     }
 
     @Test

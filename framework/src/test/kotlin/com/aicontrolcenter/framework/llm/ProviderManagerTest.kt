@@ -14,7 +14,9 @@ import com.aicontrolcenter.core.llm.ProviderAdapter
 import com.aicontrolcenter.core.llm.ProviderDraft
 import com.aicontrolcenter.core.llm.ProviderField
 import com.aicontrolcenter.core.llm.ProviderHealth
+import com.aicontrolcenter.core.llm.ProviderPreset
 import com.aicontrolcenter.core.llm.ProviderValidationException
+import com.aicontrolcenter.core.llm.ProviderValidationIssue
 import com.aicontrolcenter.core.llm.RemoteModel
 import com.aicontrolcenter.core.registry.ConnectionStatus
 import com.aicontrolcenter.core.registry.Locality
@@ -30,8 +32,10 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import org.junit.Test
+import java.io.IOException
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -245,6 +249,41 @@ class ProviderManagerTest {
     }
 
     @Test
+    fun `a stored key never follows the provider to another host or kind - it must be entered again, or removed`() = runTest {
+        val reenter = listOf(ProviderValidationIssue(ProviderField.API_KEY, "Enter the API key again for the new address."))
+        val openAi = manager.addProvider(ProviderDraft("OpenAI", ProviderKind.OPENAI_COMPATIBLE, "https://api.openai.com/v1", apiKey = secret))
+        val alias = openAi.apiKeyAlias!!
+        val toLan = ProviderDraft("OpenAI", ProviderKind.OPENAI_COMPATIBLE, "http://192.168.1.100:1234/v1")
+        val asClaude = ProviderDraft("OpenAI", ProviderKind.ANTHROPIC, "https://api.openai.com/v1")
+
+        for (draft in listOf(toLan, asClaude)) {
+            assertEquals(reenter, manager.validate(draft, editing = openAi.id), draft.toString())
+            assertEquals(reenter, assertFailsWith<ProviderValidationException> { manager.updateProvider(openAi.id, draft) }.issues)
+            assertEquals(openAi, world.providers.get(openAi.id), "nothing changed")
+            assertEquals(secret, world.vault.get(alias))
+        }
+
+        // Another path on the same host is the same endpoint.
+        val samePlace = manager.updateProvider(openAi.id, ProviderDraft("OpenAI", ProviderKind.OPENAI_COMPATIBLE, "https://API.openai.com/v2/"))
+        assertEquals(alias, samePlace.apiKeyAlias)
+        // With the key entered again, the move is fine.
+        val replacement = "sk-test-key-for-the-lan-server"
+        val moved = manager.updateProvider(openAi.id, toLan.copy(apiKey = replacement))
+        assertEquals("http://192.168.1.100:1234/v1", moved.baseUrl)
+        assertEquals(replacement, world.vault.get(alias))
+        // An explicitly emptied key still removes it, and then nothing stands in the way of moving.
+        val keyless = manager.updateProvider(openAi.id, ProviderDraft("OpenAI", ProviderKind.OPENAI_COMPATIBLE, "https://api.openai.com/v1", apiKey = ""))
+        assertNull(keyless.apiKeyAlias)
+        assertTrue(world.vault.aliases().isEmpty())
+        assertTrue(manager.validate(toLan, editing = openAi.id).isEmpty(), "without a stored key there is nothing to carry over")
+
+        // A vendor's default address and the same address written out are one host.
+        val claude = manager.addProvider(ProviderDraft("Claude", ProviderKind.ANTHROPIC, apiKey = secret))
+        assertTrue(manager.validate(ProviderDraft("Claude", ProviderKind.ANTHROPIC, "https://api.anthropic.com"), editing = claude.id).isEmpty())
+        assertEquals(reenter, manager.validate(ProviderDraft("Claude", ProviderKind.ANTHROPIC, "https://claude-proxy.example.com"), editing = claude.id))
+    }
+
+    @Test
     fun `changing how a provider is reached re-derives its locality and forgets the old connection's status`() = runTest {
         val provider = manager.addProvider(server(baseUrl = "http://127.0.0.1:8080/v1"))
         manager.checkProvider(provider.id)
@@ -382,6 +421,73 @@ class ProviderManagerTest {
         assertEquals(setOf(phone.id), contacted, "the key of the cloud provider was never handed to an adapter")
         assertEquals(ConnectionStatus.UNKNOWN, world.providers.get(cloud.id)!!.status)
         assertEquals(1, manager.refreshModels(phone.id).added.size)
+    }
+
+    @Test
+    fun `checks and listings that reach a provider off the device are logged with where they went, also when they fail`() = runTest {
+        val cloudAdapter = FakeProviderAdapter(models = listOf(RemoteModel("gpt-x")))
+        val cloud = world.provider(cloudAdapter, baseUrl = "https://api.example.com/v1", apiKey = secret, name = "Cloud")
+        val broken = object : ProviderAdapter {
+            override val client: LlmClient = ScriptedLlmClient.replies("never")
+            override suspend fun checkHealth(): ProviderHealth = throw IOException("connection reset")
+            override suspend fun listModels(): List<RemoteModel> = awaitCancellation()
+        }
+        val lan = world.provider(broken, baseUrl = "http://192.168.1.20:8080/v1", name = "Home")
+        val phone = world.provider(FakeProviderAdapter(models = listOf(RemoteModel("llama3"))), name = "Phone")
+
+        manager.checkProvider(cloud.id)
+        manager.checkProvider(lan.id)
+        manager.checkProvider(phone.id)
+        manager.refreshModels(cloud.id)
+        manager.refreshModels(phone.id)
+        cloudAdapter.listError = LlmException.Authentication("The key $secret was rejected.")
+        assertFailsWith<LlmException.Authentication> { manager.refreshModels(cloud.id) }
+        // A listing that is stopped half-way may already have delivered the key: it is recorded too.
+        assertNull(withTimeoutOrNull(1_000) { manager.refreshModels(lan.id) })
+
+        val contacts = registry().filter { it.egress != null }
+        assertEquals(
+            listOf("Provider checked", "Provider checked", "Model list requested", "Model list requested", "Model list requested"),
+            contacts.map { it.title },
+        )
+        val egress = contacts.map { it.egress!! }
+        assertEquals(listOf("api.example.com", "192.168.1.20", "api.example.com", "api.example.com", "192.168.1.20"), egress.map { it.destinationHost })
+        assertEquals(listOf(Locality.CLOUD, Locality.LOCAL_NETWORK, Locality.CLOUD, Locality.CLOUD, Locality.LOCAL_NETWORK), egress.map { it.locality })
+        assertEquals(listOf(cloud.id, lan.id, cloud.id, cloud.id, lan.id), egress.map { it.providerId })
+        assertEquals(List(2) { "API key and connection check" } + List(3) { "model list request" }, egress.map { it.purpose })
+        assertTrue("error" in contacts[1].detail, contacts[1].detail)
+        assertTrue("1 model listed" in contacts[2].detail)
+        assertTrue("failed" in contacts[3].detail && "[key removed]" in contacts[3].detail, contacts[3].detail)
+        assertTrue("stopped" in contacts[4].detail, contacts[4].detail)
+        assertFalse(secret in world.logText())
+        assertTrue(registry().none { it.egress == null && it.title in setOf("Provider checked", "Model list requested") }, "the phone's own server is no egress")
+    }
+
+    @Test
+    fun `the start-up check can leave internet providers alone`() = runTest {
+        val cloud = world.provider(baseUrl = "https://api.example.com/v1", apiKey = secret, name = "Cloud")
+        val lan = world.provider(baseUrl = "http://192.168.1.20:8080/v1", name = "Home")
+        val phone = world.provider(name = "Phone")
+        val contacted = { world.factories.getValue(ProviderKind.OPENAI_COMPATIBLE).connections.map { it.provider.id }.toSet() }
+
+        manager.checkAllProviders(includeCloud = false)
+        assertEquals(setOf(lan.id, phone.id), contacted())
+        assertEquals(ConnectionStatus.UNKNOWN, world.providers.get(cloud.id)!!.status)
+
+        manager.checkAllProviders()
+        assertEquals(setOf(cloud.id, lan.id, phone.id), contacted(), "without the switch every enabled provider is checked, as before")
+    }
+
+    @Test
+    fun `server detection never probes an address off this phone, so it has nothing to log`() = runTest {
+        val lanProbe = ProviderPreset("ollama-lan", "Ollama at home", "A server.", ProviderKind.OLLAMA, "http://192.168.1.20:11434", needsApiKey = false, setupHint = "Start it.")
+        val detecting = DefaultProviderManager(
+            world.providers, world.models, world.settings, world.vault, world.connections, world.activity, world.ids, world.clock,
+            localProbes = listOf(lanProbe),
+        )
+
+        assertTrue(detecting.detectLocalServers().isEmpty())
+        assertTrue(world.factories.values.all { it.connections.isEmpty() })
     }
 
     // ---- models ----

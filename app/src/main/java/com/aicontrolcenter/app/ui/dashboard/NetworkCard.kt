@@ -131,6 +131,7 @@ private fun NetworkLegend(hasHub: Boolean, modifier: Modifier = Modifier) {
             horizontalArrangement = Arrangement.spacedBy(Spacing.lg),
             verticalArrangement = Arrangement.spacedBy(Spacing.xs),
         ) {
+            LegendItem(StatusTone.WORKING, "Working")
             LegendItem(StatusTone.READY, "Ready")
             LegendItem(StatusTone.INFO, "No model yet")
             LegendItem(StatusTone.UNAVAILABLE, "Unavailable")
@@ -139,7 +140,7 @@ private fun NetworkLegend(hasHub: Boolean, modifier: Modifier = Modifier) {
         Text(
             text = if (hasHub) {
                 "Lines show who reports to the Director: solid when both can run, dashed when one cannot. " +
-                    "Pinch to zoom."
+                    "A ringed agent is working, and a dot travels along its line. Pinch to zoom."
             } else {
                 "No Director is designated, so there is no reporting structure to draw."
             },
@@ -190,6 +191,11 @@ private fun SelectedNodePanel(node: NetworkNode?, onOpenAgent: (AgentId) -> Unit
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 StatusChip(node.status.text, node.status.tone)
+                if (node.working) {
+                    node.status.detail?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = appColors.working, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
             }
             FilledTonalButton(onClick = { onOpenAgent(AgentId(node.id)) }) { Text("Open") }
         }

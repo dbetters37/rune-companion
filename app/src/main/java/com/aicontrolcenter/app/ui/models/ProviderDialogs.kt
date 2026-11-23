@@ -22,7 +22,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.aicontrolcenter.app.ui.components.AppTextField
+import com.aicontrolcenter.app.ui.components.InlineTextEntry
 import com.aicontrolcenter.app.ui.components.RowDivider
 import com.aicontrolcenter.app.ui.components.plural
 import com.aicontrolcenter.app.ui.icons.AppIcons
@@ -32,30 +32,19 @@ import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.appColors
 import com.aicontrolcenter.core.llm.DetectedServer
 
-/** Registers a model by the exact name its provider expects. */
+/** Registers a model by the exact name its provider expects. Inline rather than a dialog, so the keyboard never covers it. */
 @Composable
-internal fun AddModelDialog(providerName: String, onAdd: (String) -> Unit, onDismiss: () -> Unit) {
-    var name by rememberSaveable { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Add a model to $providerName") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-                Text(
-                    "For a model the provider does not list, or not yet. Enter the name exactly as the provider expects it.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                AppTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = "Model name",
-                    placeholder = "for example llama3.2:3b",
-                    supportingText = "Its capabilities are estimated from the name; you can correct them afterwards.",
-                )
-            }
-        },
-        confirmButton = { TextButton(onClick = { onAdd(name) }, enabled = name.isNotBlank()) { Text("Add model") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+internal fun AddModelCard(providerName: String, onAdd: (String) -> Unit, onDismiss: () -> Unit, modifier: Modifier = Modifier) {
+    InlineTextEntry(
+        title = "Add a model to $providerName",
+        explanation = "For a model the provider does not list, or not yet. Enter the name exactly as the provider expects it; " +
+            "its capabilities are estimated from the name and can be corrected afterwards.",
+        label = "Model name",
+        placeholder = "for example llama3.2:3b",
+        confirmLabel = "Add model",
+        onConfirm = onAdd,
+        onDismiss = onDismiss,
+        modifier = modifier,
     )
 }
 

@@ -8,14 +8,13 @@ import com.aicontrolcenter.core.llm.FinishReason
 import com.aicontrolcenter.core.llm.TokenUsage
 import com.aicontrolcenter.core.llm.ToolCallRequest
 import com.aicontrolcenter.providers.http.ProviderHttp
+import com.aicontrolcenter.providers.http.ToolArguments
 import com.aicontrolcenter.providers.http.array
 import com.aicontrolcenter.providers.http.int
 import com.aicontrolcenter.providers.http.long
 import com.aicontrolcenter.providers.http.obj
 import com.aicontrolcenter.providers.http.objects
 import com.aicontrolcenter.providers.http.string
-import kotlinx.serialization.SerializationException
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -164,9 +163,11 @@ internal class OpenAiReplyAssembler(
     }
 
     /**
-     * The finished reply.
+     * The finished reply. A call whose arguments cannot be read is still reported, with empty
+     * arguments and [ToolCallRequest.argumentsError] set, so the model is told and can correct
+     * itself instead of the whole turn failing.
      *
-     * @throws com.aicontrolcenter.core.llm.LlmException.MalformedResponse when a tool call cannot be read
+     * @throws com.aicontrolcenter.core.llm.LlmException.MalformedResponse when a tool call has no name
      */
     fun complete(): ChatResponse {
         val reported = finishReasonOf(finish)
@@ -197,32 +198,16 @@ internal class OpenAiReplyAssembler(
     private fun parseCalls(reported: FinishReason): List<Pair<ToolCallRequest, Map<String, JsonElement>>> {
         val result = ArrayList<Pair<ToolCallRequest, Map<String, JsonElement>>>(calls.size)
         for ((position, call) in calls.withIndex()) {
-            val arguments = call.argumentsObject ?: argumentsOf(call.arguments.toString())
-            if (call.name.isBlank() || arguments == null) {
+            val arguments = call.argumentsObject?.let { ToolArguments.fromElement(it) } ?: ToolArguments.fromText(call.arguments.toString())
+            if (call.name.isBlank() || arguments.error != null) {
                 // Output that hit the token limit ends mid-call; the rest of the reply is still good.
                 if (reported == FinishReason.LENGTH && position == calls.lastIndex) continue
-                throw http.errors.malformed(
-                    if (call.name.isBlank()) "a tool call had no name" else "the arguments of a call to ${call.name.take(64)} were not valid JSON",
-                )
+                if (call.name.isBlank()) throw http.errors.malformed("a tool call had no name")
             }
             val id = call.id.ifEmpty { "call_" + UUID.randomUUID().toString().replace("-", "").take(24) }
-            result += ToolCallRequest(id, call.name, arguments) to call.extras
+            result += ToolCallRequest(id, call.name, arguments.arguments, arguments.error) to call.extras
         }
         return result
-    }
-
-    private fun argumentsOf(raw: String): JsonObject? {
-        if (raw.isBlank()) return JsonObject(emptyMap())
-        return try {
-            when (val parsed = Json.parseToJsonElement(raw)) {
-                is JsonObject -> parsed
-                is JsonNull -> JsonObject(emptyMap())
-                is JsonPrimitive -> if (parsed.isString) Json.parseToJsonElement(parsed.content) as? JsonObject else null
-                else -> null
-            }
-        } catch (e: SerializationException) {
-            null
-        }
     }
 
     companion object {

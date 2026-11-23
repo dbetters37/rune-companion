@@ -19,10 +19,13 @@ import java.util.concurrent.ExecutionException
  *
  * Only the wait for the response headers is covered, which is where a non-streaming call
  * spends its time. A streaming body is aborted by closing the stream.
+ *
+ * Every request also leaves here with redirects switched off, so no transport underneath can
+ * follow one, whatever the SDK put into the options.
  */
 internal class InterruptibleHttpClient(private val delegate: HttpClient) : HttpClient {
     override fun execute(request: HttpRequest, requestOptions: RequestOptions): HttpResponse {
-        val pending = delegate.executeAsync(request, requestOptions)
+        val pending = delegate.executeAsync(request, noRedirects(requestOptions))
         try {
             return pending.get()
         } catch (e: InterruptedException) {
@@ -35,7 +38,9 @@ internal class InterruptibleHttpClient(private val delegate: HttpClient) : HttpC
     }
 
     override fun executeAsync(request: HttpRequest, requestOptions: RequestOptions): CompletableFuture<HttpResponse> =
-        delegate.executeAsync(request, requestOptions)
+        delegate.executeAsync(request, noRedirects(requestOptions))
 
     override fun close() = delegate.close()
+
+    private fun noRedirects(options: RequestOptions): RequestOptions = options.toBuilder().followRedirects(false).build()
 }

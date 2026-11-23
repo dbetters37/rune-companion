@@ -128,10 +128,15 @@ fun ConversationsScreen(
 private fun AgentSummary(state: ConversationsUiState) {
     AppCard {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
-            AgentAvatar(state.agentName, state.agentColorIndex, size = 44.dp, status = state.status?.tone)
+            val working = state.conversations.firstNotNullOfOrNull { it.livePhase }
+            AgentAvatar(state.agentName, state.agentColorIndex, size = 44.dp, status = if (working != null) StatusTone.WORKING else state.status?.tone)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(state.agentName, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
-                state.status?.let { StatusChip(it.text, it.tone) }
+                if (working != null) {
+                    StatusChip("Working: $working", StatusTone.WORKING)
+                } else {
+                    state.status?.let { StatusChip(it.text, it.tone) }
+                }
             }
         }
         state.statusDetail?.let {

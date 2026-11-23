@@ -80,6 +80,11 @@ data class ProviderFormUiState(
     val locality: Locality get() = Locality.infer(kind, baseUrl.trim().ifEmpty { null })
 
     fun issue(field: ProviderField): String? = issues[field]?.joinToString(" ")
+
+    /** Never prints the key being typed, so a log line or a crash report cannot carry it. */
+    override fun toString(): String =
+        "ProviderFormUiState(kind=$kind, name=$name, baseUrl=$baseUrl, apiKey=${if (apiKey.isEmpty()) "empty" else "[typed, hidden]"}, " +
+            "keyStored=$keyStored, removeStoredKey=$removeStoredKey, issues=$issues, isSaving=$isSaving, setup=$setup)"
 }
 
 /**

@@ -41,5 +41,5 @@ class ShellViewModel(directory: RegistryDirectory) : ViewModel() {
 val AttentionTarget.section: Section
     get() = when (this) {
         is AttentionTarget.Agent, AttentionTarget.Agents, AttentionTarget.UnavailableAgents -> Section.AGENTS
-        is AttentionTarget.AiApp -> Section.MODELS
+        is AttentionTarget.AiApp, is AttentionTarget.Provider -> Section.MODELS
     }

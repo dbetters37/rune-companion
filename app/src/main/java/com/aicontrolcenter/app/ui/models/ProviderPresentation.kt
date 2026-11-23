@@ -70,6 +70,8 @@ data class ProviderRowUi(
     val lastChecked: String,
     val keyNote: String?,
     val keyMissing: Boolean,
+    /** Whether the vault holds a key for it; null when that could not be read or does not apply. */
+    val keyStored: Boolean?,
     val modelCount: Int,
     val enabled: Boolean,
     val isSimulator: Boolean,
@@ -86,6 +88,7 @@ fun RegistrySnapshot.providerRow(provider: ModelProvider, keyStored: Boolean?, n
     lastChecked = provider.lastCheckedText(now, zone),
     keyNote = provider.keyNote(keyStored),
     keyMissing = provider.missingKey(keyStored),
+    keyStored = keyStored?.takeIf { provider.kind.hasAddress },
     modelCount = models.count { it.providerId == provider.id },
     enabled = provider.enabled,
     isSimulator = provider.isSimulator,

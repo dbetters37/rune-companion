@@ -5,11 +5,11 @@ import com.aicontrolcenter.core.llm.ProviderConnection
 import com.anthropic.backends.AnthropicBackend
 import com.anthropic.client.AnthropicClient
 import com.anthropic.client.AnthropicClientImpl
-import com.anthropic.client.okhttp.OkHttpClient
 import com.anthropic.core.ClientOptions
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runInterruptible
+import okhttp3.Dns
 
 /**
  * Owns the SDK client of one provider connection and is the only way the adapter calls it.
@@ -19,7 +19,12 @@ import kotlinx.coroutines.runInterruptible
  * to the SDK and to the [ErrorMapper], which scrubs it from anything it reports; it is never
  * logged and this class has no string form that includes it.
  */
-internal class SdkClient(private val connection: ProviderConnection, private val options: AnthropicOptions) {
+internal class SdkClient(
+    private val connection: ProviderConnection,
+    private val options: AnthropicOptions,
+    /** Answers name lookups before [LocalityDns] checks them; replaced only by tests. */
+    private val resolver: Dns = Dns.SYSTEM,
+) {
     val errors = ErrorMapper(connection.provider.name, connection.apiKey)
 
     private val lock = Any()
@@ -68,8 +73,14 @@ internal class SdkClient(private val connection: ProviderConnection, private val
 
     /**
      * Assembled the way the SDK documents for a custom transport, mirroring what its OkHttp
-     * builder does, with one difference: the transport is wrapped so that blocking calls can
-     * be aborted. The backend is what turns the key into the request's credentials.
+     * builder does, with two differences: the transport is this adapter's own
+     * ([GuardedTransport]: no redirects, locality-checked name resolution, no proxy for local
+     * addresses), and it is wrapped so that blocking calls can be aborted. The backend is what
+     * turns the key into the request's credentials.
+     *
+     * The SDK does not repeat failed calls unless [AnthropicOptions.maxRetries] asks it to: the
+     * framework's gateway owns retries, so that each attempt is checked against policy and
+     * recorded.
      */
     private fun build(): AnthropicClient {
         val apiKey = connection.apiKey?.takeIf { it.isNotBlank() }
@@ -77,12 +88,12 @@ internal class SdkClient(private val connection: ProviderConnection, private val
         val backend = AnthropicBackend.builder().apiKey(apiKey)
             .apply { serverRoot(connection.provider.baseUrl)?.let { baseUrl(it) } }
             .build()
-        val transport = InterruptibleHttpClient(OkHttpClient.builder().backend(backend).build())
+        val transport = InterruptibleHttpClient(GuardedTransport(backend, resolver))
         val clientOptions = ClientOptions.builder()
             .httpClient(transport)
             .backend(backend)
             .baseUrl(backend.baseUrl())
-            .apply { options.maxRetries?.let { maxRetries(it) } }
+            .maxRetries(options.maxRetries ?: 0)
             .apply { connection.provider.extraHeaders.forEach { (name, value) -> putHeader(name, value) } }
         backend.applyCredentials(transport, clientOptions)
         return AnthropicClientImpl(clientOptions.build())

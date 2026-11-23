@@ -39,6 +39,12 @@ enum class RunEnd {
 
     /** A model call failed; see [AgentRunResult.error]. */
     FAILED,
+
+    /**
+     * The owner stopped the agent: it was switched off or deleted while the turn was running.
+     * The run ends at the next model or tool call; [AgentRunResult.notice] says which it was.
+     */
+    STOPPED_BY_OWNER,
 }
 
 data class AgentRunResult(

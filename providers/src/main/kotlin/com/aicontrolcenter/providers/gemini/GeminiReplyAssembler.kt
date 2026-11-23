@@ -10,6 +10,7 @@ import com.aicontrolcenter.core.llm.TokenUsage
 import com.aicontrolcenter.core.llm.ToolCallRequest
 import com.aicontrolcenter.core.registry.ProviderKind
 import com.aicontrolcenter.providers.http.ProviderHttp
+import com.aicontrolcenter.providers.http.ToolArguments
 import com.aicontrolcenter.providers.http.array
 import com.aicontrolcenter.providers.http.boolean
 import com.aicontrolcenter.providers.http.long
@@ -125,14 +126,11 @@ internal class GeminiReplyAssembler(private val http: ProviderHttp, private val 
 
     private fun toolCall(call: JsonObject): ToolCallRequest {
         val name = call.string("name")?.takeIf { it.isNotBlank() } ?: throw http.errors.malformed("a function call had no name")
-        val arguments = when (val args = call["args"]) {
-            null -> JsonObject(emptyMap())
-            is JsonObject -> args
-            else -> throw http.errors.malformed("the arguments of a call to ${name.take(64)} were not a JSON object")
-        }
+        // Arguments that are not an object are reported on the call for the model to correct, not thrown.
+        val arguments = ToolArguments.fromElement(call["args"])
         // Gemini does not always number its calls; the framework needs an id to pair results with calls.
         val id = call.string("id")?.takeIf { it.isNotBlank() } ?: ("call_" + UUID.randomUUID().toString().replace("-", "").take(24))
-        return ToolCallRequest(id, name, arguments)
+        return ToolCallRequest(id, name, arguments.arguments, arguments.error)
     }
 
     companion object {

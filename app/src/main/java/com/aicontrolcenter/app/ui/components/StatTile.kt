@@ -31,9 +31,12 @@ fun StatTile(
     modifier: Modifier = Modifier,
     accent: Color = MaterialTheme.colorScheme.primary,
     onClick: (() -> Unit)? = null,
+    /** A short qualifier under the number ("2 online"). [captionColor] marks a problem. */
+    caption: String? = null,
+    captionColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
 ) {
     AppCard(
-        modifier = modifier.clearAndSetSemantics { contentDescription = "$value $label" },
+        modifier = modifier.clearAndSetSemantics { contentDescription = listOfNotNull("$value $label", caption).joinToString(", ") },
         onClick = onClick,
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
     ) {
@@ -49,5 +52,14 @@ fun StatTile(
         }
         Spacer(Modifier.height(6.dp))
         Text(text = value, style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onSurface)
+        if (caption != null) {
+            Text(
+                text = caption,
+                style = MaterialTheme.typography.labelMedium,
+                color = captionColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }

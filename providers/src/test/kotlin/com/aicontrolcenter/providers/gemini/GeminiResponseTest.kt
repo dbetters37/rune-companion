@@ -179,10 +179,19 @@ class GeminiResponseTest : MockServerTest() {
     }
 
     @Test
-    fun `an empty reply an unreadable call and a cut-off stream are failures`() {
+    fun `a call whose arguments are not an object is reported on the call`() {
+        val call = chat(candidate("""{"functionCall":{"name":"get_weather","args":"Oslo"}}""")).message.toolCalls.single()
+
+        assertEquals("get_weather", call.name)
+        assertTrue(call.arguments.isEmpty())
+        val reason = assertNotNull(call.argumentsError)
+        assertTrue("JSON object" in reason && "Oslo" in reason, reason)
+    }
+
+    @Test
+    fun `an empty reply a nameless call and a cut-off stream are failures`() {
         failsWith<LlmException.MalformedResponse> { chat("{}") }
         failsWith<LlmException.MalformedResponse> { chat(candidate("""{"functionCall":{"args":{}}}""")) }
-        failsWith<LlmException.MalformedResponse> { chat(candidate("""{"functionCall":{"name":"get_weather","args":"Oslo"}}""")) }
         assertTrue(failsWith<LlmException.Network> { stream(candidate("""{"text":"It is "}""", finish = null)) }.retryable)
     }
 

@@ -17,6 +17,7 @@ import mockwebserver3.MockResponse
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -142,6 +143,24 @@ class OpenAiStreamTest : MockServerTest() {
 
         enqueueSse("""{"error":{"message":"The server had an error while processing your request.","type":"server_error"}}""")
         assertEquals(500, failsWith<LlmException.Server> { stream() }.status)
+    }
+
+    @Test
+    fun `a streamed call whose arguments do not parse is reported on the call`() {
+        enqueueSse(
+            delta(""""tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":""}}]"""),
+            delta(""""tool_calls":[{"index":0,"function":{"arguments":"{\"city\": Oslo}"}}]"""),
+            delta("", finish = "tool_calls"),
+            "[DONE]",
+        )
+        val chunks = stream()
+
+        val call = assertIs<ChatChunk.ToolCall>(chunks.single { it is ChatChunk.ToolCall }).call
+        assertEquals("get_weather", call.name)
+        assertTrue(call.arguments.isEmpty())
+        assertTrue("not valid JSON" in assertNotNull(call.argumentsError))
+        assertEquals(listOf(call), chunks.completed().response.message.toolCalls)
+        assertEquals(FinishReason.TOOL_CALLS, chunks.completed().response.finishReason)
     }
 
     @Test

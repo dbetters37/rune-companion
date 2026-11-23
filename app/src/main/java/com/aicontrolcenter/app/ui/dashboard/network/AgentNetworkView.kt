@@ -1,5 +1,11 @@
 package com.aicontrolcenter.app.ui.dashboard.network
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -84,6 +90,19 @@ fun AgentNetworkView(
     val currentViewport by rememberUpdatedState(viewport)
     val currentOnViewportChange by rememberUpdatedState(onViewportChange)
     val currentOnSelect by rememberUpdatedState(onSelect)
+    // Pulses keep moving while agents work. (Compose tests stop infinite animations, so pictures show them at rest.)
+    val pulsePhase = if (network.pulses.isEmpty()) {
+        0f
+    } else {
+        val transition = rememberInfiniteTransition(label = "pulses")
+        val phase by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(durationMillis = 1600, easing = LinearEasing), RepeatMode.Restart),
+            label = "pulse phase",
+        )
+        phase
+    }
 
     BoxWithConstraints(
         modifier = modifier
@@ -131,11 +150,11 @@ fun AgentNetworkView(
                 network.pulses.forEach { pulse ->
                     val from = avatarCentre(pulse.fromId) ?: return@forEach
                     val to = avatarCentre(pulse.toId) ?: return@forEach
-                    val progress = pulse.progress.coerceIn(0f, 1f)
+                    val progress = (pulse.progress + pulsePhase) % 1f
                     val at = Offset(from.x + (to.x - from.x) * progress, from.y + (to.y - from.y) * progress)
                     val color = colors.agentAccent(pulse.colorIndex)
-                    drawCircle(color.copy(alpha = 0.25f), radius = 7.dp.toPx(), center = at)
-                    drawCircle(color, radius = 3.5.dp.toPx(), center = at)
+                    drawCircle(color.copy(alpha = 0.25f), radius = 10.dp.toPx(), center = at)
+                    drawCircle(color, radius = 5.dp.toPx(), center = at)
                 }
             }
             network.nodes.forEach { node ->
@@ -167,6 +186,7 @@ private fun NetworkNodeView(
         append(node.name).append(", ").append(node.role.label)
         if (node.isHub) append(", designated Director")
         append(", ").append(node.status.text)
+        if (node.working) node.status.detail?.let { append(": ").append(it) }
     }
     Column(
         modifier = modifier
@@ -188,10 +208,10 @@ private fun NetworkNodeView(
         Box(
             modifier = Modifier
                 .then(
-                    if (selected) {
-                        Modifier.border(2.dp, MaterialTheme.colorScheme.onSurface, CircleShape)
-                    } else {
-                        Modifier
+                    when {
+                        selected -> Modifier.border(2.dp, MaterialTheme.colorScheme.onSurface, CircleShape)
+                        node.working -> Modifier.border(2.dp, appColors.working, CircleShape)
+                        else -> Modifier
                     },
                 )
                 .padding(4.dp),

@@ -34,6 +34,7 @@ import com.aicontrolcenter.app.di.LocalAppGraph
 import com.aicontrolcenter.app.ui.components.AppCard
 import com.aicontrolcenter.app.ui.components.ConfirmDialog
 import com.aicontrolcenter.app.ui.components.InfoBanner
+import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.app.ui.components.KeyValueRow
 import com.aicontrolcenter.app.ui.components.RowDivider
 import com.aicontrolcenter.app.ui.components.RowText
@@ -68,6 +69,8 @@ fun SettingsRoute() {
             activity = graph.activityRecorder,
             deviceInspector = graph.deviceInspector,
             appVersion = BuildConfig.VERSION_NAME,
+            directory = graph.registryDirectory,
+            tools = graph.toolRegistry.all().map { it.spec },
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -102,7 +105,7 @@ fun SettingsScreen(state: SettingsUiState, actions: SettingsActions) {
                 .padding(start = Spacing.screen, end = Spacing.screen, top = Spacing.xs, bottom = Spacing.xl),
             verticalArrangement = Arrangement.spacedBy(Spacing.md),
         ) {
-            PrivacySection(state.settings, actions, onClearRequested = { confirmClear = true })
+            PrivacySection(state.settings, state.localOnlyEffect, actions, onClearRequested = { confirmClear = true })
             OrchestrationSection(state.settings, actions)
             DeviceSection(state.device, actions.onRefreshDevice)
             AboutSection(state.appVersion)
@@ -127,17 +130,23 @@ fun SettingsScreen(state: SettingsUiState, actions: SettingsActions) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun PrivacySection(settings: FrameworkSettings, actions: SettingsActions, onClearRequested: () -> Unit) {
+private fun PrivacySection(
+    settings: FrameworkSettings,
+    effect: LocalOnlyEffectUi,
+    actions: SettingsActions,
+    onClearRequested: () -> Unit,
+) {
     Column {
         SectionHeader("Privacy")
         AppCard {
             SwitchRow(
                 title = "Local-only mode",
-                description = "When on, nothing that sends data off this phone may be used: agents whose model is in " +
-                    "the cloud or on your network become unavailable until you turn it off.",
+                description = "Blocks every provider and tool that is not on this device. Blocked providers are not even " +
+                    "contacted for a status check, and their agents cannot run until you turn it off.",
                 checked = settings.localOnlyMode,
                 onCheckedChange = actions.onLocalOnlyModeChange,
             )
+            LocalOnlyEffect(effect, settings.localOnlyMode)
             RowDivider(Modifier.padding(vertical = Spacing.sm))
             RowText(
                 title = "Keep activity history for",
@@ -175,8 +184,8 @@ private fun OrchestrationSection(settings: FrameworkSettings, actions: SettingsA
         SectionHeader("Orchestration limits")
         AppCard {
             Text(
-                "Loop and runaway protection for agent runs. The limits are saved now and are enforced once agents " +
-                    "can execute tasks, which this version cannot do yet.",
+                "Loop and runaway protection for agent runs. Model calls, tool calls and the task time-out already " +
+                    "apply to every chat turn; the others take effect when the Director runs objectives in a later version.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = Spacing.sm),
@@ -220,4 +229,34 @@ private fun AboutSection(appVersion: String) {
             )
         }
     }
+}
+
+/** What the switch does with the registry as it is now, so its effect is never a guess. */
+@Composable
+private fun LocalOnlyEffect(effect: LocalOnlyEffectUi, on: Boolean) {
+    val verb = if (on) "Blocked now" else "Would be blocked"
+    val lines = buildList {
+        add(
+            if (effect.providers.isEmpty()) {
+                "Providers: none. Every enabled provider is on this device."
+            } else {
+                "$verb: ${effect.providers.joinToString(", ")}."
+            },
+        )
+        if (effect.agents.isNotEmpty()) {
+            add((if (on) "Cannot run: " else "Could not run: ") + effect.agents.joinToString(", ") + ".")
+        }
+        add(
+            if (effect.tools.isEmpty()) {
+                "Tools: none of the registered tools send anything off this device."
+            } else {
+                "Tools ${if (on) "blocked" else "that would be blocked"}: ${effect.tools.joinToString(", ")}."
+            },
+        )
+    }
+    InfoBanner(
+        text = lines.joinToString("\n"),
+        tone = if (on && effect.providers.isNotEmpty()) StatusTone.ATTENTION else null,
+        modifier = Modifier.padding(bottom = Spacing.sm),
+    )
 }

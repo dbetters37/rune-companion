@@ -18,6 +18,7 @@ import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -153,6 +154,43 @@ internal class StreamingTest : MockApiTest() {
         assertEquals(FinishReason.LENGTH, completed.finishReason)
         assertEquals("Saving", completed.message.text)
         assertTrue(completed.message.toolCalls.isEmpty())
+    }
+
+    @Test
+    fun `a streamed call whose arguments are not a json object is reported on the call, not run with empty input`() {
+        enqueueSse(
+            start(),
+            blockStart(0, """{"type":"tool_use","id":"toolu_bad","name":"get_weather","input":{}}"""),
+            delta(0, inputJson("""{"city": "Oslo",}""")),
+            blockStop(0),
+            blockStart(1, """{"type":"tool_use","id":"toolu_list","name":"get_time","input":{}}"""),
+            delta(1, inputJson("""["UTC"]""")),
+            blockStop(1),
+            blockStart(2, """{"type":"tool_use","id":"toolu_ok","name":"get_weather","input":{}}"""),
+            delta(2, inputJson("""{"city": "Bergen"}""")),
+            blockStop(2),
+            blockStart(3, """{"type":"tool_use","id":"toolu_bare","name":"get_weather","input":{}}"""),
+            delta(3, inputJson("""{"city": Oslo}""")),
+            blockStop(3),
+            messageDelta("tool_use"),
+            messageStop,
+        )
+
+        val chunks = collect()
+
+        assertEquals(listOf("toolu_ok"), chunks.filterIsInstance<ChatChunk.ToolCall>().map { it.call.id }, "a broken call is not announced early")
+        val completed = assertIs<ChatChunk.Completed>(chunks.last()).response
+        assertEquals(FinishReason.TOOL_CALLS, completed.finishReason)
+        val (bad, list, ok, bare) = completed.message.toolCalls
+        assertTrue("Oslo is not in quotes" in assertNotNull(bare.argumentsError), bare.argumentsError)
+        assertTrue(bare.arguments.isEmpty())
+        assertEquals("get_weather", bad.name)
+        assertTrue(bad.arguments.isEmpty())
+        val reason = assertNotNull(bad.argumentsError)
+        assertTrue("not valid JSON" in reason && """{"city": "Oslo",}""" in reason, reason)
+        assertTrue("JSON object" in assertNotNull(list.argumentsError))
+        assertNull(ok.argumentsError)
+        assertEquals(buildJsonObject { put("city", "Bergen") }, ok.arguments)
     }
 
     @Test

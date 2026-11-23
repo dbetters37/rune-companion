@@ -2,7 +2,14 @@ package com.aicontrolcenter.app.di
 
 import com.aicontrolcenter.app.testing.MainDispatcherRule
 import com.aicontrolcenter.app.testing.TestApp
+import com.aicontrolcenter.core.ProviderId
 import com.aicontrolcenter.core.activity.ActivityType
+import com.aicontrolcenter.core.llm.ProviderHealth
+import com.aicontrolcenter.core.registry.ConnectionStatus
+import com.aicontrolcenter.framework.llm.Simulator
+import com.aicontrolcenter.testkit.FakeProviderAdapter
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlin.test.assertNull
 import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.registry.AiAppStatus
 import com.aicontrolcenter.testkit.Samples
@@ -96,5 +103,41 @@ class AppGraphTest {
         app.graph.aiAppLauncher.handOffText(app.appNamed("Example Chatbot"), "hello")
         assertEquals(listOf("com.example.chatbot" to "hello"), app.launcher.handedOff)
         assertEquals(ActivityType.DATA_EGRESS, app.activityLog.all.last().type)
+    }
+
+    @Test
+    fun `starting registers the simulator before the team and checks providers in the background`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        val adapter = FakeProviderAdapter(health = ProviderHealth(ConnectionStatus.OFFLINE, "Connection refused."))
+        app.adaptersByUrl["http://192.168.1.20:8080/v1"] = adapter
+        app.providers.upsert(Samples.provider(status = ConnectionStatus.ONLINE))
+
+        app.graph.start().join()
+        advanceUntilIdle()
+        assertNotNull(app.providers.get(Simulator.PROVIDER_ID), "the simulator is always there")
+        assertNotNull(app.models.get(Simulator.MODEL_ID))
+        assertEquals(ConnectionStatus.OFFLINE, app.providers.get(ProviderId("prv_sample"))?.status, "a stale status is replaced at start")
+
+        // Back in the foreground soon after: the status is fresh, so nothing is contacted.
+        adapter.health = ProviderHealth(ConnectionStatus.ONLINE)
+        app.clock.advance(AppStartup.PROVIDER_RECHECK_MS)
+        app.graph.onAppForegrounded()
+        advanceUntilIdle()
+        assertEquals(ConnectionStatus.ONLINE, app.providers.get(ProviderId("prv_sample"))?.status, "an old status is checked again")
+
+        adapter.health = ProviderHealth(ConnectionStatus.OFFLINE, "Gone again.")
+        app.graph.onAppForegrounded()
+        advanceUntilIdle()
+        assertEquals(ConnectionStatus.ONLINE, app.providers.get(ProviderId("prv_sample"))?.status, "a fresh status is not checked again")
+    }
+
+    @Test
+    fun `deleting an agent removes its conversations`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.graph.start().join()
+        val writer = app.agentNamed("Writer").profile
+        val conversation = app.graph.agentChat.startConversation(writer.id)
+        app.graph.agentManager.delete(writer.id)
+        assertNull(app.conversations.getConversation(conversation.id))
     }
 }

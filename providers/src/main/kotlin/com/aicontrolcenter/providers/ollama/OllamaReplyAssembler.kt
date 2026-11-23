@@ -8,16 +8,14 @@ import com.aicontrolcenter.core.llm.FinishReason
 import com.aicontrolcenter.core.llm.TokenUsage
 import com.aicontrolcenter.core.llm.ToolCallRequest
 import com.aicontrolcenter.providers.http.ProviderHttp
+import com.aicontrolcenter.providers.http.ToolArguments
 import com.aicontrolcenter.providers.http.array
 import com.aicontrolcenter.providers.http.boolean
 import com.aicontrolcenter.providers.http.long
 import com.aicontrolcenter.providers.http.obj
 import com.aicontrolcenter.providers.http.objects
 import com.aicontrolcenter.providers.http.string
-import kotlinx.serialization.SerializationException
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import java.util.UUID
 
 /**
@@ -104,22 +102,16 @@ internal class OllamaReplyAssembler(
         return ChatResponse(message, finishReason, usage, model ?: requestedModel)
     }
 
+    /**
+     * Arguments that are not an object are reported on the call ([ToolCallRequest.argumentsError])
+     * rather than failing the turn, so the model hears what was wrong. Only a call without a
+     * name cannot be answered and fails the reply.
+     */
     private fun toolCall(raw: JsonObject): ToolCallRequest {
         val function = raw.obj("function") ?: throw http.errors.malformed("a tool call had no function")
         val name = function.string("name")?.takeIf { it.isNotBlank() } ?: throw http.errors.malformed("a tool call had no name")
-        val arguments = when (val value = function["arguments"]) {
-            null -> JsonObject(emptyMap())
-            is JsonObject -> value
-            // The native API sends an object; a string is tolerated for servers that imitate it loosely.
-            is JsonPrimitive -> value.takeIf { it.isString }?.content?.let(::parseObject)
-            else -> null
-        } ?: throw http.errors.malformed("the arguments of a call to ${name.take(64)} were not a JSON object")
-        return ToolCallRequest(raw.string("id")?.takeIf { it.isNotBlank() } ?: newCallId(), name, arguments)
-    }
-
-    private fun parseObject(text: String): JsonObject? = if (text.isBlank()) JsonObject(emptyMap()) else try {
-        Json.parseToJsonElement(text) as? JsonObject
-    } catch (e: SerializationException) {
-        null
+        // The native API sends an object; a string is tolerated for servers that imitate it loosely.
+        val arguments = ToolArguments.fromElement(function["arguments"])
+        return ToolCallRequest(raw.string("id")?.takeIf { it.isNotBlank() } ?: newCallId(), name, arguments.arguments, arguments.error)
     }
 }

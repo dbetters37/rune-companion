@@ -34,6 +34,7 @@ import com.aicontrolcenter.app.ui.components.icon
 import com.aicontrolcenter.app.ui.components.label
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.ModelChip
+import com.aicontrolcenter.app.ui.icons.Tools
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.appColors
 import com.aicontrolcenter.core.agents.label
@@ -135,8 +136,7 @@ internal fun ModelSection(agent: AgentDetailUi, onOpenModels: () -> Unit) {
                     text = if (agent.modelsAvailable) {
                         "An agent needs a model to work. Edit this agent to choose one of your registered models."
                     } else {
-                        "An agent needs a model to work, and none is registered yet. " +
-                            "Connecting model providers is the next stage of this build."
+                        "An agent needs a model to work, and none is registered yet. Add a model provider under Models."
                     },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -186,6 +186,32 @@ private fun ModelRefRow(model: ModelRefUi, label: String) {
             )
         }
         model.locality?.let { TintedChip(it.label, appColors.locality(it), icon = it.icon) }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun ToolsSection(agent: AgentDetailUi) {
+    Column {
+        SectionHeader("Tools")
+        AppCard {
+            if (agent.tools.isEmpty()) {
+                Text("No tools are switched on.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+                    verticalArrangement = Arrangement.spacedBy(Spacing.sm),
+                ) {
+                    agent.tools.forEach { NeutralChip(it, icon = AppIcons.Tools) }
+                }
+            }
+            Text(
+                "Switch tools on or off in the editor. Only safe information tools exist so far.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = Spacing.sm),
+            )
+        }
     }
 }
 

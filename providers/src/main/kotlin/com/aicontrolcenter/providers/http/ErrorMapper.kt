@@ -25,6 +25,7 @@ import javax.net.ssl.SSLException
  * | 529, or 503 saying the provider is overloaded | [LlmException.Overloaded] |
  * | other 5xx | [LlmException.Server] |
  * | socket or call timeout | [LlmException.Timeout] |
+ * | a local address that resolved elsewhere ([LocalityDns]) | [LlmException.Network], nothing sent |
  * | any other IOException | [LlmException.Network] |
  * | a 2xx body that cannot be decoded | [LlmException.MalformedResponse] |
  *
@@ -87,7 +88,10 @@ internal class ErrorMapper(private val label: String, private val redactor: Reda
     fun fromIo(e: IOException): LlmException {
         val reason = redactor.clean(e.message ?: e.javaClass.simpleName)
         val cause = e.takeUnless { redactor.appearsIn(it) }
+        val refused = generateSequence<Throwable>(e) { it.cause }.take(MAX_CAUSE_DEPTH).filterIsInstance<LocalityRefusedException>().firstOrNull()
         return when {
+            // Its message names only the host from the provider's address, which is not secret.
+            refused != null -> LlmException.Network(refused.message.orEmpty(), cause)
             e is SocketTimeoutException || (e is InterruptedIOException && e.message == "timeout") ->
                 LlmException.Timeout("$label did not respond in time ($reason).", cause)
             e is UnknownHostException -> LlmException.Network("$label could not be found: the host name does not resolve.", cause)
@@ -123,6 +127,7 @@ internal class ErrorMapper(private val label: String, private val redactor: Reda
     private fun saysOverloaded(detail: ErrorDetail): Boolean = OVERLOAD_PHRASES.any { it in detail.searchable }
 
     private companion object {
+        const val MAX_CAUSE_DEPTH = 12
         val BAD_KEY_PHRASES = listOf("api key not valid", "invalid api key", "incorrect api key", "api key is invalid")
         val CONTEXT_PHRASES = listOf(
             "context length", "context window", "context_length", "context size", "maximum context", "exceeds the context",

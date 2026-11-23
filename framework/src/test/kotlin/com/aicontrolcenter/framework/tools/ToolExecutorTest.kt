@@ -3,6 +3,8 @@ package com.aicontrolcenter.framework.tools
 import com.aicontrolcenter.core.activity.ActivityType
 import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.llm.ToolCallRequest
+import com.aicontrolcenter.core.tools.ActionAssessment
+import com.aicontrolcenter.core.tools.Authorization
 import com.aicontrolcenter.core.tools.RiskLevel
 import com.aicontrolcenter.core.tools.Tool
 import com.aicontrolcenter.core.tools.ToolAuthorizer
@@ -113,6 +115,50 @@ class ToolExecutorTest {
         assertTrue(tool.calls.isEmpty() && risky.calls.isEmpty())
         assertEquals(listOf("Tool call denied: Test quiet", "Tool call denied: Test wipe"), toolEvents().map { it.title })
         assertEquals("CONSEQUENTIAL", toolEvents().last().data!!.getValue("risk").jsonPrimitive.content, "the risk of this call, not of a typical one")
+    }
+
+    @Test
+    fun `a tool the agent does not have is refused before its arguments are looked at or its assessment runs`() = runTest {
+        val assessed = ArrayList<JsonObject>()
+        val strict = world.register(object : Tool {
+            private val shape = LambdaTool("strict", required = listOf("text")) { ToolOutcome.success("ran") }
+            override val spec = shape.spec
+
+            override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
+                assessed += arguments
+                return shape.assess(arguments, context)
+            }
+
+            override suspend fun execute(arguments: JsonObject, context: ToolContext) = shape.execute(arguments, context)
+        })
+        val without = context()
+
+        val badArguments = world.executor.execute(call(strict, args("extra" to JsonPrimitive(1))), without)
+        val unreadable = world.executor.execute(call(strict).copy(argumentsError = "not JSON"), without)
+        val fine = world.executor.execute(call(strict, args("text" to JsonPrimitive("a"))), without)
+
+        val authorizer = DefaultToolAuthorizer(world.settings, world.capabilities)
+        val expected = (authorizer.authorize(strict.spec, ActionAssessment(RiskLevel.SAFE, ""), without) as Authorization.Denied).reason
+        for (execution in listOf(badArguments, unreadable, fine)) {
+            assertEquals(ToolCallEnd.DENIED, execution.end)
+            assertEquals(expected, execution.outcome.content, "the same words as the authorizer, and nothing about the tool's arguments")
+        }
+        assertTrue(assessed.isEmpty(), "no assessment ran for a tool the agent does not have")
+        assertEquals(List(3) { "Tool call denied: Test strict" }, toolEvents().map { it.title })
+    }
+
+    @Test
+    fun `a call whose arguments could not be read is answered with the tool and the reason, and never runs`() = runTest {
+        val echo = world.register(LambdaTool("echo") { ToolOutcome.success("ran") })
+
+        val execution = world.executor.execute(call(echo).copy(argumentsError = "The arguments were not valid JSON: unexpected '}' at 14."), context(echo))
+
+        assertEquals(ToolCallEnd.REJECTED, execution.end)
+        assertFalse(execution.outcome.ok)
+        val text = execution.outcome.content
+        assertTrue("test_echo" in text && "unexpected '}' at 14" in text && "JSON object" in text, text)
+        assertTrue(echo.calls.isEmpty())
+        assertEquals("Tool call rejected: Test echo", toolEvents().single().title)
     }
 
     @Test

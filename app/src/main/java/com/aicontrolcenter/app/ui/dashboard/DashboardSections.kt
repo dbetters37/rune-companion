@@ -20,6 +20,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.text.style.TextAlign
+import com.aicontrolcenter.app.ui.components.AgentAvatar
+import com.aicontrolcenter.app.ui.icons.Sparkle
+import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.app.ui.components.ActivityEventRow
 import com.aicontrolcenter.app.ui.components.ActivityRowUi
 import com.aicontrolcenter.app.ui.components.AppCard
@@ -156,6 +161,106 @@ internal fun RecentActivitySection(
             rows.forEachIndexed { index, row ->
                 if (index > 0) RowDivider(Modifier.padding(start = 64.dp))
                 ActivityEventRow(row)
+            }
+        }
+    }
+}
+
+/** The common first step, one tap away: give every agent without a model something to think with. */
+@Composable
+internal fun QuickStartCard(
+    quickStart: QuickStartUi,
+    isAssigning: Boolean,
+    onConnectProvider: () -> Unit,
+    onAssignModel: () -> Unit,
+    onTrySimulator: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val count = quickStart.agentsWithoutModel.size
+    AppCard(
+        modifier = modifier,
+        containerColor = appColors.info.copy(alpha = 0.08f).compositeOver(MaterialTheme.colorScheme.surface),
+        borderColor = appColors.info.copy(alpha = 0.35f),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
+            Icon(AppIcons.Sparkle, contentDescription = null, tint = appColors.info, modifier = Modifier.size(24.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                Text(
+                    if (count == 1) "${quickStart.agentsWithoutModel.single()} has no model" else "$count agents have no model",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    if (quickStart.hasRealModels) {
+                        "They cannot run until each has one. Give them one of your models, or try them with the simulator."
+                    } else {
+                        "Agents need a model to think with. Connect a model provider, or try everything first with the " +
+                            "built-in simulator, which is not a real model."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(top = Spacing.md), horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
+            Button(
+                onClick = if (quickStart.hasRealModels) onAssignModel else onConnectProvider,
+                modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp),
+            ) {
+                Text(
+                    if (quickStart.hasRealModels) "Assign a model" else "Connect a model provider",
+                    maxLines = 2,
+                    textAlign = TextAlign.Center,
+                )
+            }
+            if (quickStart.simulatorAvailable) {
+                OutlinedButton(
+                    onClick = onTrySimulator,
+                    enabled = !isAssigning,
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp),
+                ) { Text("Try with the simulator", maxLines = 2, textAlign = TextAlign.Center) }
+            }
+        }
+    }
+}
+
+/** Agents running a turn right now, and what each is doing. */
+@Composable
+internal fun WorkingNowSection(working: List<WorkingAgentUi>, onOpenAgent: (AgentId) -> Unit, modifier: Modifier = Modifier) {
+    Column(modifier = modifier) {
+        SectionHeader(if (working.isEmpty()) "Working now" else "Working now · ${working.size}")
+        AppCard(contentPadding = PaddingValues(0.dp)) {
+            if (working.isEmpty()) {
+                Text(
+                    "No agent is working right now.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(Spacing.lg),
+                )
+            }
+            working.forEachIndexed { index, agent ->
+                if (index > 0) RowDivider()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClickLabel = "Open ${agent.name}") { onOpenAgent(agent.agentId) }
+                        .heightIn(min = 64.dp)
+                        .padding(horizontal = Spacing.lg, vertical = Spacing.md),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+                ) {
+                    AgentAvatar(agent.name, agent.colorIndex, size = 36.dp, status = StatusTone.WORKING)
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(agent.name, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp, color = appColors.working)
+                            Text(agent.detail, style = MaterialTheme.typography.bodySmall, color = appColors.working)
+                        }
+                    }
+                    Icon(AppIcons.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
         }
     }

@@ -35,11 +35,11 @@ enum class OrchestrationLimit(
         read = { it.maxMessagesPerObjective }, write = { s, v -> s.copy(maxMessagesPerObjective = v) },
     ),
     MAX_MODEL_CALLS_PER_TASK(
-        "Model calls per task", "A task is stopped once it has called its model this often.", 4..100, step = 4,
+        "Model calls per task", "A task or chat turn is stopped once it has called its model this often.", 4..100, step = 4,
         read = { it.maxModelCallsPerTask }, write = { s, v -> s.copy(maxModelCallsPerTask = v) },
     ),
     MAX_TOOL_CALLS_PER_TASK(
-        "Tool calls per task", "A task is stopped once it has used tools this often.", 5..200, step = 5,
+        "Tool calls per task", "A task or chat turn is stopped once it has used tools this often.", 5..200, step = 5,
         read = { it.maxToolCallsPerTask }, write = { s, v -> s.copy(maxToolCallsPerTask = v) },
     ),
     MAX_REVISION_ROUNDS(
@@ -51,7 +51,7 @@ enum class OrchestrationLimit(
         read = { it.maxTaskAttempts }, write = { s, v -> s.copy(maxTaskAttempts = v) },
     ),
     TASK_TIMEOUT_MINUTES(
-        "Task time-out", "A single task is stopped after this long.", 5..120, step = 5, unit = "min",
+        "Task time-out", "A single task or chat turn is stopped after this long.", 5..120, step = 5, unit = "min",
         read = { it.taskTimeoutMinutes }, write = { s, v -> s.copy(taskTimeoutMinutes = v) },
     ),
     OBJECTIVE_TIMEOUT_MINUTES(

@@ -2,6 +2,7 @@ package com.aicontrolcenter.framework.agents
 
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.agents.AgentActivity
+import com.aicontrolcenter.core.agents.AgentProfile
 import com.aicontrolcenter.core.llm.CallContext
 import com.aicontrolcenter.core.llm.ChatChunk
 import com.aicontrolcenter.core.llm.ChatMessage
@@ -41,6 +42,10 @@ import kotlinx.coroutines.withTimeoutOrNull
  *    cancellation of the caller propagates, after what was produced has been handed over.
  *  - Tool results go back to the model as tool messages and nowhere else: they cannot change
  *    limits, the tool list or the system prompt.
+ *  - What the owner changes about the agent takes effect within the turn: the agent is read
+ *    again before every model call and every tool call. Each call is authorised against the
+ *    agent as it is then, so a tool switched off mid-turn is refused; an agent switched off or
+ *    deleted mid-turn ends the run as [RunEnd.STOPPED_BY_OWNER].
  */
 class AgentRunner(
     private val gateway: ModelGateway,
@@ -91,6 +96,12 @@ class AgentRunner(
 
     private class Ending(val end: RunEnd, val notice: String?, val error: LlmException? = null)
 
+    private sealed interface Outcome {
+        class Go(val agent: AgentProfile) : Outcome
+
+        class Stop(val ending: Ending) : Outcome
+    }
+
     /** The state of one run. */
     private inner class Run(val request: AgentRunRequest, val listener: AgentRunListener, val limits: FrameworkSettings) {
         private val agent = request.agent
@@ -102,7 +113,6 @@ class AgentRunner(
         }
         private val produced = ArrayList<ChatMessage>()
         private val callContext = CallContext(agent.id, request.taskId, request.rootTaskId, request.purpose)
-        private val toolContext = ToolContext(agent, request.taskId, request.rootTaskId)
         private val maxModelCalls = limits.maxModelCallsPerTask.coerceAtLeast(1)
         private val maxToolCalls = limits.maxToolCallsPerTask.coerceAtLeast(0)
 
@@ -128,6 +138,7 @@ class AgentRunner(
                 if (modelCalls >= maxModelCalls) {
                     return Ending(RunEnd.MODEL_CALL_LIMIT, "Stopped after $modelCalls model calls, the limit for one task.")
                 }
+                (current() as? Outcome.Stop)?.let { return it.ending }
                 val response = try {
                     callModel()
                 } catch (e: LlmException) {
@@ -183,18 +194,33 @@ class AgentRunner(
             return response
         }
 
-        /** Runs the calls in order. Returns an ending when the tool budget ran out before all of them ran. */
+        /**
+         * The agent as it is stored now, or the ending of a run whose agent the owner switched
+         * off or deleted. Its tool list and settings are what the next call is authorised against.
+         */
+        private suspend fun current(): Outcome {
+            val now = agents.get(agent.id)
+                ?: return Outcome.Stop(Ending(RunEnd.STOPPED_BY_OWNER, "Stopped: ${agent.name} was deleted while it was working."))
+            if (!now.enabled) return Outcome.Stop(Ending(RunEnd.STOPPED_BY_OWNER, "Stopped: ${now.name} was switched off while it was working."))
+            return Outcome.Go(now)
+        }
+
+        /** Runs the calls in order. Returns an ending when the tool budget ran out, or the agent was stopped, before all of them ran. */
         private suspend fun runTools(calls: List<ToolCallRequest>): Ending? {
             for (call in calls) {
                 if (toolCalls >= maxToolCalls) {
                     return Ending(RunEnd.TOOL_CALL_LIMIT, "Stopped after $toolCalls tool calls, the limit for one task.")
+                }
+                val profile = when (val now = current()) {
+                    is Outcome.Stop -> return now.ending
+                    is Outcome.Go -> now.agent
                 }
                 val spec = tools.byFunctionName(call.name)?.spec
                 report("Running tool: ${spec?.title ?: call.name.take(MAX_TOOL_NAME_SHOWN)}")
                 listener.onToolStarted(call, spec)
                 toolCalls++
                 executing = call
-                val execution = executor.execute(call, toolContext)
+                val execution = executor.execute(call, ToolContext(profile, request.taskId, request.rootTaskId))
                 executing = null
                 if (!execution.outcome.ok) toolErrors++
                 unanswered.remove(call)

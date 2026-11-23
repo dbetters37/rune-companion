@@ -19,7 +19,22 @@ import kotlinx.serialization.json.put
 internal object PromptedToolsFormat {
     private const val CALL_OPEN = "<tool_call>"
     private const val CALL_CLOSE = "</tool_call>"
-    private val RESULT_TAG = Regex("<(/?)tool_result", RegexOption.IGNORE_CASE)
+
+    /*
+     * What turns text into a call, for [PromptedToolCallParser] or for [ToolCallStreamFilter]:
+     * the tags of the formats models use, Mistral's bracket marker, code fences, and JSON or
+     * "Action:" lines at the start of a line. Quoted content (tool output, the arguments of
+     * earlier calls) is rendered so that none of them occurs in it: a model that repeats what a
+     * tool returned must not thereby make a call the tool's output chose.
+     */
+    private val CALL_TAG = Regex("<(/?)(tool_?call|function|tool_use|tool_result)", RegexOption.IGNORE_CASE)
+    private val BRACKET_MARKER = Regex("\\[(?=TOOL_CALLS])", RegexOption.IGNORE_CASE)
+    private val FENCE = Regex("`{3,}")
+    private val LINE_START_TRIGGER = Regex("(?im)^([ \\t]*)(?=[{\\[]|Action( Input)?[ \\t]*:)")
+    private val UNSAFE_NAME_CHARACTER = Regex("[^A-Za-z0-9_.\\-]")
+
+    /** Invisible to a reader, but not a space: a line that starts with it no longer starts with what follows. */
+    private const val LINE_BREAKER = "\u200B"
 
     fun offersTools(request: ChatRequest): Boolean = request.tools.isNotEmpty() && request.toolChoice != ToolChoice.NONE
 
@@ -48,24 +63,41 @@ internal object PromptedToolsFormat {
 
     private const val NO_TOOLS_NOW = "Tools are not available for your next message. Answer in plain text, without any $CALL_OPEN block."
 
+    /**
+     * An earlier call, as the model wrote it. Inside JSON strings, `<`, backticks and the
+     * bracket marker are written as \\u escapes: the same value, but an argument that quotes
+     * call markup can neither end this block nor start another.
+     */
     fun renderCall(call: ToolCallRequest): String {
         val json = buildJsonObject {
             put("name", call.name)
             put("arguments", call.arguments)
-        }
-        return "$CALL_OPEN\n$json\n$CALL_CLOSE"
+        }.toString()
+        // None of these characters is JSON syntax outside a string, so each is inside one.
+        val quoted = BRACKET_MARKER.replace(json.replace("<", "\\u003c").replace("`", "\\u0060"), "\\\\u005b")
+        return "$CALL_OPEN\n$quoted\n$CALL_CLOSE"
     }
 
     /**
-     * Tool output is wrapped in tags the model was told to treat as data. Tags of the same
-     * name inside the output are defused, so a result cannot close its own block and continue
-     * as if it were the owner speaking.
+     * Tool output is wrapped in tags the model was told to treat as data. Inside the output,
+     * every call or result tag is defused, so a result can neither close its own block nor
+     * contain a call that a model repeating it would make (see the note on [CALL_TAG]).
      */
     fun renderResults(results: List<ToolResultContent>): String = results.joinToString("\n\n") { result ->
         val status = if (result.isError) " status=\"error\"" else ""
-        val content = RESULT_TAG.replace(result.content) { "&lt;" + it.groupValues[1] + "tool_result" }
-        "<tool_result name=\"${result.toolName}\"$status>\n$content\n</tool_result>"
+        val name = UNSAFE_NAME_CHARACTER.replace(result.toolName.take(MAX_NAME_LENGTH), "_")
+        "<tool_result name=\"$name\"$status>\n${quote(result.content)}\n</tool_result>"
     }
+
+    /** [text] with nothing left in it that the parser or the stream filter would take for the start of a call. */
+    fun quote(text: String): String {
+        var out = CALL_TAG.replace(text) { "&lt;" + it.groupValues[1] + it.groupValues[2] }
+        out = BRACKET_MARKER.replace(out, "&#91;")
+        out = FENCE.replace(out) { fence -> "\\`".repeat(fence.value.length) }
+        return LINE_START_TRIGGER.replace(out) { it.groupValues[1] + LINE_BREAKER }
+    }
+
+    private const val MAX_NAME_LENGTH = 64
 
     /**
      * The request as a model without tool calling can take it: tool instructions join the

@@ -64,7 +64,8 @@ internal fun hostOfUrl(url: String?): String? {
  * Where requests to this provider go, for the "information left the device" record. An address
  * that cannot be read is reported as such rather than guessed.
  */
-internal fun ModelProvider.destinationHost(): String =
-    hostOfUrl(baseUrl)
-        ?: kind.defaultHost?.takeIf { baseUrl.isNullOrBlank() }
-        ?: "unknown host ($name)"
+internal fun ModelProvider.destinationHost(): String = endpointHost(kind, baseUrl) ?: "unknown host ($name)"
+
+/** The host requests of a provider of [kind] at [baseUrl] go to, or null when the address cannot be read. */
+internal fun endpointHost(kind: ProviderKind, baseUrl: String?): String? =
+    hostOfUrl(baseUrl) ?: kind.defaultHost?.takeIf { baseUrl.isNullOrBlank() }

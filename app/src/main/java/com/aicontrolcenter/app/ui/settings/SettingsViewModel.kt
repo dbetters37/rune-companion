@@ -19,6 +19,12 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.flowOf
+import com.aicontrolcenter.core.registry.Locality
+import com.aicontrolcenter.core.registry.RegistryDirectory
+import com.aicontrolcenter.core.registry.RegistrySnapshot
+import com.aicontrolcenter.core.registry.effectiveLocality
+import com.aicontrolcenter.core.tools.ToolSpec
 
 /** The device report is read on demand, so it has its own loading and failure states. */
 sealed interface DeviceReportState {
@@ -27,10 +33,21 @@ sealed interface DeviceReportState {
     data class Failed(val reason: String) : DeviceReportState
 }
 
+/** What local-only mode blocks with the registry as it is now. */
+@Immutable
+data class LocalOnlyEffectUi(
+    /** "Hosted API (cloud)", "Desk PC (local network)". */
+    val providers: List<String> = emptyList(),
+    val tools: List<String> = emptyList(),
+    /** Agents whose every model is on a blocked provider, so they cannot run while the mode is on. */
+    val agents: List<String> = emptyList(),
+)
+
 @Immutable
 data class SettingsUiState(
     val isLoading: Boolean = true,
     val settings: FrameworkSettings = FrameworkSettings(),
+    val localOnlyEffect: LocalOnlyEffectUi = LocalOnlyEffectUi(),
     val device: DeviceReportState = DeviceReportState.Loading,
     val appVersion: String = "",
     val message: UserMessage? = null,
@@ -46,6 +63,8 @@ class SettingsViewModel(
     private val activity: ActivityRecorder,
     private val deviceInspector: DeviceInspector,
     private val appVersion: String,
+    directory: RegistryDirectory? = null,
+    private val tools: List<ToolSpec> = emptyList(),
 ) : ViewModel() {
 
     private data class Local(val device: DeviceReportState = DeviceReportState.Loading, val message: UserMessage? = null)
@@ -53,10 +72,15 @@ class SettingsViewModel(
     private val local = MutableStateFlow(Local())
     private var messageCounter = 0L
 
-    val uiState: StateFlow<SettingsUiState> = combine(settings.settings, local) { settings, local ->
+    val uiState: StateFlow<SettingsUiState> = combine(
+        settings.settings,
+        directory?.observe() ?: flowOf(null),
+        local,
+    ) { settings, snapshot, local ->
         SettingsUiState(
             isLoading = false,
             settings = settings,
+            localOnlyEffect = snapshot?.localOnlyEffect() ?: LocalOnlyEffectUi(tools = blockedTools()),
             device = local.device,
             appVersion = appVersion,
             message = local.message,
@@ -65,6 +89,23 @@ class SettingsViewModel(
 
     init {
         refreshDeviceReport()
+    }
+
+    private fun blockedTools(): List<String> = tools.filter { it.sendsDataOffDevice }.map { it.title }
+
+    /** Every enabled provider whose prompts leave the device, and the agents that would have no model left. */
+    private fun RegistrySnapshot.localOnlyEffect(): LocalOnlyEffectUi {
+        val blocked = providers.filter { it.enabled && it.effectiveLocality.leavesDevice }
+        val blockedIds = blocked.map { it.id }.toSet()
+        val blockedModels = models.filter { it.providerId in blockedIds }.map { it.id }.toSet()
+        return LocalOnlyEffectUi(
+            providers = blocked.map { "${it.name} (${if (it.effectiveLocality == Locality.CLOUD) "cloud" else "local network"})" },
+            tools = blockedTools(),
+            agents = agents.filter { entry ->
+                val assigned = listOfNotNull(entry.profile.modelId) + entry.profile.fallbackModelIds
+                assigned.isNotEmpty() && assigned.all { it in blockedModels }
+            }.map { it.profile.name },
+        )
     }
 
     fun setLocalOnlyMode(enabled: Boolean) = change {

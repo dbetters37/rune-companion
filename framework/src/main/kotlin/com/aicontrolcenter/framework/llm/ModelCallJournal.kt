@@ -24,9 +24,13 @@ internal class ModelCall(
     val promptedTools: Boolean,
     val messageCount: Int,
     val toolCount: Int,
-    /** Set only for providers off this device; attached to the event once a request went out. */
+    /**
+     * Set only for providers off this device; attached to the event once a request went out.
+     * Its size is that of one attempt: the event reports it times the attempts that were sent.
+     */
     val egress: EgressInfo?,
 ) {
+    /** Attempts handed to the adapter, each of which sent the whole request. */
     var attempts = 0
 
     /** True from the moment the adapter was asked to send; before that nothing has left the device. */
@@ -90,6 +94,13 @@ internal class ModelCallJournal(private val activity: ActivityRecorder) {
         }
     }
 
+    /** A retry that policy no longer allowed, or that would have gone somewhere else than the attempts before it. */
+    suspend fun retryBlocked(call: ModelCall, reason: String, durationMs: Long) {
+        val tries = if (call.attempts == 1) "1 attempt" else "${call.attempts} attempts"
+        val detail = "${call.model.displayName} via ${call.provider.name}: not repeated after $tries. $reason"
+        record(call, "Model call blocked", detail, Severity.WARNING, durationMs) { put("outcome", "blocked") }
+    }
+
     suspend fun cancelled(call: ModelCall, durationMs: Long) {
         val detail = "${call.model.displayName} via ${call.provider.name}: stopped before the reply was complete"
         record(call, "Model call cancelled", detail, Severity.INFO, durationMs) { put("outcome", "cancelled") }
@@ -114,7 +125,9 @@ internal class ModelCallJournal(private val activity: ActivityRecorder) {
                 put("tools", call.toolCount)
                 extra()
             },
-            egress = call.egress.takeIf { call.sent },
+            egress = call.egress?.takeIf { call.sent }?.let { egress ->
+                egress.copy(approxBytes = egress.approxBytes?.times(call.attempts.coerceAtLeast(1)))
+            },
         )
     }
 }

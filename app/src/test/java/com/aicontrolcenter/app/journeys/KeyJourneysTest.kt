@@ -41,8 +41,10 @@ class KeyJourneysTest {
     fun stopApp() = robot.close()
 
     @Test
-    fun `the dashboard explains the missing models once and lists no errors`() {
-        robot.assertShown("Agents need a model to work. Connecting model providers is the next stage of this build.")
+    fun `the dashboard offers one-tap help for agents without a model and lists no errors`() {
+        robot.assertShown("6 agents have no model")
+            .assertShown("Connect a model provider")
+            .assertShown("Try with the simulator")
             .assertShown("0 of 6 agents ready to run")
             .assertShown("Nothing needs your attention.")
             .assertShown("Designated Director")
@@ -55,7 +57,7 @@ class KeyJourneysTest {
             .assertShown("Choose a starting point.")
             .scrollListTo("Writes, explains and debugs")
             .tapItemContaining("Writes, explains and debugs")
-            .assertShown("No models are registered yet")
+            .assertShown("No model assigned. The agent cannot run without one.")
             .type("Name", "Build Engineer")
             .tap("Create agent")
 
@@ -113,7 +115,7 @@ class KeyJourneysTest {
     @Test
     fun `scan for AI apps, open one and use what is permitted`() {
         robot.openSectionViaMore("Models")
-            .assertShown("No providers yet")
+            .assertShown("Simulator: not a real model")
             .tap("AI apps · 0")
             .assertShown("No AI apps registered")
             .tap("Scan device")
@@ -205,7 +207,7 @@ class KeyJourneysTest {
             robot.openSection(section)
         }
         robot.assertShown("0 of 6 agents ready to run")
-        robot.openSection("Models").assertShown("No providers yet")
+        robot.openSection("Models").assertShown("Simulator: not a real model")
     }
 
     @Test

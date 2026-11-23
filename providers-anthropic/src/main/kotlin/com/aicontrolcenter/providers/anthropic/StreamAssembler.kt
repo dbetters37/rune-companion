@@ -75,7 +75,8 @@ internal class StreamAssembler {
             throw LlmException.Network("The connection closed before the reply was complete.")
         }
         val usage: TokenUsage? = if (usageSeen) ResponseMapper.usage(inputTokens, outputTokens, cacheRead, cacheCreation) else null
-        return RawTurn(model, stopReason, refusalExplanation, blocks.values.map { it.build() }, usage)
+        val argumentErrors = blocks.values.mapNotNull { block -> block.argumentsError?.let { error -> block.id?.let { it to error } } }.toMap()
+        return RawTurn(model, stopReason, refusalExplanation, blocks.values.map { it.build() }, usage, argumentErrors)
     }
 
     private fun start(usage: BetaUsage) {
@@ -104,6 +105,12 @@ internal class StreamAssembler {
         private val citations = ArrayList<JsonElement>()
         private var input: JsonObject? = null
 
+        val id: String? get() = start.stringOrNull("id")
+
+        /** Why a tool call's streamed arguments cannot be used: not JSON, not an object, or holding an unquoted value. */
+        var argumentsError: String? = null
+            private set
+
         fun add(delta: BetaRawContentBlockDelta): ChatChunk? = when {
             delta.isText() -> delta.asText().text().let { text.append(it); ChatChunk.Text(it) }
             delta.isThinking() -> delta.asThinking().thinking().let { thinking.append(it); ChatChunk.Reasoning(it) }
@@ -113,17 +120,26 @@ internal class StreamAssembler {
             else -> null
         }
 
-        /** Parses the streamed arguments of a tool call; arguments cut off mid-way stay unparsed and produce no chunk. */
+        /**
+         * Parses the streamed arguments of a tool call. Arguments that do not parse to an
+         * object produce no chunk: they may have been cut off by the token limit, which only
+         * the stop reason that follows will tell. They are kept as [argumentsError], which the
+         * completed response reports on the call when the model did stop to have it run.
+         */
         fun close(): ChatChunk? {
             if (start.blockType != "tool_use") return null
-            input = if (inputJson.isBlank()) {
-                start["input"] as? JsonObject ?: JsonObject(emptyMap())
+            if (inputJson.isBlank()) {
+                input = start["input"] as? JsonObject ?: JsonObject(emptyMap())
             } else {
-                try {
-                    Json.parseToJsonElement(inputJson.toString()) as? JsonObject
+                val raw = inputJson.toString()
+                val parsed = try {
+                    Json.parseToJsonElement(raw)
                 } catch (e: SerializationException) {
-                    null
+                    argumentsError = ToolArgumentErrors.describe(raw, null, e)
+                    return null
                 }
+                argumentsError = ToolArgumentErrors.problemWith(raw, parsed)
+                if (argumentsError == null) input = parsed as JsonObject
             }
             return input?.let { ResponseMapper.toolCall(build()) }?.let(ChatChunk::ToolCall)
         }

@@ -7,6 +7,10 @@ import com.aicontrolcenter.app.ui.components.StatusLabel
 import com.aicontrolcenter.app.ui.components.UserMessage
 import com.aicontrolcenter.app.ui.components.toStatusLabel
 import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.ToolId
+import com.aicontrolcenter.core.agents.AgentActivityMonitor
+import com.aicontrolcenter.core.tools.ToolSpec
+import kotlinx.coroutines.flow.flowOf
 import com.aicontrolcenter.core.agents.AgentKind
 import com.aicontrolcenter.core.agents.AgentManager
 import com.aicontrolcenter.core.agents.AgentOperationException
@@ -34,6 +38,10 @@ data class AgentDetailUi(
     val fallbackModels: List<ModelRefUi>,
     /** True when the registry has at least one model that could be assigned. */
     val modelsAvailable: Boolean,
+    /** What the agent is doing right now ("Waiting for the model"), or null when it is idle. */
+    val liveActivity: String? = null,
+    /** Titles of the tools switched on for it that exist in the registry. */
+    val tools: List<String> = emptyList(),
 ) {
     /** Only an agent with the Director role can be designated, and only if it is not already. */
     val canDesignateAsDirector: Boolean get() = profile.kind == AgentKind.DIRECTOR && !isDesignatedDirector
@@ -68,7 +76,10 @@ class AgentDetailViewModel(
     private val agentId: AgentId,
     directory: RegistryDirectory,
     private val agentManager: AgentManager,
+    monitor: AgentActivityMonitor? = null,
+    tools: List<ToolSpec> = emptyList(),
 ) : ViewModel() {
+    private val toolTitles: Map<ToolId, String> = tools.associate { it.id to it.title }
 
     private data class Local(
         val deleted: Boolean = false,
@@ -80,7 +91,11 @@ class AgentDetailViewModel(
     private val local = MutableStateFlow(Local())
     private var messageCounter = 0L
 
-    val uiState: StateFlow<AgentDetailUiState> = combine(directory.observe(), local) { snapshot, local ->
+    val uiState: StateFlow<AgentDetailUiState> = combine(
+        directory.observe(),
+        monitor?.states ?: flowOf(emptyMap()),
+        local,
+    ) { snapshot, working, local ->
         val entry = snapshot.agentsById[agentId]
         AgentDetailUiState(
             isLoading = false,
@@ -93,6 +108,8 @@ class AgentDetailViewModel(
                     model = it.profile.modelId?.let(snapshot::modelRef),
                     fallbackModels = it.profile.fallbackModelIds.map(snapshot::modelRef),
                     modelsAvailable = snapshot.models.isNotEmpty(),
+                    liveActivity = working[agentId]?.let { state -> state.detail ?: "Working" },
+                    tools = it.profile.toolIds.mapNotNull(toolTitles::get).sorted(),
                 )
             },
             deleted = local.deleted,

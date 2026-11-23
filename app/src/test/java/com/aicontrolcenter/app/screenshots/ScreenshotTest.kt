@@ -122,7 +122,7 @@ class ScreenshotTest {
         shoot("agent_editor_1_top")
         robot.type("Name", "Analyst")
         shoot("agent_editor_2_name_taken")
-        robot.scrollTo("No models are registered yet")
+        robot.scrollTo("No model assigned. The agent cannot run without one.")
         shoot("agent_editor_3_model_none")
         robot.scrollTo("Create agent")
         shoot("agent_editor_4_bottom")
@@ -169,7 +169,7 @@ class ScreenshotTest {
     fun modelsEmpty() {
         val robot = app { graph.start().join() }.openSectionViaMore("Models")
         shoot("models_providers_empty")
-        robot.tap("Models · 0")
+        robot.tap("Models · 1")
         shoot("models_models_empty")
         robot.tap("AI apps · 0")
         shoot("models_apps_empty")
@@ -179,7 +179,7 @@ class ScreenshotTest {
     fun modelsPopulated() {
         val robot = app { populateWithModels() }.openSectionViaMore("Models")
         shoot("models_providers")
-        robot.tap("Models · 3")
+        robot.tap("Models · 4")
         shoot("models_models")
     }
 
@@ -287,7 +287,7 @@ class ScreenshotTest {
     }
 }
 
-private const val PHONE = "w411dp-h891dp-xhdpi"
+internal const val PHONE = "w411dp-h891dp-xhdpi"
 
 /** A small tablet or an unfolded phone: wide enough for the navigation rail and two panes. */
-private const val WIDE = "w840dp-h900dp-xhdpi"
+internal const val WIDE = "w840dp-h900dp-xhdpi"

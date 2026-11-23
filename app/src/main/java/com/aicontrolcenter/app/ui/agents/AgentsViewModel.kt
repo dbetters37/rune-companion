@@ -5,7 +5,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aicontrolcenter.app.ui.components.StatusLabel
 import com.aicontrolcenter.app.ui.components.toStatusLabel
+import com.aicontrolcenter.app.ui.components.UserMessage
 import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.ModelId
+import com.aicontrolcenter.core.agents.AgentManager
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 import com.aicontrolcenter.core.agents.AgentAvailability
 import com.aicontrolcenter.core.agents.AgentKind
 import com.aicontrolcenter.core.agents.UnavailableReason
@@ -74,6 +79,12 @@ data class AgentsUiState(
     val query: String = "",
     val roleFilter: AgentKind? = null,
     val statusFilter: AgentStatusFilter = AgentStatusFilter.ALL,
+    /** Names of agents that have no model at all, whatever the filters. */
+    val withoutModel: List<String> = emptyList(),
+    /** Models that could be given to them: enabled, on an enabled provider. */
+    val assignableModels: List<ModelOptionUi> = emptyList(),
+    val isAssigning: Boolean = false,
+    val message: UserMessage? = null,
 ) {
     val hasActiveFilters: Boolean
         get() = query.isNotBlank() || roleFilter != null || statusFilter != AgentStatusFilter.ALL
@@ -81,15 +92,20 @@ data class AgentsUiState(
 
 /** The agent list with search and filters. Reads the live registry; changes nothing. */
 class AgentsViewModel(
-    directory: RegistryDirectory,
+    private val directory: RegistryDirectory,
     initialStatusFilter: AgentStatusFilter = AgentStatusFilter.ALL,
+    private val agentManager: AgentManager? = null,
 ) : ViewModel() {
 
     private data class Criteria(val query: String, val role: AgentKind?, val status: AgentStatusFilter)
 
-    private val criteria = MutableStateFlow(Criteria("", null, initialStatusFilter))
+    private data class Local(val isAssigning: Boolean = false, val message: UserMessage? = null)
 
-    val uiState: StateFlow<AgentsUiState> = combine(directory.observe(), criteria) { snapshot, criteria ->
+    private val criteria = MutableStateFlow(Criteria("", null, initialStatusFilter))
+    private val local = MutableStateFlow(Local())
+    private var messageCounter = 0L
+
+    val uiState: StateFlow<AgentsUiState> = combine(directory.observe(), criteria, local) { snapshot, criteria, local ->
         val needle = criteria.query.trim()
         AgentsUiState(
             isLoading = false,
@@ -104,6 +120,10 @@ class AgentsViewModel(
             query = criteria.query,
             roleFilter = criteria.role,
             statusFilter = criteria.status,
+            withoutModel = snapshot.agents.filter { it.profile.modelId == null }.map { it.profile.name },
+            assignableModels = snapshot.modelOptions().filter { it.note == null },
+            isAssigning = local.isAssigning,
+            message = local.message,
         )
     }.stateIn(
         viewModelScope,
@@ -118,6 +138,27 @@ class AgentsViewModel(
     fun setStatusFilter(status: AgentStatusFilter) = criteria.update { it.copy(status = status) }
 
     fun clearFilters() = criteria.update { Criteria("", null, AgentStatusFilter.ALL) }
+
+    /** Gives [modelId] to every agent that has none. */
+    fun assignToAgentsWithoutModel(modelId: ModelId) {
+        val manager = agentManager ?: return
+        if (local.value.isAssigning) return
+        local.update { it.copy(isAssigning = true) }
+        viewModelScope.launch {
+            val text = try {
+                val names = assignModelToAgentsWithoutOne(manager, directory, modelId)
+                val model = directory.snapshot().modelsById[modelId]?.displayName ?: "The model"
+                if (names.isEmpty()) "Every agent already has a model." else "$model assigned to ${summariseNames(names)}."
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                "Could not assign the model: ${failure.message ?: "storage error"}"
+            }
+            local.update { it.copy(isAssigning = false, message = UserMessage(text, ++messageCounter)) }
+        }
+    }
+
+    fun messageShown() = local.update { it.copy(message = null) }
 }
 
 /** Search looks at what the list shows about an agent: its name, role and description. */

@@ -16,10 +16,16 @@ import kotlinx.serialization.json.JsonPrimitive
  *  - Unmarked JSON (a code fence, a bare object on its own line, "Action:" lines) is a call
  *    only when it names a tool that was actually offered.
  *
- * Whatever cannot be read as a call is left in the text exactly as written.
+ * Whatever cannot be read as a call is left in the text exactly as written, with one
+ * exception: a marked call that names a tool but whose arguments cannot be read becomes a call
+ * with [Call.argumentsError] set, so the model is told what was wrong instead of its markup
+ * becoming the answer.
+ *
+ * Nothing inside a `<tool_result>` block of the reply counts: that is the model repeating what
+ * a tool returned, and tool output is data, never a call.
  */
 internal object PromptedToolCallParser {
-    data class Call(val name: String, val arguments: JsonObject)
+    data class Call(val name: String, val arguments: JsonObject, val argumentsError: String? = null)
 
     /** [text] is the reply without the call blocks that were understood. */
     data class Parsed(val text: String, val calls: List<Call>)
@@ -29,6 +35,7 @@ internal object PromptedToolCallParser {
     private val TAG_OPEN = Regex("<(tool_calls?|toolcall|function_calls?|tool_use)>", RegexOption.IGNORE_CASE)
     private val FUNCTION_TAG = Regex("<function=([A-Za-z0-9_.\\-]+)>", RegexOption.IGNORE_CASE)
     private val FUNCTION_CLOSE = Regex("\\s*</function>", RegexOption.IGNORE_CASE)
+    private val FUNCTION_CLOSE_ANYWHERE = Regex("</function>", RegexOption.IGNORE_CASE)
     private val BRACKET_MARKER = Regex("\\[TOOL_CALLS]", RegexOption.IGNORE_CASE)
     private val FENCE = Regex("```[A-Za-z_]*[ \\t]*\\r?\\n(.*?)```", RegexOption.DOT_MATCHES_ALL)
     private val FENCE_LINE = Regex("```[A-Za-z_]*")
@@ -38,6 +45,13 @@ internal object PromptedToolCallParser {
     private val BLANK_LINES = Regex("\\n{3,}")
 
     private val NAME_KEYS = listOf("name", "tool", "tool_name", "function", "function_name")
+
+    /** A tool's name in JSON too broken to read, for telling the model which call was not understood. */
+    private val NAME_IN_BROKEN_JSON = Regex("(?<![A-Za-z0-9_])[\"']?(?:name|tool|tool_name|function_name|function)[\"']?\\s*:\\s*[\"']([A-Za-z0-9_.\\-]{1,64})[\"']")
+    private val RESULT_OPEN = Regex("<tool_results?\\b", RegexOption.IGNORE_CASE)
+    private val RESULT_CLOSE = Regex("</tool_results?\\s*>", RegexOption.IGNORE_CASE)
+    private const val NOT_JSON = "the arguments are not valid JSON"
+    private const val NOT_AN_OBJECT = "the arguments are not a JSON object"
     private val ARGUMENT_KEYS = listOf("arguments", "args", "parameters", "params", "input", "tool_input", "action_input")
 
     /**
@@ -45,10 +59,12 @@ internal object PromptedToolCallParser {
      * written is then not completed by guesswork: half an argument is worse than no call.
      */
     fun parse(reply: String, knownTools: Set<String>, truncated: Boolean = false): Parsed {
-        val blocks = marked(reply, truncated)
-            .ifEmpty { fenced(reply, knownTools) }
-            .ifEmpty { bare(reply, knownTools) }
-            .ifEmpty { reactStyle(reply, knownTools) }
+        // Same length and line structure as the reply, so blocks found in it are where they are in the reply.
+        val source = withoutEchoedResults(reply)
+        val blocks = marked(source, truncated)
+            .ifEmpty { fenced(source, knownTools) }
+            .ifEmpty { bare(source, knownTools) }
+            .ifEmpty { reactStyle(source, knownTools) }
         if (blocks.isEmpty()) return Parsed(reply, emptyList())
         val text = StringBuilder()
         var from = 0
@@ -60,6 +76,21 @@ internal object PromptedToolCallParser {
         return Parsed(BLANK_LINES.replace(text, "\n\n").trim(), blocks.flatMap { it.calls })
     }
 
+    /**
+     * [reply] with every `<tool_result>` block blanked out: from its opening tag to its closing
+     * tag or, when it has none, to the end. Line breaks are kept.
+     */
+    private fun withoutEchoedResults(reply: String): String {
+        var open = RESULT_OPEN.find(reply) ?: return reply
+        val out = StringBuilder(reply)
+        while (true) {
+            val end = RESULT_CLOSE.find(reply, open.range.last + 1)?.range?.last?.plus(1) ?: reply.length
+            for (i in open.range.first until end) if (out[i] != '\n') out[i] = ' '
+            open = RESULT_OPEN.find(reply, end) ?: break
+        }
+        return out.toString()
+    }
+
     private fun marked(reply: String, truncated: Boolean): List<Block> {
         val blocks = ArrayList<Block>()
         var from = 0
@@ -67,7 +98,7 @@ internal object PromptedToolCallParser {
             val next = listOfNotNull(TAG_OPEN.find(reply, from), FUNCTION_TAG.find(reply, from), BRACKET_MARKER.find(reply, from))
                 .minByOrNull { it.range.first } ?: break
             val block = when {
-                next.value.startsWith("[") -> afterBracketMarker(reply, next)
+                next.value.startsWith("[") -> afterBracketMarker(reply, next, truncated)
                 next.value.contains('=') -> functionTag(reply, next, truncated)
                 else -> tagged(reply, next, truncated)
             }
@@ -81,13 +112,13 @@ internal object PromptedToolCallParser {
         val bodyStart = open.range.last + 1
         val close = reply.indexOf("</" + open.groupValues[1] + ">", bodyStart, ignoreCase = true)
         if (close >= 0) {
-            val calls = callsIn(reply.substring(bodyStart, close), allowUnclosed = true) ?: return null
+            val calls = callsIn(reply.substring(bodyStart, close), allowUnclosed = true, marked = true) ?: return null
             return Block(open.range.first, close + open.groupValues[1].length + 3, calls)
         }
         // No closing tag: the call runs to the next opening tag or the end of the reply.
         if (truncated) return null
         val bodyEnd = TAG_OPEN.find(reply, bodyStart)?.range?.first ?: reply.length
-        val calls = callsIn(reply.substring(bodyStart, bodyEnd), allowUnclosed = true) ?: return null
+        val calls = callsIn(reply.substring(bodyStart, bodyEnd), allowUnclosed = true, marked = true) ?: return null
         return Block(open.range.first, bodyEnd, calls)
     }
 
@@ -95,27 +126,58 @@ internal object PromptedToolCallParser {
         val name = open.groupValues[1]
         var end = open.range.last + 1
         var arguments = JsonObject(emptyMap())
+        var error: String? = null
         val jsonStart = indexOfNonSpace(reply, end)
         if (jsonStart >= 0 && reply[jsonStart] == '{') {
-            val read = LenientJson.readAt(reply, jsonStart, allowUnclosed = !truncated) ?: return null
-            arguments = read.element as? JsonObject ?: return null
-            end = read.end
+            val read = LenientJson.readAt(reply, jsonStart, allowUnclosed = !truncated)
+            when {
+                // Half an argument is worse than no call.
+                read == null && truncated -> return null
+                // The arguments run to the closing tag, or to the next marker when there is none.
+                read == null -> {
+                    error = NOT_JSON
+                    end = FUNCTION_CLOSE_ANYWHERE.find(reply, jsonStart)?.range?.first ?: nextMarker(reply, jsonStart)
+                }
+                read.element is JsonObject -> {
+                    arguments = read.element
+                    end = read.end
+                }
+                else -> {
+                    error = NOT_AN_OBJECT
+                    end = read.end
+                }
+            }
         }
         FUNCTION_CLOSE.matchAt(reply, end)?.let { end = it.range.last + 1 }
-        return Block(open.range.first, end, listOf(Call(name, arguments)))
+        return Block(open.range.first, end, listOf(Call(name, arguments, error)))
     }
 
-    private fun afterBracketMarker(reply: String, marker: MatchResult): Block? {
+    private fun afterBracketMarker(reply: String, marker: MatchResult, truncated: Boolean): Block? {
         val jsonStart = indexOfNonSpace(reply, marker.range.last + 1)
         if (jsonStart < 0) return null
-        val read = LenientJson.readAt(reply, jsonStart, allowUnclosed = false) ?: return null
+        val read = LenientJson.readAt(reply, jsonStart, allowUnclosed = false)
+        if (read == null) {
+            if (truncated) return null
+            val end = nextMarker(reply, jsonStart)
+            val broken = brokenCall(reply.substring(jsonStart, end)) ?: return null
+            return Block(marker.range.first, end, listOf(broken))
+        }
         val calls = toCalls(read.element)?.takeIf { it.isNotEmpty() } ?: return null
         return Block(marker.range.first, read.end, calls)
     }
 
+    /** Where the next marked call starts after [from], or the end of [reply]. */
+    private fun nextMarker(reply: String, from: Int): Int =
+        listOfNotNull(TAG_OPEN.find(reply, from), FUNCTION_TAG.find(reply, from), BRACKET_MARKER.find(reply, from))
+            .minOfOrNull { it.range.first } ?: reply.length
+
+    /** A call for the first tool named in [text], whose JSON could not be read, or null when no tool is named. */
+    private fun brokenCall(text: String): Call? =
+        NAME_IN_BROKEN_JSON.find(text)?.let { Call(it.groupValues[1], JsonObject(emptyMap()), NOT_JSON) }
+
     private fun fenced(reply: String, knownTools: Set<String>): List<Block> =
         FENCE.findAll(reply).mapNotNull { fence ->
-            val calls = callsIn(fence.groupValues[1], allowUnclosed = false)?.takeIf { all -> all.all { it.name in knownTools } }
+            val calls = callsIn(fence.groupValues[1], allowUnclosed = false, marked = false)?.takeIf { all -> all.all { it.understood(knownTools) } }
             calls?.let { Block(fence.range.first, fence.range.last + 1, it) }
         }.toList()
 
@@ -126,7 +188,7 @@ internal object PromptedToolCallParser {
             val candidate = LINE_START_JSON.find(reply, from) ?: break
             val start = candidate.groups[1]!!.range.first
             val read = LenientJson.readAt(reply, start, allowUnclosed = false)
-            val calls = read?.let { toCalls(it.element) }?.takeIf { all -> all.isNotEmpty() && all.all { it.name in knownTools } }
+            val calls = read?.let { toCalls(it.element) }?.takeIf { all -> all.isNotEmpty() && all.all { it.understood(knownTools) } }
             if (read != null && calls != null) {
                 blocks += Block(candidate.range.first, read.end, calls)
                 from = read.end
@@ -147,17 +209,25 @@ internal object PromptedToolCallParser {
             Block(action.range.first, read?.end ?: inputStart, listOf(Call(name, arguments)))
         }.toList()
 
+    /** Unmarked JSON is a call only when it names an offered tool and could be read completely. */
+    private fun Call.understood(knownTools: Set<String>): Boolean = name in knownTools && argumentsError == null
+
     /**
      * The calls written in the body of a block: one object, an array of them, or several
      * objects one after another, optionally inside a code fence. Null when any part of the
-     * body is not a call, so a block is understood completely or not at all.
+     * body is not a call, so a block is understood completely or not at all; except that in a
+     * [marked] block, JSON that cannot be read but names a tool becomes a call with an error.
      */
-    private fun callsIn(body: String, allowUnclosed: Boolean): List<Call>? {
+    private fun callsIn(body: String, allowUnclosed: Boolean, marked: Boolean): List<Call>? {
         val text = FENCE_LINE.replace(body, "")
         val calls = ArrayList<Call>()
         var at = indexOfNonSpace(text, 0)
         while (at >= 0) {
-            val read = LenientJson.readAt(text, at, allowUnclosed) ?: return null
+            val read = LenientJson.readAt(text, at, allowUnclosed)
+            if (read == null) {
+                val broken = if (marked) brokenCall(text.substring(at)) else null
+                return broken?.let { calls + it }
+            }
             calls += toCalls(read.element) ?: return null
             at = indexOfNonSpace(text, read.end)
             while (at >= 0 && text[at] == ',') at = indexOfNonSpace(text, at + 1)
@@ -186,8 +256,8 @@ internal object PromptedToolCallParser {
             null, JsonNull -> JsonObject(emptyMap())
             is JsonObject -> raw
             // Arguments encoded as a JSON string inside the JSON.
-            is JsonPrimitive -> decodeArguments(raw) ?: return null
-            else -> return null
+            is JsonPrimitive -> decodeArguments(raw) ?: return Call(name, JsonObject(emptyMap()), if (raw.isString) NOT_JSON else NOT_AN_OBJECT)
+            else -> return Call(name, JsonObject(emptyMap()), NOT_AN_OBJECT)
         }
         return Call(name, arguments)
     }

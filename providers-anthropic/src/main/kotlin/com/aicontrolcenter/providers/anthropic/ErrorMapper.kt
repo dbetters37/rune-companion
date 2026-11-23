@@ -17,6 +17,7 @@ import com.anthropic.errors.RateLimitException
 import com.anthropic.errors.RequestTimeoutException
 import com.anthropic.errors.UnauthorizedException
 import com.anthropic.models.ErrorType
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.io.IOException
 import java.io.InterruptedIOException
 import java.io.UncheckedIOException
@@ -26,8 +27,8 @@ import kotlin.jvm.optionals.getOrNull
 /**
  * Translates whatever a Claude call can throw into core's [LlmException] taxonomy.
  *
- * The SDK has already spent its bounded retries by the time an exception arrives here, so the
- * `retryable` flag of the result tells the framework whether trying again later can help.
+ * The SDK does not retry unless [AnthropicOptions.maxRetries] opts in, so the `retryable` flag
+ * of the result tells the framework whether trying again later can help.
  *
  * Messages are written from the provider's own error text and the HTTP status. The API key is
  * removed from every message, and an SDK exception whose text contains the key (a gateway
@@ -47,11 +48,12 @@ internal class ErrorMapper(private val providerName: String, private val apiKey:
         else -> LlmException.InvalidRequest("The call to $providerName could not be made: ${describe(error)}", cause = safeCause(error))
     }
 
-    /** Most specific class first, then the error type from the body, then the bare status. */
+    /** A redirect first, then the most specific class, then the error type from the body, then the bare status. */
     private fun mapStatus(error: AnthropicServiceException): LlmException {
         val status = error.statusCode()
-        val detail = detail(error)
         val cause = safeCause(error)
+        if (status in 300..399) return redirect(error, status, cause)
+        val detail = detail(error)
         return when (error) {
             is UnauthorizedException -> LlmException.Authentication("$providerName rejected the API key: $detail", cause)
             is PermissionDeniedException ->
@@ -110,7 +112,32 @@ internal class ErrorMapper(private val providerName: String, private val apiKey:
         }
     }
 
+    /**
+     * Redirects are never followed (see [GuardedTransport]). The message names where the
+     * server pointed, by host only: the path and query of a redirect can carry anything.
+     */
+    private fun redirect(error: AnthropicServiceException, status: Int, cause: Throwable?): LlmException {
+        val location = error.headers().values("location").firstOrNull()?.trim().orEmpty()
+        val absolute = when {
+            location.startsWith("//") -> "https:$location"
+            else -> location
+        }
+        val target = when {
+            location.isEmpty() -> ""
+            absolute.contains("://") -> absolute.toHttpUrlOrNull()?.host?.let { " to ${it.take(MAX_HOST)}" } ?: " to an address that could not be read"
+            else -> " to another address on the same server"
+        }
+        return LlmException.InvalidRequest(
+            scrub("$providerName answered with a redirect$target, which is not followed; check the provider's address (HTTP $status)."),
+            status,
+            cause,
+        )
+    }
+
     private fun mapConnection(error: Throwable): LlmException {
+        val refused = generateSequence(error) { it.cause }.take(MAX_CAUSE_DEPTH).filterIsInstance<LocalityRefusedException>().firstOrNull()
+        // Its message names only the host from the provider's address, which is not secret.
+        if (refused != null) return LlmException.Network(refused.message.orEmpty(), safeCause(error))
         val timedOut = generateSequence(error) { it.cause }.take(MAX_CAUSE_DEPTH).any {
             it is SocketTimeoutException || (it is InterruptedIOException && it.message?.contains("timeout", ignoreCase = true) == true)
         }
@@ -151,6 +178,7 @@ internal class ErrorMapper(private val providerName: String, private val apiKey:
 
     companion object {
         private const val MAX_DETAIL = 500
+        private const val MAX_HOST = 253
         private const val MAX_CAUSE_DEPTH = 12
         private const val REJECTED = "rejected the request: "
 

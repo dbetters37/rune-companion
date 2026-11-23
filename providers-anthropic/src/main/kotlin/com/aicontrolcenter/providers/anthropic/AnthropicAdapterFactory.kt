@@ -13,8 +13,13 @@ import com.aicontrolcenter.core.registry.ProviderKind
  *   the refusal. Sent only to the models that document the feature; the model that actually
  *   answered is reported in `ChatResponse.modelName`. If the endpoint rejects the opt-in (a
  *   gateway or platform without the beta), the adapter stops sending it and repeats the call.
- * @property maxRetries How often the SDK repeats a call that failed with a connection error,
- *   408, 409, 429 or 5xx. Null keeps the SDK's default of two retries with backoff.
+ * @property maxRetries How often the SDK itself repeats a call that failed with a connection
+ *   error, 408, 409, 429 or 5xx. Null, the default, means never: the framework's gateway then
+ *   owns every retry, re-checks local-only mode and the provider before each attempt, honours
+ *   its own limit on how long a provider may ask it to wait, and records each attempt. A
+ *   positive number is an explicit opt-in to retries that happen inside this adapter and are
+ *   invisible to all of that: the egress log shows one transfer however many times the prompt
+ *   was sent, and policy is not re-checked between the SDK's attempts.
  */
 data class AnthropicOptions(
     val refusalFallbacks: Boolean = true,

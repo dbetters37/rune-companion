@@ -67,6 +67,9 @@ import kotlinx.coroutines.withContext
  *    because an agent that silently forgets is worse than one that says it is full.
  *  - A turn that fails leaves a visible entry ([ConversationEntry.error]). Such entries are
  *    for the owner and are never sent to a model.
+ *  - Text that is still arriving is gathered per turn and published to [liveTurns] at most
+ *    every [LIVE_TEXT_INTERVAL_MS], and at once whenever the phase changes or a reply is
+ *    complete, so a long reply costs time in proportion to its length.
  *
  * Registered as an [AgentDeletionListener], it stops the turns of a deleted agent and removes
  * its conversations.
@@ -218,7 +221,17 @@ class DefaultAgentChat(
             RunEnd.FAILED -> failed(id, agent.id, "${agent.name} could not answer. ${run.notice}", run.error?.retryable ?: false, log = false)
             RunEnd.REFUSED, RunEnd.MODEL_CALL_LIMIT, RunEnd.TOOL_CALL_LIMIT, RunEnd.TIMED_OUT ->
                 failed(id, agent.id, run.notice ?: "The turn was stopped.", retryable = false, log = true)
+            // The owner switched the agent off or deleted it: their decision, not a failure, and the note says so.
+            RunEnd.STOPPED_BY_OWNER -> stoppedByOwner(id, agent.id, run.notice ?: "Stopped: ${agent.name} was switched off.")
         }
+    }
+
+    private suspend fun stoppedByOwner(id: ConversationId, agentId: AgentId, notice: String): TurnResult {
+        withContext(NonCancellable) {
+            storeError(id, notice)
+            activity.record(ActivityType.TASK, "Agent turn stopped by the owner", notice, agentId = agentId)
+        }
+        return TurnResult.Cancelled
     }
 
     private fun completed(run: AgentRunResult) = TurnResult.Completed(run.text, run.usage, run.modelCalls, run.toolCalls)
@@ -233,26 +246,73 @@ class DefaultAgentChat(
             "holds $window. Nothing was sent. Start a new conversation, or give ${agent.name} a model with a larger context window."
     }
 
-    /** Stores the turn as it unfolds and mirrors it into [liveTurns]. */
+    /**
+     * Stores the turn as it unfolds and mirrors it into [liveTurns]. One per turn, called by the
+     * runner in order from the turn's coroutine, so its buffers need no lock.
+     */
     private inner class Recorder(private val id: ConversationId) : AgentRunListener {
-        override suspend fun onModelCall(number: Int) = show {
-            it.copy(phase = TurnPhase.WAITING_FOR_MODEL, partialText = "", partialReasoning = "", activeTool = null, modelCalls = number)
+        private val text = StringBuilder()
+        private val reasoning = StringBuilder()
+
+        /** Whether [liveTurns] shows this turn receiving a reply, and whether it lags behind the buffers. */
+        private var receiving = false
+        private var behind = false
+        private var publishedAt = 0L
+
+        override suspend fun onModelCall(number: Int) {
+            clearBuffers()
+            show { it.copy(phase = TurnPhase.WAITING_FOR_MODEL, partialText = "", partialReasoning = "", activeTool = null, modelCalls = number) }
         }
 
-        override suspend fun onTextDelta(delta: String) = show { it.copy(phase = TurnPhase.RECEIVING, partialText = it.partialText + delta) }
+        override suspend fun onTextDelta(delta: String) {
+            text.append(delta)
+            arrived()
+        }
 
-        override suspend fun onReasoningDelta(delta: String) =
-            show { it.copy(phase = TurnPhase.RECEIVING, partialReasoning = it.partialReasoning + delta) }
+        override suspend fun onReasoningDelta(delta: String) {
+            reasoning.append(delta)
+            arrived()
+        }
 
         override suspend fun onMessage(message: ChatMessage, modelName: String?, usage: TokenUsage?) {
+            // The reply is complete (or cut short): show all of it before the stored message takes its place.
+            if (behind) publish()
             withContext(NonCancellable) { store(id, message, modelName, usage) }
-            if (message.role == ChatRole.ASSISTANT) show { it.copy(partialText = "", partialReasoning = "") }
+            if (message.role == ChatRole.ASSISTANT) {
+                clearBuffers()
+                show { it.copy(partialText = "", partialReasoning = "") }
+            }
         }
 
-        override suspend fun onToolStarted(call: ToolCallRequest, spec: ToolSpec?) =
+        override suspend fun onToolStarted(call: ToolCallRequest, spec: ToolSpec?) {
+            if (behind) publish()
+            receiving = false
             show { it.copy(phase = TurnPhase.RUNNING_TOOL, activeTool = call, toolCalls = it.toolCalls + 1) }
+        }
 
         override suspend fun onToolFinished(execution: ToolExecution) = show { it.copy(activeTool = null) }
+
+        /** Publishes at once when this starts the receiving phase, otherwise at most once per interval. */
+        private fun arrived() {
+            behind = true
+            if (!receiving || System.nanoTime() - publishedAt >= LIVE_TEXT_INTERVAL_NS) publish()
+        }
+
+        private fun publish() {
+            val partialText = text.toString()
+            val partialReasoning = reasoning.toString()
+            receiving = true
+            behind = false
+            publishedAt = System.nanoTime()
+            show { it.copy(phase = TurnPhase.RECEIVING, partialText = partialText, partialReasoning = partialReasoning) }
+        }
+
+        private fun clearBuffers() {
+            text.setLength(0)
+            reasoning.setLength(0)
+            receiving = false
+            behind = false
+        }
 
         private fun show(change: (LiveTurn) -> LiveTurn) = live.update { it.change(id, change) }
     }
@@ -307,6 +367,10 @@ class DefaultAgentChat(
         /** The title of a conversation until its first message names it. */
         const val DEFAULT_TITLE = "New conversation"
         const val MAX_TITLE_LENGTH = 80
+
+        /** How often text that is still arriving is published to [liveTurns]: smooth to watch, and cheap for long replies. */
+        private const val LIVE_TEXT_INTERVAL_MS = 75L
+        private const val LIVE_TEXT_INTERVAL_NS = LIVE_TEXT_INTERVAL_MS * 1_000_000
         private const val AUTO_TITLE_LENGTH = 48
         private const val DEFAULT_REPLY_ROOM = 512
         private const val CONVERSATION_GONE = "That conversation no longer exists."

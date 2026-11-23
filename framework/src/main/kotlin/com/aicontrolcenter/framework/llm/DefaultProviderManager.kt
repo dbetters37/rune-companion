@@ -6,6 +6,7 @@ import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.ProviderId
 import com.aicontrolcenter.core.activity.ActivityRecorder
 import com.aicontrolcenter.core.activity.ActivityType
+import com.aicontrolcenter.core.activity.EgressInfo
 import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.llm.DetectedServer
 import com.aicontrolcenter.core.llm.LlmException
@@ -38,6 +39,8 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * Connects, checks and removes providers and keeps their models. See [ProviderManager].
@@ -48,6 +51,10 @@ import kotlinx.coroutines.withTimeoutOrNull
  *  - The network is never touched while the registry lock is held, and never for a provider
  *    off this device while local-only mode is on: a health check or a model listing sends the
  *    key to the provider, which is exactly what that mode forbids.
+ *  - Every check and listing that reaches a provider off this device is logged with where it
+ *    went, whether it worked or not, like a model call: it sent the key there.
+ *  - A stored key is never moved to another address: an edit that points the provider at
+ *    another host, or makes it another kind, must come with the key again (or remove it).
  *  - [ModelDescriptor] has no field for "edited by the owner", so a listed model whose name or
  *    capabilities the owner changes becomes a [ModelSource.MANUAL] model. Refreshing never
  *    overwrites the description of anything but [ModelSource.PROVIDER_LISTING] models, and only
@@ -73,7 +80,8 @@ class DefaultProviderManager(
 
     override suspend fun validate(draft: ProviderDraft, editing: ProviderId?): List<ProviderValidationIssue> {
         val all = providers.getAll()
-        return ProviderDraftValidator.validate(draft, all.filter { it.id != editing }, storedKey = hasStoredKey(all.firstOrNull { it.id == editing }))
+        val current = all.firstOrNull { it.id == editing }
+        return ProviderDraftValidator.validate(draft, all.filter { it.id != editing }, storedKey = hasStoredKey(current), current = current)
     }
 
     override suspend fun addProvider(draft: ProviderDraft): ModelProvider = connections.changeRecords {
@@ -175,9 +183,19 @@ class DefaultProviderManager(
     override suspend fun checkProvider(id: ProviderId): ProviderHealth =
         check(providers.get(id) ?: throw IllegalArgumentException(PROVIDER_GONE))
 
-    override suspend fun checkAllProviders() {
+    override suspend fun checkAllProviders() = checkAllProviders(includeCloud = true)
+
+    /**
+     * Checks every enabled provider, or with [includeCloud] false only those on this phone or the
+     * owner's network. A check sends the provider's key to its address, so an app that should not
+     * contact internet services without being asked, at start-up for instance, passes false.
+     */
+    suspend fun checkAllProviders(includeCloud: Boolean) {
         coroutineScope {
-            providers.getAll().filter { it.enabled }.map { async { check(it) } }.awaitAll()
+            providers.getAll()
+                .filter { it.enabled && (includeCloud || it.effectiveLocality != Locality.CLOUD) }
+                .map { async { check(it) } }
+                .awaitAll()
         }
     }
 
@@ -198,16 +216,48 @@ class DefaultProviderManager(
         val lease = try {
             connections.acquire(provider)
         } catch (e: LlmException) {
+            // Nothing was sent: the adapter was never asked.
             return ProviderHealth(statusOf(e), e.message)
         }
-        val health = try {
-            withTimeoutOrNull(CHECK_TIMEOUT_MS) { lease.adapter.checkHealth() }
-                ?: ProviderHealth(ConnectionStatus.OFFLINE, "${provider.name} did not answer in time.")
-        } catch (e: Exception) {
-            rethrowIfCancelled(e)
-            ProviderHealth(ConnectionStatus.ERROR, "The check failed unexpectedly (${e::class.simpleName}).")
+        var outcome = "stopped before it finished"
+        try {
+            val health = try {
+                withTimeoutOrNull(CHECK_TIMEOUT_MS) { lease.adapter.checkHealth() }
+                    ?: ProviderHealth(ConnectionStatus.OFFLINE, "${provider.name} did not answer in time.")
+            } catch (e: Exception) {
+                rethrowIfCancelled(e)
+                ProviderHealth(ConnectionStatus.ERROR, "The check failed unexpectedly (${e::class.simpleName}).")
+            }
+            return health.copy(message = health.message?.let(lease::redact)).also { checked ->
+                outcome = checked.status.label + (checked.message?.let { " ($it)" } ?: "")
+            }
+        } finally {
+            recordContact(provider, CHECK_PURPOSE, "Provider checked", outcome)
         }
-        return health.copy(message = health.message?.let(lease::redact))
+    }
+
+    /**
+     * Records that a check or a listing reached [provider], when that left this device. Written
+     * however the request ended, as a model call's event is: a request that failed may still
+     * have delivered the key. Best effort, like all book-keeping that follows a network call.
+     */
+    private suspend fun recordContact(provider: ModelProvider, purpose: String, title: String, outcome: String) {
+        val locality = provider.effectiveLocality
+        if (!locality.leavesDevice) return
+        withContext(NonCancellable) {
+            try {
+                activity.record(
+                    ActivityType.REGISTRY, title, "${provider.name}: $outcome",
+                    data = buildJsonObject {
+                        put("providerId", provider.id.value)
+                        put("purpose", purpose)
+                    },
+                    egress = EgressInfo(provider.destinationHost(), locality, provider.id, purpose),
+                )
+            } catch (e: Exception) {
+                // The request has already been made; failing to note it must not turn its result into a failure.
+            }
+        }
     }
 
     private fun statusOf(error: LlmException): ConnectionStatus = when (error) {
@@ -231,13 +281,17 @@ class DefaultProviderManager(
         val provider = providers.get(id) ?: throw IllegalArgumentException(PROVIDER_GONE)
         blockedByLocalOnly(provider)?.let { throw LlmException.BlockedByPolicy(it) }
         val lease = connections.acquire(provider)
+        var outcome = "stopped before it finished"
         val listed = try {
-            lease.adapter.listModels()
+            lease.adapter.listModels().also { outcome = if (it.size == 1) "1 model listed" else "${it.size} models listed" }
         } catch (e: Exception) {
             rethrowIfCancelled(e)
             val failure = e.asLlmException(provider.name, lease)
+            outcome = "failed (${failure.message})"
             if (failure is LlmException.Authentication) connections.storeStatus(id, ConnectionStatus.AUTH_ERROR, failure.message)
             throw failure
+        } finally {
+            recordContact(provider, LIST_PURPOSE, "Model list requested", outcome)
         }
         val report = connections.changeRecords { merge(provider, listed) }
         // A listing that came back is as good as a passed health check.
@@ -363,5 +417,7 @@ class DefaultProviderManager(
         const val PROVIDER_GONE = "That provider no longer exists."
         const val MODEL_GONE = "That model no longer exists."
         const val CHECK_TIMEOUT_MS = 20_000L
+        const val CHECK_PURPOSE = "API key and connection check"
+        const val LIST_PURPOSE = "model list request"
     }
 }

@@ -22,7 +22,8 @@ class ModelsViewModelTest {
     @get:Rule val mainRule = MainDispatcherRule()
 
     private fun TestScope.models(app: TestApp) =
-        ModelsViewModel(app.graph.registryDirectory, app.graph.aiAppRegistry).also { it.uiState.activeIn(backgroundScope) }
+        ModelsViewModel(app.graph.registryDirectory, app.graph.aiAppRegistry, app.graph.providerManager, app.clock, java.time.ZoneOffset.UTC)
+            .also { it.uiState.activeIn(backgroundScope) }
 
     @Test
     fun `a first scan registers what it finds and says how each app was found`() = runTest(mainRule.dispatcher) {
@@ -132,7 +133,7 @@ class ModelsViewModelTest {
         app.graph.agentManager.ensureDefaults()
         val viewModel = models(app)
         assertEquals(emptyList(), viewModel.uiState.value.providers)
-        assertEquals(emptyList(), viewModel.uiState.value.models)
+        assertEquals(emptyList(), viewModel.uiState.value.groups)
 
         // Labelled "on device" in storage although its address is on the network.
         app.providers.upsert(Samples.provider(locality = Locality.ON_DEVICE))
@@ -150,17 +151,20 @@ class ModelsViewModelTest {
         assertEquals(1, home.modelCount)
         assertEquals("Disabled", state.providers[1].status.text)
 
-        val gemma = state.models.first()
+        assertEquals(listOf("Home server", "Spare"), state.groups.map { it.providerName })
+        val gemma = state.groups.first().models.single()
         assertEquals("Gemma 3 4B", gemma.name)
         assertEquals("gemma3:4b", gemma.wireName)
         assertEquals("Home server", gemma.providerName)
         assertEquals(Locality.LOCAL_NETWORK, gemma.locality)
-        assertEquals(listOf("Tool calling", "Vision", "JSON output", "8k context"), gemma.traits)
+        assertEquals(
+            listOf("Tool calling", "Vision", "≈ Reasoning: good", "≈ Coding: basic", "8k context"),
+            gemma.chips.map { it.text },
+            "tiers are always estimates; what the listing carries is reported",
+        )
         assertEquals(1, gemma.agentsUsing)
-
-        val orphan = state.models[1]
-        assertEquals("Unregistered provider", orphan.providerName)
-        assertNull(orphan.locality)
+        assertEquals(1, state.modelCount, "a model whose provider is gone belongs to no group")
+        assertEquals("No API key (local servers rarely need one)", home.keyNote, "the vault holds no key for it")
     }
 
     @Test

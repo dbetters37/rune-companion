@@ -38,6 +38,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
@@ -300,6 +301,64 @@ class AgentChatTest {
     }
 
     // ---- failures ----
+
+    @Test
+    fun `a very long reply streams in time proportional to its length, and its complete text is published`() = runTest {
+        val world = TestWorld(scope = this)
+        val full = buildString { repeat(200_000) { append('a' + it % 26) } }
+        val client = StreamingClient { _, _ ->
+            flow {
+                // One character at a time: a reasoning model's long output, at its most demanding.
+                for (c in full) emit(ChatChunk.Text(c.toString()))
+                emit(ChatChunk.Completed(ChatResponse(ChatMessage.assistant(full), FinishReason.STOP, TokenUsage(10, 5), "scripted-1")))
+            }
+        }
+        val conversation = world.conversation(client)
+        // An eager collector sees every value liveTurns takes, not only the latest.
+        var snapshots = 0
+        var lastText = ""
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            world.chat.liveTurns.collect { turns ->
+                turns[conversation.id]?.partialText?.takeIf { it.isNotEmpty() }?.let {
+                    snapshots++
+                    lastText = it
+                }
+            }
+        }
+
+        val started = System.nanoTime()
+        val result = world.chat.send(conversation.id, "Think hard.")
+        val tookMs = (System.nanoTime() - started) / 1_000_000
+
+        assertEquals(full, assertIs<TurnResult.Completed>(result).text)
+        assertTrue(snapshots < 1_000, "snapshots are published at a bounded rate, not once per delta: $snapshots in $tookMs ms")
+        assertEquals(full, lastText, "the last text published is the whole reply")
+        assertTrue(tookMs < 5_000, "200,000 one-character deltas took $tookMs ms")
+        assertTrue(world.chat.liveTurns.value.isEmpty())
+    }
+
+    @Test
+    fun `an agent switched off during its turn is stopped, and the conversation says so`() = runTest {
+        val world = TestWorld(scope = this)
+        var agentId = AgentId("")
+        val switchOff = world.register(LambdaTool("switch_off") {
+            world.agentManager.setEnabled(agentId, false)
+            ToolOutcome.success("done")
+        })
+        val client = ScriptedLlmClient.script(ScriptStep.Calls(listOf(call("call_1", "test_switch_off"))), ScriptStep.Reply("never asked"))
+        val conversation = world.conversation(client, tools = setOf(switchOff.spec.id))
+        agentId = conversation.agentId
+
+        val result = world.chat.send(conversation.id, "Go.")
+
+        assertEquals(TurnResult.Cancelled, result)
+        assertEquals(1, client.requests.size)
+        val note = world.entries(conversation).last()
+        assertEquals("Stopped: Scout was switched off while it was working.", note.error)
+        val event = world.events(ActivityType.TASK).single { it.title == "Agent turn stopped by the owner" }
+        assertEquals(agentId, event.agentId)
+        assertTrue(world.events(ActivityType.ERROR).none { it.agentId == agentId }, "the owner's decision is not logged as an error")
+    }
 
     @Test
     fun `a failed turn leaves a visible note that is never sent to a model`() = runTest {

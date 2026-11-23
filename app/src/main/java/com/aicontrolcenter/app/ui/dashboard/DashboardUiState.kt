@@ -11,21 +11,45 @@ import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.agents.AgentAvailability
 import com.aicontrolcenter.core.agents.UnavailableReason
+import com.aicontrolcenter.core.registry.ConnectionStatus
 import com.aicontrolcenter.core.registry.RegistrySnapshot
+import com.aicontrolcenter.framework.llm.Simulator
 
 /** Everything the dashboard shows. Produced by [DashboardViewModel]; the screen only renders it. */
 @Immutable
 data class DashboardUiState(
     val isLoading: Boolean = true,
     val summary: EcosystemSummary = EcosystemSummary(),
-    /** Explains, once, why no agent can run while no model is registered. Null when it does not apply. */
-    val setupNotice: String? = null,
+    /** The one-tap help for agents that have no model yet. Null when every agent has one. */
+    val quickStart: QuickStartUi? = null,
+    /** Agents running a turn right now, with what they are doing. */
+    val working: List<WorkingAgentUi> = emptyList(),
     val attention: List<AttentionItem> = emptyList(),
     val network: AgentNetwork = AgentNetwork(),
     val selectedNode: NetworkNode? = null,
     val recentActivity: List<ActivityRowUi> = emptyList(),
     val isScanning: Boolean = false,
+    val isAssigning: Boolean = false,
     val message: UserMessage? = null,
+)
+
+/** Agents that have no model, and whether the simulator can stand in for one. */
+@Immutable
+data class QuickStartUi(
+    val agentsWithoutModel: List<String>,
+    /** The built-in simulator is registered and switched on. */
+    val simulatorAvailable: Boolean,
+    /** A real model (not the simulator) is registered. */
+    val hasRealModels: Boolean,
+)
+
+@Immutable
+data class WorkingAgentUi(
+    val agentId: AgentId,
+    val name: String,
+    val colorIndex: Int,
+    /** "Waiting for the model", "Running tool: Current time". */
+    val detail: String,
 )
 
 /** The headline numbers of the registry. Agents, models and AI apps are counted separately. */
@@ -40,7 +64,12 @@ data class EcosystemSummary(
     val disabledAgents: Int = 0,
     val director: DirectorSummary? = null,
     val providerCount: Int = 0,
+    val providersOnline: Int = 0,
+    /** Enabled providers that are offline, rejected their key, or reported an error. */
+    val providerProblems: Int = 0,
     val modelCount: Int = 0,
+    /** Models assigned to at least one agent, as primary or fallback. */
+    val modelsInUse: Int = 0,
     val registeredApps: Int = 0,
     val installedApps: Int = 0,
 )
@@ -83,7 +112,23 @@ private fun RegistrySnapshot.toSummary(withoutModel: Int): EcosystemSummary = Ec
         DirectorSummary(it.profile.id, it.profile.name, it.profile.colorIndex, it.availability.toStatusLabel())
     },
     providerCount = providers.size,
+    providersOnline = providers.count { it.enabled && it.status == ConnectionStatus.ONLINE },
+    providerProblems = providers.count {
+        it.enabled && (it.status == ConnectionStatus.OFFLINE || it.status == ConnectionStatus.AUTH_ERROR || it.status == ConnectionStatus.ERROR)
+    },
     modelCount = models.size,
+    modelsInUse = models.count { model -> agents.any { it.profile.modelId == model.id || model.id in it.profile.fallbackModelIds } },
     registeredApps = apps.size,
     installedApps = installedApps,
 )
+
+internal fun RegistrySnapshot.quickStart(): QuickStartUi? {
+    val without = agents.filter { it.profile.modelId == null }.map { it.profile.name }
+    if (without.isEmpty()) return null
+    val simulator = modelsById[Simulator.MODEL_ID]
+    return QuickStartUi(
+        agentsWithoutModel = without,
+        simulatorAvailable = simulator != null && simulator.enabled && provider(simulator)?.enabled == true,
+        hasRealModels = !awaitingFirstModel,
+    )
+}

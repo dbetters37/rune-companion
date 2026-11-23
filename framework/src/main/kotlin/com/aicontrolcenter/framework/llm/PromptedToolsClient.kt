@@ -17,7 +17,9 @@ import java.util.UUID
  * wrapped model looks like any tool-calling model.
  *
  * A reply the parser does not understand is passed on unchanged as plain text: a model that
- * ignores the format still answers, it just cannot use tools.
+ * ignores the format still answers, it just cannot use tools. A marked call whose arguments
+ * cannot be read is passed on as a call with [ToolCallRequest.argumentsError] set, which the
+ * tool executor answers with the reason, so the model can write it again.
  */
 class PromptedToolsClient(
     private val delegate: LlmClient,
@@ -70,7 +72,7 @@ class PromptedToolsClient(
             truncated = response.finishReason == FinishReason.LENGTH,
         )
         if (parsed.calls.isEmpty()) return response
-        val calls = parsed.calls.map { ToolCallRequest(newCallId(), it.name, it.arguments) }
+        val calls = parsed.calls.map { ToolCallRequest(newCallId(), it.name, it.arguments, argumentsError = it.argumentsError) }
         // The provider's own form of the message no longer matches what the framework keeps.
         val message = response.message.copy(text = parsed.text, toolCalls = calls, providerData = null)
         return response.copy(message = message, finishReason = FinishReason.TOOL_CALLS)

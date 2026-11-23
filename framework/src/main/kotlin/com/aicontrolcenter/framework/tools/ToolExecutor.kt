@@ -43,7 +43,7 @@ enum class ToolCallEnd {
     DENIED,
     TIMED_OUT,
 
-    /** Never reached a tool: no such tool, or arguments that do not fit its schema. */
+    /** Never reached a tool: no such tool, or arguments that could not be read or do not fit its schema. */
     REJECTED,
 }
 
@@ -63,6 +63,10 @@ data class ToolExecution(
  * does can make [execute] throw, except cancellation of the caller.
  *
  * Tool output is returned and logged as data. Nothing here interprets it.
+ *
+ * Checks run in an order that gives nothing away: a tool the agent does not have switched on
+ * is refused before its arguments are looked at or its [Tool.assess] runs, so its schema is
+ * never revealed and no work is done for it.
  */
 class ToolExecutor(
     private val registry: ToolRegistry,
@@ -93,6 +97,14 @@ class ToolExecutor(
 
     private suspend fun carryOut(tool: Tool, call: ToolCallRequest, context: ToolContext, onAssessed: (ActionAssessment) -> Unit): Pair<ToolCallEnd, ToolOutcome> {
         val spec = tool.spec
+        if (spec.id !in context.agent.toolIds) return ToolCallEnd.DENIED to ToolOutcome.failure(toolNotSwitchedOn(spec, context.agent))
+        call.argumentsError?.let { reason ->
+            val why = reason.trim().trimEnd('.').take(MAX_ERROR_ECHO).ifEmpty { "they could not be read" }
+            return ToolCallEnd.REJECTED to ToolOutcome.failure(
+                "The call to ${spec.functionName} was not run because its arguments could not be read ($why). " +
+                    "Write them as a single JSON object that follows the tool's parameter schema.",
+            )
+        }
         val problems = ToolArguments.problems(spec.parameters, call.arguments)
         if (problems.isNotEmpty()) {
             return ToolCallEnd.REJECTED to ToolOutcome.failure("The call to ${spec.functionName} was not run. ${problems.joinToString(" ")}")
@@ -179,7 +191,7 @@ class ToolExecutor(
                         put("capability", it.capability.id)
                         put("sendsDataOffDevice", it.sendsDataOffDevice)
                     }
-                    (assessment?.risk ?: spec?.risk)?.let { put("risk", it.name) }
+                    listOfNotNull(assessment?.risk, spec?.risk).maxOrNull()?.let { put("risk", it.name) }
                     put("outcome", end?.name ?: "CANCELLED")
                     put("durationMs", durationMs)
                     put("argumentNames", call.arguments.keys.joinToString(","))

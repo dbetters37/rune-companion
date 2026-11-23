@@ -101,7 +101,11 @@ private fun PresetCard(preset: ProviderPreset, onClick: () -> Unit) {
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    TintedChip(locality.label, appColors.locality(locality), icon = locality.icon)
+                    if (preset.baseUrl == null && preset.kind == ProviderKind.OPENAI_COMPATIBLE) {
+                        NeutralChip("Where it goes depends on its address")
+                    } else {
+                        TintedChip(locality.label, appColors.locality(locality), icon = locality.icon)
+                    }
                     if (preset.needsApiKey) NeutralChip("Needs an API key", icon = AppIcons.Key)
                 }
                 Row(

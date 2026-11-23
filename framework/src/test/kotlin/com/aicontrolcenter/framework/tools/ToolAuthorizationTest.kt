@@ -83,6 +83,23 @@ class ToolAuthorizationTest {
     }
 
     @Test
+    fun `an assessment can raise a call's risk but never lower it below the tool's declared risk`() = runTest {
+        val declaredConsequential = LambdaTool("send", risk = RiskLevel.CONSEQUENTIAL, assessed = RiskLevel.SAFE) { ToolOutcome.success("sent") }
+        val reason = decide(declaredConsequential).reason()
+        assertTrue("owner's approval" in reason, reason)
+        assertEquals(Authorization.Allowed, decide(LambdaTool("note", risk = RiskLevel.MODIFYING, assessed = RiskLevel.SAFE) { ToolOutcome.success("ok") }))
+    }
+
+    @Test
+    fun `an agent that is switched off may not use any tool`() = runTest {
+        val lookup = tool("lookup")
+        val agent = world.agent(model = null, tools = setOf(lookup.spec.id)).copy(enabled = false)
+        val context = ToolContext(agent)
+        val reason = authorizer.authorize(lookup.spec, lookup.assess(JsonObject(emptyMap()), context), context).reason()
+        assertTrue("Scout is switched off" in reason, reason)
+    }
+
+    @Test
     fun `the capability registry starts with the built-in capabilities and takes each new one once`() {
         val registry = CapabilityRegistry()
         assertEquals(Capabilities.builtIn, registry.all())

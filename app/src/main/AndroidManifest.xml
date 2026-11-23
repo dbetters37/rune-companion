@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!--
-         INTERNET is the only permission: model providers are reached over HTTP(S), whether they
+         INTERNET is what the model-provider phase adds: providers are reached over HTTP(S), whether they
          run on this phone (loopback), on the local network or in the cloud. Every request goes
          through the framework's model gateway, which refuses everything that leaves the device
          while local-only mode is on and records every transfer in the activity log.

@@ -218,13 +218,12 @@ private fun ProviderFields(state: ProviderFormUiState, actions: ProviderFormActi
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                     )
                 }
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
                     TintedChip(state.locality.label, appColors.locality(state.locality), icon = state.locality.icon)
                     Text(
-                        state.locality.explanation,
+                        "Where prompts go with this address. " + state.locality.explanation,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.weight(1f),
                     )
                 }
             }
