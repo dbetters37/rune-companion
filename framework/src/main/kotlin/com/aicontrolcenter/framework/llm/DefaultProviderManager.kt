@@ -32,6 +32,7 @@ import com.aicontrolcenter.core.registry.ProviderKind
 import com.aicontrolcenter.core.registry.ProviderRepository
 import com.aicontrolcenter.core.registry.effectiveLocality
 import com.aicontrolcenter.core.security.SecretVault
+import com.aicontrolcenter.core.security.SecretVaultException
 import com.aicontrolcenter.core.settings.SettingsRepository
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
@@ -182,7 +183,15 @@ class DefaultProviderManager(
                 val modelCount = models.getByProvider(id).size
                 models.deleteByProvider(id)
                 providers.delete(id)
-                setOfNotNull(provider.apiKeyAlias, keyAlias(id)).forEach { vault.delete(it) }
+                // Every version of the provider's key goes, not only the current one: an earlier
+                // failed clean-up may have left older versions, and once the record is gone the
+                // start-up clean-up can no longer tell whose they were.
+                val versions = try {
+                    vault.aliases().filter { isKeyAliasOf(id, it) }
+                } catch (e: SecretVaultException) {
+                    emptyList()
+                }
+                (setOfNotNull(provider.apiKeyAlias, keyAlias(id)) + versions).forEach { vault.delete(it) }
                 val modelNote = if (modelCount == 1) "1 model" else "$modelCount models"
                 activity.record(ActivityType.REGISTRY, "Provider removed", "${provider.name} and its $modelNote. Agents that used them need another model.")
             }

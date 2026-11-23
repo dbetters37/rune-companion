@@ -137,6 +137,36 @@ class ProviderKeyChangeTest {
     }
 
     @Test
+    fun `adding a provider whose record cannot be written keeps no key`() = runTest {
+        val stores = Stores()
+        val app = stores.start()
+        stores.providers.failNextUpsert = true
+        assertFailsWith<IOException> { app.manager.addProvider(at("a.example.com", keyA)) }
+        assertTrue(stores.providers.getAll().isEmpty())
+        assertEquals(emptySet(), stores.vault.aliases(), "a key with no record would never be deleted")
+        assertFalse(keyA in stores.logText())
+    }
+
+    @Test
+    fun `removing a provider deletes every version of its key, including ones an earlier failure left behind`() = runTest {
+        val stores = Stores()
+        val app = stores.start()
+        val provider = app.manager.addProvider(at("a.example.com", keyA))
+        // An edit whose deletion of the previous key fails leaves that version behind.
+        stores.vault.failDeletes = true
+        assertFailsWith<SecretVaultException> { app.manager.updateProvider(provider.id, at("b.example.com", keyB)) }
+        stores.vault.failDeletes = false
+        stores.vault.put("provider/${provider.id.value}", "sk-original-form-key-000000")
+        stores.vault.put("backup/passphrase", "not a provider key")
+        val other = app.manager.addProvider(at("c.example.com", "sk-test-key-for-host-c-333333").copy(name = "Other"))
+        assertEquals(5, stores.vault.aliases().size)
+
+        app.manager.removeProvider(provider.id)
+
+        assertEquals(setOf(other.apiKeyAlias, "backup/passphrase"), stores.vault.aliases())
+    }
+
+    @Test
     fun `an edit interrupted after the record write leaves a key nothing uses, which the next start deletes`() = runTest {
         val stores = Stores()
         val app = stores.start()

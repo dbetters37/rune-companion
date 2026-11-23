@@ -116,10 +116,20 @@ class StoredNamesGoldenTest {
             "role", "text", "images", "toolCalls", "toolResult", "reasoning", "providerData",
         )
         assertStoredKeys(ImageContent.serializer(), "mimeType", "base64")
-        assertStoredKeys(ToolCallRequest.serializer(), "id", "name", "arguments")
+        assertStoredKeys(ToolCallRequest.serializer(), "id", "name", "arguments", "argumentsError")
         assertStoredKeys(ToolResultContent.serializer(), "callId", "toolName", "content", "isError")
         assertStoredKeys(ProviderData.serializer(), "kind", "payload")
         assertStoredKeys(TokenUsage.serializer(), "inputTokens", "outputTokens", "cachedInputTokens")
+    }
+
+    @Test
+    fun `a tool call stored before argumentsError existed still reads back`() {
+        // Conversations saved by the first build with conversation storage have no such key.
+        val stored = """{"role":"ASSISTANT","text":"Checking","images":[],""" +
+            """"toolCalls":[{"id":"call_1","name":"clock_now","arguments":{"zone":"UTC"}}],""" +
+            """"toolResult":null,"reasoning":null,"providerData":null}"""
+        val message = DataJson.decodeFromString(ChatMessage.serializer(), stored)
+        assertEquals(ToolCallRequest("call_1", "clock_now", buildJsonObject { put("zone", "UTC") }), message.toolCalls.single())
     }
 
     @Test
@@ -131,7 +141,7 @@ class StoredNamesGoldenTest {
         )
         assertEquals(
             """{"role":"ASSISTANT","text":"Checking","images":[],""" +
-                """"toolCalls":[{"id":"call_1","name":"clock_now","arguments":{"zone":"UTC"}}],"toolResult":null,""" +
+                """"toolCalls":[{"id":"call_1","name":"clock_now","arguments":{"zone":"UTC"},"argumentsError":null}],"toolResult":null,""" +
                 """"reasoning":"The owner wants the time.",""" +
                 """"providerData":{"kind":"ANTHROPIC","payload":[{"type":"thinking","signature":"c2ln"}]}}""",
             encodeColumn(
