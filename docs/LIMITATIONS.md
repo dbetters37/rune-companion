@@ -58,7 +58,7 @@ do it.
 | Opening apps, sharing to apps, opening links | Nothing | |
 | Operating other apps' screens | You enable the app's accessibility service in Android settings, and authorise each target app in the registry | See section 4 for the extra step on sideloaded apps |
 | Scripts | Nothing for the JavaScript sandbox and in-sandbox shell. Termux, with `allow-external-apps=true` in its properties and the `RUN_COMMAND` permission granted, for full command-line tools | |
-| Long runs while the screen is off | Notification permission (Android 13+). Exempting the app from battery optimisation helps on aggressive devices | Runs execute in a foreground service with a visible notification and a Stop action |
+| Long runs while the screen is off | Notification permission (Android 13+). Exempting the app from battery optimisation helps on aggressive devices | Objectives run in a foreground service with a visible notification and a Pause action. Android only lets the app start it while the app is on screen |
 | Web search by agents | A search provider's API key, or a self-hosted search endpoint | Not built into Android. Without it agents can still open and read specific URLs |
 
 ## 4. Installing and enabling
@@ -113,6 +113,14 @@ do it.
   finds with its search tool are sent to that provider as part of the conversation, and the
   call is logged as data leaving the device. Local-only mode prevents it. There is no
   per-memory or per-space "never send" mark yet.
+
+- **Agents can mislead each other.** What one agent writes reaches the next agent's prompt as
+  quoted data, never as instructions, and cannot change any agent's permissions. A model can
+  still be persuaded by it, so an agent that read a planted instruction can pass bad work on.
+  Reviews are done by another model and catch mistakes, not attacks.
+- **Limits stop work, not cost already spent.** Caps on tasks, messages, model calls and time
+  bound how much an objective can do. A cloud provider bills for the calls made before a limit
+  was reached.
 
 ## 7. Not verifiable in the build environment
 

@@ -142,32 +142,47 @@ so small local models can still use tools.
 ### C. Multi-agent communication
 
 - **Messages.** `AgentMessage` is a typed envelope (assignment, assistance request and
-  response, findings, delegation, memory share, review request and result, completion,
-  failure, question, answer, cancel) with sender, recipient, task, thread, reply-to and hop
-  count. Every message is persisted and shown in Activity.
-- **Tasks.** A `Task` has instructions, completion criteria, an assignee, dependencies,
-  limits, usage, a delegation chain, a result or error, and review verdicts. States:
+  response, question, answer, delegation, findings, memory share, review request and result,
+  completion, failure, status, cancel) with a typed sender and recipient (owner, agent or
+  system), objective, task, reply-to and hop count. Messages are append-only and stored per
+  objective.
+- **Tasks.** A `TaskRecord` is an objective, a work task, a review or the synthesis. It
+  has instructions, completion criteria, an assignee, dependencies, a delegation chain,
+  attempts and revision rounds, usage, a result or error, and review verdicts. States:
 
 ```
 QUEUED ─► RUNNING ─► COMPLETED
-            │  ▲         ▲
-            │  └─ WAITING_APPROVAL / WAITING_FOR_AGENT ─┘
+            │  ▲
+            │  └── WAITING_FOR_AGENT (asked or delegated to a teammate)
             ├─► IN_REVIEW ─► (approved) COMPLETED │ (revise) RUNNING, next round
             ├─► FAILED │ TIMED_OUT │ CANCELLED
             └─► PAUSED (by the owner) │ INTERRUPTED (process died; recovered on next start)
 ```
 
-- **Director.** Given an objective it (1) interprets it, (2) produces a plan of tasks with
-  criteria and dependencies, (3) selects an agent per task by skills, availability and
-  reliability, (4) distributes assignments, (5) collects results, (6) has important results
-  reviewed by a different agent, (7) sends revisions back or arbitrates disagreements,
-  (8) synthesises the final result and saves it as a document, (9) saves knowledge to memory
-  when the objective authorises it.
-- **Loop protection.** Delegation depth limit; no delegating to an agent already in the
-  delegation chain; per-objective caps on tasks and messages; per-task caps on model calls,
-  tool calls, attempts and revision rounds; repeated-exchange detection between two agents;
-  wall-clock time-outs per task and per objective. Hitting a limit fails the task with a
-  clear reason instead of continuing.
+- **Director.** `DefaultOrchestrator` runs each objective in its own supervised job. Given an
+  objective the Director (1) interprets it, (2) returns a JSON plan of tasks with criteria
+  and dependencies, which is validated and retried once with the problems quoted, (3) has
+  `AgentSelector` pick an agent per task by skills, word overlap, reliability and current
+  load, (4) distributes assignments, (5) collects results, (6) has results it marked for
+  review checked by a different agent, (7) sends revisions back, and when reviewer and author
+  keep disagreeing decides itself in an arbitration task, (8) writes the final Markdown
+  document, falling back to assembling the results mechanically, and (9) saves a summary to
+  a shared space when the objective allows it.
+- **Single source of truth.** The task store drives everything. Each step re-reads the
+  stored state, checks under a per-objective lock that the task still has the status it
+  expects, and writes before acting. Pause, resume and crash recovery therefore run the same
+  `ObjectiveDriver` code. Work done by agents is always passed to other agents' prompts as
+  quoted, framed data with a size budget, never as instructions.
+- **Teamwork inside a task.** `team.ask_agent` runs a bounded question to a teammate;
+  `team.delegate` creates a child task and waits for it. Both are offered according to each
+  agent's delegation policy.
+- **Loop protection.** Delegation depth; no delegating to an agent already in the chain;
+  refusal of the third near-identical request to the same agent; per-objective caps on tasks
+  and messages; per-task caps on model calls (questions to teammates included), tool calls,
+  attempts and revision rounds; wall-clock limits per task and per objective; a bound on
+  restarts that make no progress. A refusal reaches the model as a tool result and the owner
+  as a "Limit reached" message. When an objective-wide limit stops work, finished results are
+  kept and the final document says what was not completed and why.
 
 ### D. Phone operator
 
@@ -265,7 +280,7 @@ agents, edges are their connections, and messages travel along them while tasks 
 | Consequential actions | Always confirmed by you, with a preview |
 | Data leaving the device | `Locality` on every provider and model; egress recorded as `EgressInfo` on activity events; a local-only mode that blocks every off-device provider and tool |
 | Execution logs | Append-only `ActivityLog` with filters by type, agent, task, objective, severity and egress |
-| Crash and interruption | Task state and transcripts are persisted step by step; tasks found running at start-up are marked interrupted and resumed or held, as configured; long runs execute in a foreground service with a stop control |
+| Crash and interruption | Task state and transcripts are persisted step by step; tasks found running at start-up are marked interrupted and resumed or held, as configured; an interrupted run counts as an attempt, so a step that keeps crashing is not retried forever; objectives run in a foreground service with a Pause control |
 | Untrusted content | Tool results, web pages, app screens and other agents' messages are passed to models as data, and cannot raise an agent's permissions |
 
 ## 7. Testing
