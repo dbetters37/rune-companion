@@ -55,7 +55,10 @@ internal class KnowledgeSpaces(private val ctx: MemoryContext) {
             val space = ctx.repository.getSpace(id) ?: return 0
             val now = ctx.clock.now()
             var removedFrom = 0
-            for (agent in ctx.agents.getAll()) {
+            for (listed in ctx.agents.getAll()) {
+                if (id !in listed.memory.readableSpaces && id !in listed.memory.writableSpaces) continue
+                // Re-read right before writing, so an edit made since the list was read is kept.
+                val agent = ctx.agents.get(listed.id) ?: continue
                 val policy = agent.memory
                 if (id !in policy.readableSpaces && id !in policy.writableSpaces) continue
                 ctx.agents.upsert(

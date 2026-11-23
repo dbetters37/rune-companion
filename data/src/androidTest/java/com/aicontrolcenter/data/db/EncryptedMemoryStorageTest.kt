@@ -111,7 +111,7 @@ class EncryptedMemoryStorageTest {
         val second = encryptedLayer()
         assertEquals(listOf(boiler, alarm, task), second.memories.list())
         assertEquals(listOf(space), second.memories.observeSpaces().first())
-        // Case is ignored beyond ASCII: the search column is lower-cased on write.
+        // Case (and accents) are ignored beyond ASCII: the search column is folded on write.
         assertEquals(listOf(boiler), second.memories.searchText("KESSEL ÜBER TÜR $MARKER"))
         assertEquals(listOf(boiler, task), second.memories.searchText("BOILER"))
         assertEquals(listOf(task), second.memories.searchText("boiler", MemoryFilter(scopes = setOf(task.scope))))

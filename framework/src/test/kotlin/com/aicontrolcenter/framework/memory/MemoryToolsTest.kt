@@ -355,9 +355,10 @@ class MemoryToolsTest {
         assertEquals(listOf(original.id), copy.provenance.derivedFrom)
         assertNotNull(memory.repository.get(original.id))
         assertEquals(
-            "Shared \"Finding\" into the shared space \"Team knowledge\" as memory ${copy.id.value}. The original stays in your private memory.",
+            "Shared memory ${original.id.value} into the shared space \"Team knowledge\" as memory ${copy.id.value}. The original stays in your private memory.",
             execution.outcome.content,
         )
+        assertFalse("Finding" in execution.outcome.content, "the confirmation is stored as it is, so it names memories by id only")
         assertTrue("Share memory ${original.id.value} into the shared space \"Team knowledge\"" in world.events(ActivityType.TOOL_CALL).single().detail)
     }
 

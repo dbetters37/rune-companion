@@ -42,8 +42,12 @@ import kotlinx.coroutines.withContext
  * - Filters, ordering and limits are evaluated by SQLite (see [MemoryQueryBuilder]).
  * - Text search: every query word must occur in title, content or tags. Words are matched with
  *   `LIKE ... ESCAPE`, so `%`, `_` and the escape character are literal, against `search_text`,
- *   a lower-cased copy maintained on write (see `memorySearchText`), so case is ignored in
- *   every alphabet and not only in ASCII.
+ *   a folded copy maintained on write (see `memorySearchText`), so case is ignored in every
+ *   alphabet and not only in ASCII, and accents are ignored as in recall's keyword matching.
+ * - [MemoryRecord.history] is stored as JSON next to the provenance.
+ * - An agent's memory is found through the owning-agent indexes: [deleteAgentMemory] and
+ *   [agentsWithMemory] read no content, and [taskMemoryOf] reads the newest rows first and stops
+ *   at the limit. [linksAmong] and [embeddingsOf] take any number of ids, in chunks.
  * - Removing memories removes their links and embeddings in the same transaction.
  * - A row that cannot be decoded is treated as absent and reported without its content, like
  *   unreadable rows everywhere in this module.
@@ -232,15 +236,15 @@ class RoomMemoryRepository internal constructor(
 
     companion object {
         /**
-         * Most UTF-8 bytes of text (title, content, tags and provenance together) one memory may
-         * hold: half of Android's cursor window, leaving room for the other columns.
+         * Most UTF-8 bytes of text (title, content, tags, provenance and history together) one
+         * memory may hold: half of Android's cursor window, leaving room for the other columns.
          */
         const val MAX_TEXT_BYTES = 1024 * 1024
 
         private val NEWEST_FIRST = compareByDescending<MemoryRecord> { it.updatedAt }.thenBy { it.id.value }
 
         private fun MemoryEntity.storedTextBytes(): Long =
-            listOf(id, title, content, tagsJson, provenanceJson).sumOf { it.utf8Length() }
+            listOf(id, title, content, tagsJson, provenanceJson, historyJson).sumOf { it.utf8Length() }
 
         /** UTF-8 length without encoding the text; unpaired surrogates count as the 3 bytes SQLite stores. */
         private fun String.utf8Length(): Long {

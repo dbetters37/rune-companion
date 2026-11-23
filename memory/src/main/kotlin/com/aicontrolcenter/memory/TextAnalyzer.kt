@@ -33,7 +33,7 @@ internal object TextAnalyzer {
     /** Lower-case words in order, stop words included. */
     fun words(text: String): List<String> {
         if (text.isEmpty()) return emptyList()
-        val folded = MARKS.replace(Normalizer.normalize(text, Normalizer.Form.NFKD), "").lowercase(Locale.ROOT)
+        val folded = fold(text)
         val words = ArrayList<String>()
         val current = StringBuilder()
         var i = 0
@@ -49,6 +49,22 @@ internal object TextAnalyzer {
         }
         if (current.isNotEmpty()) words += current.toString()
         return words
+    }
+
+    /**
+     * NFKD-normalised, non-spacing marks removed, lower case: how [words] compares text. ASCII
+     * text has nothing to decompose or remove, so it skips straight to lower case (same result).
+     */
+    fun fold(text: String): String {
+        var ascii = true
+        for (c in text) {
+            if (c.code >= 0x80) {
+                ascii = false
+                break
+            }
+        }
+        if (ascii) return text.lowercase(Locale.ROOT)
+        return MARKS.replace(Normalizer.normalize(text, Normalizer.Form.NFKD), "").lowercase(Locale.ROOT)
     }
 
     fun isStopWord(word: String): Boolean = word in STOP_WORDS

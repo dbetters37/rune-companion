@@ -108,6 +108,22 @@ class RoomMemoryBehaviourTest {
     }
 
     @Test
+    fun `search ignores accents the way recall's keyword matching does`() = runTest {
+        repo.upsert(s.memory("mem_cafe", title = "Café Central", content = "Melange und Torte in München", tags = setOf("Wien")))
+        repo.upsert(s.memory("mem_plain", title = "Cafe Sperl", content = "Near the Naschmarkt", tags = emptySet()))
+        // Decomposed input (e followed by a combining accent) is the same word as precomposed é.
+        repo.upsert(s.memory("mem_decomposed", title = "Noe\u0308l", content = "Christmas", tags = emptySet()))
+
+        assertEquals(listOf("mem_cafe", "mem_plain"), ids(repo.searchText("cafe")).sorted())
+        assertEquals(listOf("mem_cafe", "mem_plain"), ids(repo.searchText("CAFÉ")).sorted())
+        assertEquals(listOf("mem_cafe"), ids(repo.searchText("munchen central")))
+        assertEquals(listOf("mem_decomposed"), ids(repo.searchText("noël")))
+        assertEquals(listOf("mem_decomposed"), ids(repo.searchText("NOEL")))
+        // What the memory engine sends: the query's words, folded by its own TextAnalyzer.
+        assertEquals(listOf("mem_cafe"), ids(repo.searchText("cafe central munchen")))
+    }
+
+    @Test
     fun `percent, underscore and the escape character are matched literally`() = runTest {
         repo.upsert(s.memory("mem_pct", title = "Discount", content = "Saves 100% today", tags = emptySet()))
         repo.upsert(s.memory("mem_us", title = "Variable", content = "Uses snake_case names", tags = emptySet()))
@@ -161,8 +177,35 @@ class RoomMemoryBehaviourTest {
         assertTrue("index_memories_scope_agent_id_scope_type_scope_task_id" in oneAgent, oneAgent)
         val oneSpace = plan(MemoryFilter(scopes = setOf(s.commons)))
         assertTrue("index_memories_scope_space_id" in oneSpace, oneSpace)
+        // Either index of the owning agent: SQLite may prefer the one that also yields the listing order.
         val oneTask = plan(MemoryFilter(scopes = setOf(s.task)))
-        assertTrue("index_memories_scope_agent_id_scope_type_scope_task_id" in oneTask, oneTask)
+        assertTrue("USING INDEX index_memories_scope_agent_id_scope_type_" in oneTask, oneTask)
+    }
+
+    @Test
+    fun `an agent's task memory is read newest first from an index that stops at the limit`() {
+        // The statement of MemoryDao.taskMemoryOf.
+        val sql = "SELECT ${com.aicontrolcenter.data.db.entity.MemoryRow.COLUMNS} FROM memories WHERE scope_type = 'TASK' AND scope_agent_id = ? " +
+            "AND (? IS NULL OR expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC, id ASC LIMIT ?"
+        val plan = sqlite.query(SimpleSQLiteQuery("EXPLAIN QUERY PLAN $sql", arrayOf<Any?>("agt_researcher", 5L, 5L, 10L))).use { cursor ->
+            buildList { while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("detail"))) }
+        }.joinToString(" | ")
+        assertTrue("index_memories_scope_agent_id_scope_type_updated_at_id" in plan && "TEMP B-TREE" !in plan, plan)
+        val agents = sqlite.query(SimpleSQLiteQuery("EXPLAIN QUERY PLAN SELECT id FROM memories WHERE scope_agent_id = ? AND scope_type IN ('AGENT', 'TASK')", arrayOf<Any?>("agt_researcher"))).use { cursor ->
+            buildList { while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("detail"))) }
+        }.joinToString(" | ")
+        assertTrue("USING" in agents && "index_memories_scope_agent_id" in agents, agents)
+    }
+
+    @Test
+    fun `a filter naming more than a thousand tasks of one agent is one condition, not one per task`() = runTest {
+        val agent = AgentId("agt_researcher")
+        repo.upsert(s.memory("mem_t7", MemoryScope.Task(TaskId("tsk_7"), agent), 300))
+        repo.upsert(s.memory("mem_t1199", MemoryScope.Task(TaskId("tsk_1199"), agent), 200))
+        repo.upsert(s.memory("mem_other", MemoryScope.Task(TaskId("tsk_7"), AgentId("agt_writer")), 100))
+        val scopes = (1..1_200).map { MemoryScope.Task(TaskId("tsk_$it"), agent) }.toSet<MemoryScope>()
+        assertEquals(listOf("mem_t7", "mem_t1199"), ids(repo.list(MemoryFilter(scopes = scopes))))
+        assertEquals(listOf("mem_t7"), ids(repo.searchText("title mem_t7", MemoryFilter(scopes = scopes))))
     }
 
     @Test

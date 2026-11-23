@@ -27,6 +27,8 @@ import com.aicontrolcenter.core.memory.MemoryKind
 import com.aicontrolcenter.core.memory.MemoryScope
 import com.aicontrolcenter.core.memory.MemoryTier
 import com.aicontrolcenter.core.memory.Provenance
+import com.aicontrolcenter.core.memory.ProvenanceAction
+import com.aicontrolcenter.core.memory.ProvenanceEvent
 import com.aicontrolcenter.core.memory.ProvenanceOrigin
 import com.aicontrolcenter.core.registry.AiAppCapability
 import com.aicontrolcenter.core.registry.AiAppStatus
@@ -50,7 +52,9 @@ import com.aicontrolcenter.data.db.mapper.MemoryScopeType
 import com.aicontrolcenter.data.db.mapper.ScopeColumns
 import com.aicontrolcenter.data.db.mapper.encodeColumn
 import com.aicontrolcenter.data.db.mapper.level
+import com.aicontrolcenter.data.db.mapper.memoryHistorySerializer
 import com.aicontrolcenter.data.db.mapper.memorySearchText
+import com.aicontrolcenter.data.db.mapper.memorySearchWords
 import com.aicontrolcenter.data.db.mapper.toColumns
 import com.aicontrolcenter.data.security.AndroidKeystoreVaultCipher
 import com.aicontrolcenter.data.security.VaultFileStore
@@ -150,9 +154,24 @@ class StoredNamesGoldenTest {
         )
         assertEquals("""["research","shared tag"]""", encodeColumn(ColumnSerializers.stringSet, linkedSetOf("research", "shared tag")))
         // Rows keep the search text they were written with: a change here needs a migration that rebuilds it.
+        // Accents go and compatibility characters decompose, as in the memory engine's keyword matching.
         assertEquals(
-            "über äpfel\nline one\nline two\ntea time ß",
-            memorySearchText("Über ÄPFEL", "Line one\nLINE two", linkedSetOf("tea time", "ß")),
+            "uber apfel\nline one\nline two\ntea time ß cafe fi 2",
+            memorySearchText("Über ÄPFEL", "Line one\nLINE two", linkedSetOf("tea time", "ß cafe\u0301 ﬁ ²")),
+        )
+        assertEquals(listOf("cafe", "munchen", "ωμεγα"), memorySearchWords("Café  MÜNCHEN Ωμέγα café"))
+        assertStoredKeys(ProvenanceEvent.serializer(), "action", "byOrigin", "byAgentId", "at", "relatedMemory", "note")
+        assertStoredNames<ProvenanceAction>("EDITED", "SHARED_FROM", "PROMOTED_FROM")
+        assertEquals(
+            """[{"action":"SHARED_FROM","byOrigin":"AGENT","byAgentId":"agt_1","at":7,"relatedMemory":"mem_a","note":"Copied revision 2"},""" +
+                """{"action":"EDITED","byOrigin":"OWNER","byAgentId":null,"at":9,"relatedMemory":null,"note":null}]""",
+            encodeColumn(
+                memoryHistorySerializer,
+                listOf(
+                    ProvenanceEvent(ProvenanceAction.SHARED_FROM, ProvenanceOrigin.AGENT, AgentId("agt_1"), 7, MemoryId("mem_a"), "Copied revision 2"),
+                    ProvenanceEvent(ProvenanceAction.EDITED, ProvenanceOrigin.OWNER, at = 9),
+                ),
+            ),
         )
         // Little-endian float32: 1.0 and -0.0.
         assertContentEquals(

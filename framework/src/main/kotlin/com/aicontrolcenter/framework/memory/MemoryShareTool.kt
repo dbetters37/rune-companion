@@ -23,6 +23,10 @@ import kotlinx.serialization.json.putJsonObject
  * remembers becomes visible to others unless it is shared like this or saved into a space.
  *
  * Not switched on for any agent by default; the owner decides who may share.
+ *
+ * The confirmation names memories by id only. It is stored with the conversation as it is, and
+ * the call it answers names the memory by id too, so nothing of a memory's text stays in the
+ * conversation once the memory is forgotten.
  */
 internal class MemoryShareTool(private val support: MemoryToolSupport) : Tool {
     override val spec = ToolSpec(
@@ -79,8 +83,9 @@ internal class MemoryShareTool(private val support: MemoryToolSupport) : Tool {
         }
         val copy = support.memory.share(actor, original.id, space.id)
         val names = spaces.associate { it.id to it.name }
+        // Ids only, no title: this confirmation is stored with the conversation and must not keep memory text after the memory is gone.
         ToolOutcome.success(
-            "Shared \"${MemoryText.safeTitle(original.title)}\" into the shared space \"${MemoryText.safeTitle(space.name)}\" as memory ${copy.id.value}. " +
+            "Shared memory ${original.id.value} into the shared space \"${MemoryText.safeTitle(space.name)}\" as memory ${copy.id.value}. " +
                 "The original stays in ${MemoryText.scope(original.scope, profile.id, names)}.",
             buildJsonObject {
                 put("id", copy.id.value)

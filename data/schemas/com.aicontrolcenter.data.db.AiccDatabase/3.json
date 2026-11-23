@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 3,
-    "identityHash": "8d1d8f2223e55294f5b27c0e241c155a",
+    "identityHash": "a70d0fe70a66569c529ece795df8d1a9",
     "entities": [
       {
         "tableName": "agents",
@@ -970,7 +970,7 @@
       },
       {
         "tableName": "memories",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `scope_type` TEXT NOT NULL, `scope_agent_id` TEXT, `scope_space_id` TEXT, `scope_task_id` TEXT, `kind` TEXT NOT NULL, `tier` TEXT NOT NULL, `title` TEXT NOT NULL, `content` TEXT NOT NULL, `tags_json` TEXT NOT NULL, `importance` REAL NOT NULL, `confidence` REAL NOT NULL, `provenance_json` TEXT NOT NULL, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, `last_accessed_at` INTEGER, `access_count` INTEGER NOT NULL, `expires_at` INTEGER, `revision` INTEGER NOT NULL, `search_text` TEXT NOT NULL, PRIMARY KEY(`id`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `scope_type` TEXT NOT NULL, `scope_agent_id` TEXT, `scope_space_id` TEXT, `scope_task_id` TEXT, `kind` TEXT NOT NULL, `tier` TEXT NOT NULL, `title` TEXT NOT NULL, `content` TEXT NOT NULL, `tags_json` TEXT NOT NULL, `importance` REAL NOT NULL, `confidence` REAL NOT NULL, `provenance_json` TEXT NOT NULL, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, `last_accessed_at` INTEGER, `access_count` INTEGER NOT NULL, `expires_at` INTEGER, `revision` INTEGER NOT NULL, `history_json` TEXT NOT NULL, `search_text` TEXT NOT NULL, PRIMARY KEY(`id`))",
         "fields": [
           {
             "fieldPath": "id",
@@ -1082,6 +1082,12 @@
             "notNull": true
           },
           {
+            "fieldPath": "historyJson",
+            "columnName": "history_json",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
             "fieldPath": "searchText",
             "columnName": "search_text",
             "affinity": "TEXT",
@@ -1118,6 +1124,23 @@
             ],
             "orders": [],
             "createSql": "CREATE INDEX IF NOT EXISTS `index_memories_scope_agent_id_scope_type_scope_task_id` ON `${TABLE_NAME}` (`scope_agent_id`, `scope_type`, `scope_task_id`)"
+          },
+          {
+            "name": "index_memories_scope_agent_id_scope_type_updated_at_id",
+            "unique": false,
+            "columnNames": [
+              "scope_agent_id",
+              "scope_type",
+              "updated_at",
+              "id"
+            ],
+            "orders": [
+              "ASC",
+              "ASC",
+              "DESC",
+              "ASC"
+            ],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_memories_scope_agent_id_scope_type_updated_at_id` ON `${TABLE_NAME}` (`scope_agent_id` ASC, `scope_type` ASC, `updated_at` DESC, `id` ASC)"
           },
           {
             "name": "index_memories_scope_space_id",
@@ -1311,7 +1334,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '8d1d8f2223e55294f5b27c0e241c155a')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'a70d0fe70a66569c529ece795df8d1a9')"
     ]
   }
 }

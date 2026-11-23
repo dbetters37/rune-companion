@@ -59,6 +59,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import java.time.ZoneOffset
+import kotlin.coroutines.EmptyCoroutineContext
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -108,7 +109,8 @@ class TestWorld(
     }
     val executor = ToolExecutor(toolRegistry, DefaultToolAuthorizer(settings, capabilities), activity, clock, toolLimits)
     val monitor = DefaultAgentActivityMonitor(clock)
-    val recall = AutoRecall(memory, activity, zone = { ZoneOffset.UTC })
+    /** Looks up on the caller's dispatcher, so that recall follows virtual time in coroutine tests. */
+    val recall = AutoRecall(memory, activity, zone = { ZoneOffset.UTC }, lookupContext = EmptyCoroutineContext)
     val runner = AgentRunner(gateway, toolRegistry, executor, agents, settings, monitor, clock, recall = recall)
     val chat = DefaultAgentChat(conversations, agents, models, providers, settings, runner, activity, ids, clock, scope)
 

@@ -3,14 +3,19 @@ package com.aicontrolcenter.memory
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.IdGenerator
 import com.aicontrolcenter.core.MemoryId
+import com.aicontrolcenter.core.memory.MemoryActor
+import com.aicontrolcenter.core.memory.MemoryLink
 import com.aicontrolcenter.core.memory.MemoryPermissionException
 import com.aicontrolcenter.core.memory.MemoryRecord
 import com.aicontrolcenter.core.memory.MemoryRepository
 import com.aicontrolcenter.core.memory.MemoryScope
 import com.aicontrolcenter.core.memory.Provenance
+import com.aicontrolcenter.core.memory.ProvenanceAction
+import com.aicontrolcenter.core.memory.ProvenanceEvent
 import com.aicontrolcenter.core.memory.ProvenanceOrigin
 import com.aicontrolcenter.core.registry.AgentRepository
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * What the parts of [DefaultMemoryService] share: the ports, the access rules and the guards
@@ -28,11 +33,42 @@ internal class MemoryContext(
     val vectors: MemoryEmbeddings,
 ) {
     /**
-     * Serialises read-modify-write sequences (revision increments, "does a copy exist yet"
-     * checks, unique space names) within this process, so concurrent calls never lose an
+     * Serialises every write within this process: read-modify-write sequences (revision
+     * increments, "does a copy exist yet" checks, unique space names) and every deletion
+     * (forget, forgetting an agent, deleting a space, expiry and the clean-up in maintenance).
+     * So a memory checked to exist inside the lock still exists when it is written, an update or
+     * share never recreates a memory forgotten meanwhile, and concurrent calls never lose an
      * update or create duplicates. Embedding happens outside it, as embedders may be slow.
      */
     val writeLock = Mutex()
+
+    /**
+     * Runs [block] holding [writeLock], with [actor]'s access resolved inside the lock: a policy
+     * change or deletion that finished while this call waited for the lock already applies.
+     */
+    suspend inline fun <T> writing(actor: MemoryActor, block: (ResolvedActor) -> T): T =
+        writeLock.withLock { block(resolver.resolve(actor)) }
+
+    /** A history entry saying that [who] did [action] at [at]. */
+    fun event(action: ProvenanceAction, who: ResolvedActor, at: Long, related: MemoryId? = null, note: String? = null) =
+        ProvenanceEvent(
+            action = action, byOrigin = if (who.isOwner) ProvenanceOrigin.OWNER else ProvenanceOrigin.AGENT,
+            byAgentId = who.agentId, at = at, relatedMemory = related, note = note,
+        )
+
+    /**
+     * Stores [records] and [links] together or not at all. When the repository refuses because
+     * [required] no longer exists (it was deleted by something outside this engine), the
+     * caller gets the same refusal as for a memory that never existed.
+     */
+    suspend fun writeAll(records: List<MemoryRecord>, links: List<MemoryLink>, required: MemoryId) {
+        try {
+            repository.upsertAll(records, links)
+        } catch (e: IllegalArgumentException) {
+            if (repository.get(required) == null) MemoryRules.fail("There is no memory with id ${required.value}.")
+            throw e
+        }
+    }
 
     suspend fun deny(who: ResolvedActor, message: String): Nothing {
         log.refused(who, message)

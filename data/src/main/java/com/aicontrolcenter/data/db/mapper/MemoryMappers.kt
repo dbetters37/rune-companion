@@ -13,10 +13,14 @@ import com.aicontrolcenter.core.memory.MemoryRecord
 import com.aicontrolcenter.core.memory.MemoryScope
 import com.aicontrolcenter.core.memory.MemoryTier
 import com.aicontrolcenter.core.memory.Provenance
+import com.aicontrolcenter.core.memory.ProvenanceEvent
 import com.aicontrolcenter.data.db.entity.KnowledgeSpaceEntity
 import com.aicontrolcenter.data.db.entity.MemoryEntity
 import com.aicontrolcenter.data.db.entity.MemoryLinkEntity
 import com.aicontrolcenter.data.db.entity.MemoryRow
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.builtins.ListSerializer
+import java.text.Normalizer
 
 /** The stored names of the three kinds of [MemoryScope], in the `scope_type` column. */
 internal enum class MemoryScopeType { AGENT, SHARED, TASK }
@@ -31,22 +35,37 @@ internal fun MemoryScope.toColumns(): ScopeColumns = when (this) {
 }
 
 /**
- * What `search_text` holds: title, content and tags, separated by line breaks and spaces, in
- * lower case by full Unicode rules (`Locale.ROOT`). Query words are lower-cased the same way,
- * so matching ignores case in every alphabet, not only the ASCII letters SQLite's `LIKE` folds.
- * Lower-casing is not full case folding: "STRASSE" does not find "straße".
+ * What `search_text` holds: title, content and tags, separated by line breaks and spaces, and
+ * folded by [foldForSearch]. Query words are folded the same way, so matching ignores case in
+ * every alphabet (not only the ASCII letters SQLite's `LIKE` folds) and ignores accents, as
+ * the memory engine's keyword matching does: "cafe" finds "Café" and "MUNCHEN" finds
+ * "München". Lower-casing is not full case folding: "STRASSE" does not find "straße".
  *
  * Rows keep the text they were written with, so changing this needs a migration that rebuilds
  * the column; `StoredNamesGoldenTest` pins it.
  */
 internal fun memorySearchText(title: String, content: String, tags: Set<String>): String =
-    (title + "\n" + content + "\n" + tags.joinToString(" ")).lowercase()
+    foldForSearch(title + "\n" + content + "\n" + tags.joinToString(" "))
 
-/** Query words as [memorySearchText] spells them: lower case, split at whitespace, each once. */
+/** Query words as [memorySearchText] spells them: folded, split at whitespace, each once. */
 internal fun memorySearchWords(query: String): List<String> =
-    query.lowercase().split(WHITESPACE).filter { it.isNotBlank() }.distinct()
+    foldForSearch(query).split(WHITESPACE).filter { it.isNotBlank() }.distinct()
+
+/**
+ * Compatibility decomposition (NFKD), then non-spacing marks removed, then lower case by full
+ * Unicode rules: the folding of the memory engine's `TextAnalyzer`, so the repository's text
+ * search and recall's keyword matching agree on what the same word is.
+ */
+internal fun foldForSearch(text: String): String {
+    if (text.all { it.code < 0x80 }) return text.lowercase()
+    return COMBINING_MARKS.replace(Normalizer.normalize(text, Normalizer.Form.NFKD), "").lowercase()
+}
 
 private val WHITESPACE = Regex("\\s+")
+private val COMBINING_MARKS = Regex("\\p{Mn}+")
+
+/** The `history_json` column: a memory's later edits, shares and promotions, oldest first. */
+internal val memoryHistorySerializer: KSerializer<List<ProvenanceEvent>> = ListSerializer(ProvenanceEvent.serializer())
 
 internal fun MemoryRecord.toEntity(): MemoryEntity {
     val scope = scope.toColumns()
@@ -70,6 +89,7 @@ internal fun MemoryRecord.toEntity(): MemoryEntity {
         accessCount = accessCount,
         expiresAt = expiresAt,
         revision = revision,
+        historyJson = encodeColumn(memoryHistorySerializer, history),
         searchText = memorySearchText(title, content, tags),
     )
 }
@@ -101,6 +121,7 @@ internal fun MemoryRow.toDomain(): MemoryRecord {
         accessCount = accessCount,
         expiresAt = expiresAt,
         revision = revision,
+        history = row.json("history_json", memoryHistorySerializer, historyJson),
     )
 }
 

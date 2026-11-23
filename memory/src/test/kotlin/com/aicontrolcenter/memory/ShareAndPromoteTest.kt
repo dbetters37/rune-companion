@@ -8,6 +8,7 @@ import com.aicontrolcenter.core.memory.MemoryPermissionException
 import com.aicontrolcenter.core.memory.MemoryScope
 import com.aicontrolcenter.core.memory.MemoryTier
 import com.aicontrolcenter.core.memory.MemoryValidationException
+import com.aicontrolcenter.core.memory.ProvenanceAction
 import com.aicontrolcenter.core.memory.ProvenanceOrigin
 import com.aicontrolcenter.core.memory.RecallQuery
 import com.aicontrolcenter.memory.MemoryWorld.Companion.private
@@ -42,9 +43,14 @@ class ShareAndPromoteTest {
         assertEquals(0.8, copy.importance)
         assertEquals(1, copy.revision)
         assertEquals(world.clock.current, copy.createdAt)
-        assertEquals(ProvenanceOrigin.DERIVED, copy.provenance.origin)
-        assertEquals(listOf(original.id), copy.provenance.derivedFrom)
+        // The copy says who first wrote the text; the share itself is recorded in its history.
+        assertEquals(original.provenance.copy(derivedFrom = listOf(original.id)), copy.provenance)
+        assertEquals(ProvenanceOrigin.AGENT, copy.provenance.origin)
         assertEquals(AgentId("agt_a"), copy.provenance.agentId)
+        val shared = copy.history.single()
+        assertEquals(ProvenanceAction.SHARED_FROM, shared.action)
+        assertEquals(Triple(ProvenanceOrigin.AGENT, AgentId("agt_a"), original.id), Triple(shared.byOrigin, shared.byAgentId, shared.relatedMemory))
+        assertEquals(world.clock.current, shared.at)
         assertEquals(original, world.repository.get(original.id))
         val link = world.repository.linksOf(copy.id).single()
         assertEquals(Triple(copy.id, original.id, LinkRelation.SHARED_COPY_OF), Triple(link.from, link.to, link.relation))
@@ -93,9 +99,13 @@ class ShareAndPromoteTest {
         assertEquals(MemoryTier.LONG_TERM, kept.tier)
         assertNull(kept.expiresAt)
         assertEquals(key.content, kept.content)
-        assertEquals(ProvenanceOrigin.SYSTEM, kept.provenance.origin)
-        assertEquals(TaskId("tsk_7"), kept.provenance.taskId)
-        assertEquals(listOf(key.id), kept.provenance.derivedFrom)
+        assertEquals(key.provenance.copy(derivedFrom = listOf(key.id)), kept.provenance)
+        val promotedEvent = kept.history.single()
+        assertEquals(ProvenanceAction.PROMOTED_FROM, promotedEvent.action)
+        assertEquals(Triple(ProvenanceOrigin.AGENT, agent.profile.id, key.id), Triple(promotedEvent.byOrigin, promotedEvent.byAgentId, promotedEvent.relatedMemory))
+        assertEquals("Kept from task tsk_7", promotedEvent.note)
+        val link = world.repository.linksOf(kept.id).single()
+        assertEquals(Triple(kept.id, key.id, LinkRelation.DERIVED_FROM), Triple(link.from, link.to, link.relation))
 
         // The promoted original expired at once, the minor one keeps its own expiry.
         assertEquals(world.clock.current, world.repository.get(key.id)!!.expiresAt)

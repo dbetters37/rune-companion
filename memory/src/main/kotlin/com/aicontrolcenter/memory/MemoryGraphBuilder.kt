@@ -39,12 +39,7 @@ internal class MemoryGraphBuilder(private val config: MemoryConfig, private val 
         alreadyTruncated: Boolean,
         now: Long,
     ): MemoryGraphSnapshot {
-        val ranked = records.sortedWith(
-            compareByDescending<MemoryRecord> { 0.5 * it.importance + 0.5 * scorer.recency(it, now) }
-                .thenByDescending { it.updatedAt }
-                .thenBy { it.id.value },
-        )
-        val kept = ranked.take(maxNodes.coerceAtLeast(0))
+        val kept = select(records, maxNodes, now)
         val clusters = LinkedHashMap<String, Pair<GraphCluster, Int>>()
         fun join(id: String, kind: String, label: String): String {
             val previous = clusters[id]
@@ -76,6 +71,14 @@ internal class MemoryGraphBuilder(private val config: MemoryConfig, private val 
             truncated = alreadyTruncated || kept.size < records.size,
         )
     }
+
+    /** The memories [build] draws when given [records]: at most [maxNodes], in drawing order. */
+    fun select(records: List<MemoryRecord>, maxNodes: Int, now: Long): List<MemoryRecord> =
+        records.sortedWith(
+            compareByDescending<MemoryRecord> { 0.5 * it.importance + 0.5 * scorer.recency(it, now) }
+                .thenByDescending { it.updatedAt }
+                .thenBy { it.id.value },
+        ).take(maxNodes.coerceAtLeast(0))
 
     private fun node(record: MemoryRecord, clusterIds: List<String>, now: Long): GraphNode {
         val scope = record.scope

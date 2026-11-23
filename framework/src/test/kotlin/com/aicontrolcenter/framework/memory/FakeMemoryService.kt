@@ -61,6 +61,10 @@ class FakeMemoryService(
     @Volatile
     var recallDelayMs: Long = 0
 
+    /** Set to make every recall block its thread this long without ever suspending, like a long computation. */
+    @Volatile
+    var recallBlockingMs: Long = 0
+
     val recalls = CopyOnWriteArrayList<Pair<MemoryActor, RecallQuery>>()
     val forgottenAgents = CopyOnWriteArrayList<AgentId>()
 
@@ -136,6 +140,7 @@ class FakeMemoryService(
     override suspend fun recall(actor: MemoryActor, query: RecallQuery): List<MemoryHit> {
         recalls += actor to query
         if (recallDelayMs > 0) delay(recallDelayMs)
+        if (recallBlockingMs > 0) Thread.sleep(recallBlockingMs)
         recallFailure?.let { throw it }
         val access = access(actor)
         val words = query.text.lowercase().split(Regex("[^\\p{L}\\p{N}]+")).filter { it.length >= 3 }.distinct()

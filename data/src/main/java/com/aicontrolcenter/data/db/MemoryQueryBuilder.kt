@@ -35,8 +35,10 @@ internal data class SearchPlan(val inSql: List<String>, val inKotlin: List<Strin
  * value is a bound argument.
  *
  * - Scopes are grouped by type, so that a set of private scopes is one `IN` over the owning
- *   agent's index and a set of spaces one `IN` over the space index. An empty set of scopes
- *   matches nothing, as `MemoryFilter` defines.
+ *   agent's index and a set of spaces one `IN` over the space index. Task scopes are grouped by
+ *   their agent, one `IN` of task ids per agent, so many tasks of one agent do not deepen the
+ *   expression. (The memory engine reads task memory with `taskMemoryOf` and does not pass task
+ *   scopes here at all.) An empty set of scopes matches nothing, as `MemoryFilter` defines.
  * - Kinds: a stored kind this build does not know is read as a note, so a filter that includes
  *   [MemoryKind.NOTE] also includes every unknown kind.
  * - Lists are ordered `updated_at DESC, id ASC`, the order of the listing index.
@@ -149,7 +151,10 @@ internal object MemoryQueryBuilder {
         if (scopes.isEmpty()) return Condition("0")
         val agents = scopes.filterIsInstance<MemoryScope.Agent>().map { it.agentId.value }.sorted()
         val spaces = scopes.filterIsInstance<MemoryScope.Shared>().map { it.spaceId.value }.sorted()
-        val tasks = scopes.filterIsInstance<MemoryScope.Task>().sortedWith(compareBy({ it.taskId.value }, { it.agentId.value }))
+        val tasksByAgent = scopes.filterIsInstance<MemoryScope.Task>()
+            .groupBy({ it.agentId.value }, { it.taskId.value })
+            .toSortedMap()
+            .mapValues { (_, taskIds) -> taskIds.sorted() }
         val parts = listOfNotNull(
             agents.takeIf { it.isNotEmpty() }?.let { ids ->
                 Condition("(${p}scope_type = ? AND ${p}scope_agent_id IN (${placeholders(ids.size)}))", type(MemoryScopeType.AGENT) + ids.map(SqlArg::Text))
@@ -157,10 +162,12 @@ internal object MemoryQueryBuilder {
             spaces.takeIf { it.isNotEmpty() }?.let { ids ->
                 Condition("(${p}scope_type = ? AND ${p}scope_space_id IN (${placeholders(ids.size)}))", type(MemoryScopeType.SHARED) + ids.map(SqlArg::Text))
             },
-            tasks.takeIf { it.isNotEmpty() }?.let { list ->
+            tasksByAgent.takeIf { it.isNotEmpty() }?.let { byAgent ->
                 Condition(
-                    "(${p}scope_type = ? AND (" + list.joinToString(" OR ") { "(${p}scope_task_id = ? AND ${p}scope_agent_id = ?)" } + "))",
-                    type(MemoryScopeType.TASK) + list.flatMap { listOf(SqlArg.Text(it.taskId.value), SqlArg.Text(it.agentId.value)) },
+                    "(${p}scope_type = ? AND (" +
+                        byAgent.values.joinToString(" OR ") { taskIds -> "(${p}scope_agent_id = ? AND ${p}scope_task_id IN (${placeholders(taskIds.size)}))" } +
+                        "))",
+                    type(MemoryScopeType.TASK) + byAgent.flatMap { (agentId, taskIds) -> listOf(SqlArg.Text(agentId)) + taskIds.map(SqlArg::Text) },
                 )
             },
         )

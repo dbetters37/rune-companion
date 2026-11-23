@@ -29,8 +29,9 @@ internal object AiccMigrations {
  * validates the result against it). The parent table `memories` comes before the tables whose
  * foreign keys point at it.
  */
-private object Migration2To3 : Migration(2, 3) {
-    private val statements = listOf(
+internal object Migration2To3 : Migration(2, 3) {
+    /** Internal so `SchemaExportTest` can compare them with the exported `createSql`. */
+    internal val statements = listOf(
         "CREATE TABLE IF NOT EXISTS `knowledge_spaces` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `description` TEXT NOT NULL, " +
             "`created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`id`))",
         "CREATE INDEX IF NOT EXISTS `index_knowledge_spaces_created_at_id` ON `knowledge_spaces` (`created_at`, `id`)",
@@ -39,10 +40,12 @@ private object Migration2To3 : Migration(2, 3) {
             "`content` TEXT NOT NULL, `tags_json` TEXT NOT NULL, `importance` REAL NOT NULL, `confidence` REAL NOT NULL, " +
             "`provenance_json` TEXT NOT NULL, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, " +
             "`last_accessed_at` INTEGER, `access_count` INTEGER NOT NULL, `expires_at` INTEGER, `revision` INTEGER NOT NULL, " +
-            "`search_text` TEXT NOT NULL, PRIMARY KEY(`id`))",
+            "`history_json` TEXT NOT NULL, `search_text` TEXT NOT NULL, PRIMARY KEY(`id`))",
         "CREATE INDEX IF NOT EXISTS `index_memories_updated_at_id` ON `memories` (`updated_at` DESC, `id` ASC)",
         "CREATE INDEX IF NOT EXISTS `index_memories_scope_agent_id_scope_type_scope_task_id` ON `memories` " +
             "(`scope_agent_id`, `scope_type`, `scope_task_id`)",
+        "CREATE INDEX IF NOT EXISTS `index_memories_scope_agent_id_scope_type_updated_at_id` ON `memories` " +
+            "(`scope_agent_id` ASC, `scope_type` ASC, `updated_at` DESC, `id` ASC)",
         "CREATE INDEX IF NOT EXISTS `index_memories_scope_space_id` ON `memories` (`scope_space_id`)",
         "CREATE INDEX IF NOT EXISTS `index_memories_kind_updated_at` ON `memories` (`kind`, `updated_at`)",
         "CREATE INDEX IF NOT EXISTS `index_memories_expires_at` ON `memories` (`expires_at`)",

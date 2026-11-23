@@ -16,7 +16,11 @@ data class AgentRunRequest(
     val agent: AgentProfile,
     /** The model to think with; the caller has already resolved availability and fallbacks. */
     val modelId: ModelId,
-    /** The conversation so far, ending with the message to answer. Without a system message: the runner writes it. */
+    /**
+     * The conversation so far, ending with the message to answer, as stored. Without a system
+     * message: the runner writes it. Stored memory_search results (references) are written out
+     * by the runner as the agent may read memory when the run starts.
+     */
     val messages: List<ChatMessage>,
     val taskId: TaskId? = null,
     val rootTaskId: TaskId? = null,
@@ -57,7 +61,12 @@ data class AgentRunResult(
     /** For every ending but COMPLETED: one sentence for the owner saying what happened. */
     val notice: String?,
     val error: LlmException?,
-    /** Every message this run added to the conversation, in order: assistant messages and tool results. */
+    /**
+     * Every message this run added to the conversation, in order: assistant messages and tool
+     * results, in the form to store. A memory_search result is a reference (the query and the
+     * ids it showed, no memory text), which [AgentRunner] writes out again from current memory
+     * when it is in [AgentRunRequest.messages] of a later run.
+     */
     val produced: List<ChatMessage>,
     val usage: TokenUsage,
     val modelCalls: Int,
@@ -81,7 +90,8 @@ interface AgentRunListener {
     /**
      * A message joined the conversation: a complete assistant message, an assistant message
      * cut short because the run was stopped mid-reply, or a tool result. [modelName] and
-     * [usage] are set for complete assistant messages.
+     * [usage] are set for complete assistant messages. It comes in the form to store, as in
+     * [AgentRunResult.produced]: a memory_search result is a reference, not memory text.
      */
     suspend fun onMessage(message: ChatMessage, modelName: String?, usage: TokenUsage?) {}
 

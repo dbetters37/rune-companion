@@ -83,7 +83,8 @@ class SchemaExportTest {
         assertEquals(setOf(listOf("updated_at"), listOf("agent_id", "updated_at")), tables.getValue("conversations").indexColumns())
         assertEquals(
             setOf(
-                listOf("updated_at", "id"), listOf("scope_agent_id", "scope_type", "scope_task_id"), listOf("scope_space_id"),
+                listOf("updated_at", "id"), listOf("scope_agent_id", "scope_type", "scope_task_id"),
+                listOf("scope_agent_id", "scope_type", "updated_at", "id"), listOf("scope_space_id"),
                 listOf("kind", "updated_at"), listOf("expires_at"),
             ),
             tables.getValue("memories").indexColumns(),
@@ -98,6 +99,31 @@ class SchemaExportTest {
         val index = schema(AiccDatabase.VERSION).tables().getValue("memories").getValue("indices").jsonArray
             .map { it.jsonObject }.single { it.getValue("name").jsonPrimitive.content == "index_memories_updated_at_id" }
         assertEquals(listOf("DESC", "ASC"), index.getValue("orders").jsonArray.map { it.jsonPrimitive.content })
+    }
+
+    @Test
+    fun `an agent's memory is listed newest first from an index, and the history is a column of its own`() {
+        val memories = schema(AiccDatabase.VERSION).tables().getValue("memories")
+        val index = memories.getValue("indices").jsonArray.map { it.jsonObject }
+            .single { it.getValue("name").jsonPrimitive.content == "index_memories_scope_agent_id_scope_type_updated_at_id" }
+        assertEquals(listOf("ASC", "ASC", "DESC", "ASC"), index.getValue("orders").jsonArray.map { it.jsonPrimitive.content })
+        val history = memories.getValue("fields").jsonArray.map { it.jsonObject }.single { it.getValue("columnName").jsonPrimitive.content == "history_json" }
+        assertEquals("TEXT", history.getValue("affinity").jsonPrimitive.content)
+        assertEquals(true, history.getValue("notNull").jsonPrimitive.content.toBoolean())
+    }
+
+    @Test
+    fun `the migration to version 3 runs exactly the exported statements of the tables it adds`() {
+        // Version 3 is created by Room on new installations and by Migration2To3 on upgraded
+        // phones; both must produce the very same tables and indexes, in parents-first order.
+        val added = listOf("knowledge_spaces", "memories", "memory_links", "memory_embeddings")
+        val entities = schema(3).getValue("entities").jsonArray.map { it.jsonObject }.associateBy { it.getValue("tableName").jsonPrimitive.content }
+        val exported = added.flatMap { table ->
+            val entity = entities.getValue(table)
+            val indexes = (entity["indices"]?.jsonArray ?: emptyList()).map { it.jsonObject.getValue("createSql").jsonPrimitive.content }
+            (listOf(entity.getValue("createSql").jsonPrimitive.content) + indexes).map { it.replace("\${TABLE_NAME}", table) }
+        }
+        assertEquals(exported, Migration2To3.statements)
     }
 
     @Test

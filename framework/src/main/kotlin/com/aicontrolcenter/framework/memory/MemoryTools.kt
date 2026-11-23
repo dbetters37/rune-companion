@@ -50,7 +50,7 @@ object MemoryTools {
      */
     fun create(memory: MemoryService, agents: AgentRepository, clock: Clock, zone: () -> ZoneId = ZoneId::systemDefault): List<Tool> {
         val support = MemoryToolSupport(memory, agents)
-        return listOf(MemorySearchTool(support, zone), MemorySaveTool(support, clock), MemoryShareTool(support))
+        return listOf(MemorySearchTool(support, clock, zone), MemorySaveTool(support, clock), MemoryShareTool(support))
     }
 
     /**

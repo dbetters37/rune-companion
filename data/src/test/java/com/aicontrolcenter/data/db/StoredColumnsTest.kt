@@ -21,6 +21,7 @@ import com.aicontrolcenter.data.db.mapper.toEntity
 import com.aicontrolcenter.testkit.Samples
 import com.aicontrolcenter.testkit.contract.MemorySamples
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import org.junit.Test
 import kotlin.test.assertEquals
@@ -172,7 +173,7 @@ class StoredColumnsTest {
 
     private fun MemoryEntity.toRow() = MemoryRow(
         id, scopeType, scopeAgentId, scopeSpaceId, scopeTaskId, kind, tier, title, content, tagsJson, importance, confidence,
-        provenanceJson, createdAt, updatedAt, lastAccessedAt, accessCount, expiresAt, revision,
+        provenanceJson, createdAt, updatedAt, lastAccessedAt, accessCount, expiresAt, revision, historyJson,
     )
 
     @Test
@@ -195,8 +196,13 @@ class StoredColumnsTest {
             setOf("origin", "agentId", "taskId", "conversationId", "modelId", "modelName", "derivedFrom", "source", "recordedAt"),
             Json.parseToJsonElement(stored.provenanceJson).jsonObject.keys,
         )
-        assertEquals("ölpreis\nsteigt\nmarkt", stored.searchText)
+        assertEquals("olpreis\nsteigt\nmarkt", stored.searchText)
+        assertEquals(
+            listOf(listOf("action", "byOrigin", "byAgentId", "at", "relatedMemory", "note")),
+            Json.parseToJsonElement(stored.historyJson).jsonArray.map { it.jsonObject.keys.toList() }.distinct(),
+        )
         assertEquals(record, stored.toRow().toDomain())
+        assertEquals(2, record.history.size, "the sample has a history, so the round trip covers it")
 
         val shared = MemorySamples.memory("mem_2", MemorySamples.commons).toEntity()
         assertEquals(listOf("SHARED", null, "spc_commons", null), listOf(shared.scopeType, shared.scopeAgentId, shared.scopeSpaceId, shared.scopeTaskId))
@@ -211,6 +217,7 @@ class StoredColumnsTest {
             stored.copy(tier = "FOREVER"),
             stored.copy(provenanceJson = """{"origin":"AGENT","""),
             stored.copy(tagsJson = "[1"),
+            stored.copy(historyJson = """[{"action":"EDITED","""),
         ).map { assertFailsWith<StoredDataException> { it.toDomain() }.message!! }
         assertEquals(
             listOf(
@@ -219,6 +226,7 @@ class StoredColumnsTest {
                 "Column memories.tier of row 'mem_1' holds the unknown value 'FOREVER'.",
                 "Column memories.provenance_json of row 'mem_1' does not hold readable JSON.",
                 "Column memories.tags_json of row 'mem_1' does not hold readable JSON.",
+                "Column memories.history_json of row 'mem_1' does not hold readable JSON.",
             ),
             failures,
         )

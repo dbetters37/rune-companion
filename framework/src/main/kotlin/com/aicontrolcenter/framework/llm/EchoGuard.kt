@@ -37,6 +37,10 @@ import kotlinx.serialization.json.JsonPrimitive
  *
  * An earlier call itself is not quoted content: the model wrote it, and making the same call
  * again is legitimate. Only what its arguments carry (string values, nested objects) is.
+ *
+ * Memories recalled for the turn are quoted content too: they arrive in a
+ * [RecalledMemoriesBlock] at the start of a user message, and a call repeated from inside that
+ * block is not run either.
  */
 internal class EchoGuard private constructor(private val quoted: List<String>, private val resultsInOrder: String) {
 
@@ -91,11 +95,15 @@ internal class EchoGuard private constructor(private val quoted: List<String>, p
 
         private val JSON_ESCAPES = mapOf("b" to "\b", "f" to "\u000C", "n" to "\n", "r" to "\r", "t" to "\t")
 
-        /** What the model was shown as data in [request]: every tool result, and what earlier calls quoted in their arguments. */
+        /**
+         * What the model was shown as data in [request]: every tool result, every block of
+         * recalled memories, and what earlier calls quoted in their arguments.
+         */
         fun of(request: ChatRequest): EchoGuard {
             val quoted = ArrayList<String>()
             val results = StringBuilder()
             for (message in request.messages) {
+                if (message.role == ChatRole.USER) RecalledMemoriesBlock.content(message.text)?.let { quoted += normalise(it) }
                 message.toolResult?.let { results.append(normalise(it.content)) }
                 if (message.role == ChatRole.TOOL && message.text.isNotBlank()) results.append(normalise(message.text))
                 for (call in message.toolCalls) call.arguments.values.forEach { collect(it, quoted) }

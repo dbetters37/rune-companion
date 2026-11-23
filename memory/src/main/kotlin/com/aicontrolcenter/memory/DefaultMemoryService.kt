@@ -27,6 +27,7 @@ import com.aicontrolcenter.core.memory.MemoryScope
 import com.aicontrolcenter.core.memory.MemoryService
 import com.aicontrolcenter.core.memory.MemoryTier
 import com.aicontrolcenter.core.memory.Provenance
+import com.aicontrolcenter.core.memory.ProvenanceAction
 import com.aicontrolcenter.core.memory.ProvenanceOrigin
 import com.aicontrolcenter.core.memory.RecallQuery
 import com.aicontrolcenter.core.memoryId
@@ -40,6 +41,8 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -61,8 +64,12 @@ import kotlinx.serialization.json.put
  *   [com.aicontrolcenter.core.memory.MemoryPermissionException]. [get] returns null for both.
  * - Vectors are computed after the memory is stored, and a failing or forbidden embedder never
  *   loses a memory ([MemoryEmbeddings]).
- * - Read-modify-write steps are serialised by one in-process lock. The app must use a single
- *   instance per repository.
+ * - Every write and every deletion is serialised by one in-process lock, and the actor's
+ *   access is resolved again inside it (see [MemoryContext.writeLock]). The app must use a
+ *   single instance per repository.
+ * - Provenance says how a memory's text was first written and is never changed, also not on
+ *   shared or promoted copies; edits, shares and promotions are appended to
+ *   [MemoryRecord.history] with who did them and when.
  */
 class DefaultMemoryService(
     private val repository: MemoryRepository,
@@ -79,7 +86,7 @@ class DefaultMemoryService(
     private val vectors = MemoryEmbeddings(embedder, settings, repository, log, config)
     private val ctx = MemoryContext(repository, agents, ids, clock, config, resolver, log, vectors)
     private val scorer = RecallScorer(config)
-    private val reader = MemoryReader(repository)
+    private val reader = MemoryReader(repository, config)
     private val recaller = MemoryRecall(ctx, reader, scorer)
     private val links = MemoryLinks(ctx)
     private val sharing = MemorySharing(ctx)
@@ -118,35 +125,41 @@ class DefaultMemoryService(
         val importance = MemoryRules.unit("Importance", draft.importance)
         val confidence = MemoryRules.unit("Confidence", draft.confidence)
         val ttl = MemoryRules.ttl(draft.ttlMs)
-        val who = resolver.resolve(actor)
-        ctx.requireScopeExists(draft.scope)
-        ctx.requireWrite(who, draft.scope)
-
-        val now = clock.now()
-        val tier = if (draft.scope is MemoryScope.Task) MemoryTier.SHORT_TERM else draft.tier
-        val record = MemoryRecord(
-            id = ids.memoryId(), scope = draft.scope, kind = draft.kind, tier = tier, title = title, content = content,
-            tags = tags, importance = importance, confidence = confidence,
-            provenance = provenanceFor(who, draft.provenance, now),
-            createdAt = now, updatedAt = now,
-            expiresAt = if (tier == MemoryTier.SHORT_TERM) ctx.expiry(now, ttl ?: config.shortTermTtlMs) else null,
-            revision = 1,
-        )
-        repository.upsert(record)
+        // Inside the lock: a space deleted or an agent forgotten meanwhile is noticed here.
+        val (who, record) = ctx.writing(actor) { who ->
+            ctx.requireScopeExists(draft.scope)
+            ctx.requireWrite(who, draft.scope)
+            val now = clock.now()
+            val tier = if (draft.scope is MemoryScope.Task) MemoryTier.SHORT_TERM else draft.tier
+            val record = MemoryRecord(
+                id = ids.memoryId(), scope = draft.scope, kind = draft.kind, tier = tier, title = title, content = content,
+                tags = tags, importance = importance, confidence = confidence,
+                provenance = provenanceFor(who, draft.provenance, now),
+                createdAt = now, updatedAt = now,
+                expiresAt = if (tier == MemoryTier.SHORT_TERM) ctx.expiry(now, ttl ?: config.shortTermTtlMs) else null,
+                revision = 1,
+            )
+            repository.upsert(record)
+            who to record
+        }
         log.changed(who, "Memory saved", record)
         vectors.store(listOf(record), who.agentId, replacing = false)
         return record
     }
 
-    /** An update that changes nothing returns the memory as it is, without a new revision or event. */
+    /**
+     * An update that changes nothing returns the memory as it is, without a new revision or
+     * event. Otherwise the provenance stays as it is (it describes how the text was first
+     * written) and an EDITED event naming the editor, the time and the changed fields is
+     * appended to the history. A memory forgotten meanwhile is refused, never recreated.
+     */
     override suspend fun update(actor: MemoryActor, id: MemoryId, change: MemoryChange): MemoryRecord {
         val title = change.title?.let(MemoryRules::title)
         val content = change.content?.let(MemoryRules::content)
         val tags = change.tags?.let(MemoryRules::tags)
         val importance = change.importance?.let { MemoryRules.unit("Importance", it) }
         val confidence = change.confidence?.let { MemoryRules.unit("Confidence", it) }
-        val who = resolver.resolve(actor)
-        val (current, next) = ctx.writeLock.withLock {
+        val (who, current, next) = ctx.writing(actor) { who ->
             val current = ctx.existing(id)
             ctx.requireRead(who, current.scope)
             ctx.requireWrite(who, current.scope)
@@ -166,9 +179,21 @@ class DefaultMemoryService(
                 },
             )
             if (candidate == current) return current
-            val next = candidate.copy(updatedAt = now, revision = current.revision + 1)
+            val changed = listOfNotNull(
+                "title".takeIf { candidate.title != current.title },
+                "content".takeIf { candidate.content != current.content },
+                "kind".takeIf { candidate.kind != current.kind },
+                "tags".takeIf { candidate.tags != current.tags },
+                "importance".takeIf { candidate.importance != current.importance },
+                "confidence".takeIf { candidate.confidence != current.confidence },
+                "tier".takeIf { candidate.tier != current.tier || candidate.expiresAt != current.expiresAt },
+            )
+            val next = candidate.copy(
+                updatedAt = now, revision = current.revision + 1,
+                history = current.history + ctx.event(ProvenanceAction.EDITED, who, now, note = "${changed.joinToString(", ")} changed"),
+            )
             repository.upsert(next)
-            current to next
+            Triple(who, current, next)
         }
         log.changed(who, "Memory updated", next)
         if (next.title != current.title || next.content != current.content || next.tags != current.tags) {
@@ -179,11 +204,13 @@ class DefaultMemoryService(
 
     /** Forgetting a memory that does not exist does nothing. */
     override suspend fun forget(actor: MemoryActor, id: MemoryId) {
-        val who = resolver.resolve(actor)
-        val record = repository.get(id) ?: return
-        ctx.requireRead(who, record.scope)
-        ctx.requireWrite(who, record.scope)
-        repository.delete(id)
+        val (who, record) = ctx.writing(actor) { who ->
+            val record = repository.get(id) ?: return
+            ctx.requireRead(who, record.scope)
+            ctx.requireWrite(who, record.scope)
+            repository.delete(id)
+            who to record
+        }
         log.changed(who, "Memory forgotten", record)
     }
 
@@ -198,11 +225,10 @@ class DefaultMemoryService(
 
     override suspend fun linksOf(actor: MemoryActor, id: MemoryId): List<MemoryLink> = links.linksOf(resolver.resolve(actor), id)
 
-    override suspend fun share(actor: MemoryActor, id: MemoryId, space: SpaceId): MemoryRecord =
-        sharing.share(resolver.resolve(actor), id, space)
+    override suspend fun share(actor: MemoryActor, id: MemoryId, space: SpaceId): MemoryRecord = sharing.share(actor, id, space)
 
     override suspend fun promoteTaskMemory(actor: MemoryActor, taskId: TaskId, agentId: AgentId, minImportance: Double): List<MemoryRecord> =
-        sharing.promote(resolver.resolve(actor), taskId, agentId, minImportance)
+        sharing.promote(actor, taskId, agentId, minImportance)
 
     override fun observeSpaces(): Flow<List<KnowledgeSpace>> = repository.observeSpaces()
 
@@ -220,15 +246,12 @@ class DefaultMemoryService(
         exporter.graph(resolver.resolve(actor), request)
 
     /**
-     * Deletes the agent's private memory and the memory of all its tasks. Task scopes cannot be
-     * listed in advance, so this scans every memory once; it runs only when an agent is deleted.
+     * Deletes the agent's private memory and the memory of all its tasks, in one transaction of
+     * the repository and without loading any of it. If this never runs (the process died after
+     * the agent was deleted), [maintain] removes the memory later.
      */
     override suspend fun forgetAgent(agentId: AgentId): Int {
-        var deleted = repository.deleteScope(MemoryScope.Agent(agentId))
-        val taskScopes = repository.list().mapNotNullTo(HashSet()) { record ->
-            (record.scope as? MemoryScope.Task)?.takeIf { it.agentId == agentId }
-        }
-        for (scope in taskScopes) deleted += repository.deleteScope(scope)
+        val deleted = ctx.writeLock.withLock { repository.deleteAgentMemory(agentId) }
         val name = agents.get(agentId)?.name ?: "agent ${agentId.value}"
         log.event(
             null, "Agent memory forgotten: $name",
@@ -242,10 +265,28 @@ class DefaultMemoryService(
         return deleted
     }
 
-    /** Deletes expired memories, then computes up to [MemoryConfig.maxEmbeddingsPerMaintenance] missing or stale vectors. */
+    /**
+     * Deletes expired memories and the private and task memory of agents that no longer exist,
+     * then computes up to [MemoryConfig.maxEmbeddingsPerMaintenance] missing or stale vectors.
+     * The report's [MaintenanceReport.expiredDeleted] counts expired memories only; memory of
+     * removed agents is reported in its own activity entry.
+     */
     override suspend fun maintain(): MaintenanceReport {
         val now = clock.now()
-        val expired = repository.deleteExpired(now)
+        val (expired, orphans) = ctx.writeLock.withLock {
+            repository.deleteExpired(now) to deleteMemoryOfRemovedAgents()
+        }
+        if (orphans.isNotEmpty()) {
+            val total = orphans.values.sum()
+            log.event(
+                null, "Memory of removed agents deleted",
+                "Deleted $total memor${if (total == 1) "y" else "ies"} (private and task memory) of ${orphans.size} agent${if (orphans.size == 1) "" else "s"} that no longer exist.",
+                buildJsonObject {
+                    put("agentIds", JsonArray(orphans.keys.sortedBy { it.value }.map { JsonPrimitive(it.value) }))
+                    put("memoriesDeleted", total)
+                },
+            )
+        }
         val computed = vectors.refresh(now, config.maxEmbeddingsPerMaintenance)
         if (expired > 0 || computed > 0) {
             log.event(
@@ -258,6 +299,22 @@ class DefaultMemoryService(
             )
         }
         return MaintenanceReport(expired, computed)
+    }
+
+    /**
+     * Private and task memory whose agent is gone, for example because the process died between
+     * deleting the agent and [forgetAgent]. Owners are read before agents, so an agent created
+     * meanwhile is never mistaken for a removed one. When no agent at all can be read, nothing
+     * is deleted: that looks like a storage problem rather than an owner who removed every agent.
+     */
+    private suspend fun deleteMemoryOfRemovedAgents(): Map<AgentId, Int> {
+        val owners = repository.agentsWithMemory()
+        if (owners.isEmpty()) return emptyMap()
+        val existing = agents.getAll().mapTo(HashSet()) { it.id }
+        if (existing.isEmpty()) return emptyMap()
+        return (owners - existing).filter { agents.get(it) == null }
+            .associateWith { repository.deleteAgentMemory(it) }
+            .filterValues { it > 0 }
     }
 
     private fun provenanceFor(who: ResolvedActor, given: Provenance, now: Long): Provenance = when {

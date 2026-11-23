@@ -13,6 +13,9 @@ import com.aicontrolcenter.core.llm.ToolCallRequest
  * stored result (the app was killed while the tool ran) gets a result saying so, because
  * providers reject a transcript in which a call was never answered. The repair is derived
  * from the stored entries alone, so every later turn rebuilds the identical history.
+ *
+ * Stored memory_search results are references, not memory text; the runner writes them out as
+ * the agent may read memory when the turn starts.
  */
 internal object ConversationHistory {
     private const val INTERRUPTED = "No result: the app was interrupted before this tool finished."

@@ -29,13 +29,14 @@ internal data class MemoryRow(
     @ColumnInfo(name = "access_count") val accessCount: Int,
     @ColumnInfo(name = "expires_at") val expiresAt: Long?,
     val revision: Int,
+    @ColumnInfo(name = "history_json") val historyJson: String,
 ) {
     companion object {
         /** The selected columns, unqualified; for queries over `memories` without an alias. */
         const val COLUMNS =
             "id, scope_type, scope_agent_id, scope_space_id, scope_task_id, kind, tier, title, content, tags_json, " +
                 "importance, confidence, provenance_json, created_at, updated_at, last_accessed_at, access_count, " +
-                "expires_at, revision"
+                "expires_at, revision, history_json"
     }
 }
 

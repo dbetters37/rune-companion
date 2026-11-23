@@ -14,6 +14,7 @@ import com.aicontrolcenter.core.memory.MemoryActor
 import com.aicontrolcenter.core.memory.MemoryDraft
 import com.aicontrolcenter.core.memory.MemoryKind
 import com.aicontrolcenter.core.memory.MemoryRecord
+import com.aicontrolcenter.core.memory.MemoryRepository
 import com.aicontrolcenter.core.memory.MemoryScope
 import com.aicontrolcenter.core.memory.MemoryTier
 import com.aicontrolcenter.core.memory.Provenance
@@ -32,15 +33,18 @@ class MemoryWorld(
     val embedder: Embedder = HashingEmbedder(),
     config: MemoryConfig = MemoryConfig(),
     localOnly: Boolean = false,
+    /** Wraps the repository the service uses, e.g. to observe or delay its calls; [repository] stays the plain one. */
+    wrap: (InMemoryMemoryRepository) -> MemoryRepository = { it },
 ) {
     val clock = FakeClock()
     val ids = SequentialIdGenerator()
     val repository = InMemoryMemoryRepository()
+    val store: MemoryRepository = wrap(repository)
     val agents = InMemoryAgentRepository()
     val settings = InMemorySettingsRepository(FrameworkSettings(localOnlyMode = localOnly))
     val activityLog = InMemoryActivityLog()
     val service = DefaultMemoryService(
-        repository, agents, settings, embedder, ActivityRecorder(activityLog, ids, clock), ids, clock, config,
+        store, agents, settings, embedder, ActivityRecorder(activityLog, ids, clock), ids, clock, config,
     )
     val owner = MemoryActor.Owner
 

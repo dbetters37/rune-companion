@@ -21,8 +21,10 @@ import com.aicontrolcenter.core.settings.SettingsRepository
 import com.aicontrolcenter.core.tools.ToolContext
 import com.aicontrolcenter.core.tools.ToolRegistry
 import com.aicontrolcenter.core.tools.ToolSpec
+import com.aicontrolcenter.framework.llm.RecalledMemoriesBlock
 import com.aicontrolcenter.framework.llm.TokenEstimator
 import com.aicontrolcenter.framework.memory.AutoRecall
+import com.aicontrolcenter.framework.memory.MemoryReferences
 import com.aicontrolcenter.framework.tools.ToolExecutor
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
@@ -47,10 +49,16 @@ import kotlinx.coroutines.withTimeoutOrNull
  *    again before every model call and every tool call. Each call is authorised against the
  *    agent as it is then, so a tool switched off mid-turn is refused; an agent switched off or
  *    deleted mid-turn ends the run as [RunEnd.STOPPED_BY_OWNER].
- *  - With [recall], memories that relate to the newest owner or task message are looked up once,
- *    as the agent is stored when the turn starts, and put into the system prompt before the
- *    first model call. Recall never fails a turn, and the system prompt does not change after
- *    that first call. The record of data leaving the device then says that memories went too.
+ *  - Memory text never reaches the system message, and stored conversations never hold it:
+ *     - With [recall], memories that relate to the newest owner or task message are looked up
+ *       once, as the agent is stored when the turn starts, and put as a delimited data block
+ *       ([RecalledMemoriesBlock]) in front of that message's text, in the request only. Recall
+ *       never fails a turn, and the block does not change after the first model call. The
+ *       record of data leaving the device then says that memories went too.
+ *     - memory_search results are handed over for storing as references ([AgentRunResult.produced],
+ *       [AgentRunListener.onMessage]); the model reads the result itself for the rest of the turn.
+ *       References in [AgentRunRequest.messages] are written out again before the first model
+ *       call, as the agent as it is stored then may read memory now ([MemoryReferences]).
  *  - Every tool call runs with an [AgentTurnInfo] in its coroutine context, so tools that record
  *    provenance know the model and conversation of the turn.
  *
@@ -69,6 +77,9 @@ class AgentRunner(
     /** Null: no automatic recall, as before memory existed. */
     private val recall: AutoRecall? = null,
 ) {
+    /** How memory tool results are stored and written out again; shared with the chat, which shows them. */
+    internal val references = MemoryReferences(tools)
+
     suspend fun run(request: AgentRunRequest, listener: AgentRunListener = AgentRunListener.NONE): AgentRunResult {
         val limits = settings.get()
         val run = Run(request, listener, limits)
@@ -97,8 +108,15 @@ class AgentRunner(
     fun estimatePromptTokens(request: AgentRunRequest): Int {
         val offered = offeredTools(request)
         val system = ChatMessage.system(prompts.compose(request.agent, offered))
-        return TokenEstimator.tokens(listOf(system) + request.messages, offered.map(::definition))
+        // A stored memory search result is a reference here; it is counted at the most it can take once written out.
+        val referenced = request.messages.sumOf { references.renderedCharsAtMost(it) }
+        return TokenEstimator.tokens(listOf(system) + request.messages, offered.map(::definition)) +
+            (referenced + LATIN_CHARS_PER_TOKEN - 1) / LATIN_CHARS_PER_TOKEN
     }
+
+    /** As [estimatePromptTokens], with memory search results written out as [AgentRunRequest.agent] reads them now. */
+    internal suspend fun estimateRenderedPromptTokens(request: AgentRunRequest): Int =
+        estimatePromptTokens(request.copy(messages = references.forAgent(request.messages, request.agent)))
 
     /** The agent's enabled tools that exist, in a fixed order so that the request prefix is the same on every call. */
     private fun offeredTools(request: AgentRunRequest): List<ToolSpec> =
@@ -154,7 +172,10 @@ class AgentRunner(
                     is Outcome.Stop -> return now.ending
                     is Outcome.Go -> now.agent
                 }
-                if (modelCalls == 0) recallMemories(profile)
+                if (modelCalls == 0) {
+                    renderReferences(profile)
+                    recallMemories(profile)
+                }
                 val response = try {
                     callModel()
                 } catch (e: LlmException) {
@@ -211,16 +232,30 @@ class AgentRunner(
         }
 
         /**
-         * Puts the memories recalled for [profile] into the system prompt. Runs before the first
-         * model call, so nothing has been sent yet and the transcript still only grows from the
-         * model's point of view.
+         * Writes the stored memory search results of the conversation out again, as [profile]
+         * may read memory now. Runs before the first model call, so nothing has been sent yet.
+         * Never fails the turn: what cannot be read is shown as no longer available.
+         */
+        private suspend fun renderReferences(profile: AgentProfile) {
+            // Nothing has joined the transcript yet: it is the system prompt and the request's messages.
+            val rendered = references.forAgent(request.messages, profile)
+            for (i in rendered.indices) transcript[1 + i] = rendered[i]
+        }
+
+        /**
+         * Puts the memories recalled for [profile] in front of the text of the newest owner or
+         * task message, in the request only: the stored conversation keeps the message as the
+         * owner wrote it. Runs before the first model call, so nothing has been sent yet and the
+         * transcript still only grows from the model's point of view.
          */
         private suspend fun recallMemories(profile: AgentProfile) {
             val recall = recall ?: return
             if (!profile.memory.autoRecall || profile.memory.recallLimit <= 0) return
+            val newest = transcript.indexOfLast { it.role == ChatRole.USER }
+            if (newest < 0) return
             report("Recalling memories")
             val recalled = recall.recall(profile, request.messages, request.taskId, request.rootTaskId) ?: return
-            transcript[0] = ChatMessage.system(prompts.compose(agent, offered, recalled.section))
+            transcript[newest] = RecalledMemoriesBlock.prepend(transcript[newest], recalled.section)
             val count = recalled.memories.size
             val memories = if (count == 1) "1 recalled memory" else "$count recalled memories"
             callContext = callContext.copy(purpose = "${request.purpose}, with $memories")
@@ -258,7 +293,10 @@ class AgentRunner(
                 executing = null
                 if (!execution.outcome.ok) toolErrors++
                 unanswered.remove(call)
-                append(ChatMessage.toolResult(call.id, call.name, execution.outcome.content, isError = !execution.outcome.ok), null, null)
+                val result = ChatMessage.toolResult(call.id, call.name, execution.outcome.content, isError = !execution.outcome.ok)
+                // The model reads the result itself for the rest of the turn; a memory search result is stored as a reference.
+                val stored = references.storedForm(execution)?.let { ChatMessage.toolResult(call.id, call.name, it, isError = false) } ?: result
+                append(result, null, null, stored)
                 listener.onToolFinished(execution)
             }
             return null
@@ -291,10 +329,11 @@ class AgentRunner(
             }
         }
 
-        private suspend fun append(message: ChatMessage, modelName: String?, usage: TokenUsage?) {
+        /** [message] joins the transcript the model reads; [stored], the form to keep, is what is handed over. */
+        private suspend fun append(message: ChatMessage, modelName: String?, usage: TokenUsage?, stored: ChatMessage = message) {
             transcript += message
-            produced += message
-            listener.onMessage(message, modelName.takeIf { message.role == ChatRole.ASSISTANT }, usage)
+            produced += stored
+            listener.onMessage(stored, modelName.takeIf { stored.role == ChatRole.ASSISTANT }, usage)
         }
 
         private fun report(detail: String) = monitor.report(agent.id, AgentActivity.WORKING, detail, request.taskId)
@@ -318,5 +357,6 @@ class AgentRunner(
 
     private companion object {
         const val MAX_TOOL_NAME_SHOWN = 40
+        const val LATIN_CHARS_PER_TOKEN = 4
     }
 }

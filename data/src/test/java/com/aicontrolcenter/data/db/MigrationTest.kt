@@ -91,6 +91,7 @@ class MigrationTest {
         memories.putEmbedding(MemoryId("mem_a"), "emb", floatArrayOf(0.6f, 0.8f))
 
         assertEquals(records, memories.list())
+        assertTrue(records.all { it.history.isNotEmpty() }, "the samples carry a history, which must survive")
         assertEquals(listOf(space), memories.observeSpaces().first())
         assertEquals(listOf("mem_a"), memories.searchText("title MEM_A").map { it.id.value })
         assertContentEquals(floatArrayOf(0.6f, 0.8f), memories.embeddings("emb").getValue(MemoryId("mem_a")))
@@ -235,6 +236,7 @@ class MigrationTest {
                 indexes.containsAll(
                     setOf(
                         "index_memories_updated_at_id", "index_memories_scope_agent_id_scope_type_scope_task_id",
+                        "index_memories_scope_agent_id_scope_type_updated_at_id",
                         "index_memories_scope_space_id", "index_memories_kind_updated_at", "index_memories_expires_at",
                         "index_memory_links_from_id", "index_memory_links_to_id", "index_memory_embeddings_embedder_id",
                     ),

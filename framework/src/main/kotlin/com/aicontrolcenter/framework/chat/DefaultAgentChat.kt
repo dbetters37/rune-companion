@@ -49,6 +49,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.job
 import kotlinx.coroutines.joinAll
@@ -70,6 +71,10 @@ import kotlinx.coroutines.withContext
  *    because an agent that silently forgets is worse than one that says it is full.
  *  - A turn that fails leaves a visible entry ([ConversationEntry.error]). Such entries are
  *    for the owner and are never sent to a model.
+ *  - Memory text is not kept in conversations: a memory_search result is stored as a reference
+ *    and shown from current memory, as the owner may read it, every time [observeEntries] emits;
+ *    a memory that was forgotten shows as no longer available. The runner does the same for the
+ *    agent when it sends the conversation to the model. Recalled memories are never stored.
  *  - Text that is still arriving is gathered per turn and published to [liveTurns] at most
  *    every [LIVE_TEXT_INTERVAL_MS], and at once whenever the phase changes or a reply is
  *    complete, so a long reply costs time in proportion to its length. Text held back by that
@@ -106,7 +111,10 @@ class DefaultAgentChat(
 
     override fun observeConversations(agentId: AgentId?): Flow<List<Conversation>> = conversations.observeConversations(agentId)
 
-    override fun observeEntries(id: ConversationId): Flow<List<ConversationEntry>> = conversations.observeEntries(id)
+    override fun observeEntries(id: ConversationId): Flow<List<ConversationEntry>> = conversations.observeEntries(id).map { entries ->
+        if (entries.none { runner.references.isReference(it.message) }) entries
+        else runner.references.forOwner(entries, conversations.getConversation(id)?.agentId)
+    }
 
     override suspend fun startConversation(agentId: AgentId, title: String?): Conversation {
         requireNotNull(agents.get(agentId)) { "That agent no longer exists." }
@@ -249,10 +257,10 @@ class DefaultAgentChat(
     private fun completed(run: AgentRunResult) = TurnResult.Completed(run.text, run.usage, run.modelCalls, run.toolCalls)
 
     /** An explanation when the conversation cannot fit the model's context window, or null when it fits or the window is unknown. */
-    private fun tooLongFor(model: ModelDescriptor, agent: AgentProfile, request: AgentRunRequest): String? {
+    private suspend fun tooLongFor(model: ModelDescriptor, agent: AgentProfile, request: AgentRunRequest): String? {
         val window = model.capabilities.contextWindow ?: return null
         val replyRoom = minOf(agent.generation.maxOutputTokens ?: DEFAULT_REPLY_ROOM, window / 4)
-        val needed = runner.estimatePromptTokens(request) + replyRoom
+        val needed = runner.estimateRenderedPromptTokens(request) + replyRoom
         if (needed <= window) return null
         return "This conversation has grown too long for ${model.displayName}: it needs about $needed tokens and the model's context window " +
             "holds $window. Nothing was sent. Start a new conversation, or give ${agent.name} a model with a larger context window."

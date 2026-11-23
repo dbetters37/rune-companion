@@ -49,11 +49,19 @@ data class MemoryConfig(
     val maxEmbeddingsPerMaintenance: Int = 1_000,
     /** The app version written into graph snapshots. */
     val appVersion: String = "0.3.0",
+    /**
+     * Recall and the graph also stop adding candidates once their text (title, content and
+     * tags) reaches this many characters in total, newest first: 5,000 memories of the maximum
+     * length would otherwise be about 100 million characters. About 12 MB on Android, where
+     * strings take two bytes a character; the text search's additions may add a quarter more.
+     */
+    val candidateTextBudget: Long = 6_000_000,
 ) {
     init {
         require(shortTermTtlMs > 0) { "The short-term TTL must be positive." }
         require(recencyHalfLifeMs > 0) { "The recency half-life must be positive." }
         require(candidateLimit > 0) { "The candidate limit must be positive." }
+        require(candidateTextBudget > 0) { "The candidate text budget must be positive." }
         require(maxRecallLimit > 0) { "The recall limit must be positive." }
         require(semanticRelevanceFloor in 0.0..1.0) { "The semantic relevance floor must be within 0..1." }
         require(embeddingBatchSize > 0) { "The embedding batch size must be positive." }
