@@ -133,7 +133,7 @@ abstract class SettingsRepositoryContract {
             maxModelCallsPerTask = 11, maxToolCallsPerTask = 22, maxRevisionRounds = 3, maxTaskAttempts = 4,
             taskTimeoutMinutes = 6, objectiveTimeoutMinutes = 60, approvalTimeoutMinutes = 9,
             autoResumeInterruptedTasks = true, operatorEnabled = true, accessibilityOperatorEnabled = true,
-            onboardingCompleted = true, seedVersion = 3,
+            onboardingCompleted = true, seedVersion = 3, memorySeedVersion = 2,
         )
         assertEquals(changed, repo.update { changed })
         assertEquals(changed, repo.get())

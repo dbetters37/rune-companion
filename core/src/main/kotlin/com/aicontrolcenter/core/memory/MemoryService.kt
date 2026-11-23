@@ -152,6 +152,12 @@ interface MemoryService {
     /** A neutral graph of what [actor] may read, for the graph view and for external graph tools. */
     suspend fun graph(actor: MemoryActor, request: GraphRequest = GraphRequest()): MemoryGraphSnapshot
 
+    /**
+     * Deletes an agent's private and task memory, with their links. Used when the agent itself
+     * is deleted; memories it shared into spaces stay there, with their provenance.
+     */
+    suspend fun forgetAgent(agentId: AgentId): Int
+
     /** Deletes expired short-term memories and computes missing embeddings. Safe to call often. */
     suspend fun maintain(): MaintenanceReport
 }

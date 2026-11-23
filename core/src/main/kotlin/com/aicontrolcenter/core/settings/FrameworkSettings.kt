@@ -43,6 +43,8 @@ data class FrameworkSettings(
     val onboardingCompleted: Boolean = false,
     /** Version of the built-in starter content already applied; lets later versions add to it once. */
     val seedVersion: Int = 0,
+    /** Version of the built-in memory content (the starter knowledge space) already applied. */
+    val memorySeedVersion: Int = 0,
 )
 
 interface SettingsRepository {
