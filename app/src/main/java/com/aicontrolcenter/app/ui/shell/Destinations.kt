@@ -50,6 +50,24 @@ import kotlinx.serialization.Serializable
 
 @Serializable data object ConceptsRoute
 
+/** The gallery of provider presets: the first step of adding a provider. */
+@Serializable data object ProviderPresetsRoute
+
+/**
+ * Adds a provider from [presetId], or edits [providerId]. [baseUrl] pre-fills the address of
+ * a server found on this phone.
+ */
+@Serializable data class ProviderFormRoute(val presetId: String? = null, val providerId: String? = null, val baseUrl: String? = null)
+
+@Serializable data class ProviderDetailRoute(val providerId: String)
+
+@Serializable data class ModelEditorRoute(val modelId: String)
+
+/** An agent's conversations. */
+@Serializable data class ConversationsRoute(val agentId: String)
+
+@Serializable data class ChatRoute(val conversationId: String)
+
 /** The eight primary sections of the control center, in their fixed order. */
 enum class Section(val title: String, val description: String) {
     DASHBOARD("Dashboard", "Overview of your whole AI ecosystem"),
@@ -102,9 +120,10 @@ fun NavDestination.isTopLevel(): Boolean =
 fun NavDestination.section(): Section = when {
     hasRoute<DashboardRoute>() -> Section.DASHBOARD
     hasRoute<AgentsRoute>() || hasRoute<AgentTemplatesRoute>() || hasRoute<AgentEditorRoute>() ||
-        hasRoute<AgentDetailRoute>() -> Section.AGENTS
+        hasRoute<AgentDetailRoute>() || hasRoute<ConversationsRoute>() || hasRoute<ChatRoute>() -> Section.AGENTS
     hasRoute<ModelsRoute>() || hasRoute<AiAppDetailRoute>() || hasRoute<RegisterAppRoute>() ||
-        hasRoute<ConceptsRoute>() -> Section.MODELS
+        hasRoute<ConceptsRoute>() || hasRoute<ProviderPresetsRoute>() || hasRoute<ProviderFormRoute>() ||
+        hasRoute<ProviderDetailRoute>() || hasRoute<ModelEditorRoute>() -> Section.MODELS
     hasRoute<TasksRoute>() -> Section.TASKS
     hasRoute<MemoryRoute>() -> Section.MEMORY
     hasRoute<ToolsRoute>() -> Section.TOOLS

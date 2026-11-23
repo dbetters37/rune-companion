@@ -86,6 +86,9 @@ enum class Locality {
                 val b = octets[1]!!
                 // 127.0.0.0/8 is loopback. 0.0.0.0 is what a server binds to, and reaches this device.
                 if (a == 127 || octets.all { it == 0 }) return ON_DEVICE
+                // 100.64.0.0/10 is shared address space. It is counted as the owner's network
+                // because overlay networks such as Tailscale use it to reach a home server; a
+                // carrier's NAT range is not something anyone enters as a provider address.
                 val private = a == 10 || (a == 172 && b in 16..31) || (a == 192 && b == 168) ||
                     (a == 169 && b == 254) || (a == 100 && b in 64..127)
                 return if (private) LOCAL_NETWORK else CLOUD

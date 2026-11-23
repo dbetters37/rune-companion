@@ -67,6 +67,12 @@ data class ToolCallRequest(
     /** The tool's function name as offered in [ChatRequest.tools]. */
     val name: String,
     val arguments: JsonObject,
+    /**
+     * Set when the model named a tool but its arguments could not be read (not valid JSON, not
+     * an object). [arguments] is then empty. The call is not run: it is answered with this
+     * message as an error result, so the model can correct itself instead of the turn failing.
+     */
+    val argumentsError: String? = null,
 )
 
 @Serializable

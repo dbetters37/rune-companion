@@ -20,8 +20,15 @@ import com.aicontrolcenter.app.ui.dashboard.AttentionTarget
 import com.aicontrolcenter.app.ui.dashboard.DashboardNavigation
 import com.aicontrolcenter.app.ui.dashboard.DashboardRoute as DashboardScreenRoute
 import com.aicontrolcenter.app.ui.models.AiAppDetailRoute as AiAppDetailScreenRoute
+import com.aicontrolcenter.app.ui.chat.ChatRoute as ChatScreenRoute
+import com.aicontrolcenter.app.ui.chat.ConversationsRoute as ConversationsScreenRoute
 import com.aicontrolcenter.app.ui.models.ConceptsScreen
+import com.aicontrolcenter.app.ui.models.ModelEditorRoute as ModelEditorScreenRoute
+import com.aicontrolcenter.app.ui.models.ModelsNavigation
 import com.aicontrolcenter.app.ui.models.ModelsRoute as ModelsScreenRoute
+import com.aicontrolcenter.app.ui.models.PresetGalleryRoute
+import com.aicontrolcenter.app.ui.models.ProviderDetailRoute as ProviderDetailScreenRoute
+import com.aicontrolcenter.app.ui.models.ProviderFormRoute as ProviderFormScreenRoute
 import com.aicontrolcenter.app.ui.models.ModelsTab
 import com.aicontrolcenter.app.ui.models.RegisterAppRoute as RegisterAppScreenRoute
 import com.aicontrolcenter.app.ui.planned.PlannedSection
@@ -29,6 +36,9 @@ import com.aicontrolcenter.app.ui.planned.PlannedSectionScreen
 import com.aicontrolcenter.app.ui.settings.SettingsRoute as SettingsScreenRoute
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.AiAppId
+import com.aicontrolcenter.core.ConversationId
+import com.aicontrolcenter.core.ModelId
+import com.aicontrolcenter.core.ProviderId
 
 /**
  * Switches to a section root. The start destination stays at the bottom of the stack, so Back
@@ -56,6 +66,10 @@ private fun NavHostController.open(route: Any) = navigate(route) { launchSingleT
 fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) {
     val openAgent: (AgentId) -> Unit = { navController.open(AgentDetailRoute(it.value)) }
     val openApp: (AiAppId) -> Unit = { navController.open(AiAppDetailRoute(it.value)) }
+    val openProvider: (ProviderId) -> Unit = { navController.open(ProviderDetailRoute(it.value)) }
+    val openModel: (ModelId) -> Unit = { navController.open(ModelEditorRoute(it.value)) }
+    val addProvider: () -> Unit = { navController.open(ProviderPresetsRoute) }
+    val openConversation: (ConversationId) -> Unit = { navController.open(ChatRoute(it.value)) }
     val back: () -> Unit = { navController.popBackStack() }
 
     NavHost(
@@ -75,6 +89,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                         when (target) {
                             is AttentionTarget.Agent -> openAgent(target.id)
                             is AttentionTarget.AiApp -> openApp(target.id)
+                            is AttentionTarget.Provider -> openProvider(target.id)
                             AttentionTarget.Agents -> navController.navigateToSection(AgentsRoute(), restore = false)
                             AttentionTarget.UnavailableAgents ->
                                 navController.navigateToSection(AgentsRoute(AgentStatusFilter.UNAVAILABLE), restore = false)
@@ -86,6 +101,8 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                     onOpenProviders = { navController.navigateToSection(ModelsRoute(ModelsTab.PROVIDERS), restore = false) },
                     onOpenApps = { navController.navigateToSection(ModelsRoute(ModelsTab.APPS), restore = false) },
                     onSeeAllActivity = { navController.navigateToSection(ActivityRoute) },
+                    onAddProvider = addProvider,
+                    onOpenProvider = openProvider,
                 ),
             )
         }
@@ -94,6 +111,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                 initialStatusFilter = entry.toRoute<AgentsRoute>().status,
                 onOpenAgent = openAgent,
                 onNewAgent = { navController.open(AgentTemplatesRoute) },
+                onAddProvider = addProvider,
             )
         }
         composable<AgentTemplatesRoute> {
@@ -128,15 +146,67 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                 onEdit = { navController.open(AgentEditorRoute(agentId = it.value)) },
                 onOpenAgent = openAgent,
                 onOpenModels = { navController.navigateToSection(ModelsRoute(ModelsTab.MODELS), restore = false) },
+                onChat = { navController.open(ConversationsRoute(it.value)) },
             )
+        }
+        composable<ConversationsRoute> { entry ->
+            ConversationsScreenRoute(
+                agentId = AgentId(entry.toRoute<ConversationsRoute>().agentId),
+                onBack = back,
+                onOpenConversation = openConversation,
+            )
+        }
+        composable<ChatRoute> { entry ->
+            ChatScreenRoute(conversationId = ConversationId(entry.toRoute<ChatRoute>().conversationId), onBack = back)
         }
         composable<ModelsRoute> { entry ->
             ModelsScreenRoute(
                 initialTab = entry.toRoute<ModelsRoute>().tab,
-                onOpenApp = openApp,
-                onRegisterManually = { navController.open(RegisterAppRoute) },
-                onOpenConcepts = { navController.open(ConceptsRoute) },
+                navigation = ModelsNavigation(
+                    onOpenApp = openApp,
+                    onRegisterManually = { navController.open(RegisterAppRoute) },
+                    onOpenConcepts = { navController.open(ConceptsRoute) },
+                    onAddProvider = addProvider,
+                    onOpenProvider = openProvider,
+                    onOpenModel = openModel,
+                    onAddDetected = { server ->
+                        navController.open(ProviderFormRoute(presetId = server.presetId, baseUrl = server.baseUrl))
+                    },
+                ),
             )
+        }
+        composable<ProviderPresetsRoute> {
+            PresetGalleryRoute(onBack = back, onPick = { navController.open(ProviderFormRoute(presetId = it)) })
+        }
+        composable<ProviderFormRoute> { entry ->
+            val route = entry.toRoute<ProviderFormRoute>()
+            ProviderFormScreenRoute(
+                presetId = route.presetId,
+                providerId = route.providerId?.let(::ProviderId),
+                baseUrl = route.baseUrl,
+                onClose = back,
+                onFinished = { id, isNew ->
+                    if (isNew) {
+                        // Leave the adding flow behind: Back from the new provider returns to where it started.
+                        navController.popBackStack<ProviderFormRoute>(inclusive = true)
+                        navController.popBackStack<ProviderPresetsRoute>(inclusive = true)
+                        navController.open(ProviderDetailRoute(id.value))
+                    } else {
+                        navController.popBackStack()
+                    }
+                },
+            )
+        }
+        composable<ProviderDetailRoute> { entry ->
+            ProviderDetailScreenRoute(
+                providerId = ProviderId(entry.toRoute<ProviderDetailRoute>().providerId),
+                onBack = back,
+                onEdit = { navController.open(ProviderFormRoute(providerId = it.value)) },
+                onOpenModel = openModel,
+            )
+        }
+        composable<ModelEditorRoute> { entry ->
+            ModelEditorScreenRoute(modelId = ModelId(entry.toRoute<ModelEditorRoute>().modelId), onBack = back)
         }
         composable<AiAppDetailRoute> { entry ->
             AiAppDetailScreenRoute(appId = AiAppId(entry.toRoute<AiAppDetailRoute>().appId), onBack = back)
