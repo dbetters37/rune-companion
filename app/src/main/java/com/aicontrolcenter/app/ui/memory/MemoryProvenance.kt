@@ -112,7 +112,9 @@ internal fun describeProvenance(
         }
         HistoryRowUi(text, formatFullDateTime(event.at, zone), event.relatedMemory?.let(::ref))
     }
-    return ProvenanceUi(summary, rows, p.derivedFrom.distinct().map(::ref), history)
+    // A share or promotion names its original in the history too; list each memory once, there.
+    val inHistory = record.history.mapNotNullTo(HashSet()) { it.relatedMemory }
+    return ProvenanceUi(summary, rows, p.derivedFrom.distinct().filterNot { it in inHistory }.map(::ref), history)
 }
 
 private fun derivedPhrase(p: Provenance): String =

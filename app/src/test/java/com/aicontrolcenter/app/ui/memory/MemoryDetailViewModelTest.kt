@@ -68,9 +68,10 @@ class MemoryDetailViewModelTest {
         val sample = app.populateWithMemories()
         val copy = assertNotNull(detail(app, sample.bulletPointsShared).uiState.value.memory)
         assertEquals(sample.teamSpace, (copy.record.scope as MemoryScope.Shared).spaceId)
-        // The engine records the original in the copy's history (or, before that, in derivedFrom); either is shown as a link.
+        // The engine names the original both in derivedFrom and in the copy's history; the screen lists it once, in the history.
         val references = copy.provenance.history.mapNotNull { it.related } + copy.provenance.derivedFrom
         val originalRef = references.single { it.id == sample.bulletPoints }
+        assertTrue(copy.provenance.derivedFrom.none { it.id == sample.bulletPoints })
         assertEquals("Prefers summaries as short bullet points", originalRef.title)
         assertEquals(ScopeKind.PRIVATE, originalRef.scope?.kind)
 

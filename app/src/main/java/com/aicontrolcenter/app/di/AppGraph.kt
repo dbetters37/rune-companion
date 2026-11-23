@@ -1,5 +1,7 @@
 package com.aicontrolcenter.app.di
 
+import kotlinx.coroutines.Dispatchers
+import kotlin.coroutines.CoroutineContext
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.IdGenerator
 import com.aicontrolcenter.core.activity.ActivityLog
@@ -76,6 +78,11 @@ class AppGraph(
     appScope: CoroutineScope,
     adapterFactories: List<ProviderAdapterFactory> = productionAdapterFactories(),
     val memoryConfig: MemoryConfig = MemoryConfig(appVersion = BuildConfig.VERSION_NAME),
+    /**
+     * Where heavy work (memory recall and scoring) runs. The background pool in the app; tests
+     * pass [kotlin.coroutines.EmptyCoroutineContext] so that work stays on their test dispatcher.
+     */
+    backgroundContext: CoroutineContext = Dispatchers.Default,
 ) {
     val clock: Clock = ports.clock
     val idGenerator: IdGenerator = ports.idGenerator
@@ -157,6 +164,7 @@ class AppGraph(
         ids = ports.idGenerator,
         clock = ports.clock,
         config = memoryConfig,
+        computeContext = backgroundContext,
     )
 
     // --- tools ---
@@ -191,7 +199,7 @@ class AppGraph(
         monitor = monitor,
         clock = ports.clock,
         // Relevant memories are added to the prompt before each turn, per the agent's memory policy.
-        recall = AutoRecall(memoryService, activityRecorder),
+        recall = AutoRecall(memoryService, activityRecorder, lookupContext = backgroundContext),
     )
 
     private val defaultAgentChat = DefaultAgentChat(

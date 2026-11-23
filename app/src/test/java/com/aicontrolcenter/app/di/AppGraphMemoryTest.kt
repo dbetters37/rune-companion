@@ -1,5 +1,6 @@
 package com.aicontrolcenter.app.di
 
+import kotlin.coroutines.EmptyCoroutineContext
 import com.aicontrolcenter.app.testing.MainDispatcherRule
 import com.aicontrolcenter.app.testing.TestApp
 import com.aicontrolcenter.app.testing.populateWithMemories
@@ -39,7 +40,7 @@ class AppGraphMemoryTest {
 
         // The owner deletes it; the next process start must not bring it back.
         app.graph.memoryService.deleteSpace(MemoryActor.Owner, team.id)
-        val restarted = AppGraph(app.ports, backgroundScope, app.factories.values.toList())
+        val restarted = AppGraph(app.ports, backgroundScope, app.factories.values.toList(), backgroundContext = EmptyCoroutineContext)
         restarted.start().join()
         assertTrue(restarted.memoryService.observeSpaces().first().isEmpty())
     }

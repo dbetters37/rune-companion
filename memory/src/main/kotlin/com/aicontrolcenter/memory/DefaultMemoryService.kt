@@ -1,5 +1,7 @@
 package com.aicontrolcenter.memory
 
+import kotlinx.coroutines.Dispatchers
+import kotlin.coroutines.CoroutineContext
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.IdGenerator
@@ -82,6 +84,12 @@ class DefaultMemoryService(
     private val ids: IdGenerator,
     private val clock: Clock,
     private val config: MemoryConfig = MemoryConfig(),
+    /**
+     * Where recall scoring runs: off the caller's thread by default, so a time-out can end the
+     * wait. [kotlin.coroutines.EmptyCoroutineContext] keeps it on the caller's dispatcher
+     * (tests in virtual time).
+     */
+    computeContext: CoroutineContext = Dispatchers.Default,
 ) : MemoryService {
     private val resolver = AccessResolver(agents, repository)
     private val log = MemoryActivity(activity, agents, repository)
@@ -89,7 +97,7 @@ class DefaultMemoryService(
     private val ctx = MemoryContext(repository, agents, ids, clock, config, resolver, log, vectors)
     private val scorer = RecallScorer(config)
     private val reader = MemoryReader(repository, config)
-    private val recaller = MemoryRecall(ctx, reader, scorer)
+    private val recaller = MemoryRecall(ctx, reader, scorer, computeContext)
     private val links = MemoryLinks(ctx)
     private val sharing = MemorySharing(ctx)
     private val spaces = KnowledgeSpaces(ctx)

@@ -1,5 +1,6 @@
 package com.aicontrolcenter.memory
 
+import kotlin.coroutines.CoroutineContext
 import com.aicontrolcenter.core.MemoryId
 import com.aicontrolcenter.core.memory.MemoryFilter
 import com.aicontrolcenter.core.memory.MemoryHit
@@ -32,7 +33,12 @@ import kotlinx.coroutines.yield
  * specific scope (task, then private, then shared) is kept, so copies never crowd out other
  * memories. A copy edited since it was shared is a hit of its own.
  */
-internal class MemoryRecall(private val ctx: MemoryContext, private val reader: MemoryReader, private val scorer: RecallScorer) {
+internal class MemoryRecall(
+    private val ctx: MemoryContext,
+    private val reader: MemoryReader,
+    private val scorer: RecallScorer,
+    private val computeContext: CoroutineContext = Dispatchers.Default,
+) {
     suspend fun recall(who: ResolvedActor, query: RecallQuery): List<MemoryHit> {
         val limit = query.limit.coerceAtMost(ctx.config.maxRecallLimit)
         if (limit <= 0 || query.text.isBlank()) return emptyList()
@@ -59,7 +65,7 @@ internal class MemoryRecall(private val ctx: MemoryContext, private val reader: 
         queryVector: FloatArray?,
         now: Long,
     ): List<MemoryHit> =
-        withContext(Dispatchers.Default) {
+        withContext(computeContext) {
             val hits = ArrayList<MemoryHit>()
             for (chunk in candidates.chunked(VECTOR_CHUNK)) {
                 ensureActive()

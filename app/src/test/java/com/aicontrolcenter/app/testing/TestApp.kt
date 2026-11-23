@@ -1,5 +1,6 @@
 package com.aicontrolcenter.app.testing
 
+import kotlin.coroutines.EmptyCoroutineContext
 import com.aicontrolcenter.app.di.AppGraph
 import com.aicontrolcenter.app.di.Ports
 import com.aicontrolcenter.core.agents.AgentKind
@@ -105,7 +106,10 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
             FakeProviderAdapterFactory(kind) { connection -> adaptersByUrl[connection.provider.baseUrl.orEmpty()] ?: fallbackAdapter() }
         }
 
-    val graph = AppGraph(ports, scope, factories.values.toList() + SimulatorProviderFactory(chunkDelayMs = 0))
+    val graph = AppGraph(
+        ports, scope, factories.values.toList() + SimulatorProviderFactory(chunkDelayMs = 0),
+        backgroundContext = EmptyCoroutineContext,
+    )
 
     private inline fun <T> failOr(block: () -> T): T = scanFailure?.let { throw it } ?: block()
 
