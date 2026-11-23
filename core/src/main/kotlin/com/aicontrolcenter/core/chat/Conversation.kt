@@ -5,6 +5,7 @@ import com.aicontrolcenter.core.ConversationId
 import com.aicontrolcenter.core.llm.ChatMessage
 import com.aicontrolcenter.core.llm.TokenUsage
 import com.aicontrolcenter.core.llm.ToolCallRequest
+import com.aicontrolcenter.core.operator.OwnerRequest
 import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.tools.ToolOutcome
 import kotlinx.coroutines.flow.Flow
@@ -70,6 +71,12 @@ data class LiveTurn(
     val locality: Locality? = null,
     val modelCalls: Int = 0,
     val toolCalls: Int = 0,
+    /**
+     * The permission or approval request [activeTool] is waiting for the owner to answer, shown
+     * in the chat while the turn is paused on it; null when nothing waits. The owner answers it
+     * in the app ([com.aicontrolcenter.core.operator.OwnerRequests]); stopping the turn cancels it.
+     */
+    val waitingForOwner: OwnerRequest? = null,
 )
 
 enum class TurnPhase { PREPARING, WAITING_FOR_MODEL, RECEIVING, RUNNING_TOOL }

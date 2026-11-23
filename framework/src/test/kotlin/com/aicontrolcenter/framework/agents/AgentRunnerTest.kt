@@ -31,6 +31,7 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.currentTime
+import kotlinx.coroutines.test.testTimeSource
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
@@ -310,6 +311,7 @@ class AgentRunnerTest {
 
     @Test
     fun `a turn that outlasts the time limit ends as timed out and keeps what was written`() = runTest {
+        world.time.source = testTimeSource
         world.settings.update { it.copy(taskTimeoutMinutes = 2) }
         val client = StreamingClient { _, _ ->
             flow {

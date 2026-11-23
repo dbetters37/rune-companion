@@ -171,7 +171,7 @@ class BoundedAutonomyTest {
 
     private fun TeamFixture.orchestratorWith(scope: CoroutineScope, memory: MemoryService) = DefaultOrchestrator(
         tasks, messages, world.conversations, world.agents, world.directory, world.settings, world.runner, world.toolRegistry,
-        world.monitor, world.activity, world.ids, world.clock, scope, memory,
+        world.monitor, world.activity, world.ids, world.clock, scope, memory, timeSource = world.time,
     )
 
     /**
@@ -496,7 +496,7 @@ class BoundedAutonomyTest {
         val team = TeamFixture(this).setUp()
         val capped = CappedTasks()
         val w = team.world
-        val orchestrator = DefaultOrchestrator(capped, team.messages, w.conversations, w.agents, w.directory, w.settings, w.runner, w.toolRegistry, w.monitor, w.activity, w.ids, w.clock, backgroundScope, w.memory)
+        val orchestrator = DefaultOrchestrator(capped, team.messages, w.conversations, w.agents, w.directory, w.settings, w.runner, w.toolRegistry, w.monitor, w.activity, w.ids, w.clock, backgroundScope, w.memory, timeSource = w.time)
         team.script.plan = { _, _ -> ScriptStep.Reply(planJson((1..24).map { task("t$it", "Section $it", listOf("research")) })) }
         team.script.work = { s -> ScriptStep.Reply("Findings of ${TeamScript.titleOf(s.brief)}. " + "x".repeat(if (TeamScript.titleOf(s.brief) == "Section 1") 1_500_000 else 45_000)) }
         team.script.synthesis = { ScriptStep.Fail(LlmException.ContextTooLong("The prompt is longer than the model's context window.")) }
@@ -561,7 +561,7 @@ class BoundedAutonomyTest {
         val team = TeamFixture(this).setUp()
         val w = team.world
         val memory = SlowMemory(w.memory)
-        val orchestrator = DefaultOrchestrator(team.tasks, team.messages, w.conversations, w.agents, w.directory, w.settings, w.runner, w.toolRegistry, w.monitor, w.activity, w.ids, w.clock, backgroundScope, memory)
+        val orchestrator = DefaultOrchestrator(team.tasks, team.messages, w.conversations, w.agents, w.directory, w.settings, w.runner, w.toolRegistry, w.monitor, w.activity, w.ids, w.clock, backgroundScope, memory, timeSource = w.time)
         team.script.plan = { _, _ -> ScriptStep.Reply(planJson(listOf(task("a", "Find apps", listOf("research")), task("b", "Write notes", listOf("writing"))))) }
         var refuse = true
         team.script.work = { s -> if (s.agent == "Writer" && refuse) ScriptStep.Fail(LlmException.InvalidRequest("refused")) else ScriptStep.Reply("Found Alpha") }
@@ -596,7 +596,7 @@ class BoundedAutonomyTest {
     fun `a task run again while the objective's job announces its end is not lost`() = runTest {
         val team = TeamFixture(this).setUp()
         val w = team.world
-        val orchestrator = DefaultOrchestrator(team.tasks, SlowMessages(team.messages), w.conversations, w.agents, w.directory, w.settings, w.runner, w.toolRegistry, w.monitor, w.activity, w.ids, w.clock, backgroundScope, w.memory)
+        val orchestrator = DefaultOrchestrator(team.tasks, SlowMessages(team.messages), w.conversations, w.agents, w.directory, w.settings, w.runner, w.toolRegistry, w.monitor, w.activity, w.ids, w.clock, backgroundScope, w.memory, timeSource = w.time)
         team.script.plan = { _, _ -> ScriptStep.Reply(planJson(listOf(task("a", "Find apps", listOf("research")), task("b", "Write notes", listOf("writing"))))) }
         var refuse = true
         team.script.work = { s -> if (s.agent == "Writer" && refuse) ScriptStep.Fail(LlmException.InvalidRequest("refused")) else ScriptStep.Reply("Found Alpha") }

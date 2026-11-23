@@ -10,6 +10,9 @@ import com.aicontrolcenter.core.activity.ActivityType
 import com.aicontrolcenter.core.agents.AgentKind
 import com.aicontrolcenter.core.agents.AgentProfile
 import com.aicontrolcenter.core.agents.GenerationSettings
+import com.aicontrolcenter.core.operator.OperatorCapabilities
+import com.aicontrolcenter.core.operator.ProtectedPackages
+import com.aicontrolcenter.core.tools.Capabilities
 import com.aicontrolcenter.core.llm.LlmClient
 import com.aicontrolcenter.core.llm.ProviderAdapter
 import com.aicontrolcenter.core.registry.Locality
@@ -34,11 +37,15 @@ import com.aicontrolcenter.framework.memory.AutoRecall
 import com.aicontrolcenter.framework.memory.FakeMemoryService
 import com.aicontrolcenter.framework.memory.MemorySeeder
 import com.aicontrolcenter.framework.memory.MemoryTools
+import com.aicontrolcenter.framework.operator.DefaultCapabilityRequester
+import com.aicontrolcenter.framework.operator.DefaultOwnerRequests
+import com.aicontrolcenter.framework.operator.OperatorFacts
+import com.aicontrolcenter.framework.operator.OperatorTaskHooks
+import com.aicontrolcenter.framework.operator.PermissionBroker
 import com.aicontrolcenter.framework.registry.DefaultAiAppRegistry
 import com.aicontrolcenter.framework.registry.DefaultRegistryDirectory
 import com.aicontrolcenter.framework.tools.BuiltInTools
 import com.aicontrolcenter.framework.tools.CapabilityRegistry
-import com.aicontrolcenter.framework.tools.DefaultToolAuthorizer
 import com.aicontrolcenter.framework.tools.DefaultToolRegistry
 import com.aicontrolcenter.framework.tools.ToolExecutor
 import com.aicontrolcenter.framework.tools.ToolLimits
@@ -51,19 +58,40 @@ import com.aicontrolcenter.testkit.InMemoryAgentRepository
 import com.aicontrolcenter.testkit.InMemoryAiAppRepository
 import com.aicontrolcenter.testkit.InMemoryConversationRepository
 import com.aicontrolcenter.testkit.InMemoryModelRepository
+import com.aicontrolcenter.testkit.InMemoryOperatorAppRepository
+import com.aicontrolcenter.testkit.InMemoryOwnerRequestRepository
+import com.aicontrolcenter.testkit.InMemoryPermissionRepository
 import com.aicontrolcenter.testkit.InMemoryProviderRepository
 import com.aicontrolcenter.testkit.InMemorySecretVault
 import com.aicontrolcenter.testkit.InMemorySettingsRepository
+import com.aicontrolcenter.testkit.InMemorySharedFolderRepository
+import com.aicontrolcenter.testkit.InMemoryTaskRepository
 import com.aicontrolcenter.testkit.SequentialIdGenerator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
 import java.time.ZoneOffset
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 import kotlin.coroutines.EmptyCoroutineContext
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * A complete in-memory framework for tests, wired the way the app wires it.
+ * The time source of a [TestWorld]'s pausable limits: real time until a test points it at its
+ * scheduler (`world.time.source = testTimeSource`), so a limit then ends at an exact virtual time.
+ */
+class SwitchableTimeSource : TimeSource {
+    @Volatile
+    var source: TimeSource = TimeSource.Monotonic
+
+    override fun markNow(): TimeMark = source.markNow()
+}
+
+/**
+ * A complete in-memory framework for tests, wired the way the app wires it: tool calls are
+ * decided by the [PermissionBroker] over in-memory grants, requests, folders and apps, which
+ * the owner answers through [ownerRequests].
  *
  * @param scope where chat turns run. The default is a real dispatcher, as in the app; pass a
  * test scope to run turns in virtual time.
@@ -74,7 +102,9 @@ class TestWorld(
     toolLimits: ToolLimits = ToolLimits(),
 ) {
     val clock = FakeClock(autoAdvanceMs = 1)
+    val time = SwitchableTimeSource()
     val ids = SequentialIdGenerator()
+    val tasks = InMemoryTaskRepository()
     val agents = InMemoryAgentRepository()
     val providers = InMemoryProviderRepository()
     val models = InMemoryModelRepository()
@@ -102,16 +132,32 @@ class TestWorld(
 
     /** Memory as the framework sees it: the contract, here a fake. Days are shown in UTC. */
     val memory = FakeMemoryService(agents, clock, ids)
-    val capabilities = CapabilityRegistry()
+    val capabilities = CapabilityRegistry(Capabilities.builtIn + OperatorCapabilities.all)
     val toolRegistry = DefaultToolRegistry().also {
         BuiltInTools.registerAll(it, clock, directory)
         MemoryTools.registerAll(it, memory, capabilities, agents, clock) { ZoneOffset.UTC }
     }
-    val executor = ToolExecutor(toolRegistry, DefaultToolAuthorizer(settings, capabilities), activity, clock, toolLimits)
+
+    // The phone operator's stores and the permission broker, as the app wires them.
+    val grants = InMemoryPermissionRepository()
+    val requests = InMemoryOwnerRequestRepository(grants)
+    val folders = InMemorySharedFolderRepository()
+    val operatorApps = InMemoryOperatorAppRepository()
+    val screenStopped = MutableStateFlow(false)
+    val protectedPackages = ProtectedPackages(OWN_PACKAGE)
+    val facts = OperatorFacts(agents, settings, capabilities, folders, operatorApps, screenStopped) { protectedPackages }
+    val broker = PermissionBroker(facts, requests, grants, tasks, activity, ids, clock)
+    val requester = DefaultCapabilityRequester(facts, requests, grants, activity, ids, clock)
+    val operatorHooks = OperatorTaskHooks(requests, grants, activity, clock)
+
+    /** How the owner answers requests in these tests: the owner-only port, as the approval screen uses it. */
+    val ownerRequests = DefaultOwnerRequests(requests, activity, ids, clock)
+
+    val executor = ToolExecutor(toolRegistry, broker, activity, clock, toolLimits, time)
     val monitor = DefaultAgentActivityMonitor(clock)
     /** Looks up on the caller's dispatcher, so that recall follows virtual time in coroutine tests. */
     val recall = AutoRecall(memory, activity, zone = { ZoneOffset.UTC }, lookupContext = EmptyCoroutineContext)
-    val runner = AgentRunner(gateway, toolRegistry, executor, agents, settings, monitor, clock, recall = recall)
+    val runner = AgentRunner(gateway, toolRegistry, executor, agents, settings, monitor, clock, recall = recall, timeSource = time)
     val chat = DefaultAgentChat(conversations, agents, models, providers, settings, runner, activity, ids, clock, scope)
 
     private val nextPort = java.util.concurrent.atomic.AtomicInteger()
@@ -186,4 +232,8 @@ class TestWorld(
 
     /** Everything the log holds as one string, for asserting that a secret is nowhere in it. */
     fun logText(): String = log.all.joinToString("\n") { "${it.title} ${it.detail} ${it.data} ${it.egress}" }
+
+    companion object {
+        const val OWN_PACKAGE = "com.aicontrolcenter.app"
+    }
 }

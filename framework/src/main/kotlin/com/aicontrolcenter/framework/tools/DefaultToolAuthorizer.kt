@@ -17,9 +17,12 @@ import com.aicontrolcenter.core.tools.ToolSpec
  * action is not consequential. The risk of a call is the higher of the tool's declared risk and
  * what [com.aicontrolcenter.core.tools.Tool.assess] said about this call: an assessment can
  * raise the risk, never lower it. Everything else is denied with a reason the model can pass on, because this
- * class cannot raise a permission or approval request. The permission broker that can (with
- * per-agent grants and owner prompts) implements the same [ToolAuthorizer] and takes this
- * class's place in [ToolExecutor]; nothing else changes.
+ * class cannot raise a permission or approval request.
+ *
+ * [com.aicontrolcenter.framework.operator.PermissionBroker], which can (with per-agent grants
+ * and owner prompts), implements the same [ToolAuthorizer] with these rules as its first steps
+ * and takes this class's place in [ToolExecutor] once its stores are wired; until then this
+ * class keeps every call that would need the owner refused.
  */
 class DefaultToolAuthorizer(
     private val settings: SettingsRepository,

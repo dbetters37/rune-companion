@@ -26,6 +26,8 @@ import com.aicontrolcenter.core.tasks.TaskStatus
 import com.aicontrolcenter.core.tools.ToolRegistry
 import com.aicontrolcenter.framework.agents.AgentRunner
 import com.aicontrolcenter.framework.agents.DefaultAgentActivityMonitor
+import com.aicontrolcenter.framework.llm.rethrowIfCancelled
+import com.aicontrolcenter.framework.operator.OperatorTaskHooks
 import com.aicontrolcenter.framework.orchestration.OrchestrationContext.Companion.WORKING
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -35,6 +37,8 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.time.TimeSource
 
 /**
  * The Director at work: see [Orchestrator] for the contract. How it is built:
@@ -61,6 +65,13 @@ import kotlinx.coroutines.launch
  *  - Agents run through [AgentRunner] with briefs written by [BriefWriter], so every protection
  *    of a run (per-task model and tool call limits, time limit, tool authorisation, content as
  *    data) applies to orchestrated work exactly as to a chat.
+ *  - Waiting for the owner does not use up time: the objective's and the tasks' limits are
+ *    pausable ([com.aicontrolcenter.core.tasks.withPausableTimeout]), a task waiting for an
+ *    answer is WAITING_FOR_OWNER (working, as WAITING_FOR_AGENT is: pausing, cancelling and the
+ *    crash recovery treat both alike), and the objective's stored deadline moves with the pauses.
+ *  - With [operatorHooks], a task that ends takes its permissions with it (its pending asks are
+ *    withdrawn, its TASK and ONCE grants revoked), and the first recovery at start-up withdraws
+ *    every request still pending, since no waiter survived the stop.
  *
  * Wiring: build it, then register the team tools with [TeamTools.registerAll], then call
  * [recoverInterrupted] once at start-up before objectives are started.
@@ -82,14 +93,21 @@ class DefaultOrchestrator(
     scope: CoroutineScope,
     /** Where the Director saves knowledge when the owner allows it; null: nothing is saved. */
     memory: MemoryService? = null,
+    /** Measures the objectives' pausable time limits; tests pass the test scheduler's (`testTimeSource`). */
+    timeSource: TimeSource = TimeSource.Monotonic,
+    /** Ends a task's permissions with it and withdraws stale requests at start-up; null without the phone operator. */
+    private val operatorHooks: OperatorTaskHooks? = null,
 ) : Orchestrator {
     private val runtimes = Runtimes()
     private val transcripts = TaskTranscripts(conversations, ids, clock)
     private val journal = ObjectiveJournal(messages, agents, activity, ids, clock)
     private val ctx = OrchestrationContext(
-        CappedTaskStore(tasks), messages, agents, directory, settings, toolRegistry, memory, monitor, journal, transcripts,
-        StepRunner(runner, directory, transcripts, journal), ids, clock, runtimes,
+        CappedTaskStore(operatorHooks?.let { TaskEndingStore(tasks, it) } ?: tasks), messages, agents, directory, settings, toolRegistry, memory,
+        monitor, journal, transcripts, StepRunner(runner, directory, transcripts, journal), ids, clock, runtimes, timeSource,
     )
+
+    /** Whether the start-up withdrawal of pending requests has run: once per process. */
+    private val startedUp = AtomicBoolean(false)
     private val work = WorkSteps(ctx)
     private val driver = ObjectiveDriver(ctx, PlanningStep(ctx), work, ReviewSteps(ctx, work), SynthesisStep(ctx), KnowledgeKeeper(ctx))
 
@@ -143,7 +161,8 @@ class DefaultOrchestrator(
             val now = clock.now()
             val changes = ctx.tasks.getTree(rootId).filter { it.id != rootId && it.status in WORKING }
                 .map { it.copy(status = TaskStatus.PAUSED, statusDetail = "Paused by the owner.", updatedAt = now) }
-            val updated = objective.copy(status = TaskStatus.PAUSED, statusDetail = "Paused by the owner.", updatedAt = now)
+            // The deadline as its running limit has it: time spent waiting for the owner moved it later.
+            val updated = objective.copy(status = TaskStatus.PAUSED, statusDetail = "Paused by the owner.", deadlineAt = rt.deadlineNow(objective.deadlineAt), updatedAt = now)
             ctx.tasks.upsertAll(changes + updated)
             updated to changes
         } ?: return
@@ -330,6 +349,14 @@ class DefaultOrchestrator(
     }
 
     override suspend fun recoverInterrupted(): List<TaskId> {
+        // No waiter outlives the app: every question still open is withdrawn, before any task is recovered.
+        if (operatorHooks != null && startedUp.compareAndSet(false, true)) {
+            try {
+                operatorHooks.startUp()
+            } catch (e: Exception) {
+                rethrowIfCancelled(e) // the requests then expire on their own; recovery goes on
+            }
+        }
         // What was running, and objectives an earlier recovery left interrupted: those with only bookkeeping left, or being ended, are finished now.
         val stuck = ctx.tasks.withStatus(WORKING + TaskStatus.INTERRUPTED)
         val roots = stuck.map { it.rootId }.distinct().filter { runtimes.existing(it)?.isDriven != true }

@@ -13,6 +13,7 @@ import com.aicontrolcenter.testkit.ScriptedLlmClient
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.currentTime
+import kotlinx.coroutines.test.testTimeSource
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import kotlin.test.assertEquals
@@ -40,6 +41,7 @@ class AgentRunOverridesTest {
 
     @Test
     fun `a shorter time limit ends the run when it passes`() = runTest {
+        world.time.source = testTimeSource
         val client = ScriptedLlmClient { _, _ ->
             delay(10 * 60_000)
             ScriptStep.Reply("late")
@@ -60,6 +62,13 @@ class AgentRunOverridesTest {
                     contexts += context
                     return ToolOutcome.success("ok")
                 }
+
+                // Interface delegation would send the framework's call (with the assessment) to the delegate.
+                override suspend fun execute(
+                    arguments: kotlinx.serialization.json.JsonObject,
+                    context: ToolContext,
+                    assessment: com.aicontrolcenter.core.tools.ActionAssessment,
+                ): ToolOutcome = execute(arguments, context)
             },
         )
         val client = ScriptedLlmClient { _, index ->

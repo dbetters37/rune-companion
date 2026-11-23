@@ -18,6 +18,7 @@ import com.aicontrolcenter.core.tasks.TaskRequester
 import com.aicontrolcenter.core.tasks.TaskStatus
 import com.aicontrolcenter.core.tools.ToolRegistry
 import com.aicontrolcenter.framework.agents.DefaultAgentActivityMonitor
+import kotlin.time.TimeSource
 
 /** What the steps of an objective share. One per orchestrator. */
 internal class OrchestrationContext(
@@ -35,6 +36,8 @@ internal class OrchestrationContext(
     val ids: IdGenerator,
     val clock: Clock,
     val runtimes: Runtimes,
+    /** Measures the objective's pausable time limits; tests pass the test scheduler's. */
+    val timeSource: TimeSource = TimeSource.Monotonic,
 ) {
     val briefs = BriefWriter()
     val selector = AgentSelector()
@@ -90,8 +93,8 @@ internal class OrchestrationContext(
     companion object {
         const val MINUTE_MS = 60_000L
 
-        /** Statuses in which a task is held by a job (or was, when the app stopped). */
-        val WORKING = setOf(TaskStatus.RUNNING, TaskStatus.WAITING_FOR_AGENT)
+        /** Statuses in which a task is held by a job (or was, when the app stopped): running, or waiting for a teammate or the owner. */
+        val WORKING = setOf(TaskStatus.RUNNING, TaskStatus.WAITING_FOR_AGENT, TaskStatus.WAITING_FOR_OWNER)
 
         /** The tasks of the plan the scheduler runs: planned work and reviews, not delegated work. */
         fun TaskRecord.isScheduled(): Boolean =

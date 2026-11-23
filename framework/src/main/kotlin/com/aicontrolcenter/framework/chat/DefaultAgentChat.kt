@@ -22,6 +22,7 @@ import com.aicontrolcenter.core.llm.ChatMessage
 import com.aicontrolcenter.core.llm.ChatRole
 import com.aicontrolcenter.core.llm.TokenUsage
 import com.aicontrolcenter.core.llm.ToolCallRequest
+import com.aicontrolcenter.core.operator.OwnerRequest
 import com.aicontrolcenter.core.registry.AgentRepository
 import com.aicontrolcenter.core.registry.ModelDescriptor
 import com.aicontrolcenter.core.registry.ModelRepository
@@ -80,6 +81,10 @@ import kotlinx.coroutines.withContext
  *    complete, so a long reply costs time in proportion to its length. Text held back by that
  *    interval is published when it is over even if nothing more arrives, so the preview never
  *    lags behind a reply that pauses.
+ *
+ * A tool call that waits for the owner to answer a permission or approval request shows it in
+ * the live turn ([LiveTurn.waitingForOwner]) until the wait ends; stopping the turn ([cancel])
+ * withdraws the request.
  *
  * Registered as an [AgentDeletionListener], it stops the turns of a deleted agent and removes
  * its conversations.
@@ -318,7 +323,13 @@ class DefaultAgentChat(
             show { it.copy(phase = TurnPhase.RUNNING_TOOL, activeTool = call, toolCalls = it.toolCalls + 1) }
         }
 
-        override suspend fun onToolFinished(execution: ToolExecution) = synchronized(lock) { show { it.copy(activeTool = null) } }
+        override suspend fun onToolFinished(execution: ToolExecution) = synchronized(lock) { show { it.copy(activeTool = null, waitingForOwner = null) } }
+
+        override suspend fun onWaitingForOwner(request: OwnerRequest) = synchronized(lock) { show { it.copy(waitingForOwner = request) } }
+
+        override suspend fun onOwnerAnswered(request: OwnerRequest) = synchronized(lock) {
+            show { if (it.waitingForOwner?.id == request.id) it.copy(waitingForOwner = null) else it }
+        }
 
         /** Ends the timer; called when the turn ends, however it ends. */
         fun stop() = synchronized(lock) { cancelFlush() }

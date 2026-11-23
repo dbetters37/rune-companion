@@ -99,6 +99,13 @@ class WaitClock internal constructor(
 private class PausableTimeout : CancellationException("Time limit reached")
 
 /**
+ * True when [e], or one of its causes, is the cancellation with which a [withPausableTimeout]
+ * ended its work: what `TimeoutCancellationException` is to `withTimeout`. Lets work that is
+ * stopped tell "the time limit ran out" from "the owner or the app stopped it".
+ */
+fun isPausableTimeout(e: Throwable): Boolean = generateSequence(e) { it.cause }.any { it is PausableTimeout }
+
+/**
  * Like `withTimeoutOrNull(timeoutMs)`, except that time inside [WaitClock.pausedWhile] does not
  * count: [block] is cancelled and null returned only once [timeoutMs] of unpaused time has
  * passed. Use it for task, objective, run and planning limits instead of a fixed timeout.

@@ -2,6 +2,7 @@ package com.aicontrolcenter.framework.orchestration
 
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.TaskId
+import com.aicontrolcenter.core.tasks.WaitClock
 import com.aicontrolcenter.framework.agents.TaskCallBudget
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -28,6 +29,9 @@ import java.util.concurrent.ConcurrentHashMap
  *    sets [anotherPass], and the job looks again before it ends instead of starting a second one.
  *  - [callBudgets] are the call budgets of the WORK runs going on, by task id, which the answers
  *    to their questions are charged to.
+ *  - [limit] is the objective's time limit while its plan runs: the deadline it started from and
+ *    its [WaitClock], whose paused time (waiting for the owner) moves the deadline later
+ *    ([deadlineNow]).
  */
 internal class ObjectiveRuntime(val rootId: TaskId) {
     val lock = Mutex()
@@ -50,6 +54,15 @@ internal class ObjectiveRuntime(val rootId: TaskId) {
     fun poke() {
         wake.trySend(Unit)
     }
+
+    /** The objective's time limit while it runs: started from [deadline], paused while anything under it waits for the owner. */
+    class RunningLimit(val deadline: Long, val clock: WaitClock)
+
+    @Volatile
+    var limit: RunningLimit? = null
+
+    /** The objective's deadline now: [stored], or while its limit runs, the deadline it started from plus the time it was paused. */
+    fun deadlineNow(stored: Long?): Long? = limit?.let { it.deadline + it.clock.pausedMs() } ?: stored
 
     val isDriven: Boolean get() = driving && job?.isActive == true
 }

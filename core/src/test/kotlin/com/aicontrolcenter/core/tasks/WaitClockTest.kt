@@ -62,6 +62,42 @@ class WaitClockTest {
     }
 
     @Test
+    fun `an enclosing limit that runs out stops the limit inside, which does not take it for its own time-out`() = runTest {
+        var inner = "unset"
+        val outer = withPausableTimeout(60_000, testTimeSource) {
+            try {
+                inner = withPausableTimeout(300_000, testTimeSource) {
+                    delay(120_000)
+                    "finished"
+                } ?: "timed out"
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                inner = "stopped by the enclosing limit"
+                throw e
+            }
+        }
+        assertNull(outer)
+        assertEquals("stopped by the enclosing limit", inner)
+        assertEquals(60_000, testScheduler.currentTime)
+    }
+
+    @Test
+    fun `work stopped by the limit can tell, and other cancellations are not mistaken for it`() = runTest {
+        var seen: Throwable? = null
+        val result = withPausableTimeout(1_000, testTimeSource) {
+            try {
+                delay(5_000)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                seen = e
+                throw e
+            }
+        }
+        assertNull(result)
+        assertEquals(true, seen?.let(::isPausableTimeout))
+        assertEquals(false, isPausableTimeout(kotlinx.coroutines.CancellationException("stopped by the owner")))
+        assertEquals(false, isPausableTimeout(IllegalStateException("boom")))
+    }
+
+    @Test
     fun `a time source that does not match the delays can only lengthen the limit`() = runTest {
         // Monotonic real time against virtual delays: pauses count as nothing, yet the limit still ends.
         assertEquals("ok", withPausableTimeout(60_000) { WaitClock.pausedWhile { delay(300_000) }; delay(59_000); "ok" })
