@@ -136,7 +136,7 @@ class StoredNamesGoldenTest {
         assertStoredNames<TaskKind>("OBJECTIVE", "WORK", "REVIEW", "SYNTHESIS")
         assertStoredNames<TaskStatus>(
             "QUEUED", "RUNNING", "WAITING_FOR_AGENT", "IN_REVIEW", "PAUSED", "COMPLETED", "FAILED", "TIMED_OUT", "CANCELLED",
-            "INTERRUPTED",
+            "INTERRUPTED", "WAITING_FOR_OWNER",
         )
         assertStoredNames<ReviewDecision>("APPROVED", "REVISE", "REJECTED")
         assertStoredNames<MessageType>(

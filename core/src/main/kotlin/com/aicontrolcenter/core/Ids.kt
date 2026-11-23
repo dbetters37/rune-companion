@@ -22,6 +22,12 @@ import java.util.UUID
 @Serializable @JvmInline value class ConversationId(val value: String) { override fun toString(): String = value }
 @Serializable @JvmInline value class MemoryLinkId(val value: String) { override fun toString(): String = value }
 
+/** A permission grant (see `core.operator.PermissionGrant`). */
+@Serializable @JvmInline value class GrantId(val value: String) { override fun toString(): String = value }
+
+/** A shared folder the owner picked (see `core.operator.SharedFolder`). */
+@Serializable @JvmInline value class FolderId(val value: String) { override fun toString(): String = value }
+
 /** Source of new identifiers. Injected everywhere so tests can be deterministic. */
 fun interface IdGenerator {
     /** Returns a new unique id of the form `<prefix>_<random>`. */
@@ -45,3 +51,5 @@ fun IdGenerator.eventId() = EventId(newId("evt"))
 fun IdGenerator.requestId() = RequestId(newId("req"))
 fun IdGenerator.conversationId() = ConversationId(newId("cnv"))
 fun IdGenerator.memoryLinkId() = MemoryLinkId(newId("lnk"))
+fun IdGenerator.grantId() = GrantId(newId("grt"))
+fun IdGenerator.folderId() = FolderId(newId("fld"))

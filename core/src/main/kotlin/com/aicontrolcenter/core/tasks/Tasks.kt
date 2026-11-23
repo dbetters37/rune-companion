@@ -21,6 +21,7 @@ enum class TaskKind {
     SYNTHESIS,
 }
 
+/** Where a task is in its life. Stored by name; new values are only ever appended. */
 enum class TaskStatus {
     QUEUED,
     RUNNING,
@@ -40,10 +41,20 @@ enum class TaskStatus {
 
     /** Was running when the app stopped; resumed or held at the next start, as configured. */
     INTERRUPTED,
+
+    /**
+     * Blocked on the owner answering a permission or approval request. Active, like
+     * [WAITING_FOR_AGENT]: crash recovery treats both the same way. The time spent here does not
+     * count against the task's or the objective's time limits.
+     */
+    WAITING_FOR_OWNER,
     ;
 
     val isFinished: Boolean get() = this == COMPLETED || this == FAILED || this == TIMED_OUT || this == CANCELLED
-    val isActive: Boolean get() = this == RUNNING || this == WAITING_FOR_AGENT || this == IN_REVIEW
+    val isActive: Boolean get() = this == RUNNING || this == WAITING_FOR_AGENT || this == WAITING_FOR_OWNER || this == IN_REVIEW
+
+    /** Blocked on someone else (a teammate or the owner) while the task is otherwise running. */
+    val isWaiting: Boolean get() = this == WAITING_FOR_AGENT || this == WAITING_FOR_OWNER
 }
 
 /** Who asked for a task. */

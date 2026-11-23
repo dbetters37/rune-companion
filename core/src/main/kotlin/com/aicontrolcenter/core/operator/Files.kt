@@ -1,0 +1,293 @@
+package com.aicontrolcenter.core.operator
+
+import com.aicontrolcenter.core.FolderId
+import kotlinx.coroutines.flow.Flow
+import kotlinx.serialization.Serializable
+import java.io.File
+import java.io.InputStream
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.Path
+
+/**
+ * The agents' workspace directory in this app's private storage (`files/workspace`). Only
+ * [Workspace] and [WorkspaceFile.resolve] use it directly. Implemented in `:device` from the
+ * app's files directory; tests use a temporary directory.
+ */
+fun interface WorkspaceRoot {
+    /** The workspace directory. Exists when this returns. */
+    fun directory(): File
+}
+
+/**
+ * A workspace path that passed the sandbox: inside the root, outside the trash folder (unless
+ * asked for), and with no symbolic link on any existing component. Gateways take this instead of
+ * a [File], so none of them re-implements the sandbox. Only [resolve] makes one; resolve again
+ * right before use rather than keeping one across a wait.
+ */
+class WorkspaceFile private constructor(
+    /** The path inside the workspace. */
+    val path: RelativePath,
+    /** The checked file; may not exist yet. */
+    val file: File,
+) {
+    override fun toString(): String = path.value
+
+    override fun equals(other: Any?): Boolean = other is WorkspaceFile && other.file == file
+
+    override fun hashCode(): Int = file.hashCode()
+
+    /** The sandbox check. */
+    companion object {
+        /**
+         * Resolves [path] under [root]. [DocResult.NotAllowed] when the root or any existing
+         * component is a symbolic link (checked without following links), or when the path is
+         * in [Workspace.TRASH_FOLDER] and [allowTrash] is false (only [Workspace] itself reaches
+         * the trash).
+         */
+        fun resolve(root: File, path: RelativePath, allowTrash: Boolean = false): DocResult<WorkspaceFile> {
+            if (!allowTrash && path.segments.firstOrNull() == Workspace.TRASH_FOLDER) {
+                return DocResult.NotAllowed("The trash is reached only through the trash and restore operations.")
+            }
+            val base: Path = root.toPath().toAbsolutePath().normalize()
+            if (Files.isSymbolicLink(base)) return DocResult.NotAllowed("The workspace folder is a link, so it is not used.")
+            var current = base
+            for (segment in path.segments) {
+                current = current.resolve(segment)
+                if (Files.isSymbolicLink(current)) {
+                    return DocResult.NotAllowed("\"${path.value}\" goes through a link, and links are not followed in the workspace.")
+                }
+                if (!Files.exists(current, LinkOption.NOFOLLOW_LINKS)) break
+            }
+            val target = base.resolve(path.value).normalize()
+            if (!target.startsWith(base)) return DocResult.NotAllowed("\"${path.value}\" is outside the workspace.")
+            return DocResult.Ok(WorkspaceFile(path, target.toFile()))
+        }
+    }
+}
+
+/** One item in the workspace trash. Stored as JSON next to the trashed content (see [Workspace]). */
+@Serializable
+data class TrashItem(
+    /** Name-safe id, the trash folder's entry name. */
+    val id: String,
+    /** Where it was, as [RelativePath.value]; [Workspace.restore] puts it back there. */
+    val originalPath: String,
+    val isFolder: Boolean,
+    val sizeBytes: Long? = null,
+    val trashedAt: Long,
+)
+
+/** A [Workspace.search] hit: a name match (no line) or a line of text. */
+data class WorkspaceHit(val path: RelativePath, val line: Int? = null, val excerpt: String? = null)
+
+/**
+ * The agents' workspace as one service, used by both the workspace tools and the app's file
+ * manager, so they share one sandbox and one trash. Implemented once in `:framework` over
+ * [WorkspaceRoot]; every path goes through [WorkspaceFile.resolve]. Size limits return
+ * [DocResult.TooLarge]. Reads and lists never touch [TRASH_FOLDER] content except through the
+ * trash methods.
+ *
+ * Trash format: [trash] moves the item to `.trash/<id>/<name>` and writes `.trash/<id>.json`
+ * holding its [TrashItem]; [restore] moves it back to [TrashItem.originalPath] (missing parent
+ * folders recreated; [DocResult.AlreadyExists] if something is there now); [emptyTrash] deletes
+ * both.
+ */
+interface Workspace {
+    /** Increases after every change, from any caller, so screens can refresh. */
+    val changes: Flow<Long>
+
+    /** Entries directly inside [path], folders first, then by name. */
+    suspend fun list(path: RelativePath): DocResult<List<DocumentEntry>>
+
+    suspend fun stat(path: RelativePath): DocResult<DocumentEntry>
+
+    /** At most [maxBytes] starting at byte [offset]. */
+    suspend fun read(path: RelativePath, offset: Long, maxBytes: Long): DocResult<FileContent>
+
+    /** Creates the file (missing parents included), or replaces it when [overwrite]; else [DocResult.AlreadyExists]. */
+    suspend fun write(path: RelativePath, bytes: ByteArray, overwrite: Boolean): DocResult<DocumentEntry>
+
+    /** Appends to the file, creating it if missing. */
+    suspend fun append(path: RelativePath, bytes: ByteArray): DocResult<DocumentEntry>
+
+    /**
+     * Replaces every occurrence of [find] in a UTF-8 text file. With [expectedCount], changes
+     * nothing unless exactly that many occur. Returns how many were replaced.
+     */
+    suspend fun replaceText(path: RelativePath, find: String, replacement: String, expectedCount: Int?): DocResult<Int>
+
+    /** Creates the folder and missing parents; an existing folder is returned as is. */
+    suspend fun makeFolder(path: RelativePath): DocResult<DocumentEntry>
+
+    /** Renames or moves; never onto an existing entry unless [overwrite], and never a folder into itself. */
+    suspend fun move(from: RelativePath, to: RelativePath, overwrite: Boolean): DocResult<DocumentEntry>
+
+    /** Moves a file or folder to the trash. */
+    suspend fun trash(path: RelativePath): DocResult<TrashItem>
+
+    /** Trash items, newest first. */
+    suspend fun listTrash(): DocResult<List<TrashItem>>
+
+    suspend fun restore(id: String): DocResult<DocumentEntry>
+
+    /** Deletes [ids] from the trash for good, or everything when null. Returns how many items. */
+    suspend fun emptyTrash(ids: Set<String>?): DocResult<Int>
+
+    /** Names, then text lines of UTF-8 files, containing [query] (case-insensitive), under [under]. */
+    suspend fun search(query: String, under: RelativePath, maxResults: Int): DocResult<List<WorkspaceHit>>
+
+    /** Copies [source] (a document the owner chose) to [path], at most [maxBytes]. */
+    suspend fun import(path: RelativePath, source: InputStream, maxBytes: Long, overwrite: Boolean): DocResult<DocumentEntry>
+
+    /** The checked file for a gateway call (share, install, copy target, screenshot, shell directory). */
+    suspend fun resolve(path: RelativePath): DocResult<WorkspaceFile>
+
+    /** Constants. */
+    companion object {
+        /** The trash's folder name at the workspace root. */
+        const val TRASH_FOLDER: String = ".trash"
+    }
+}
+
+/**
+ * A folder in shared storage the owner picked with the system folder picker. Access is the
+ * persisted Storage Access Framework grant for [treeUri]; nothing outside the tree is reachable.
+ * Which agents may use it is decided by grants constrained to [id].
+ */
+@Serializable
+data class SharedFolder(
+    val id: FolderId,
+    /** The `content://` tree URI the picker returned, as text. */
+    val treeUri: String,
+    val displayName: String,
+    val addedAt: Long,
+    /** The owner's switch: no agent may change anything in it, whatever was granted. */
+    val readOnly: Boolean = false,
+)
+
+/**
+ * Storage of the folders the owner picked. Lists are oldest first (added time, then id); flows
+ * emit at once and after every change. Implementations: Room (`:data`) and in-memory
+ * (`:testkit`); both pass `SharedFolderRepositoryContract`.
+ */
+interface SharedFolderRepository {
+    fun observeAll(): Flow<List<SharedFolder>>
+
+    suspend fun getAll(): List<SharedFolder>
+
+    suspend fun get(id: FolderId): SharedFolder?
+
+    suspend fun getByTreeUri(treeUri: String): SharedFolder?
+
+    /** Inserts or replaces by id. @throws IllegalArgumentException if another folder has the same [SharedFolder.treeUri]. */
+    suspend fun upsert(folder: SharedFolder)
+
+    /** No-op if absent. [OwnerFolders.remove] revokes the folder's grants first. */
+    suspend fun delete(id: FolderId)
+}
+
+/** One file or folder in a shared folder. */
+data class DocumentEntry(
+    /** Path from the shared folder's root. */
+    val path: RelativePath,
+    val isFolder: Boolean,
+    val sizeBytes: Long? = null,
+    val mimeType: String? = null,
+    val modifiedAt: Long? = null,
+) {
+    val name: String get() = path.name
+}
+
+/** Bytes read from a file, possibly only part of it. */
+class FileContent(
+    val bytes: ByteArray,
+    /** The file's full size when known. */
+    val totalBytes: Long?,
+    /** Fewer bytes were read than the file holds. Set by the gateway, which knows even when [totalBytes] does not. */
+    val truncated: Boolean = totalBytes != null && totalBytes > bytes.size,
+) {
+    override fun equals(other: Any?): Boolean =
+        other is FileContent && other.totalBytes == totalBytes && other.truncated == truncated && other.bytes.contentEquals(bytes)
+
+    override fun hashCode(): Int = 31 * (31 * bytes.contentHashCode() + totalBytes.hashCode()) + truncated.hashCode()
+}
+
+/** The outcome of a file operation through a gateway. Expected failures are values, not exceptions. */
+sealed interface DocResult<out T> {
+    /** Done; [value] is the result. */
+    data class Ok<T>(val value: T) : DocResult<T>
+
+    /** Nothing at [path]. */
+    data class NotFound(val path: String) : DocResult<Nothing>
+
+    /** Something is already at [path] and overwriting was not asked for (or it is a folder). */
+    data class AlreadyExists(val path: String) : DocResult<Nothing>
+
+    /** The file is bigger than the caller's limit. */
+    data class TooLarge(val sizeBytes: Long, val limitBytes: Long) : DocResult<Nothing>
+
+    /** Not permitted: the folder is read-only, removed or its access was withdrawn, a link, or the provider does not support the operation. */
+    data class NotAllowed(val reason: String) : DocResult<Nothing>
+
+    /** Two or more entries in one folder have the name at [path] (some providers allow it), so which one is meant is unknown; nothing was done. */
+    data class Ambiguous(val path: String, val count: Int) : DocResult<Nothing>
+
+    /** Anything else; [reason] is a sentence the model can read. */
+    data class Failed(val reason: String) : DocResult<Nothing>
+}
+
+/** The outcome of [SharedFolders.takeAccess]. */
+sealed interface FolderAccess {
+    /** Access is persisted; [displayName] is the folder's name as the provider shows it. */
+    data class Granted(val displayName: String) : FolderAccess
+
+    /** The URI is not a tree this app may keep, or Android refused to persist access. */
+    data class Refused(val reason: String) : FolderAccess
+}
+
+/**
+ * Files in the folders the owner picked, through the Storage Access Framework (`:device`).
+ * Tool-facing operations name a folder by [FolderId] and a [RelativePath] inside it; every call
+ * re-reads the folder from [SharedFolderRepository], so a folder removed or switched to
+ * read-only meanwhile is honoured ([DocResult.NotAllowed]). The gateway walks the tree by display
+ * name and returns [DocResult.Ambiguous] when two children share a name; it never leaves the
+ * tree. Size limits are the caller's ([maxBytes]); larger files return [DocResult.TooLarge] for
+ * copies and a truncated [FileContent] for reads.
+ */
+interface SharedFolders {
+    /** Persists access to a tree the owner just picked. Called by [OwnerFolders] only. */
+    suspend fun takeAccess(treeUri: String): FolderAccess
+
+    /** Gives up the persisted access, when the owner removes the folder ([OwnerFolders]). */
+    suspend fun releaseAccess(folder: SharedFolder)
+
+    /** Whether access still holds (it is lost if the folder is moved or deleted). */
+    suspend fun hasAccess(folder: SharedFolder): Boolean
+
+    /** The entries directly inside [path], folders first, then by name. */
+    suspend fun list(folder: FolderId, path: RelativePath): DocResult<List<DocumentEntry>>
+
+    suspend fun stat(folder: FolderId, path: RelativePath): DocResult<DocumentEntry>
+
+    /** At most [maxBytes] from the start of the file. */
+    suspend fun read(folder: FolderId, path: RelativePath, maxBytes: Long): DocResult<FileContent>
+
+    /** Creates the file (missing parent folders included), or replaces it when [overwrite]; else [DocResult.AlreadyExists]. */
+    suspend fun write(folder: FolderId, path: RelativePath, bytes: ByteArray, mimeType: String?, overwrite: Boolean): DocResult<DocumentEntry>
+
+    /** Creates the folder and missing parents; an existing folder is returned as is. */
+    suspend fun makeFolder(folder: FolderId, path: RelativePath): DocResult<DocumentEntry>
+
+    /** Renames in place; [newName] is a single name. */
+    suspend fun rename(folder: FolderId, path: RelativePath, newName: String): DocResult<DocumentEntry>
+
+    /** Deletes a file, or a folder with everything in it. Never the folder's root. */
+    suspend fun delete(folder: FolderId, path: RelativePath): DocResult<Unit>
+
+    /** Copies a file to [target]; never overwrites ([DocResult.AlreadyExists]). Returns the bytes copied. */
+    suspend fun copyToWorkspace(folder: FolderId, path: RelativePath, target: WorkspaceFile, maxBytes: Long): DocResult<Long>
+
+    /** Copies the workspace file [source] into the folder, as [write] would. */
+    suspend fun copyFromWorkspace(source: WorkspaceFile, folder: FolderId, path: RelativePath, overwrite: Boolean): DocResult<DocumentEntry>
+}

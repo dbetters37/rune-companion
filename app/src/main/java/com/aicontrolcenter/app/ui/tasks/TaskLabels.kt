@@ -29,6 +29,7 @@ fun TaskStatus.toStatusLabel(kind: TaskKind = TaskKind.WORK): StatusLabel = when
     TaskStatus.QUEUED -> StatusLabel("Queued", StatusTone.WAITING)
     TaskStatus.RUNNING -> StatusLabel(if (kind == TaskKind.OBJECTIVE) "Running" else "Working", StatusTone.WORKING)
     TaskStatus.WAITING_FOR_AGENT -> StatusLabel("Waiting for a teammate", StatusTone.WAITING)
+    TaskStatus.WAITING_FOR_OWNER -> StatusLabel("Waiting for you", StatusTone.ATTENTION)
     TaskStatus.IN_REVIEW -> StatusLabel("In review", StatusTone.WAITING)
     TaskStatus.PAUSED -> StatusLabel("Paused", StatusTone.DISABLED)
     TaskStatus.COMPLETED -> StatusLabel("Completed", StatusTone.READY)
