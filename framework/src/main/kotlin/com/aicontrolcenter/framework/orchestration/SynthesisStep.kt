@@ -37,7 +37,7 @@ internal class SynthesisStep(private val ctx: OrchestrationContext) {
         val names = ctx.agents.getAll().associate { it.id to it.name }
         val completed = planned.filter { it.status == TaskStatus.COMPLETED }.map { SourceResult(it, it.assignee?.let(names::get) ?: "a former team member") }
         val missing = planned.filter { it.status != TaskStatus.COMPLETED }.map { it.title to FinalDocument.whyNot(it) }
-        val brief = ctx.briefs.synthesis(SynthesisBrief(objective, started, completed, missing))
+        val brief = ctx.briefs.synthesis(SynthesisBrief(objective, started, completed, missing), ctx.steps.briefBudget(ready))
         ctx.runtimes.started(directorId, started.id)
         val result = try {
             ctx.steps.run(
@@ -75,21 +75,47 @@ internal class SynthesisStep(private val ctx: OrchestrationContext) {
  * their titles, then what was not completed and why. Plain, and labelled as assembled.
  */
 internal object FinalDocument {
-    fun assemble(objective: TaskRecord, planned: List<TaskRecord>, names: Map<com.aicontrolcenter.core.AgentId, String>, why: String): String = buildString {
-        append("# ").append(objective.title).append("\n\n")
-        append("> The Director could not write the final document ($why). The results are shown as the team produced them.\n")
+    /**
+     * At most [maxBytes] of UTF-8 (by default [StoredText.MAX_DOCUMENT_BYTES], well below what
+     * the task store holds): every result gets a share, and one cut says where its whole text is.
+     */
+    fun assemble(
+        objective: TaskRecord,
+        planned: List<TaskRecord>,
+        names: Map<com.aicontrolcenter.core.AgentId, String>,
+        why: String,
+        maxBytes: Int = StoredText.MAX_DOCUMENT_BYTES,
+    ): String {
         val completed = planned.filter { it.status == TaskStatus.COMPLETED }
-        for (task in completed) {
-            append("\n## ").append(task.title).append('\n')
-            task.assignee?.let { names[it] }?.let { append("*By ").append(it).append("*\n\n") }
-            append(task.result.orEmpty().trim()).append('\n')
-        }
         val missing = planned.filter { it.status != TaskStatus.COMPLETED }
-        if (missing.isNotEmpty()) {
-            append("\n## Not completed\n")
-            missing.forEach { append("- ").append(it.title).append(": ").append(whyNot(it)).append('\n') }
+        fun render(results: List<String>) = buildString {
+            append("# ").append(objective.title).append("\n\n")
+            append("> The Director could not write the final document ($why). The results are shown as the team produced them.\n")
+            completed.forEachIndexed { index, task ->
+                append("\n## ").append(task.title).append('\n')
+                task.assignee?.let { names[it] }?.let { append("*By ").append(it).append("*\n\n") }
+                append(results[index]).append('\n')
+            }
+            if (missing.isNotEmpty()) {
+                append("\n## Not completed\n")
+                missing.forEach { append("- ").append(it.title).append(": ").append(whyNot(it)).append('\n') }
+            }
+        }.trimEnd()
+        val results = completed.map { it.result.orEmpty().trim() }
+        val whole = render(results)
+        if (StoredText.utf8Bytes(whole) <= maxBytes) return whole
+        // Too large to store: each result gets a share of what the rest of the document leaves.
+        val fixed = StoredText.utf8Bytes(render(results.map { "" })) + completed.size * CUT_NOTE_BYTES
+        val shares = TextBudget.allocate(results.map { StoredText.utf8Bytes(it).toDouble() }, (maxBytes - fixed).toDouble().coerceAtLeast(0.0))
+        val cut = results.mapIndexed { index, text ->
+            StoredText.capBytes(text, shares[index].toInt().coerceAtLeast(0) + CUT_NOTE_BYTES) { n ->
+                "[cut: $n characters omitted; the whole result is on the task \"${completed[index].title}\"]"
+            }
         }
-    }.trimEnd()
+        return StoredText.capBytes(render(cut), maxBytes) { n -> "[cut: $n characters omitted; see the objective's tasks for every result]" }
+    }
+
+    private const val CUT_NOTE_BYTES = 200
 
     /** Why a task did not complete, in one sentence. */
     fun whyNot(task: TaskRecord): String {

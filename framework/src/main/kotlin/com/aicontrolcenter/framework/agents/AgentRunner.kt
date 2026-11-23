@@ -157,6 +157,7 @@ class AgentRunner(
         private var callContext = CallContext(agent.id, request.taskId, request.rootTaskId, request.purpose)
         private val maxModelCalls = limits.maxModelCallsPerTask.coerceAtLeast(1).let { cap -> request.limits.maxModelCalls?.coerceIn(1, cap) ?: cap }
         private val maxToolCalls = limits.maxToolCallsPerTask.coerceAtLeast(0).let { cap -> request.limits.maxToolCalls?.coerceIn(0, cap) ?: cap }
+        private val budget = request.callBudget?.also { it.limits(maxModelCalls, maxToolCalls) }
 
         private var modelCalls = 0
         private var modelErrors = 0
@@ -177,8 +178,10 @@ class AgentRunner(
 
         suspend fun loop(): Ending {
             while (true) {
-                if (modelCalls >= maxModelCalls) {
-                    return Ending(RunEnd.MODEL_CALL_LIMIT, "Stopped after $modelCalls model calls, the limit for one task.")
+                val chargedModelCalls = budget?.chargedModelCalls ?: 0
+                if (modelCalls + chargedModelCalls >= maxModelCalls) {
+                    val helpers = if (chargedModelCalls > 0) " and $chargedModelCalls by teammates answering its questions" else ""
+                    return Ending(RunEnd.MODEL_CALL_LIMIT, "Stopped after $modelCalls model calls$helpers, the limit for one task.")
                 }
                 val profile = when (val now = current()) {
                     is Outcome.Stop -> return now.ending
@@ -208,6 +211,7 @@ class AgentRunner(
 
         private suspend fun callModel(): ChatResponse {
             modelCalls++
+            budget?.ownModelCall()
             partial.setLength(0)
             report("Waiting for the model")
             listener.onModelCall(modelCalls)
@@ -289,8 +293,10 @@ class AgentRunner(
         /** Runs the calls in order. Returns an ending when the tool budget ran out, or the agent was stopped, before all of them ran. */
         private suspend fun runTools(calls: List<ToolCallRequest>): Ending? {
             for (call in calls) {
-                if (toolCalls >= maxToolCalls) {
-                    return Ending(RunEnd.TOOL_CALL_LIMIT, "Stopped after $toolCalls tool calls, the limit for one task.")
+                val chargedToolCalls = budget?.chargedToolCalls ?: 0
+                if (toolCalls + chargedToolCalls >= maxToolCalls) {
+                    val helpers = if (chargedToolCalls > 0) " and $chargedToolCalls by teammates answering its questions" else ""
+                    return Ending(RunEnd.TOOL_CALL_LIMIT, "Stopped after $toolCalls tool calls$helpers, the limit for one task.")
                 }
                 val profile = when (val now = current()) {
                     is Outcome.Stop -> return now.ending
@@ -300,6 +306,7 @@ class AgentRunner(
                 report("Running tool: ${spec?.title ?: call.name.take(MAX_TOOL_NAME_SHOWN)}")
                 listener.onToolStarted(call, spec)
                 toolCalls++
+                budget?.ownToolCall()
                 executing = call
                 val execution = withContext(AgentTurnInfo(request.modelId, modelName, request.conversationId)) {
                     executor.execute(call, ToolContext(profile, request.taskId, request.rootTaskId, request.delegationChain))

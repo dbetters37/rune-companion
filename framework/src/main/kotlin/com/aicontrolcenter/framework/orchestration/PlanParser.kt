@@ -46,16 +46,23 @@ internal object PlanParser {
     const val MAX_CRITERIA = 8
     const val MAX_CRITERION = 300
     const val MAX_SKILLS = 8
+    const val MAX_KEY = 40
+    const val MAX_PROBLEMS = 10
     const val DEFAULT_FINAL_INSTRUCTIONS = "Combine the results into one clear Markdown document that answers the objective directly."
 
-    fun read(text: String, maxTasks: Int): PlanReading {
+    /**
+     * [reviewsOn]: the owner wants reviews, so each task marked for review needs a second task
+     * place for its review, and the plan must leave room for them all.
+     */
+    fun read(text: String, maxTasks: Int, reviewsOn: Boolean = false): PlanReading {
         val root = JsonReply.firstObject(text) ?: return PlanReading.Invalid(listOf("The answer contained no JSON object."))
         val body = (root.field("plan") as? JsonObject)?.takeIf { root.field("tasks") == null } ?: root
         val rawTasks = body.field("tasks") as? JsonArray
             ?: return PlanReading.Invalid(listOf("The JSON object has no \"tasks\" list."))
+        // Too many tasks: the count is the problem; examining each would only make the answer longer.
+        if (rawTasks.size > maxTasks) return PlanReading.Invalid(listOf("The plan has ${rawTasks.size} tasks; at most $maxTasks are allowed. Combine or drop tasks."))
         val problems = ArrayList<String>()
         if (rawTasks.isEmpty()) problems += "The plan has no tasks; it needs at least one."
-        if (rawTasks.size > maxTasks) problems += "The plan has ${rawTasks.size} tasks; at most $maxTasks are allowed. Combine or drop tasks."
 
         val tasks = ArrayList<PlannedTask>()
         val seen = HashSet<String>()
@@ -66,7 +73,7 @@ internal object PlanParser {
                 problems += "Task $number is not a JSON object."
                 return@forEachIndexed
             }
-            val key = item.field("key", "id").text()?.take(40)
+            val key = item.field("key", "id").text()?.let(::normaliseKey)?.ifEmpty { null }
             if (key == null) {
                 problems += "Task $number has no \"key\"."
                 return@forEachIndexed
@@ -85,12 +92,17 @@ internal object PlanParser {
                     .map { it.take(MAX_CRITERION) }.take(MAX_CRITERIA),
                 skills = item.field("skills").texts().map { it.lowercase() }.distinct().take(MAX_SKILLS),
                 assignee = item.field("assignee", "agent").text(),
-                dependsOn = item.field("depends_on", "dependsOn", "dependencies").texts().distinct(),
+                dependsOn = item.field("depends_on", "dependsOn", "dependencies").texts().map(::normaliseKey).filter { it.isNotEmpty() }.distinct(),
                 needsReview = item.field("needs_review", "needsReview", "review").flag() ?: false,
             )
         }
         problems += dependencyProblems(tasks)
-        if (problems.isNotEmpty()) return PlanReading.Invalid(problems)
+        val reviewed = if (reviewsOn) tasks.count { it.needsReview } else 0
+        if (problems.isEmpty() && tasks.size + reviewed > maxTasks) {
+            problems += "The plan has ${tasks.size} tasks and marks $reviewed for review; each review takes a task place of its own, so it needs " +
+                "${tasks.size + reviewed} of the $maxTasks places. Combine tasks or mark fewer for review."
+        }
+        if (problems.isNotEmpty()) return PlanReading.Invalid(capped(problems))
         return PlanReading.Valid(
             ObjectivePlan(
                 interpretation = body.field("interpretation").text().orEmpty().take(MAX_INSTRUCTIONS),
@@ -100,6 +112,18 @@ internal object PlanParser {
             ),
         )
     }
+
+    /**
+     * A key as the plan uses it: on one line, without surrounding space, at most [MAX_KEY]
+     * characters. Task keys and the keys in depends_on are read the same way, so a long key
+     * still matches the dependencies that name it.
+     */
+    fun normaliseKey(raw: String): String = raw.replace(Regex("\\s+"), " ").trim().take(MAX_KEY).trimEnd()
+
+    /** At most [MAX_PROBLEMS] problems, then how many more there were. */
+    private fun capped(problems: List<String>): List<String> =
+        if (problems.size <= MAX_PROBLEMS) problems
+        else problems.take(MAX_PROBLEMS) + "And ${problems.size - MAX_PROBLEMS} more problems of the same kinds."
 
     /** Unknown and self dependencies, and the first cycle found (named by its keys). */
     private fun dependencyProblems(tasks: List<PlannedTask>): List<String> {

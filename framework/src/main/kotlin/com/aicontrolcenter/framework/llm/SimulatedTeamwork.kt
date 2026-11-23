@@ -72,7 +72,9 @@ internal object SimulatedTeamwork {
 
     private fun plan(brief: String): String {
         val objective = objective(brief)
-        val allowed = AT_MOST.find(brief)?.groupValues?.get(1)?.toIntOrNull() ?: MAX_TASKS
+        val places = AT_MOST.find(brief)?.groupValues?.get(1)?.toIntOrNull() ?: MAX_TASKS
+        // Every task but the first is marked for review; where reviews take task places, n tasks need 2n - 1 of them.
+        val allowed = if (BriefWriter.REVIEW_ROOM in brief) (places + 1) / 2 else places
         val clauses = CLAUSE_BREAK.split(objective).map { it.trim().trimEnd(',') }.filter { it.length >= 3 }
             .take(minOf(allowed, MAX_TASKS).coerceAtLeast(1))
             .ifEmpty { listOf(objective.ifBlank { "the objective" }) }

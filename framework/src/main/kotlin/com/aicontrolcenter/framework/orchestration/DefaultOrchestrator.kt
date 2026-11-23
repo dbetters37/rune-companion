@@ -33,6 +33,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 
 /**
@@ -45,6 +46,11 @@ import kotlinx.coroutines.launch
  *    child of a supervisor: one objective failing, or being cancelled, never touches another.
  *  - The owner's commands write the new statuses first, under the objective's lock, and only
  *    then stop the jobs involved, which therefore never write a status on their way out.
+ *  - The objective's time limit counts only the time it runs. A stopped objective (PAUSED or
+ *    INTERRUPTED) keeps the time it had left as the difference between its deadline and the
+ *    moment it was stored as stopped (its updatedAt); resuming gives it exactly that again. After
+ *    a crash, that moment is the objective's last stored write (the driver stores a heartbeat),
+ *    and every task that was running counts the interrupted run as one of its attempts.
  *  - Agents run through [AgentRunner] with briefs written by [BriefWriter], so every protection
  *    of a run (per-task model and tool call limits, time limit, tool authorisation, content as
  *    data) applies to orchestrated work exactly as to a chat.
@@ -74,7 +80,7 @@ class DefaultOrchestrator(
     private val transcripts = TaskTranscripts(conversations, ids, clock)
     private val journal = ObjectiveJournal(messages, agents, activity, ids, clock)
     private val ctx = OrchestrationContext(
-        tasks, messages, agents, directory, settings, toolRegistry, memory, monitor, journal, transcripts,
+        CappedTaskStore(tasks), messages, agents, directory, settings, toolRegistry, memory, monitor, journal, transcripts,
         StepRunner(runner, directory, transcripts, journal), ids, clock, runtimes,
     )
     private val work = WorkSteps(ctx)
@@ -154,16 +160,18 @@ class DefaultOrchestrator(
             if (objective.status !in RESUMABLE) return@withLockNonCancellable null
             val now = clock.now()
             val limits = ctx.limits(objective, settings.get())
-            val changes = ctx.tasks.getTree(rootId).filter { it.id != rootId && it.status in RESUMABLE + WORKING }.map {
-                if (it.kind == TaskKind.WORK && it.delegationChain.isNotEmpty()) {
+            val changes = ctx.tasks.getTree(rootId).filter { it.id != rootId && (it.status in RESUMABLE + WORKING || it.isDelegated() && it.status == TaskStatus.QUEUED) }.map {
+                if (it.isDelegated()) {
                     // Delegated work belongs to its delegating task's run, which restarts from its brief and may delegate again.
-                    it.copy(status = TaskStatus.CANCELLED, error = "Its delegating task restarts from its brief.", finishedAt = now, updatedAt = now)
+                    it.copy(status = TaskStatus.CANCELLED, error = "Its delegating task restarts from its brief.", statusDetail = "Its delegating task restarts from its brief.", finishedAt = now, updatedAt = now)
                 } else {
                     it.copy(status = TaskStatus.QUEUED, statusDetail = "Resumed; restarts from its brief.", updatedAt = now)
                 }
             }
-            // Time spent paused does not count: the objective gets its whole time limit again.
-            val updated = objective.copy(status = TaskStatus.RUNNING, statusDetail = "Resumed.", deadlineAt = now + limits.objectiveTimeoutMs, updatedAt = now)
+            // Time spent stopped does not count, and time already used stays used: the objective gets what it had left.
+            val remaining = remainingWhenStopped(objective, limits.objectiveTimeoutMs)
+            val detail = if (remaining > 0) "Resumed." else "Resumed with no time left: the final result is written from what exists."
+            val updated = objective.copy(status = TaskStatus.RUNNING, statusDetail = detail, deadlineAt = now + remaining, updatedAt = now)
             ctx.tasks.upsertAll(changes + updated)
             updated to changes
         } ?: return
@@ -312,23 +320,51 @@ class DefaultOrchestrator(
     override suspend fun recoverInterrupted(): List<TaskId> {
         val stuck = ctx.tasks.withStatus(WORKING)
         val roots = stuck.map { it.rootId }.distinct().filter { runtimes.existing(it)?.isDriven != true }
-        val autoResume = settings.get().autoResumeInterruptedTasks
+        val current = settings.get()
+        val autoResume = current.autoResumeInterruptedTasks
         val affected = ArrayList<TaskId>()
         for (rootId in roots) {
             val rt = runtimes.of(rootId)
+            var planningFailed = false
             val objective = rt.lock.withLockNonCancellable {
                 val objective = ctx.tasks.get(rootId) ?: return@withLockNonCancellable null
                 val now = clock.now()
-                val interrupted = ctx.tasks.getTree(rootId).filter { it.id != rootId && it.status in WORKING }
-                    .map { it.copy(status = TaskStatus.INTERRUPTED, statusDetail = INTERRUPTED, updatedAt = now) }
-                val updated = if (objective.status.isFinished) objective else objective.copy(
-                    status = TaskStatus.INTERRUPTED, updatedAt = now,
-                    statusDetail = if (autoResume) "$INTERRUPTED Resuming." else "$INTERRUPTED Resume it to continue.",
-                )
+                val limits = ctx.limits(objective, current)
+                val tree = ctx.tasks.getTree(rootId)
+                // Each task that was running used up the attempt the app stopped.
+                val interrupted = tree.filter { it.id != rootId && it.status in WORKING }.map { interrupted(it, limits.maxTaskAttempts, now) }
+                val updated = if (objective.status.isFinished) objective else {
+                    // The time left is what it had at its last stored write: the time the app was not running does not count.
+                    val stoppedAt = if (objective.status in WORKING) tree.maxOf { it.updatedAt } else objective.updatedAt
+                    val remaining = objective.deadlineAt?.let { (it - stoppedAt).coerceIn(0, limits.objectiveTimeoutMs) } ?: limits.objectiveTimeoutMs
+                    val planning = objective.status in WORKING && tree.none { it.kind == TaskKind.WORK || it.kind == TaskKind.SYNTHESIS }
+                    val attempt = objective.attempt + if (planning) 1 else 0
+                    if (planning && attempt >= limits.maxTaskAttempts) {
+                        planningFailed = true
+                        val reason = "Planning was interrupted $attempt time(s): the app stopped while the Director was planning, and no attempts are left."
+                        objective.copy(status = TaskStatus.FAILED, attempt = attempt, error = reason, statusDetail = reason, finishedAt = now, updatedAt = now)
+                    } else {
+                        objective.copy(
+                            status = TaskStatus.INTERRUPTED, attempt = attempt, deadlineAt = now + remaining, updatedAt = now,
+                            statusDetail = if (autoResume) "$INTERRUPTED Resuming." else "$INTERRUPTED Resume it to continue.",
+                        )
+                    }
+                }
                 ctx.tasks.upsertAll(interrupted + updated)
-                interrupted.forEach { journal.taskChanged(it, "Task interrupted", Severity.WARNING) }
+                interrupted.forEach {
+                    if (it.status == TaskStatus.FAILED) {
+                        journal.taskChanged(it, "Task failed", Severity.WARNING)
+                        journal.countFinished(it)
+                    } else {
+                        journal.taskChanged(it, "Task interrupted", Severity.WARNING)
+                    }
+                }
                 updated
             } ?: continue
+            if (planningFailed) {
+                journal.taskChanged(objective, "Objective failed", Severity.WARNING)
+                journal.send(rootId, objective, Participant.System, Participant.Owner, MessageType.FAILURE, objective.error.orEmpty())
+            }
             if (objective.status != TaskStatus.INTERRUPTED) continue
             affected += rootId
             journal.taskChanged(objective, "Objective interrupted", Severity.WARNING)
@@ -338,22 +374,62 @@ class DefaultOrchestrator(
         return affected
     }
 
-    /** Starts the objective's job unless it is already running. */
+    /**
+     * Starts the objective's job unless one is driving it. When one is, it is told to look again
+     * before it ends ([ObjectiveRuntime.anotherPass]), so a command that arrives while the job is
+     * winding down (writing its last records, say) is never lost.
+     */
     private fun launch(rootId: TaskId) {
         val rt = runtimes.of(rootId)
         synchronized(rt) {
-            if (rt.isDriven) return
-            val job = objectives.launch(start = CoroutineStart.LAZY) { driver.drive(rt) }
+            if (rt.isDriven) {
+                rt.anotherPass = true
+                return
+            }
+            rt.driving = true
+            rt.anotherPass = false
+            val job = objectives.launch(start = CoroutineStart.LAZY) {
+                val self = coroutineContext.job
+                do {
+                    driver.drive(rt)
+                    val again = synchronized(rt) {
+                        val more = rt.job === self && rt.anotherPass
+                        rt.anotherPass = false
+                        if (!more && rt.job === self) rt.driving = false
+                        more
+                    }
+                } while (again)
+            }
             rt.job = job
             runtimes.setRunning(rootId, true)
             job.invokeOnCompletion {
                 synchronized(rt) {
-                    if (rt.job === job) runtimes.setRunning(rootId, false)
+                    if (rt.job === job) {
+                        rt.driving = false
+                        runtimes.setRunning(rootId, false)
+                    }
                 }
             }
             job.start()
         }
     }
+
+    /** The time a stopped objective had left: its deadline less the moment it was stored as stopped, at most [limitMs]. */
+    private fun remainingWhenStopped(objective: TaskRecord, limitMs: Long): Long =
+        objective.deadlineAt?.let { (it - objective.updatedAt).coerceIn(0, limitMs) } ?: limitMs
+
+    /** [task] after the app stopped while it ran: the run counts as an attempt; with none left, the task has failed. */
+    private fun interrupted(task: TaskRecord, maxAttempts: Int, now: Long): TaskRecord {
+        val times = (INTERRUPTIONS.find(task.error.orEmpty())?.groupValues?.get(1)?.toIntOrNull() ?: 0) + 1
+        val what = "Interrupted $times time(s): the app stopped while this was running"
+        return if (task.attempt + 1 >= maxAttempts) {
+            task.copy(status = TaskStatus.FAILED, error = "$what, and no attempts are left.", statusDetail = "$what, and no attempts are left.", finishedAt = now, updatedAt = now)
+        } else {
+            task.copy(status = TaskStatus.INTERRUPTED, attempt = task.attempt + 1, error = "$what.", statusDetail = INTERRUPTED, updatedAt = now)
+        }
+    }
+
+    private fun TaskRecord.isDelegated() = kind == TaskKind.WORK && delegationChain.isNotEmpty()
 
     /** Stops the objective's job and every task job under it, and waits until they have wound down. */
     private suspend fun stop(rt: ObjectiveRuntime) {
@@ -380,6 +456,7 @@ class DefaultOrchestrator(
         const val TASK_GONE = "That task no longer exists."
         const val CANCELLED_BY_OWNER = "Cancelled by the owner."
         const val INTERRUPTED = "Interrupted: the app stopped while this was running."
+        val INTERRUPTIONS = Regex("^Interrupted (\\d+) time")
         val RESUMABLE = setOf(TaskStatus.PAUSED, TaskStatus.INTERRUPTED)
         val RETRYABLE = setOf(TaskStatus.FAILED, TaskStatus.TIMED_OUT, TaskStatus.CANCELLED)
     }

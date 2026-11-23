@@ -134,13 +134,14 @@ class ReviewFlowTest {
 
     @Test
     fun `a result that cannot be reviewed within the task limit is used, says so, and the limit is reported`() = runTest {
-        val team = reviewed(verdict("revise", "x", "y"), settings = { copy(maxTasksPerObjective = 1) })
+        // The plan keeps a place for the first review; the revision's review would need a third.
+        val team = reviewed(verdict("revise", "x", "y"), settings = { copy(maxTasksPerObjective = 2) })
         val objective = team.start()
         team.settle()
         val work = team.work(objective.id).single()
         assertEquals(TaskStatus.COMPLETED, work.status)
-        assertTrue(work.statusDetail!!.contains("not reviewed: the objective has reached its limit of 1 tasks"), work.statusDetail)
-        assertTrue(team.reviews(objective.id).isEmpty())
+        assertTrue(work.statusDetail!!.contains("not reviewed: the objective has reached its limit of 2 tasks"), work.statusDetail)
+        assertEquals(1, team.reviews(objective.id).size)
         assertTrue(team.limitMessages(objective.id).single().body.contains("used without review"))
         assertEquals(Participant.System, team.limitMessages(objective.id).single().from)
     }

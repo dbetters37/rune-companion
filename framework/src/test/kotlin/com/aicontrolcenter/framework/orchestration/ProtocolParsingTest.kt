@@ -86,10 +86,11 @@ class ProtocolParsingTest {
     @Test
     fun `the simulator's plan for an objective is a valid plan matching the starter team's skills`() {
         val objective = TaskSamples.objective("Research this subject, compare available solutions, develop a plan, and organize the results into a document")
-        val brief = BriefWriter().plan(objective, emptyList(), "Director", maxTasks = 3, reviewResults = true)
+        // Five task places: three tasks, two of them reviewed (each review takes a place of its own).
+        val brief = BriefWriter().plan(objective, emptyList(), "Director", maxTasks = 5, reviewResults = true)
         val reply = SimulatedTeamwork.reply(ChatRequest(messages = listOf(ChatMessage.system("You are Director, a Director agent."), ChatMessage.user(brief))))!!
         assertTrue(reply.contains("\"simulated\":true"))
-        val plan = assertIs<PlanReading.Valid>(PlanParser.read(reply, 3)).plan
+        val plan = assertIs<PlanReading.Valid>(PlanParser.read(reply, 5, reviewsOn = true)).plan
         assertEquals(3, plan.tasks.size, "never more tasks than allowed")
         assertEquals(listOf(listOf("research", "fact-finding"), listOf("analysis", "comparison"), listOf("planning", "analysis")), plan.tasks.map { it.skills })
         assertEquals(listOf(false, true, true), plan.tasks.map { it.needsReview })

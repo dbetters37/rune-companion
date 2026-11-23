@@ -12,7 +12,6 @@ import com.aicontrolcenter.core.tasks.TaskKind
 import com.aicontrolcenter.core.tasks.TaskRecord
 import com.aicontrolcenter.core.tasks.TaskStatus
 import com.aicontrolcenter.framework.agents.RunLimits
-import com.aicontrolcenter.framework.orchestration.OrchestrationContext.Companion.countsAgainstLimit
 
 /**
  * Runs REVIEW tasks: a reviewer's check of a result, and the Director's arbitration when a
@@ -56,12 +55,14 @@ internal class ReviewSteps(private val ctx: OrchestrationContext, private val wo
         ctx.journal.taskChanged(started, if (kind == ReviewKind.REVIEW) "Review started" else "Arbitration started")
         val author = authorName(reviewed.assignee)
         val earlier = reviewed.reviews.map { it to authorName(it.reviewer) }
+        val budget = ctx.steps.briefBudget(ready)
         val brief = when (kind) {
             ReviewKind.REVIEW -> {
                 val plan = ctx.tasks.getTree(reviewed.rootId).filter { it.kind == TaskKind.WORK && it.delegationChain.isEmpty() }.sortedBy { it.order }
-                ctx.briefs.review(ReviewBrief(objective, reviewed, author, plan.indexOfFirst { it.id == reviewed.id } + 1, plan.size, earlier))
+                ctx.briefs.review(ReviewBrief(objective, reviewed, author, plan.indexOfFirst { it.id == reviewed.id } + 1, plan.size, earlier), budget)
             }
-            ReviewKind.ARBITRATION -> ctx.briefs.arbitration(ArbitrationBrief(objective, reviewed, author, earlier, review.instructions))
+            // Only the framework's own reason goes into the brief's text; what agents wrote is framed there.
+            ReviewKind.ARBITRATION -> ctx.briefs.arbitration(ArbitrationBrief(objective, reviewed, author, earlier, arbitrationWhy(review)), budget)
         }
         ctx.runtimes.started(ready.agent.id, started.id)
         val result = try {
@@ -126,9 +127,9 @@ internal class ReviewSteps(private val ctx: OrchestrationContext, private val wo
                 is ReviewStep.Arbitrate -> {
                     val objective = ctx.tasks.get(reviewed.rootId)
                     val director = objective?.assignee?.let { ctx.agents.get(it) }
-                    val count = ctx.tasks.getTree(reviewed.rootId).count { it.countsAgainstLimit() }
+                    val count = ctx.committedTasks(ctx.tasks.getTree(reviewed.rootId))
                     if (director != null && count < maxTasks) {
-                        arbitration = work.reviewTask(judged, director, ReviewKind.ARBITRATION, "Settle the review of \"${reviewed.title}\": ${step.why}", now)
+                        arbitration = work.reviewTask(judged, director, ReviewKind.ARBITRATION, ARBITRATION_PREFIX + step.why, now)
                         judged.copy(statusDetail = "Waiting for the Director's decision: ${step.why}")
                     } else {
                         arbitrationLimit = if (director == null) "the Director is not available to settle the review" else "the objective has reached its limit of $maxTasks tasks"
@@ -227,8 +228,17 @@ internal class ReviewSteps(private val ctx: OrchestrationContext, private val wo
 
     private suspend fun authorName(id: AgentId?): String = id?.let { ctx.agents.get(it)?.name } ?: "a former team member"
 
+    /** The framework's sentence on why the Director arbitrates; an arbitration stored before it was kept apart says it in general words. */
+    private fun arbitrationWhy(review: TaskRecord): String =
+        review.instructions.takeIf { it.startsWith(ARBITRATION_PREFIX) }?.removePrefix(ARBITRATION_PREFIX) ?: "the reviewer and the author did not agree."
+
     private fun verdictText(verdict: ReviewVerdict): String = buildString {
         append("Decision: ").append(verdict.decision.name.lowercase()).append(". ").append(verdict.summary)
         if (verdict.issues.isNotEmpty()) append('\n').append(verdict.issues.joinToString("\n") { "- $it" })
+    }
+
+    private companion object {
+        /** Opens the instructions of an arbitration; the framework's reason follows. */
+        const val ARBITRATION_PREFIX = "Settle the review that did not converge: "
     }
 }

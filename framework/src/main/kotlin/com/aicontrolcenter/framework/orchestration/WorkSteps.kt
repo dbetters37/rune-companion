@@ -14,9 +14,9 @@ import com.aicontrolcenter.core.tasks.TaskRecord
 import com.aicontrolcenter.core.tasks.TaskRequester
 import com.aicontrolcenter.core.tasks.TaskStatus
 import com.aicontrolcenter.framework.agents.RunLimits
+import com.aicontrolcenter.framework.agents.TaskCallBudget
 import com.aicontrolcenter.framework.memory.MemoryTools
 import com.aicontrolcenter.framework.orchestration.OrchestrationContext.Companion.WORKING
-import com.aicontrolcenter.framework.orchestration.OrchestrationContext.Companion.countsAgainstLimit
 
 /**
  * Runs WORK tasks: the planned ones the scheduler starts, and the delegated ones a teammate's
@@ -33,7 +33,11 @@ import com.aicontrolcenter.framework.orchestration.OrchestrationContext.Companio
  */
 internal class WorkSteps(private val ctx: OrchestrationContext) {
 
-    suspend fun run(rt: ObjectiveRuntime, taskId: TaskId) {
+    /**
+     * Runs one attempt of [taskId]. [notAfter] bounds it further than the task time limit: a
+     * delegated task gets no more time than the task that delegated it has left.
+     */
+    suspend fun run(rt: ObjectiveRuntime, taskId: TaskId, notAfter: Long? = null) {
         val queued = ctx.tasks.get(taskId) ?: return
         val objective = ctx.tasks.get(queued.rootId) ?: return
         val settings = ctx.settings.get()
@@ -48,10 +52,11 @@ internal class WorkSteps(private val ctx: OrchestrationContext) {
         val conversationId = queued.conversationId ?: ctx.transcripts.open(agent.id, "Task · ${queued.title}")
         if (queued.conversationId != null) ctx.transcripts.note(conversationId, restartNote(queued))
         val now = ctx.clock.now()
+        val timeoutMs = minOf(limits.taskTimeoutMs, ((notAfter ?: Long.MAX_VALUE) - now).coerceAtLeast(1))
         val task = ctx.change(rt, taskId, setOf(TaskStatus.QUEUED, TaskStatus.RUNNING)) {
             it.copy(
                 status = TaskStatus.RUNNING, assignee = agent.id, conversationId = conversationId,
-                startedAt = it.startedAt ?: now, finishedAt = null, deadlineAt = now + limits.taskTimeoutMs,
+                startedAt = it.startedAt ?: now, finishedAt = null, deadlineAt = now + timeoutMs,
                 statusDetail = "${agent.name} is working, ${ready.destination}.",
             )
         } ?: return
@@ -70,12 +75,15 @@ internal class WorkSteps(private val ctx: OrchestrationContext) {
                 previousFailure = task.error, feedback = feedback(task),
                 canAsk = TeamTools.ASK_ID in tools, canDelegate = TeamTools.DELEGATE_ID in tools,
             ),
+            ctx.steps.briefBudget(ready, tools),
         )
+        // Shared with the teammates' answers to this run's questions, which count against its limits.
+        val budget = TaskCallBudget().also { rt.callBudgets[task.id] = it }
         ctx.runtimes.started(agent.id, task.id)
         val result = try {
             ctx.steps.run(
-                ready, task, conversationId, brief, extraTools = tools,
-                limits = RunLimits(timeoutMs = limits.taskTimeoutMs),
+                ready, task, conversationId, brief, extraTools = tools, callBudget = budget,
+                limits = RunLimits(timeoutMs = timeoutMs),
                 onTool = { execution ->
                     if (execution.spec?.id == MemoryTools.SHARE_ID && execution.outcome.ok) {
                         // Shared into a knowledge space: every agent the owner lets read it can use it from now on.
@@ -84,6 +92,7 @@ internal class WorkSteps(private val ctx: OrchestrationContext) {
                 },
             )
         } finally {
+            rt.callBudgets.remove(task.id, budget)
             ctx.runtimes.ended(agent.id, task.id)
         }
         ctx.account(rt, task.id) { it.copy(usage = it.usage + result.usage) }
@@ -115,7 +124,8 @@ internal class WorkSteps(private val ctx: OrchestrationContext) {
             if (!wantsReview) return@withLockNonCancellable completed(withResult, "Completed by ${agent.name}.").also { ctx.tasks.upsert(it) }
             val tree = ctx.tasks.getTree(task.rootId)
             val needs = TaskNeeds(current.title, current.instructions)
-            val limitProblem = if (tree.count { it.countsAgainstLimit() } >= maxTasks) "the objective has reached its limit of $maxTasks tasks" else null
+            // The plan kept a place for this task's first review; later rounds need a free one.
+            val limitProblem = if (ctx.committedTasks(tree, current.id) >= maxTasks) "the objective has reached its limit of $maxTasks tasks" else null
             val selection = ctx.selector.forReview(needs, agent.id, ctx.directory.snapshot().agents, ctx.runtimes.loads())
             if (limitProblem == null && selection is Selection.Chosen) {
                 reviewer = selection.agent

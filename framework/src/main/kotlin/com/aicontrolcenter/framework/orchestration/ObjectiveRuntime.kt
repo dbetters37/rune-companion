@@ -2,6 +2,7 @@ package com.aicontrolcenter.framework.orchestration
 
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.TaskId
+import com.aicontrolcenter.framework.agents.TaskCallBudget
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,7 +23,11 @@ import java.util.concurrent.ConcurrentHashMap
  *    held while an agent runs.
  *  - [wake] tells the scheduler to look again: a task finished, the owner changed something.
  *  - [job] runs the objective; [taskJobs] are the jobs of its running tasks, by task id, so the
- *    owner can stop one.
+ *    owner can stop one. [driving] is true from the moment a job is started until it has decided,
+ *    with nothing left to do, to end; a command that needs the objective driven while it is true
+ *    sets [anotherPass], and the job looks again before it ends instead of starting a second one.
+ *  - [callBudgets] are the call budgets of the WORK runs going on, by task id, which the answers
+ *    to their questions are charged to.
  */
 internal class ObjectiveRuntime(val rootId: TaskId) {
     val lock = Mutex()
@@ -33,11 +38,20 @@ internal class ObjectiveRuntime(val rootId: TaskId) {
 
     val taskJobs = ConcurrentHashMap<TaskId, Job>()
 
+    val callBudgets = ConcurrentHashMap<TaskId, TaskCallBudget>()
+
+    /** Guarded by this runtime's monitor (synchronized), as is [anotherPass]. */
+    @Volatile
+    var driving: Boolean = false
+
+    @Volatile
+    var anotherPass: Boolean = false
+
     fun poke() {
         wake.trySend(Unit)
     }
 
-    val isDriven: Boolean get() = job?.isActive == true
+    val isDriven: Boolean get() = driving && job?.isActive == true
 }
 
 /** The runtimes of all objectives, and the live views derived from them. */

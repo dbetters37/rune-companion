@@ -56,6 +56,9 @@ internal object TeamGuards {
     fun taskLimit(tasksUnderObjective: Int, limits: ObjectiveLimits): String? =
         if (tasksUnderObjective + 1 > limits.maxTasks) "the objective already has $tasksUnderObjective tasks, the limit is ${limits.maxTasks}." else null
 
+    fun assistanceLimit(askedByTask: Int, max: Int = TeamDesk.MAX_ASKS_PER_TASK): String? =
+        if (askedByTask >= max) "this task has already asked its teammates $askedByTask questions, the limit for one task. Finish the task with what you have." else null
+
     fun messageLimit(messagesUnderObjective: Int, needed: Int, limits: ObjectiveLimits): String? =
         if (messagesUnderObjective + needed > limits.maxMessages) {
             "the objective already has $messagesUnderObjective messages, the limit is ${limits.maxMessages}."

@@ -47,14 +47,16 @@ internal class PlanningStep(private val ctx: OrchestrationContext) {
             RosterEntry(it.profile.name, it.profile.kind.label, it.profile.description, it.profile.skills.toList(), it.availability.isReady)
         }
         val reviewOn = objective.options?.reviewResults ?: true
-        var prompt = ctx.briefs.plan(planning, roster, ready.agent.name, limits.maxTasks, reviewOn)
+        var prompt = ctx.briefs.plan(planning, roster, ready.agent.name, limits.maxTasks, reviewOn, ctx.steps.briefBudget(ready))
         var history = emptyList<ChatMessage>()
         var problems = emptyList<String>()
         for (round in 0 until PLANNING_ROUNDS) {
+            // Planning is part of the objective's time: it never runs past the objective's deadline.
+            val left = ((planning.deadlineAt ?: Long.MAX_VALUE) - ctx.clock.now()).coerceAtLeast(1)
             ctx.runtimes.started(directorId, planning.id)
             val result = try {
                 ctx.steps.run(
-                    ready, planning, conversationId, prompt, history, json = true, limits = RunLimits(timeoutMs = limits.taskTimeoutMs),
+                    ready, planning, conversationId, prompt, history, json = true, limits = RunLimits(timeoutMs = minOf(limits.taskTimeoutMs, left)),
                     label = "Task: Planning · ${planning.title}", purpose = "the owner's objective and the team roster",
                 )
             } finally {
@@ -62,7 +64,7 @@ internal class PlanningStep(private val ctx: OrchestrationContext) {
             }
             ctx.account(rt, planning.id) { it.copy(usage = it.usage + result.usage) }
             problems = if (result.ok) {
-                when (val reading = PlanParser.read(result.text, limits.maxTasks)) {
+                when (val reading = PlanParser.read(result.text, limits.maxTasks, reviewOn)) {
                     is PlanReading.Valid -> return store(rt, planning, directorId, reading.plan, reviewOn)
                     is PlanReading.Invalid -> reading.problems
                 }
@@ -70,12 +72,12 @@ internal class PlanningStep(private val ctx: OrchestrationContext) {
                 listOf(result.failure ?: "The planning run did not produce an answer.")
             }
             if (round + 1 < PLANNING_ROUNDS) {
-                ctx.journal.warn(planning.rootId, planning, "Plan sent back to the Director", problems.joinToString(" "), directorId)
+                ctx.journal.warn(planning.rootId, planning, "Plan sent back to the Director", StoredText.capChars(problems.joinToString(" "), StoredText.MAX_REASON_CHARS), directorId)
                 history = history + ChatMessage.user(prompt) + result.produced
                 prompt = ctx.briefs.planCorrection(problems, limits.maxTasks)
             }
         }
-        return failObjective(rt, "The Director could not produce a usable plan. ${problems.joinToString(" ")}")
+        return failObjective(rt, StoredText.capChars("The Director could not produce a usable plan. ${problems.joinToString(" ")}", StoredText.MAX_REASON_CHARS))
     }
 
     private suspend fun store(rt: ObjectiveRuntime, objective: TaskRecord, directorId: AgentId, plan: ObjectivePlan, reviewOn: Boolean): Boolean {
@@ -129,7 +131,7 @@ internal class PlanningStep(private val ctx: OrchestrationContext) {
     }
 
     /** Fails the objective while it is still running; always returns false. */
-    private suspend fun failObjective(rt: ObjectiveRuntime, reason: String): Boolean {
+    suspend fun failObjective(rt: ObjectiveRuntime, reason: String): Boolean {
         val failed = ctx.change(rt, rt.rootId, setOf(TaskStatus.RUNNING)) {
             it.copy(status = TaskStatus.FAILED, error = reason, statusDetail = "Planning failed.", finishedAt = ctx.clock.now())
         } ?: return false

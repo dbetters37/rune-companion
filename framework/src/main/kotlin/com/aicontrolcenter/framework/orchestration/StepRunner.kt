@@ -17,6 +17,7 @@ import com.aicontrolcenter.framework.agents.AgentRunRequest
 import com.aicontrolcenter.framework.agents.AgentRunner
 import com.aicontrolcenter.framework.agents.RunEnd
 import com.aicontrolcenter.framework.agents.RunLimits
+import com.aicontrolcenter.framework.agents.TaskCallBudget
 import com.aicontrolcenter.framework.tools.ToolExecution
 
 /** Whether an agent can take a step now, with what it would run on. */
@@ -29,6 +30,8 @@ internal sealed interface Readiness {
         /** Its prompts are sent off this device. Shown on the task, so the owner sees where the work goes. */
         val leavesDevice: Boolean,
         val jsonCapable: Boolean,
+        /** The model's context window in tokens, when it states one. */
+        val contextWindow: Int? = null,
     ) : Readiness {
         /** Where this agent's work goes, in words for the task's status line. */
         val destination: String
@@ -84,6 +87,7 @@ internal class StepRunner(
                     providerName = provider?.name ?: "its provider",
                     leavesDevice = provider?.effectiveLocality?.leavesDevice ?: false,
                     jsonCapable = model.capabilities.jsonOutput,
+                    contextWindow = model.capabilities.contextWindow?.takeIf { it > 0 },
                 )
             }
         }
@@ -103,6 +107,8 @@ internal class StepRunner(
         purpose: String = "task brief and results of other agents",
         /** Called after every tool call of the run. */
         onTool: suspend (ToolExecution) -> Unit = {},
+        /** The task's call budget, shared with the runs made on its behalf; see [TaskCallBudget]. */
+        callBudget: TaskCallBudget? = null,
     ): StepResult {
         conversationId?.let { transcripts.user(it, prompt) }
         val request = AgentRunRequest(
@@ -110,7 +116,7 @@ internal class StepRunner(
             taskId = task.id, rootTaskId = task.rootId, purpose = purpose, conversationId = conversationId,
             delegationChain = task.delegationChain, extraToolIds = extraTools,
             // Only where the model supports it: the request asks, the briefs say it in words as well.
-            jsonOutput = json && ready.jsonCapable, limits = limits, activityLabel = label,
+            jsonOutput = json && ready.jsonCapable, limits = limits, activityLabel = label, callBudget = callBudget,
         )
         val recorder = conversationId?.let(transcripts::recorder)
         val listener = object : AgentRunListener {
@@ -143,6 +149,20 @@ internal class StepRunner(
         val limit = result.limitHit ?: failure?.takeIf { result.end == StepEnd.TIMED_OUT }
         limit?.let { journal.limitReached(task.rootId, task, "\"${task.title}\": $it") }
         return result
+    }
+
+    /**
+     * How many tokens a brief for [ready] may take: the model's context window (or
+     * [TextBudget.DEFAULT_CONTEXT_TOKENS] when it states none), less the room for the reply as the
+     * chat keeps it, the system prompt, the tool definitions and [history]; and of that four
+     * fifths, so tool results and the estimate's error still fit. Never more than
+     * [TextBudget.MAX_BRIEF_TOKENS]: the brief is also stored in the task's transcript.
+     */
+    fun briefBudget(ready: Readiness.Ready, extraTools: Set<ToolId> = emptySet(), history: List<ChatMessage> = emptyList()): Int {
+        val window = ready.contextWindow ?: TextBudget.DEFAULT_CONTEXT_TOKENS
+        val replyRoom = minOf(ready.agent.generation.maxOutputTokens ?: TextBudget.DEFAULT_REPLY_ROOM, window / 4)
+        val overhead = runner.estimatePromptTokens(AgentRunRequest(ready.agent, ready.modelId, history, extraToolIds = extraTools))
+        return ((window - replyRoom - overhead).toLong() * 4 / 5).coerceIn(TextBudget.MIN_BRIEF_TOKENS.toLong(), TextBudget.MAX_BRIEF_TOKENS.toLong()).toInt()
     }
 
     companion object {

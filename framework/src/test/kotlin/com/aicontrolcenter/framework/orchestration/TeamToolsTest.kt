@@ -74,7 +74,7 @@ class TeamToolsTest {
         assertEquals("Beta is cheapest.", response.body)
         val asked = team.script.seenBy(OrchestrationProtocol.ASK).single()
         assertEquals("Analyst", asked.agent)
-        assertTrue(asked.brief.contains("label=\"Question from Researcher\">\n${DataBlock.QUOTE}Which app is cheapest?"), asked.brief)
+        assertTrue(asked.brief.contains("label=\"Question from Researcher (task: Find apps)\">\n${DataBlock.QUOTE}Which app is cheapest?"), asked.brief)
         val researcherTools = team.script.seenBy(OrchestrationProtocol.TASK).first().request.tools.map { it.name }
         assertTrue("team_ask_agent" in researcherTools && "team_delegate" !in researcherTools, "offered as its delegation policy allows")
         assertEquals(1, work.usage.messagesSent)

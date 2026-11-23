@@ -54,7 +54,7 @@ internal class ObjectiveJournal(
     ): AgentMessage = withContext(NonCancellable) {
         val message = AgentMessage(
             id = ids.messageId(), rootId = rootId, taskId = task?.id, from = from, to = to, type = type,
-            body = body.trim().take(MAX_BODY), replyTo = replyTo, hop = hop, at = clock.now(),
+            body = StoredText.capChars(body.trim(), MAX_BODY), replyTo = replyTo, hop = hop, at = clock.now(),
         )
         messages.append(message)
         val about = task?.let { " · Task: ${it.title}" }.orEmpty()
@@ -80,7 +80,7 @@ internal class ObjectiveJournal(
         withContext(NonCancellable) {
             safely {
                 activity.record(
-                    ActivityType.TASK, "$title: ${task.title}", task.statusDetail ?: task.error.orEmpty(),
+                    ActivityType.TASK, "$title: ${task.title}", StoredText.capChars(task.statusDetail ?: task.error.orEmpty(), StoredText.MAX_REASON_CHARS),
                     severity = severity, agentId = task.assignee, taskId = task.id, rootTaskId = task.rootId,
                     data = data ?: buildJsonObject {
                         put("kind", task.kind.name)
@@ -101,7 +101,7 @@ internal class ObjectiveJournal(
         withContext(NonCancellable) {
             safely {
                 activity.record(
-                    ActivityType.TASK, "Limit reached", reason, severity = Severity.WARNING,
+                    ActivityType.TASK, "Limit reached", StoredText.capChars(reason, StoredText.MAX_REASON_CHARS), severity = Severity.WARNING,
                     agentId = task?.assignee, taskId = task?.id, rootTaskId = rootId,
                 )
             }
@@ -110,7 +110,7 @@ internal class ObjectiveJournal(
 
     suspend fun warn(rootId: TaskId, task: TaskRecord?, title: String, detail: String, agentId: AgentId? = task?.assignee) =
         withContext(NonCancellable) {
-            safely { activity.record(ActivityType.TASK, title, detail, Severity.WARNING, agentId, task?.id, rootId) }
+            safely { activity.record(ActivityType.TASK, title, StoredText.capChars(detail, StoredText.MAX_REASON_CHARS), Severity.WARNING, agentId, task?.id, rootId) }
         }
 
     suspend fun ownerAction(rootId: TaskId, task: TaskRecord?, title: String, detail: String = "") = withContext(NonCancellable) {
@@ -176,7 +176,7 @@ internal class ObjectiveJournal(
     }
 
     private companion object {
-        /** A message body is plain text for people to read; a body larger than this is cut. */
+        /** A message body is plain text for people to read; a body larger than this is cut, with a note (far below the store's limit). */
         const val MAX_BODY = 20_000
         const val MAX_LOGGED = 120
     }

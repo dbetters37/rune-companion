@@ -67,6 +67,20 @@ internal class OrchestrationContext(
         objectiveTimeoutMs = settings.objectiveTimeoutMinutes.coerceAtLeast(1) * MINUTE_MS,
     )
 
+    /**
+     * Task places used or kept under an objective: every WORK and REVIEW task, plus the place a
+     * valid plan keeps for the first review of each planned task marked for review that has not
+     * been reviewed yet (see [PlanParser.read]). The place kept for [except] is not counted: its
+     * review is about to use it.
+     */
+    fun committedTasks(tree: List<TaskRecord>, except: TaskId? = null): Int {
+        val reviewed = tree.filter { it.kind == TaskKind.REVIEW }.mapNotNull { it.parentId }.toSet()
+        val kept = tree.count {
+            it.kind == TaskKind.WORK && it.delegationChain.isEmpty() && it.needsReview && it.id != except && it.id !in reviewed && !it.status.isFinished
+        }
+        return tree.count { it.countsAgainstLimit() } + kept
+    }
+
     /** Who gave [task]: the agent that requested it, or the owner. */
     fun assigner(task: TaskRecord): Participant = when (val by = task.requestedBy) {
         is TaskRequester.Agent -> Participant.Agent(by.agentId)

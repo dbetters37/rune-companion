@@ -47,6 +47,12 @@ data class AgentRunRequest(
      * runner's own step ("Waiting for the model") is added after it. Null shows the step alone.
      */
     val activityLabel: String? = null,
+    /**
+     * The task's call budget, shared with the sub-runs made for it (a teammate answering one of
+     * its questions): what those used counts against this run's model and tool call limits
+     * before its next call. Null: the run counts only its own calls.
+     */
+    val callBudget: TaskCallBudget? = null,
 )
 
 /**
@@ -59,6 +65,53 @@ data class RunLimits(
     val maxToolCalls: Int? = null,
     val timeoutMs: Long? = null,
 )
+
+/**
+ * The model and tool calls one task's run may make, shared with the runs made on its behalf.
+ * The run sets the limits it works under and counts its own calls; a sub-run made for the task
+ * (a teammate answering its question) is given at most what is [remainingModelCalls] and
+ * [remainingToolCalls], and what it used is [charge]d here, so the task's limits hold for the
+ * task as a whole. Safe to use from several coroutines.
+ */
+class TaskCallBudget {
+    @Volatile
+    var maxModelCalls: Int = Int.MAX_VALUE
+        private set
+
+    @Volatile
+    var maxToolCalls: Int = Int.MAX_VALUE
+        private set
+
+    private val own = java.util.concurrent.atomic.AtomicIntegerArray(2)
+    private val charged = java.util.concurrent.atomic.AtomicIntegerArray(2)
+
+    /** Model calls used: the run's own and those charged by sub-runs. */
+    val modelCalls: Int get() = own[0] + charged[0]
+    val toolCalls: Int get() = own[1] + charged[1]
+    val chargedModelCalls: Int get() = charged[0]
+    val chargedToolCalls: Int get() = charged[1]
+    val remainingModelCalls: Int get() = (maxModelCalls - modelCalls).coerceAtLeast(0)
+    val remainingToolCalls: Int get() = (maxToolCalls - toolCalls).coerceAtLeast(0)
+
+    /** Adds what a sub-run for this task used. */
+    fun charge(modelCalls: Int, toolCalls: Int) {
+        charged.addAndGet(0, modelCalls.coerceAtLeast(0))
+        charged.addAndGet(1, toolCalls.coerceAtLeast(0))
+    }
+
+    internal fun limits(maxModelCalls: Int, maxToolCalls: Int) {
+        this.maxModelCalls = maxModelCalls
+        this.maxToolCalls = maxToolCalls
+    }
+
+    internal fun ownModelCall() {
+        own.incrementAndGet(0)
+    }
+
+    internal fun ownToolCall() {
+        own.incrementAndGet(1)
+    }
+}
 
 /** Why a run stopped. */
 enum class RunEnd {

@@ -1,5 +1,7 @@
 package com.aicontrolcenter.framework.orchestration
 
+import com.aicontrolcenter.core.TaskId
+import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.agents.AgentActivity
 import com.aicontrolcenter.core.agents.AgentProfile
 import com.aicontrolcenter.core.taskId
@@ -14,10 +16,14 @@ import com.aicontrolcenter.core.tasks.TaskUsage
 import com.aicontrolcenter.core.tools.ToolContext
 import com.aicontrolcenter.core.tools.ToolOutcome
 import com.aicontrolcenter.framework.agents.RunLimits
-import com.aicontrolcenter.framework.orchestration.OrchestrationContext.Companion.countsAgainstLimit
+import com.aicontrolcenter.framework.agents.TaskCallBudget
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * What the team tools do: an agent working on a task asks a teammate a question, or hands it
@@ -32,7 +38,13 @@ import kotlinx.coroutines.launch
  *
  * While the teammate works, the caller's task is WAITING_FOR_AGENT. A delegated task is a
  * stored WORK task under the caller's task, run here (not by the scheduler) with the same
- * attempts and time limit as any task; the owner can cancel it on its own.
+ * attempts as any task, and never past the time its delegating task has left; the owner can
+ * cancel it on its own. When the delegating task stops waiting for whatever reason, a delegated
+ * task that has not finished is ended with that reason, never left for nobody to run.
+ *
+ * A teammate's answer is part of the asking task's work: it runs within what is left of the
+ * task's model and tool call limits and is counted against them ([TaskCallBudget]), and a task
+ * may ask at most [MAX_ASKS_PER_TASK] questions.
  */
 internal class TeamDesk(private val ctx: OrchestrationContext, private val work: WorkSteps) {
 
@@ -60,7 +72,17 @@ internal class TeamDesk(private val ctx: OrchestrationContext, private val work:
         guard(caller, TeamGuards.cycle(chain, caller.agent.id, target))?.let { return it }
         guard(caller, TeamGuards.depth(chain, caller.limits))?.let { return it }
         guard(caller, TeamGuards.messageLimit(ctx.messages.count(caller.objective.id), 2, caller.limits))?.let { return it }
-        guard(caller, TeamGuards.repeated(ctx.messages.list(caller.objective.id), caller.agent.id, target.id, MessageType.ASSISTANCE_REQUEST, text, target.name))?.let { return it }
+        val history = ctx.messages.list(caller.objective.id)
+        val asked = history.count { it.taskId == caller.task.id && it.type == MessageType.ASSISTANCE_REQUEST && it.from == Participant.Agent(caller.agent.id) }
+        guardOnce(caller, history, TeamGuards.assistanceLimit(asked))?.let { return it }
+        guard(caller, TeamGuards.repeated(history, caller.agent.id, target.id, MessageType.ASSISTANCE_REQUEST, text, target.name))?.let { return it }
+        // The answer is part of the asking task's work: it runs within what the task has left of its own limits.
+        val budget = caller.rt.callBudgets[caller.task.id]
+        val modelCalls = minOf(ASK_MODEL_CALLS, budget?.remainingModelCalls ?: ASK_MODEL_CALLS)
+        val toolCalls = minOf(ASK_TOOL_CALLS, budget?.remainingToolCalls ?: ASK_TOOL_CALLS)
+        if (modelCalls < 1) {
+            guardOnce(caller, history, "this task has used all ${budget?.maxModelCalls} model calls it may make, its teammates' answers included. Finish the task with what you have.")?.let { return it }
+        }
         val ready = when (val readiness = ctx.steps.prepare(target.id)) {
             is Readiness.Ready -> readiness
             is Readiness.NotReady -> return ToolOutcome.failure("${target.name} cannot answer right now: ${readiness.reason}.")
@@ -73,14 +95,15 @@ internal class TeamDesk(private val ctx: OrchestrationContext, private val work:
             try {
                 ctx.steps.run(
                     ready, caller.task.copy(delegationChain = chain + caller.agent.id), conversationId = null,
-                    prompt = ctx.briefs.ask(caller.agent.name, caller.task, text),
-                    limits = RunLimits(maxModelCalls = ASK_MODEL_CALLS, maxToolCalls = ASK_TOOL_CALLS, timeoutMs = minOf(ASK_TIMEOUT_MS, remaining)),
+                    prompt = ctx.briefs.ask(caller.agent.name, caller.task, text, ctx.steps.briefBudget(ready)),
+                    limits = RunLimits(maxModelCalls = modelCalls, maxToolCalls = toolCalls, timeoutMs = minOf(ASK_TIMEOUT_MS, remaining)),
                     label = "Task: ${caller.task.title} (helping ${caller.agent.name})", purpose = "a teammate's question",
                 )
             } finally {
                 ctx.runtimes.ended(target.id, caller.task.id)
             }
         }
+        budget?.charge(answer.usage.modelCalls, answer.usage.toolCalls)
         ctx.account(caller.rt, caller.task.id) { it.copy(usage = it.usage + answer.usage + TaskUsage(messagesSent = 1)) }
         return if (answer.ok) {
             ctx.journal.send(caller.objective.id, caller.task, Participant.Agent(target.id), Participant.Agent(caller.agent.id), MessageType.ASSISTANCE_RESPONSE, answer.text, hop, request.id)
@@ -110,7 +133,7 @@ internal class TeamDesk(private val ctx: OrchestrationContext, private val work:
         guard(caller, TeamGuards.cycle(chain, caller.agent.id, target))?.let { return it }
         guard(caller, TeamGuards.depth(chain, caller.limits))?.let { return it }
         guard(caller, TeamGuards.policyDepth(newChain, profiles))?.let { return it }
-        guard(caller, TeamGuards.taskLimit(ctx.tasks.getTree(caller.objective.id).count { it.countsAgainstLimit() }, caller.limits))?.let { return it }
+        guard(caller, TeamGuards.taskLimit(ctx.committedTasks(ctx.tasks.getTree(caller.objective.id)), caller.limits))?.let { return it }
         guard(caller, TeamGuards.messageLimit(ctx.messages.count(caller.objective.id), 2, caller.limits))?.let { return it }
         val body = "$name\n$what"
         guard(caller, TeamGuards.repeated(ctx.messages.list(caller.objective.id), caller.agent.id, target.id, MessageType.DELEGATION, body, target.name))?.let { return it }
@@ -131,17 +154,32 @@ internal class TeamDesk(private val ctx: OrchestrationContext, private val work:
         if (!stored) return ToolOutcome.failure("The task was stopped before the work could be delegated.")
         ctx.journal.taskChanged(child, "Task delegated")
         ctx.journal.send(caller.objective.id, child, Participant.Agent(caller.agent.id), Participant.Agent(target.id), MessageType.DELEGATION, body, newChain.size)
-        waitingFor(caller, target) {
-            coroutineScope {
-                while (ctx.tasks.get(child.id)?.status == TaskStatus.QUEUED) {
-                    val job = launch(start = CoroutineStart.LAZY) { work.run(caller.rt, child.id) }
-                    caller.rt.taskJobs[child.id] = job
-                    job.invokeOnCompletion { caller.rt.taskJobs.remove(child.id, job) }
-                    job.start()
-                    job.join()
-                    if (job.isCancelled) break
+        // The child gets no more time than its delegating task has left, attempts included.
+        val notAfter = ctx.tasks.get(caller.task.id)?.deadlineAt ?: caller.task.deadlineAt
+        var ranOutOfTime = false
+        try {
+            waitingFor(caller, target) {
+                coroutineScope {
+                    while (ctx.tasks.get(child.id)?.status == TaskStatus.QUEUED) {
+                        if (notAfter != null && ctx.clock.now() >= notAfter) {
+                            ranOutOfTime = true
+                            break
+                        }
+                        val job = launch(start = CoroutineStart.LAZY) { work.run(caller.rt, child.id, notAfter) }
+                        caller.rt.taskJobs[child.id] = job
+                        job.invokeOnCompletion { caller.rt.taskJobs.remove(child.id, job) }
+                        job.start()
+                        job.join()
+                        if (job.isCancelled) break
+                    }
                 }
             }
+        } catch (e: CancellationException) {
+            if (generateSequence<Throwable>(e) { it.cause }.any { it is TimeoutCancellationException }) ranOutOfTime = true
+            throw e
+        } finally {
+            // Whatever stopped the delegating task, its child must not be left unfinished with nobody to run it.
+            withContext(NonCancellable) { settleChild(caller.rt, child.id, ranOutOfTime) }
         }
         ctx.account(caller.rt, caller.task.id) { it.copy(usage = it.usage + TaskUsage(messagesSent = 1)) }
         val final = ctx.tasks.get(child.id) ?: return ToolOutcome.failure("The delegated task no longer exists.")
@@ -150,6 +188,36 @@ internal class TeamDesk(private val ctx: OrchestrationContext, private val work:
             TaskStatus.CANCELLED -> ToolOutcome.failure("The delegated task \"${final.title}\" was cancelled${final.error?.let { ": $it" } ?: "."} Continue without it.")
             else -> ToolOutcome.failure("The delegated task \"${final.title}\" did not complete: ${FinalDocument.whyNot(final)} Continue without it or do that part yourself.")
         }
+    }
+
+    /**
+     * Ends a delegated task that is still unfinished once its delegating task's wait is over: it
+     * is TIMED_OUT when that task ran out of time, otherwise CANCELLED, and says that its
+     * delegating task stopped. A child the owner has just paused (with its objective, or its
+     * delegating task) stays as it is: resuming decides what happens to it.
+     */
+    private suspend fun settleChild(rt: ObjectiveRuntime, childId: TaskId, ranOutOfTime: Boolean) {
+        val settled = rt.lock.withLockNonCancellable {
+            val child = ctx.tasks.get(childId)?.takeIf { !it.status.isFinished } ?: return@withLockNonCancellable null
+            val parent = child.parentId?.let { ctx.tasks.get(it) }
+            val objective = ctx.tasks.get(child.rootId)
+            if (child.status == TaskStatus.PAUSED || parent?.status == TaskStatus.PAUSED || objective?.status == TaskStatus.PAUSED) return@withLockNonCancellable null
+            val why = when {
+                ranOutOfTime -> "it ran out of time"
+                parent == null -> "it no longer exists"
+                parent.status.isFinished -> FinalDocument.whyNot(parent).trimEnd('.')
+                else -> "it was stopped"
+            }
+            val reason = "Its delegating task stopped: $why."
+            val now = ctx.clock.now()
+            child.copy(
+                status = if (ranOutOfTime) TaskStatus.TIMED_OUT else TaskStatus.CANCELLED, error = reason, statusDetail = reason,
+                finishedAt = now, updatedAt = now,
+            ).also { ctx.tasks.upsert(it) }
+        } ?: return
+        rt.taskJobs[childId]?.cancel()
+        ctx.journal.taskChanged(settled, if (settled.status == TaskStatus.TIMED_OUT) "Task timed out" else "Task cancelled", Severity.WARNING)
+        if (settled.startedAt != null) ctx.journal.countFinished(settled)
     }
 
     /** The caller's task and objective when a team tool may be used now, or the refusal. */
@@ -166,6 +234,14 @@ internal class TeamDesk(private val ctx: OrchestrationContext, private val work:
     private suspend fun guard(caller: Caller, refusal: String?): ToolOutcome? {
         refusal ?: return null
         ctx.journal.limitReached(caller.objective.id, caller.task, "${caller.agent.name} was refused: $refusal")
+        return ToolOutcome.failure("Refused: $refusal")
+    }
+
+    /** As [guard], but the owner is told only once per task: a model that keeps asking does not fill the objective's messages. */
+    private suspend fun guardOnce(caller: Caller, history: List<com.aicontrolcenter.core.tasks.AgentMessage>, refusal: String?): ToolOutcome? {
+        refusal ?: return null
+        val reported = "Limit reached: ${caller.agent.name} was refused: $refusal"
+        if (history.none { it.taskId == caller.task.id && it.type == MessageType.STATUS && it.body == reported }) return guard(caller, refusal)
         return ToolOutcome.failure("Refused: $refusal")
     }
 
@@ -198,6 +274,9 @@ internal class TeamDesk(private val ctx: OrchestrationContext, private val work:
         const val ASK_MODEL_CALLS = 4
         const val ASK_TOOL_CALLS = 4
         const val ASK_TIMEOUT_MS = 5 * 60_000L
+
+        /** Questions one task may ask its teammates, over all its attempts. */
+        const val MAX_ASKS_PER_TASK = 5
         private const val MAX_NAME_ECHO = 60
     }
 }
