@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Shown in Android's accessibility settings. -->
+    <string name="operator_a11y_label">AI Control Center operator</string>
+    <string name="operator_a11y_summary">Lets your agents read and operate the apps you authorise</string>
+    <string name="operator_a11y_description">Lets AI Control Center agents read the screen of the apps you authorise in Tools › Screen control and tap, type and scroll there, one action at a time. Consequential actions (send, buy, delete…) wait for your approval. A banner shows while an agent operates, with a Stop button. Agents never operate Android settings, installers, permission screens, the lock screen, this app, password fields or views apps mark as sensitive.</string>
+
+    <!-- The banner drawn over other apps while an agent operates them. -->
+    <string name="operator_overlay_stop">Stop</string>
+    <string name="operator_overlay_stop_description">Stop the agents operating the screen</string>
+</resources>

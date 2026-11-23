@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The screen operator's accessibility service. What it asks for, and why:
+    - canRetrieveWindowContent, flagRetrieveInteractiveWindows: read the window in front and check
+      which app and window type it is before anything is read or done;
+    - flagReportViewIds: view ids such as "com.example:id/send" help classify consequential controls;
+    - flagIncludeNotImportantViews: rows whose text lives in children an app marked unimportant;
+    - canTakeScreenshot (Android 11+): the screen.screenshot tool, of an authorised app's window only.
+    Deliberately not asked for: canPerformGestures (actions are node actions, never taps at
+    coordinates), canRequestFilterKeyEvents / flagRequestFilterKeyEvents (no key logging), and
+    notification events. isAccessibilityTool is false because this is not an assistive
+    technology; Android therefore hides views marked sensitive from it.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/operator_a11y_description"
+    android:summary="@string/operator_a11y_summary"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeWindowsChanged|typeViewClicked|typeViewFocused|typeViewTextChanged|typeViewScrolled"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagReportViewIds|flagIncludeNotImportantViews"
+    android:notificationTimeout="100"
+    android:canRetrieveWindowContent="true"
+    android:canTakeScreenshot="true"
+    android:isAccessibilityTool="false" />
