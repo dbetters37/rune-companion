@@ -291,3 +291,6 @@ internal const val PHONE = "w411dp-h891dp-xhdpi"
 
 /** A small tablet or an unfolded phone: wide enough for the navigation rail and two panes. */
 internal const val WIDE = "w840dp-h900dp-xhdpi"
+
+/** The narrowest common phone width (many Samsung models). */
+internal const val NARROW = "w360dp-h780dp-xhdpi"

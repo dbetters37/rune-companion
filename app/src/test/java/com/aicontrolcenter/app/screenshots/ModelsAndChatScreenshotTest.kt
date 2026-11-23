@@ -1,5 +1,7 @@
 package com.aicontrolcenter.app.screenshots
 
+import com.aicontrolcenter.app.testing.populatePhaseOne
+import com.aicontrolcenter.framework.llm.Simulator
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onRoot
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -213,6 +215,17 @@ class ModelsAndChatScreenshotTest {
         shoot("p2_conversations_empty")
         robot.tap("New conversation")
         shoot("p2_chat_1_new")
+    }
+
+    @Test
+    @Config(qualifiers = NARROW)
+    fun chatOnANarrowPhone() {
+        app {
+            populatePhaseOne()
+            graph.providerManager.ensureBuiltIns()
+            graph.agentManager.assignModel(agentNamed("Researcher").profile.id, Simulator.MODEL_ID)
+        }.openSection("Agents").tapItemContaining("Investigates subjects").tap("Chat").tap("New conversation")
+        shoot("p2_chat_narrow_simulator")
     }
 
     private fun chatTranscript(dark: Boolean): AppRobot = app(dark) {

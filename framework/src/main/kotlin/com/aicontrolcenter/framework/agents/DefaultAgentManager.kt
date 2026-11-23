@@ -196,11 +196,13 @@ class DefaultAgentManager(
     }
 
     override suspend fun ensureDefaults() = mutex.withLock {
-        if (settings.get().seedVersion >= SEED_VERSION) return@withLock
-        // Resumable: an interrupted first run continues with the templates that are still
-        // missing, and an owner who already has agents of their own is left alone.
+        val before = settings.get().seedVersion
+        if (before >= SEED_VERSION) return@withLock
+        // The starter team is created on the first run only. Resumable: an interrupted first run
+        // continues with the templates that are still missing. An owner who already has agents of
+        // their own is left alone, and a later version never brings back agents the owner deleted.
         val existing = agents.getAll()
-        val seedable = existing.isEmpty() || existing.all { it.templateId in starterTeam }
+        val seedable = before == 0 && (existing.isEmpty() || existing.all { it.templateId in starterTeam })
         if (seedable) {
             withContext(NonCancellable) {
                 var created = 0
@@ -218,11 +220,37 @@ class DefaultAgentManager(
                 }
             }
         }
+        if (before in 1 until TOOLS_SEED_VERSION) giveTemplateToolsToEarlierAgents()
         val current = settings.get()
         val director = current.directorAgentId?.let { agents.get(it) }
             ?: agents.getAll().firstOrNull { it.kind == AgentKind.DIRECTOR }
         settings.update { it.copy(seedVersion = SEED_VERSION, directorAgentId = director?.id) }
         Unit
+    }
+
+    /**
+     * Version 2 of the starter content added the built-in information tools to the templates.
+     * Agents created from a template before then get the template's tools too, unless the owner
+     * has already chosen tools for them. Those tools only read information (the date and time,
+     * the list of agents); the owner can switch them off per agent.
+     */
+    private suspend fun giveTemplateToolsToEarlierAgents() = withContext(NonCancellable) {
+        var updated = 0
+        for (agent in agents.getAll()) {
+            if (agent.toolIds.isNotEmpty()) continue
+            val tools = templates.firstOrNull { it.id == agent.templateId }?.draft?.toolIds.orEmpty()
+            if (tools.isEmpty()) continue
+            agents.upsert(agent.copy(toolIds = tools, updatedAt = clock.now()))
+            updated++
+        }
+        if (updated > 0) {
+            val count = if (updated == 1) "1 agent" else "$updated agents"
+            activity.record(
+                ActivityType.SYSTEM, "Information tools switched on",
+                "$count from the starter templates can now read the date and time and the list of agents. " +
+                    "These tools only read information; switch them off in each agent's settings.",
+            )
+        }
     }
 
     /** One key for "the same name": trimmed and case-folded the same way everywhere. */
@@ -268,6 +296,9 @@ class DefaultAgentManager(
         const val MAX_DELEGATION_DEPTH = 10
 
         /** Bump when the built-in starter content changes in a way existing installs should receive. */
-        const val SEED_VERSION = 1
+        const val SEED_VERSION = 2
+
+        /** The starter-content version that gave template agents the built-in information tools. */
+        private const val TOOLS_SEED_VERSION = 2
     }
 }

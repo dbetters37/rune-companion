@@ -526,7 +526,8 @@ internal fun DestinationLine(destination: DestinationUi?) {
         horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
     ) {
         Icon(destination.locality.icon, contentDescription = null, tint = color, modifier = Modifier.size(20.dp))
-        Column(Modifier.weight(1f)) {
+        // Everything stacks in one column, so the line stays readable on narrow (360 dp) phones.
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
                 destination.locality.destinationPhrase.replaceFirstChar(Char::uppercase),
                 style = MaterialTheme.typography.labelLarge,
@@ -539,11 +540,11 @@ internal fun DestinationLine(destination: DestinationUi?) {
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (destination.isSimulator) TintedChip(SIMULATOR_LABEL, appColors.attention)
         }
-        if (destination.isSimulator) TintedChip(SIMULATOR_LABEL, appColors.attention)
     }
 }
 

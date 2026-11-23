@@ -48,6 +48,37 @@ class AgentManagerTest {
     }
 
     @Test
+    fun `an install upgraded from the first version gets the information tools but not its deleted agents back`() = runTest {
+        // What a version-1 install looks like: the starter team without tools, one agent deleted,
+        // one agent given tools by its owner, one created by hand.
+        for (templateId in AgentTemplates.starterTeam) {
+            if (templateId == AgentTemplates.WRITER) continue
+            val draft = AgentTemplates.byId(templateId)!!.draft
+            manager.create(draft.copy(toolIds = emptySet()))
+        }
+        val chosen = manager.create(AgentTemplates.byId(AgentTemplates.CODER)!!.draft.copy(toolIds = setOf(ToolId("team.list_agents"))))
+        val handMade = manager.create(AgentDraft(name = "Mine"))
+        world.settings.update { it.copy(seedVersion = 1) }
+
+        manager.ensureDefaults()
+
+        val after = world.agents.getAll()
+        assertTrue(after.none { it.name == "Writer" }, "a deleted starter agent stays deleted")
+        val templateTools = AgentTemplates.byId(AgentTemplates.RESEARCHER)!!.draft.toolIds
+        assertTrue(templateTools.isNotEmpty())
+        assertEquals(templateTools, after.single { it.name == "Researcher" }.toolIds)
+        assertEquals(setOf(ToolId("team.list_agents")), after.single { it.id == chosen.id }.toolIds, "the owner's choice is kept")
+        assertTrue(after.single { it.id == handMade.id }.toolIds.isEmpty(), "an agent not made from a template is left alone")
+        assertEquals(DefaultAgentManager.SEED_VERSION, world.settings.get().seedVersion)
+        assertEquals("Information tools switched on", world.log.all.last().title)
+        assertTrue("5 agents" in world.log.all.last().detail, world.log.all.last().detail)
+
+        val events = world.log.all.size
+        manager.ensureDefaults()
+        assertEquals(events, world.log.all.size, "the upgrade runs once")
+    }
+
+    @Test
     fun `seeding leaves an existing team alone but still designates its director`() = runTest {
         val mine = manager.create(AgentDraft(name = "Boss", kind = AgentKind.DIRECTOR))
         manager.ensureDefaults()
