@@ -26,6 +26,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import com.aicontrolcenter.app.ui.components.AppCard
 import com.aicontrolcenter.app.ui.components.AppTextField
 import com.aicontrolcenter.app.ui.components.InfoBanner
+import com.aicontrolcenter.app.ui.components.SIMULATOR_LABEL
+import com.aicontrolcenter.app.ui.components.icon
+import com.aicontrolcenter.app.ui.components.label
+import com.aicontrolcenter.app.ui.theme.StatusTone
+import com.aicontrolcenter.core.tools.RiskLevel
 import com.aicontrolcenter.app.ui.components.RowDivider
 import com.aicontrolcenter.app.ui.components.SectionHeader
 import com.aicontrolcenter.app.ui.components.StepperRow
@@ -50,13 +55,16 @@ internal fun ModelEditor(state: AgentEditorUiState, actions: AgentEditorActions)
                 if (state.models.isEmpty()) {
                     InfoBanner(
                         title = "No models are registered yet",
-                        text = "A model is reached through a provider, and connecting providers is the next stage of this " +
-                            "build. Until then an agent can be fully configured but cannot run.",
+                        text = "A model is reached through a provider. Add one under Models, Providers; until then this agent " +
+                            "can be fully configured but cannot run.",
                     )
                 }
                 val selected = state.model(draft.modelId)
                 when {
-                    selected != null -> ModelOptionRow(selected, label = "Primary model")
+                    selected != null -> {
+                        ModelOptionRow(selected, label = "Primary model")
+                        ModelWarning(selected)
+                    }
                     draft.modelId != null -> Text(
                         "The assigned model is no longer registered. Choose another one.",
                         style = MaterialTheme.typography.bodyMedium,
@@ -97,7 +105,7 @@ internal fun ModelEditor(state: AgentEditorUiState, actions: AgentEditorActions)
                     )
                     draft.fallbackModelIds.forEachIndexed { index, id ->
                         val option = state.model(id)
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(verticalAlignment = Alignment.Top) {
                             Column(Modifier.weight(1f)) {
                                 if (option != null) {
                                     ModelOptionRow(option, label = "Fallback ${index + 1}")
@@ -146,6 +154,65 @@ internal fun ModelEditor(state: AgentEditorUiState, actions: AgentEditorActions)
         null -> Unit
     }
 }
+
+/** Says plainly what choosing [model] means for the owner's data, or that it is not a real model. */
+@Composable
+private fun ModelWarning(model: ModelOptionUi) {
+    val locality = model.locality
+    when {
+        model.isSimulator -> InfoBanner(
+            title = SIMULATOR_LABEL,
+            text = "Replies are scripted and labelled as simulated. Use it to try this agent and its tools, then choose a real model.",
+            tone = StatusTone.ATTENTION,
+        )
+        locality != null && locality.leavesDevice -> InfoBanner(
+            title = "Leaves this device",
+            text = "What this agent is given, including your messages, is sent to ${model.providerName} " +
+                "(${locality.label.lowercase()}). Local-only mode blocks it.",
+            tone = StatusTone.ATTENTION,
+            icon = locality.icon,
+        )
+    }
+}
+
+/** The tools this agent may use. Each switch only makes a tool available; the permission rules still apply to every call. */
+@Composable
+internal fun ToolsEditor(state: AgentEditorUiState, actions: AgentEditorActions) {
+    Column {
+        SectionHeader("Tools")
+        AppCard {
+            Column {
+                Text(
+                    "Only safe information tools exist so far: they read facts and change nothing. Tools that act on this phone " +
+                        "arrive in a later version, with their own permissions.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = Spacing.sm),
+                )
+                if (state.tools.isEmpty()) {
+                    Text("No tools are registered.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                state.tools.forEachIndexed { index, tool ->
+                    if (index > 0) RowDivider()
+                    SwitchRow(
+                        title = tool.title,
+                        description = "${tool.risk.label}. ${tool.description}",
+                        checked = tool.id in state.draft.toolIds,
+                        onCheckedChange = { on -> actions.onSetTool(tool.id, on) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** How much a tool can do, in words. */
+internal val RiskLevel.label: String
+    get() = when (this) {
+        RiskLevel.SAFE -> "Safe: reads only"
+        RiskLevel.MODIFYING -> "Changes data you can undo"
+        RiskLevel.CONSEQUENTIAL -> "Consequential: always asks you first"
+    }
 
 @Composable
 internal fun GenerationEditor(state: AgentEditorUiState, actions: AgentEditorActions) {

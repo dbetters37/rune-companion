@@ -6,6 +6,11 @@ import androidx.lifecycle.viewModelScope
 import com.aicontrolcenter.app.ui.components.UserMessage
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ModelId
+import com.aicontrolcenter.core.ToolId
+import com.aicontrolcenter.app.ui.models.isSimulator
+import com.aicontrolcenter.core.registry.ModelStatus
+import com.aicontrolcenter.core.tools.RiskLevel
+import com.aicontrolcenter.core.tools.ToolSpec
 import com.aicontrolcenter.core.agents.AgentDraft
 import com.aicontrolcenter.core.agents.AgentField
 import com.aicontrolcenter.core.agents.AgentManager
@@ -34,6 +39,18 @@ data class ModelOptionUi(
     val locality: Locality?,
     /** Disabled or unavailable models stay selectable (the owner may be fixing them) but are marked. */
     val note: String? = null,
+    val isSimulator: Boolean = false,
+)
+
+/** A registered tool as the editor offers it. */
+@Immutable
+data class ToolOptionUi(
+    val id: ToolId,
+    val title: String,
+    val description: String,
+    val risk: RiskLevel,
+    /** True when calling it sends information off the device; such tools are blocked in local-only mode. */
+    val sendsDataOffDevice: Boolean,
 )
 
 @Immutable
@@ -48,6 +65,7 @@ data class AgentEditorUiState(
     val isDirty: Boolean = false,
     val isSaving: Boolean = false,
     val models: List<ModelOptionUi> = emptyList(),
+    val tools: List<ToolOptionUi> = emptyList(),
     /** Set once after a successful save; the route navigates and calls back to clear it. */
     val savedAgentId: AgentId? = null,
     val message: UserMessage? = null,
@@ -84,9 +102,15 @@ class AgentEditorViewModel(
     private val editingId: AgentId?,
     private val templateId: String?,
     private val draftStore: DraftStore = DraftStore.None,
+    tools: List<ToolSpec> = emptyList(),
 ) : ViewModel() {
 
-    private val state = MutableStateFlow(AgentEditorUiState(isNew = editingId == null))
+    private val state = MutableStateFlow(
+        AgentEditorUiState(
+            isNew = editingId == null,
+            tools = tools.sortedBy { it.title }.map { ToolOptionUi(it.id, it.title, it.description, it.risk, it.sendsDataOffDevice) },
+        ),
+    )
     val uiState: StateFlow<AgentEditorUiState> = state.asStateFlow()
 
     private var original: AgentDraft? = null
@@ -108,8 +132,10 @@ class AgentEditorViewModel(
                             !model.enabled -> "Disabled"
                             provider == null -> "Provider missing"
                             !provider.enabled -> "Provider disabled"
+                            model.status == ModelStatus.UNAVAILABLE -> "No longer listed"
                             else -> null
                         },
+                        isSimulator = model.isSimulator,
                     )
                 }
                 state.update { it.copy(models = options) }
@@ -178,6 +204,9 @@ class AgentEditorViewModel(
     }
 
     fun removeFallback(id: ModelId) = edit { it.copy(fallbackModelIds = it.fallbackModelIds - id) }
+
+    /** Switches a tool on or off for this agent. Using it still needs the matching permission. */
+    fun setTool(id: ToolId, enabled: Boolean) = edit { if (enabled) it.copy(toolIds = it.toolIds + id) else it.copy(toolIds = it.toolIds - id) }
 
     /** Null means "use the model's own default". Values are kept to one decimal place. */
     fun setTemperature(value: Double?) = edit {

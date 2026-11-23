@@ -38,6 +38,7 @@ import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ModelId
+import com.aicontrolcenter.core.ToolId
 import com.aicontrolcenter.core.agents.AgentDraft
 
 /** Everything the editor screen can ask for. Bundled so the screen's signature stays readable. */
@@ -50,6 +51,7 @@ class AgentEditorActions(
     val onSetModel: (ModelId?) -> Unit,
     val onAddFallback: (ModelId) -> Unit,
     val onRemoveFallback: (ModelId) -> Unit,
+    val onSetTool: (ToolId, Boolean) -> Unit,
     val onSetTemperature: (Double?) -> Unit,
     val onSetMaxOutputTokens: (String) -> Unit,
     val onSave: () -> Unit,
@@ -84,6 +86,7 @@ fun AgentEditorRoute(
             editingId = agentId,
             templateId = templateId,
             draftStore = SavedStateDraftStore(createSavedStateHandle()),
+            tools = graph.toolRegistry.all().map { it.spec },
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -102,6 +105,7 @@ fun AgentEditorRoute(
         onSetModel = viewModel::setModel,
         onAddFallback = viewModel::addFallback,
         onRemoveFallback = viewModel::removeFallback,
+        onSetTool = viewModel::setTool,
         onSetTemperature = viewModel::setTemperature,
         onSetMaxOutputTokens = viewModel::setMaxOutputTokensText,
         onSave = viewModel::save,
@@ -154,6 +158,7 @@ fun AgentEditorScreen(state: AgentEditorUiState, actions: AgentEditorActions) {
                 InstructionsEditor(state, actions)
                 ResponsibilitiesAndSkillsEditor(state, actions)
                 ModelEditor(state, actions)
+                ToolsEditor(state, actions)
                 GenerationEditor(state, actions)
                 MemoryEditor(state, actions)
                 DelegationEditor(state, actions)

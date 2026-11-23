@@ -2,6 +2,8 @@ package com.aicontrolcenter.app.ui.agents
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -22,28 +24,30 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.aicontrolcenter.app.ui.components.SIMULATOR_LABEL
 import com.aicontrolcenter.app.ui.components.TintedChip
 import com.aicontrolcenter.app.ui.components.icon
 import com.aicontrolcenter.app.ui.components.label
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.ModelChip
+import com.aicontrolcenter.app.ui.icons.Sparkle
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.appColors
 import com.aicontrolcenter.core.ModelId
 
 /** A model with its provider and where prompts sent to it would go. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun ModelOptionRow(option: ModelOptionUi, modifier: Modifier = Modifier, label: String? = null) {
     Row(
         modifier = modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Spacing.md),
     ) {
         Icon(
-            AppIcons.ModelChip,
+            if (option.isSimulator) AppIcons.Sparkle else AppIcons.ModelChip,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.secondary,
-            modifier = Modifier.size(22.dp),
+            modifier = Modifier.padding(top = 2.dp).size(22.dp),
         )
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             if (label != null) {
@@ -53,7 +57,7 @@ internal fun ModelOptionRow(option: ModelOptionUi, modifier: Modifier = Modifier
                 option.name,
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
@@ -63,8 +67,15 @@ internal fun ModelOptionRow(option: ModelOptionUi, modifier: Modifier = Modifier
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            FlowRow(
+                modifier = Modifier.padding(top = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                option.locality?.let { TintedChip(it.label, appColors.locality(it), icon = it.icon) }
+                if (option.isSimulator) TintedChip(SIMULATOR_LABEL, appColors.attention)
+            }
         }
-        option.locality?.let { TintedChip(it.label, appColors.locality(it), icon = it.icon) }
     }
 }
 
