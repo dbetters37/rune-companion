@@ -15,9 +15,12 @@ import com.aicontrolcenter.core.llm.ModelGateway
 import com.aicontrolcenter.core.llm.TokenUsage
 import com.aicontrolcenter.core.llm.ToolCallRequest
 import com.aicontrolcenter.core.llm.ToolDefinition
+import com.aicontrolcenter.core.operator.OwnerRequest
+import com.aicontrolcenter.core.operator.ScreenOperator
 import com.aicontrolcenter.core.registry.AgentRepository
 import com.aicontrolcenter.core.settings.FrameworkSettings
 import com.aicontrolcenter.core.settings.SettingsRepository
+import com.aicontrolcenter.core.tasks.withPausableTimeout
 import com.aicontrolcenter.core.tools.ToolContext
 import com.aicontrolcenter.core.tools.ToolRegistry
 import com.aicontrolcenter.core.tools.ToolSpec
@@ -25,10 +28,11 @@ import com.aicontrolcenter.framework.llm.RecalledMemoriesBlock
 import com.aicontrolcenter.framework.llm.TokenEstimator
 import com.aicontrolcenter.framework.memory.AutoRecall
 import com.aicontrolcenter.framework.memory.MemoryReferences
+import com.aicontrolcenter.framework.operator.OwnerWaits
 import com.aicontrolcenter.framework.tools.ToolExecutor
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.time.TimeSource
 
 /**
  * Runs one turn of one agent: call the model, run the tools it asks for, feed the results
@@ -60,7 +64,13 @@ import kotlinx.coroutines.withTimeoutOrNull
  *       References in [AgentRunRequest.messages] are written out again before the first model
  *       call, as the agent as it is stored then may read memory now ([MemoryReferences]).
  *  - Every tool call runs with an [AgentTurnInfo] in its coroutine context, so tools that record
- *    provenance know the model and conversation of the turn.
+ *    provenance know the model and conversation of the turn, and with an [OwnerWaits] that shows
+ *    a wait for the owner: the agent's activity is WAITING_FOR_APPROVAL and the listener is told
+ *    ([AgentRunListener.onWaitingForOwner]), so a chat can show the request.
+ *  - The run's time limit is pausable ([withPausableTimeout]): time a tool call spends waiting
+ *    for the owner to answer a permission or approval request does not count against it.
+ *  - When the run ends, the agent's screen-operation indicator is ended
+ *    ([ScreenOperator.endSession]).
  *
  * A request can narrow a run, never widen it: [AgentRunRequest.limits] lowers the model call,
  * tool call and time limits for one run (a teammate's short answer, a task with little time
@@ -82,6 +92,10 @@ class AgentRunner(
     private val prompts: AgentPromptComposer = AgentPromptComposer(),
     /** Null: no automatic recall, as before memory existed. */
     private val recall: AutoRecall? = null,
+    /** Measures the run's time limit; tests pass the test scheduler's (`testTimeSource`). */
+    private val timeSource: TimeSource = TimeSource.Monotonic,
+    /** Ends the agent's "operating" indicator when a run ends; null without screen operation. */
+    private val screen: ScreenOperator? = null,
 ) {
     /** How memory tool results are stored and written out again; shared with the chat, which shows them. */
     internal val references = MemoryReferences(tools)
@@ -94,7 +108,7 @@ class AgentRunner(
             val timeoutMinutes = limits.taskTimeoutMinutes.coerceAtLeast(1)
             val frameworkTimeoutMs = timeoutMinutes * 60_000L
             val timeoutMs = request.limits.timeoutMs?.coerceIn(1, frameworkTimeoutMs) ?: frameworkTimeoutMs
-            val ending = withTimeoutOrNull(timeoutMs) { run.loop() }
+            val ending = withPausableTimeout(timeoutMs, timeSource) { run.loop() }
                 ?: Ending(
                     RunEnd.TIMED_OUT,
                     if (timeoutMs == frameworkTimeoutMs) "Stopped: the turn ran longer than $timeoutMinutes minutes, the time limit for one task."
@@ -108,6 +122,11 @@ class AgentRunner(
                 run.closeOpenWork("the turn was stopped")
                 monitor.runEnded(request.agent.id)
                 run.saveStats()
+                try {
+                    screen?.endSession(request.agent.name)
+                } catch (e: Exception) {
+                    // Only the indicator depends on it; it ends by itself after a while.
+                }
             }
         }
     }
@@ -308,8 +327,9 @@ class AgentRunner(
                 toolCalls++
                 budget?.ownToolCall()
                 executing = call
-                val execution = withContext(AgentTurnInfo(request.modelId, modelName, request.conversationId)) {
-                    executor.execute(call, ToolContext(profile, request.taskId, request.rootTaskId, request.delegationChain))
+                val turn = AgentTurnInfo(request.modelId, modelName, request.conversationId, request.extraToolIds)
+                val execution = withContext(turn + Waits(spec?.title ?: call.name.take(MAX_TOOL_NAME_SHOWN))) {
+                    executor.execute(call, ToolContext(profile, request.taskId, request.rootTaskId, request.delegationChain, request.conversationId))
                 }
                 executing = null
                 if (!execution.outcome.ok) toolErrors++
@@ -357,8 +377,21 @@ class AgentRunner(
             listener.onMessage(stored, modelName.takeIf { stored.role == ChatRole.ASSISTANT }, usage)
         }
 
-        private fun report(detail: String) =
-            monitor.report(agent.id, AgentActivity.WORKING, request.activityLabel?.let { "$it · $detail" } ?: detail, request.taskId)
+        private fun report(detail: String, activity: AgentActivity = AgentActivity.WORKING) =
+            monitor.report(agent.id, activity, request.activityLabel?.let { "$it · $detail" } ?: detail, request.taskId)
+
+        /** Shows a tool call's wait for the owner as the agent's activity and tells the listener. */
+        private inner class Waits(private val tool: String) : OwnerWaits() {
+            override suspend fun waiting(request: OwnerRequest) {
+                report("Waiting for your answer: $tool", AgentActivity.WAITING_FOR_APPROVAL)
+                listener.onWaitingForOwner(request)
+            }
+
+            override suspend fun answered(request: OwnerRequest) {
+                report("Running tool: $tool")
+                listener.onOwnerAnswered(request)
+            }
+        }
 
         fun result(ending: Ending) = AgentRunResult(
             ending.end, lastText, ending.notice, ending.error, produced.toList(), usage, modelCalls, toolCalls, modelName,

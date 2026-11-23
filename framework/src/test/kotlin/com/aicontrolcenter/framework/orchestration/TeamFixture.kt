@@ -18,7 +18,6 @@ import com.aicontrolcenter.core.tasks.TaskRecord
 import com.aicontrolcenter.framework.TestWorld
 import com.aicontrolcenter.framework.tools.BuiltInTools
 import com.aicontrolcenter.testkit.InMemoryMessageRepository
-import com.aicontrolcenter.testkit.InMemoryTaskRepository
 import com.aicontrolcenter.testkit.ScriptStep
 import com.aicontrolcenter.testkit.ScriptedLlmClient
 import kotlinx.coroutines.CoroutineScope
@@ -26,6 +25,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.testTimeSource
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
@@ -118,9 +118,10 @@ class TeamScript {
  * test's background scope (virtual time). The Director and three specialists share one
  * scripted model, unless a test gives an agent another one.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class TeamFixture(val test: TestScope, settings: FrameworkSettings.() -> FrameworkSettings = { this }) {
-    val world = TestWorld(scope = test.backgroundScope)
-    val tasks = InMemoryTaskRepository()
+    val world = TestWorld(scope = test.backgroundScope).also { it.time.source = test.testTimeSource }
+    val tasks = world.tasks
     val messages = InMemoryMessageRepository()
     val script = TeamScript()
     lateinit var model: ModelDescriptor
@@ -136,7 +137,7 @@ class TeamFixture(val test: TestScope, settings: FrameworkSettings.() -> Framewo
     /** Another orchestrator over the same stores, as after a restart of the app; [scope] stands for the app's scope. */
     fun newOrchestrator(scope: CoroutineScope = test.backgroundScope) = DefaultOrchestrator(
         tasks, messages, world.conversations, world.agents, world.directory, world.settings, world.runner, world.toolRegistry,
-        world.monitor, world.activity, world.ids, world.clock, scope, world.memory,
+        world.monitor, world.activity, world.ids, world.clock, scope, world.memory, timeSource = world.time, operatorHooks = world.operatorHooks,
     )
 
     init {

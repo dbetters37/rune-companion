@@ -10,6 +10,7 @@ import com.aicontrolcenter.core.llm.ChatMessage
 import com.aicontrolcenter.core.llm.LlmException
 import com.aicontrolcenter.core.llm.TokenUsage
 import com.aicontrolcenter.core.llm.ToolCallRequest
+import com.aicontrolcenter.core.operator.OwnerRequest
 import com.aicontrolcenter.core.tools.ToolSpec
 import com.aicontrolcenter.framework.tools.ToolExecution
 
@@ -182,6 +183,15 @@ interface AgentRunListener {
     suspend fun onToolStarted(call: ToolCallRequest, spec: ToolSpec?) {}
 
     suspend fun onToolFinished(execution: ToolExecution) {}
+
+    /**
+     * The tool call that started last now waits for the owner to answer [request] (a permission
+     * or an approval). The run is paused until [onOwnerAnswered]; stopping it withdraws the request.
+     */
+    suspend fun onWaitingForOwner(request: OwnerRequest) {}
+
+    /** The wait for [request] is over: answered, expired or withdrawn ([request] as it ended). Also called while the run is being stopped. */
+    suspend fun onOwnerAnswered(request: OwnerRequest) {}
 
     companion object {
         val NONE = object : AgentRunListener {}

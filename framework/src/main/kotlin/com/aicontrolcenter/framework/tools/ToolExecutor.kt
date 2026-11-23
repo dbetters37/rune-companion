@@ -1,10 +1,12 @@
 package com.aicontrolcenter.framework.tools
 
 import com.aicontrolcenter.core.Clock
+import com.aicontrolcenter.core.RequestId
 import com.aicontrolcenter.core.activity.ActivityRecorder
 import com.aicontrolcenter.core.activity.ActivityType
 import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.llm.ToolCallRequest
+import com.aicontrolcenter.core.tasks.withPausableTimeout
 import com.aicontrolcenter.core.tools.ActionAssessment
 import com.aicontrolcenter.core.tools.Authorization
 import com.aicontrolcenter.core.tools.Tool
@@ -18,13 +20,15 @@ import com.aicontrolcenter.framework.llm.PromptedToolsFormat
 import com.aicontrolcenter.framework.llm.rethrowIfCancelled
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
+import kotlin.time.TimeSource
 
 /** Bounds on a single tool call. */
 data class ToolLimits(
-    /** How long a tool may run. Waiting for the authorizer (later: for the owner) does not count. */
+    /** How long a tool may run. Waiting for the authorizer, and for the owner, does not count. */
     val timeoutMs: Long = 60_000,
     /** Longer output is cut and marked, so one call cannot fill the model's context window. */
     val maxOutputChars: Int = 16_000,
@@ -77,6 +81,16 @@ data class ToolExecution(
  * Checks run in an order that gives nothing away: a tool the agent does not have switched on
  * is refused before its arguments are looked at or its [Tool.assess] runs, so its schema is
  * never revealed and no work is done for it.
+ *
+ * What runs is what was authorised: the tool is run with the very [ActionAssessment] the
+ * authorizer saw ([Tool.execute] with three arguments). When the owner answered a request for
+ * the call ([Authorization.AllowedByOwner]), the assessment's [com.aicontrolcenter.core.tools.PreparedAction]
+ * is checked again first, and a call whose target changed while the owner was asked is refused
+ * with [ToolOutcome.changedSinceApproved]. The log entry of the call names the requests the owner
+ * answered for it.
+ *
+ * The tool's own time limit starts after authorisation and is pausable: time the tool spends
+ * waiting for the owner ([com.aicontrolcenter.core.tasks.WaitClock.pausedWhile]) does not count.
  */
 class ToolExecutor(
     private val registry: ToolRegistry,
@@ -84,28 +98,37 @@ class ToolExecutor(
     private val activity: ActivityRecorder,
     private val clock: Clock,
     private val limits: ToolLimits = ToolLimits(),
+    /** Measures the tool time limit; tests pass the test scheduler's (`testTimeSource`). */
+    private val timeSource: TimeSource = TimeSource.Monotonic,
 ) {
     suspend fun execute(call: ToolCallRequest, context: ToolContext): ToolExecution {
         val startedAt = clock.now()
         var assessment: ActionAssessment? = null
+        var answeredBy: List<RequestId> = emptyList()
         var finished: Pair<ToolCallEnd, ToolOutcome>? = null
         val tool = registry.byFunctionName(call.name)
         try {
             finished = when {
                 tool == null -> ToolCallEnd.REJECTED to ToolOutcome.failure(unknownTool(call.name, context))
-                else -> carryOut(tool, call, context) { assessment = it }
+                else -> carryOut(tool, call, context, { assessment = it }, { answeredBy = it })
             }
         } finally {
             // Also reached when the caller is cancelled mid-call: the attempt still belongs in the log.
             withContext(NonCancellable) {
-                record(call, tool?.spec, context, assessment, finished, (clock.now() - startedAt).coerceAtLeast(0))
+                record(call, tool?.spec, context, assessment, answeredBy, finished, (clock.now() - startedAt).coerceAtLeast(0))
             }
         }
         val (end, outcome) = checkNotNull(finished)
         return ToolExecution(call, tool?.spec, outcome, end, (clock.now() - startedAt).coerceAtLeast(0))
     }
 
-    private suspend fun carryOut(tool: Tool, call: ToolCallRequest, context: ToolContext, onAssessed: (ActionAssessment) -> Unit): Pair<ToolCallEnd, ToolOutcome> {
+    private suspend fun carryOut(
+        tool: Tool,
+        call: ToolCallRequest,
+        context: ToolContext,
+        onAssessed: (ActionAssessment) -> Unit,
+        onAnswered: (List<RequestId>) -> Unit,
+    ): Pair<ToolCallEnd, ToolOutcome> {
         val spec = tool.spec
         if (spec.id !in context.agent.toolIds) return ToolCallEnd.DENIED to ToolOutcome.failure(toolNotSwitchedOn(spec, context.agent))
         call.argumentsError?.let { reason ->
@@ -144,10 +167,22 @@ class ToolExecutor(
             Authorization.Denied("Permission for \"${spec.title}\" could not be checked, so the call was not run.")
         }
         if (decision is Authorization.Denied) return ToolCallEnd.DENIED to ToolOutcome.failure(decision.reason)
+        if (decision is Authorization.AllowedByOwner) {
+            onAnswered(decision.requestIds)
+            // The owner took time to answer: what the call was checked against may have changed meanwhile.
+            val changed = try {
+                assessment.prepared?.changedSince()
+            } catch (e: Exception) {
+                rethrowIfCancelled(e)
+                "it could not be checked again (${describe(e)})"
+            }
+            if (changed != null) return ToolCallEnd.DENIED to ToolOutcome.changedSinceApproved(changed)
+        }
 
         val outcome = try {
-            if (tool is SelfLimitingTool) tool.execute(call.arguments, context)
-            else withTimeoutOrNull(limits.timeoutMs) { tool.execute(call.arguments, context) }
+            // The very assessment that was authorised: the tool acts on what it prepared, never on a fresh lookup.
+            if (tool is SelfLimitingTool) tool.execute(call.arguments, context, assessment)
+            else withPausableTimeout(limits.timeoutMs, timeSource) { tool.execute(call.arguments, context, assessment) }
         } catch (e: Exception) {
             rethrowIfCancelled(e)
             return ToolCallEnd.FAILED to ToolOutcome.failure("${spec.functionName} failed: ${describe(e)}")
@@ -181,6 +216,7 @@ class ToolExecutor(
         spec: ToolSpec?,
         context: ToolContext,
         assessment: ActionAssessment?,
+        answeredBy: List<RequestId>,
         finished: Pair<ToolCallEnd, ToolOutcome>?,
         durationMs: Long,
     ) {
@@ -217,6 +253,7 @@ class ToolExecutor(
                     put("durationMs", durationMs)
                     put("argumentNames", call.arguments.keys.joinToString(","))
                     outcome?.let { put("outputChars", it.content.length) }
+                    if (answeredBy.isNotEmpty()) putJsonArray("requestIds") { answeredBy.forEach { add(it.value) } }
                 },
             )
         } catch (e: Exception) {

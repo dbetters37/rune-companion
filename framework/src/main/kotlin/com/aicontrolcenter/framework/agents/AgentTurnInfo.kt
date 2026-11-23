@@ -2,6 +2,7 @@ package com.aicontrolcenter.framework.agents
 
 import com.aicontrolcenter.core.ConversationId
 import com.aicontrolcenter.core.ModelId
+import com.aicontrolcenter.core.ToolId
 import kotlinx.coroutines.currentCoroutineContext
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
@@ -20,6 +21,12 @@ class AgentTurnInfo(
     /** Null until the first reply of the turn arrived; tools run only after one, so it is normally set. */
     val modelName: String?,
     val conversationId: ConversationId?,
+    /**
+     * Tools the framework offered this run on top of the agent's own ([AgentRunRequest.extraToolIds]).
+     * The permission broker reads the agent fresh from its repository and counts these as
+     * switched on, as the runner does.
+     */
+    val extraToolIds: Set<ToolId> = emptySet(),
 ) : AbstractCoroutineContextElement(Key) {
     companion object Key : CoroutineContext.Key<AgentTurnInfo>
 }

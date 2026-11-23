@@ -241,7 +241,7 @@ class KnowledgeRoundsTest {
         messages: MessageRepository = this.messages,
         memory: MemoryService = world.memory,
         clock: Clock = world.clock,
-    ) = DefaultOrchestrator(tasks, messages, world.conversations, world.agents, world.directory, world.settings, world.runner, world.toolRegistry, world.monitor, world.activity, world.ids, clock, scope, memory)
+    ) = DefaultOrchestrator(tasks, messages, world.conversations, world.agents, world.directory, world.settings, world.runner, world.toolRegistry, world.monitor, world.activity, world.ids, clock, scope, memory, timeSource = world.time)
 
     /**
      * An objective of two tasks that saves knowledge (unless [save] is off), its work leaving task

@@ -13,6 +13,7 @@ import com.aicontrolcenter.core.tasks.TaskRecord
 import com.aicontrolcenter.core.tasks.TaskRequester
 import com.aicontrolcenter.core.tasks.TaskStatus
 import com.aicontrolcenter.core.tasks.TaskUsage
+import com.aicontrolcenter.core.tasks.isPausableTimeout
 import com.aicontrolcenter.core.tools.ToolContext
 import com.aicontrolcenter.core.tools.ToolOutcome
 import com.aicontrolcenter.framework.agents.RunLimits
@@ -154,13 +155,14 @@ internal class TeamDesk(private val ctx: OrchestrationContext, private val work:
         if (!stored) return ToolOutcome.failure("The task was stopped before the work could be delegated.")
         ctx.journal.taskChanged(child, "Task delegated")
         ctx.journal.send(caller.objective.id, child, Participant.Agent(caller.agent.id), Participant.Agent(target.id), MessageType.DELEGATION, body, newChain.size)
-        // The child gets no more time than its delegating task has left, attempts included.
-        val notAfter = ctx.tasks.get(caller.task.id)?.deadlineAt ?: caller.task.deadlineAt
+        // The child gets no more time than its delegating task has left, attempts included. Read before each
+        // attempt: a wait for the owner under the child moved the delegating task's stored deadline later.
         var ranOutOfTime = false
         try {
             waitingFor(caller, target) {
                 coroutineScope {
                     while (ctx.tasks.get(child.id)?.status == TaskStatus.QUEUED) {
+                        val notAfter = ctx.tasks.get(caller.task.id)?.deadlineAt ?: caller.task.deadlineAt
                         if (notAfter != null && ctx.clock.now() >= notAfter) {
                             ranOutOfTime = true
                             break
@@ -175,7 +177,7 @@ internal class TeamDesk(private val ctx: OrchestrationContext, private val work:
                 }
             }
         } catch (e: CancellationException) {
-            if (generateSequence<Throwable>(e) { it.cause }.any { it is TimeoutCancellationException }) ranOutOfTime = true
+            if (isPausableTimeout(e) || generateSequence<Throwable>(e) { it.cause }.any { it is TimeoutCancellationException }) ranOutOfTime = true
             throw e
         } finally {
             // Whatever stopped the delegating task, its child must not be left unfinished with nobody to run it.

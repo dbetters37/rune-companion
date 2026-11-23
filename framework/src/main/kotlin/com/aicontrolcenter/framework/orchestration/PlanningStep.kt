@@ -51,8 +51,10 @@ internal class PlanningStep(private val ctx: OrchestrationContext) {
         var history = emptyList<ChatMessage>()
         var problems = emptyList<String>()
         for (round in 0 until PLANNING_ROUNDS) {
-            // Planning is part of the objective's time: it never runs past the objective's deadline.
-            val left = ((planning.deadlineAt ?: Long.MAX_VALUE) - ctx.clock.now()).coerceAtLeast(1)
+            // Planning is part of the objective's time: it never runs past the objective's deadline, as stored now
+            // (a wait for the owner during the last round moved it later; the run's own limit pauses meanwhile).
+            val deadline = ctx.tasks.get(planning.id)?.deadlineAt ?: planning.deadlineAt
+            val left = ((deadline ?: Long.MAX_VALUE) - ctx.clock.now()).coerceAtLeast(1)
             ctx.runtimes.started(directorId, planning.id)
             val result = try {
                 ctx.steps.run(

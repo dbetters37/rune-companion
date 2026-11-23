@@ -4,6 +4,8 @@ import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.tasks.TaskRecord
 import com.aicontrolcenter.core.tasks.TaskRepository
 import com.aicontrolcenter.framework.llm.TokenEstimator
+import com.aicontrolcenter.framework.llm.rethrowIfCancelled
+import com.aicontrolcenter.framework.operator.OperatorTaskHooks
 
 /**
  * How much of an agent's context window a brief may take, and how a brief is made to fit.
@@ -192,4 +194,35 @@ internal class CappedTaskStore(private val inner: TaskRepository) : TaskReposito
 
     override suspend fun update(id: TaskId, transform: (TaskRecord) -> TaskRecord): TaskRecord? =
         inner.update(id) { StoredText.capped(transform(it)) }
+}
+
+/**
+ * The task store as the orchestrator writes it, telling [hooks] about every task written with a
+ * finished status, whoever finished it (a step, a limit, the owner, the recovery): its pending
+ * asks are withdrawn and its TASK and ONCE grants revoked. A failure there never fails the write.
+ */
+internal class TaskEndingStore(private val inner: TaskRepository, private val hooks: OperatorTaskHooks) : TaskRepository by inner {
+    override suspend fun upsert(task: TaskRecord) {
+        inner.upsert(task)
+        ended(listOf(task))
+    }
+
+    override suspend fun upsertAll(tasks: List<TaskRecord>) {
+        inner.upsertAll(tasks)
+        ended(tasks)
+    }
+
+    override suspend fun update(id: TaskId, transform: (TaskRecord) -> TaskRecord): TaskRecord? =
+        inner.update(id, transform)?.also { ended(listOf(it)) }
+
+    private suspend fun ended(tasks: List<TaskRecord>) {
+        for (task in tasks) {
+            if (!task.status.isFinished) continue
+            try {
+                hooks.taskEnded(task)
+            } catch (e: Exception) {
+                rethrowIfCancelled(e)
+            }
+        }
+    }
 }

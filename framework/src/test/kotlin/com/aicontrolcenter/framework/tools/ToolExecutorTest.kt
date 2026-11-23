@@ -20,11 +20,14 @@ import com.aicontrolcenter.framework.llm.PromptedToolsClient
 import com.aicontrolcenter.testkit.ScriptStep
 import com.aicontrolcenter.testkit.ScriptedLlmClient
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.currentTime
+import kotlinx.coroutines.test.testTimeSource
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonElement
@@ -116,11 +119,16 @@ class ToolExecutorTest {
         val risky = world.register(LambdaTool("wipe", assessed = RiskLevel.CONSEQUENTIAL) { ToolOutcome.success("ran") })
 
         val notSwitchedOn = world.executor.execute(call(tool), context())
-        val consequential = world.executor.execute(call(risky), context(risky))
+        // A consequential call waits for the owner's approval; the owner says no.
+        val riskyContext = context(risky)
+        val pending = async { world.executor.execute(call(risky), riskyContext) }
+        runCurrent()
+        world.ownerRequests.deny(world.ownerRequests.pending.first().single().id)
+        val consequential = pending.await()
 
         assertEquals(listOf(ToolCallEnd.DENIED, ToolCallEnd.DENIED), listOf(notSwitchedOn.end, consequential.end))
         assertTrue("not switched on" in notSwitchedOn.outcome.content)
-        assertTrue("owner's approval" in consequential.outcome.content)
+        assertTrue("did not approve" in consequential.outcome.content, consequential.outcome.content)
         assertTrue(tool.calls.isEmpty() && risky.calls.isEmpty())
         assertEquals(listOf("Tool call denied: Test quiet", "Tool call denied: Test wipe"), toolEvents().map { it.title })
         assertEquals("CONSEQUENTIAL", toolEvents().last().data!!.getValue("risk").jsonPrimitive.content, "the risk of this call, not of a typical one")
@@ -250,6 +258,7 @@ class ToolExecutorTest {
 
     @Test
     fun `a tool that runs too long is stopped at the time limit`() = runTest {
+        world.time.source = testTimeSource
         var finished = false
         val slow = world.register(
             LambdaTool("slow") {

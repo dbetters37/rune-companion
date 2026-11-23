@@ -10,6 +10,8 @@ import com.aicontrolcenter.core.tasks.Participant
 import com.aicontrolcenter.core.tasks.TaskKind
 import com.aicontrolcenter.core.tasks.TaskRecord
 import com.aicontrolcenter.core.tasks.TaskStatus
+import com.aicontrolcenter.core.tasks.WaitClock
+import com.aicontrolcenter.core.tasks.withPausableTimeout
 import com.aicontrolcenter.framework.llm.rethrowIfCancelled
 import com.aicontrolcenter.framework.orchestration.OrchestrationContext.Companion.WORKING
 import com.aicontrolcenter.framework.orchestration.OrchestrationContext.Companion.isScheduled
@@ -22,7 +24,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Drives one objective from its stored state to its end: plan (unless a plan is stored), run
@@ -43,6 +44,13 @@ import kotlinx.coroutines.withTimeoutOrNull
  *
  * While it runs, the driver writes a heartbeat onto the objective every [HEARTBEAT_MS], so that
  * after a crash the time the objective had left can be read from its last stored write.
+ *
+ * The objective's time limit is pausable ([withPausableTimeout]): while any task under it waits
+ * for the owner, the limit stands still, even if other tasks go on (the objective cannot finish
+ * without that answer). The stored deadline follows: the heartbeat, and the end of the limit,
+ * write the deadline the limit started from plus the time it was paused
+ * ([ObjectiveRuntime.deadlineNow]), so a pause, a resume and the crash recovery all see the time
+ * the objective really has left. Saving knowledge is bounded the same way.
  *
  * The objective is finished under its lock, against what is stored at that moment: when the
  * owner asked for a task to run again meanwhile, the driver goes on with it instead.
@@ -83,16 +91,29 @@ internal class ObjectiveDriver(
         }
     }
 
-    /** Stores the objective (its updatedAt) every [HEARTBEAT_MS] while it runs: the last moment it is known to have been running. */
+    /**
+     * Stores the objective (its updatedAt, and its deadline as the running limit has it) every
+     * [HEARTBEAT_MS] while it runs: the last moment it is known to have been running. One atomic
+     * update, so a deadline another writer moved meanwhile is never written back.
+     */
     private suspend fun heartbeat(rt: ObjectiveRuntime) {
         while (true) {
             delay(HEARTBEAT_MS)
             try {
-                ctx.change(rt, rt.rootId, setOf(TaskStatus.RUNNING)) { it } ?: return
+                if (storeRunning(rt) == null) return
             } catch (e: Exception) {
                 rethrowIfCancelled(e) // a missed heartbeat only makes the time left after a crash a little longer
             }
         }
+    }
+
+    /** Touches the running objective with its deadline as [ObjectiveRuntime.deadlineNow] has it; null when it is not running. */
+    private suspend fun storeRunning(rt: ObjectiveRuntime): com.aicontrolcenter.core.tasks.TaskRecord? = rt.lock.withLockNonCancellable {
+        var running = false
+        ctx.tasks.update(rt.rootId) {
+            running = it.status == TaskStatus.RUNNING
+            if (running) it.copy(deadlineAt = rt.deadlineNow(it.deadlineAt), updatedAt = ctx.clock.now()) else it
+        }?.takeIf { running }
     }
 
     private suspend fun body(rt: ObjectiveRuntime, atStartUp: Boolean) {
@@ -110,7 +131,23 @@ internal class ObjectiveDriver(
         while (true) {
             val objective = ctx.tasks.get(rt.rootId)?.takeIf { it.status == TaskStatus.RUNNING } ?: return
             val remaining = ((objective.deadlineAt ?: Long.MAX_VALUE) - ctx.clock.now()).coerceAtLeast(1)
-            val inTime = withTimeoutOrNull(remaining) { supervisorScope { schedule(rt, this) } }
+            // Time spent waiting for the owner does not count: the limit pauses, and the stored deadline moves with it.
+            val inTime = withPausableTimeout(remaining, ctx.timeSource) {
+                rt.limit = objective.deadlineAt?.let { ObjectiveRuntime.RunningLimit(it, checkNotNull(WaitClock.current())) }
+                try {
+                    supervisorScope { schedule(rt, this) }.also {
+                        // Every task ended: what follows reads the deadline as the limit left it. A limit that ran out, or work the
+                        // owner or the app stopped, writes nothing here (pausing stores its own; after a crash the heartbeat's holds).
+                        try {
+                            storeRunning(rt)
+                        } catch (e: Exception) {
+                            rethrowIfCancelled(e)
+                        }
+                    }
+                } finally {
+                    rt.limit = null
+                }
+            }
             if (inTime == null) objectiveTimedOut(rt)
             if (!isRunning(rt.rootId)) return
             runSynthesis(rt)
@@ -417,7 +454,7 @@ internal class ObjectiveDriver(
             ctx.journal.send(objective.id, objective, Participant.System, Participant.Owner, MessageType.STATUS, "$KNOWLEDGE_SAVING ${resultOf(round)} (attempt ${tried + 1} of ${limits.maxTaskAttempts}$revision).")
             // What the attempt did; null: the round reached its time limit.
             val saved = try {
-                withTimeoutOrNull(minOf(left, limits.taskTimeoutMs)) { knowledge.save(objective, document, written, finalResult(round), startRevision) }
+                withPausableTimeout(minOf(left, limits.taskTimeoutMs), ctx.timeSource) { knowledge.save(objective, document, written, finalResult(round), startRevision) }
             } catch (e: CancellationException) {
                 withContext(NonCancellable) { recordIfStoppedByOwner(objective, round) }
                 throw e
