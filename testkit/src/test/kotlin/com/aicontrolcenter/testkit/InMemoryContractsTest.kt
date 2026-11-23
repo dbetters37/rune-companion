@@ -39,3 +39,7 @@ class InMemorySecretVaultTest : SecretVaultContract() {
 class InMemoryConversationRepositoryTest : com.aicontrolcenter.testkit.contract.ConversationRepositoryContract() {
     override fun createRepository() = InMemoryConversationRepository()
 }
+
+class InMemoryMemoryRepositoryTest : com.aicontrolcenter.testkit.contract.MemoryRepositoryContract() {
+    override fun createRepository() = InMemoryMemoryRepository()
+}
