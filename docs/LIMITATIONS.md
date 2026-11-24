@@ -235,7 +235,8 @@ do it.
   lowest priority from then on; while two such threads run, new scripts are refused with a
   message that says so, and an endless one ends only with the app itself: closing the app ends
   it, and when Android keeps the app running in the background (for an objective, or for
-  screen control), Force stop in Android's settings for the app does. The memory limit is measured roughly, on the whole app: a script is stopped when
+  screen control), Force stop in Android's settings for the app does. The memory limit is
+  measured roughly, on the whole app: a script is stopped when
   the app's memory grew by more than 96 MB since it began, or when less than an eighth of the
   memory Android gives the app (and less than 96 MB) is left, whichever comes first. Telling
   what a script keeps from what it has thrown away costs time, so after the first few times it
