@@ -23,6 +23,7 @@ import com.aicontrolcenter.core.operator.OperatorCapabilities
 import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.OwnerRequestStatus
 import com.aicontrolcenter.core.operator.PermissionGrant
+import com.aicontrolcenter.core.operator.PreviewText
 import com.aicontrolcenter.core.registry.AgentEntry
 import com.aicontrolcenter.core.registry.RegistrySnapshot
 import com.aicontrolcenter.core.tools.Capability
@@ -267,6 +268,11 @@ class ApprovalPresentationTest {
         assertEquals("a⟨U+202E⟩b⟨U+200B⟩c⟨U+00A0⟩d⟨U+0007⟩", visible("a‮b​c d\u0007"))
         assertEquals("tag⟨U+E0041⟩", visible("tag󠁁"))
         assertEquals("emoji 😀 stays", visible("emoji 😀 stays"))
+        // Round 4 (J3): half of a two-part character alone is shown by its code here too, as PreviewText.exact shows it.
+        for (half in listOf("echo keep\uD800", "\uDC00x", "a\uDC00\uD800b", "😀\uD83D", "\uDE00😀")) {
+            assertEquals(PreviewText.exact(half), visible(half))
+            assertTrue("⟨U+D" in visible(half), visible(half))
+        }
         val exact = "Write “a⏎\nb” ␣×5 ⇥"
         assertEquals(exact, visible(exact))
         assertEquals(listOf("⏎", "␣×5", "⇥"), previewMarks(exact).map { exact.substring(it) })

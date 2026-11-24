@@ -11,6 +11,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aicontrolcenter.core.operator.CommandLimits
 import com.aicontrolcenter.core.operator.CommandOutcome
 import com.aicontrolcenter.core.operator.DeviceAccess
+import com.aicontrolcenter.core.operator.ExactText
 import com.aicontrolcenter.core.operator.TermuxAvailability
 import com.aicontrolcenter.device.testing.FakeDevice
 import kotlinx.coroutines.async
@@ -186,10 +187,11 @@ class TermuxCommandRunnerTest {
     fun `a command that would not arrive in Termux as the same text is not sent`() = runTest {
         ready()
 
-        for (broken in listOf("rm keep\uD800", "rm keep\uDC00 x", "echo \uDC00\uD83D")) {
+        for (broken in listOf("rm keep\uD800", "rm keep\uDC00 x", "echo \uDC00\uD83D", "ls\u0000 -la")) {
             val outcome = assertIs<CommandOutcome.Failed>(runner.run(broken, limits), "[$broken]")
 
-            assertTrue("cannot be passed on as it is" in outcome.reason && "U+D" in outcome.reason, outcome.reason)
+            // The words of the one rule (ExactText), the character named by its code.
+            assertTrue(ExactText.problem(broken)!! in outcome.reason && "U+" in outcome.reason && "was not run" in outcome.reason, outcome.reason)
             assertNull(shadowOf(app).nextStartedService, "Termux was not asked")
         }
 

@@ -88,7 +88,7 @@ internal class SystemShellRunner(
 
     private suspend fun runOne(command: String, workingDirectory: WorkspaceFile, limits: CommandLimits): CommandOutcome {
         if (command.isBlank()) return CommandOutcome.Failed("There is no command.")
-        if ('\u0000' in command) return CommandOutcome.Failed("The command contains a NUL character, which a shell cannot take.")
+        // A NUL, half of a surrogate pair: the shell would get another text than the one that was shown.
         notExactProblem(command)?.let { return CommandOutcome.Failed(it) }
         if (command.length > MAX_COMMAND_CHARS) {
             return CommandOutcome.Failed("The command is longer than $MAX_COMMAND_CHARS characters; put longer scripts in a workspace file and run that.")

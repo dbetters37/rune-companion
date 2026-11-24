@@ -3,6 +3,7 @@ package com.aicontrolcenter.device.operator.commands
 import com.aicontrolcenter.core.operator.CommandLimits
 import com.aicontrolcenter.core.operator.CommandOutcome
 import com.aicontrolcenter.core.operator.DocResult
+import com.aicontrolcenter.core.operator.ExactText
 import com.aicontrolcenter.core.operator.RelativePath
 import com.aicontrolcenter.core.operator.WorkspaceFile
 import kotlinx.coroutines.CoroutineStart
@@ -213,9 +214,14 @@ class SystemShellRunnerTest {
         for (broken in listOf("rm keep\uD800", "rm keep\uDC00", "echo \uDC00\uD83D", "echo ok \uD83D")) {
             val outcome = assertIs<CommandOutcome.Failed>(runner.run(broken, project, limits), "[$broken]")
 
-            assertTrue("cannot be passed on as it is" in outcome.reason && "was not run" in outcome.reason, outcome.reason)
+            // The words of the one rule (ExactText), which the tools use too when they refuse it before anyone is asked.
+            assertTrue(ExactText.problem(broken)!! in outcome.reason && "was not run" in outcome.reason, outcome.reason)
             assertTrue("U+D" in outcome.reason, "the character is named by its code: ${outcome.reason}")
+            assertTrue(outcome.reason.none { it.isSurrogate() }, "and never repeated as it is")
         }
+        // A NUL ends the text for the shell: the same rule, the same words.
+        val nul = assertIs<CommandOutcome.Failed>(runner.run("rm keep1\u0000X", project, limits))
+        assertTrue(ExactText.problem("rm keep1\u0000X")!! in nul.reason && "U+0000" in nul.reason, nul.reason)
         assertEquals(listOf("keep1", "keepX"), project.file.list()!!.sorted(), "nothing ran")
         assertFalse(home.exists(), "refused before anything was prepared")
 

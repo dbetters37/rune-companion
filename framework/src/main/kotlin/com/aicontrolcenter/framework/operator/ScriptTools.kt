@@ -4,6 +4,7 @@ import com.aicontrolcenter.core.operator.CommandLimits
 import com.aicontrolcenter.core.operator.CommandOutcome
 import com.aicontrolcenter.core.operator.CommandTurn
 import com.aicontrolcenter.core.operator.DocResult
+import com.aicontrolcenter.core.operator.ExactText
 import com.aicontrolcenter.core.operator.PreviewText
 import com.aicontrolcenter.core.operator.RelativePath
 import com.aicontrolcenter.core.operator.TermuxAvailability
@@ -59,24 +60,14 @@ internal object ScriptTools {
      * it. Java cannot encode half of a surrogate pair on its own and hands "?" on in its place,
      * which a shell reads as a pattern ("rm keep?" removes files nobody named); and a NUL ends
      * the text for the process. So an argument with either, or one that does not come back
-     * unchanged from UTF-8, is refused while the call is assessed, before anyone is asked.
+     * unchanged from UTF-8, is refused while the call is assessed, before anyone is asked. The
+     * rule and its words are [ExactText]'s, the same the runners use as their last check.
      *
-     * @throws ToolCallRejected naming the [argument] and the character
+     * @throws ToolCallRejected naming the [argument] and the character, by its code
      */
     fun requireExact(argument: String, value: String) {
-        val bad = value.indices.firstOrNull { i ->
-            val c = value[i]
-            c == '\u0000' ||
-                (c.isHighSurrogate() && value.getOrNull(i + 1)?.isLowSurrogate() != true) ||
-                (c.isLowSurrogate() && value.getOrNull(i - 1)?.isHighSurrogate() != true)
-        }
-        val unchanged = bad == null && String(value.toByteArray(Charsets.UTF_8), Charsets.UTF_8) == value
-        if (unchanged) return
-        val which = bad?.let { " (U+%04X)".format(value[it].code) }.orEmpty()
-        throw ToolCallRejected(
-            "\"$argument\" contains a character that cannot be passed on exactly to the program that runs it$which: the program would get " +
-                "something else than the owner is shown. Nothing was asked and nothing was run. Write it without that character.",
-        )
+        val problem = ExactText.problem(value) ?: return
+        throw ToolCallRejected("\"$argument\" contains $problem. Nothing was asked and nothing was run. Write it without that character.")
     }
 }
 

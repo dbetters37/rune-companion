@@ -421,8 +421,10 @@ fun breadthOf(capability: Capability, title: String, target: String?): String {
 
 /**
  * [text] with any invisible, direction-changing, control or unusual space character that is
- * still in it written as "⟨U+XXXX⟩". Line breaks stay (a preview from [PreviewText.exact] shows
- * each one as ⏎ followed by the real break). Text already made exact is returned unchanged.
+ * still in it written as "⟨U+XXXX⟩", and half of a two-part character whose other half is
+ * missing too, as [PreviewText.exact] writes it. Line breaks stay (a preview from
+ * [PreviewText.exact] shows each one as ⏎ followed by the real break). Text already made exact
+ * is returned unchanged.
  */
 fun visible(text: String): String {
     if (text.none { it != '\n' && (PreviewText.isHidden(it) || Character.isISOControl(it) || it.isSurrogate() || PreviewText.isUnusualSpace(it.code)) }) {
@@ -430,7 +432,8 @@ fun visible(text: String): String {
     }
     val out = StringBuilder(text.length + 16)
     text.codePoints().forEach { cp ->
-        val shown = cp != '\n'.code && (PreviewText.isHidden(cp) || Character.isISOControl(cp) || PreviewText.isUnusualSpace(cp))
+        // A surrogate that comes as a code point of its own has no partner beside it.
+        val shown = cp != '\n'.code && (PreviewText.isHidden(cp) || Character.isISOControl(cp) || PreviewText.isUnusualSpace(cp) || cp in 0xD800..0xDFFF)
         if (shown) out.append("⟨U+").append(String.format("%04X", cp)).append('⟩') else out.appendCodePoint(cp)
     }
     return out.toString()

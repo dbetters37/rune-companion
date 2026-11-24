@@ -6,6 +6,7 @@ import com.aicontrolcenter.core.agents.AgentProfile
 import com.aicontrolcenter.core.llm.ToolCallRequest
 import com.aicontrolcenter.core.operator.CommandLimits
 import com.aicontrolcenter.core.operator.CommandOutcome
+import com.aicontrolcenter.core.operator.ExactText
 import com.aicontrolcenter.core.operator.GrantScope
 import com.aicontrolcenter.core.operator.PermissionGrant
 import com.aicontrolcenter.core.operator.PreviewText
@@ -435,14 +436,14 @@ class ShellRound4Test {
         for (command in listOf("echo keep\uD800", "echo keep\uDC00", "\uD800", "echo \uDBFF x", "echo a\uDC00\uD800b", "ls\u0000 -la")) {
             for (id in listOf("scripts.run_shell", "termux.run")) {
                 val reason = f.rejected(id, "command" to command)
-                assertTrue("cannot be passed on exactly" in reason && "Nothing was asked and nothing was run" in reason, "$id: $reason")
+                assertTrue(ExactText.problem(command)!! in reason && "Nothing was asked and nothing was run" in reason, "$id: $reason")
             }
         }
         assertTrue("U+D800" in f.rejected("scripts.run_shell", "command" to "echo keep\uD800"))
         assertTrue("U+0000" in f.rejected("termux.run", "command" to "ls\u0000"))
         // The folder reaches the process too.
         val folder = f.rejected("scripts.run_shell", "command" to "ls", "directory" to "sub\uD800")
-        assertTrue("\"directory\"" in folder && "cannot be passed on exactly" in folder, folder)
+        assertTrue("\"directory\"" in folder && ExactText.problem("sub\uD800")!! in folder, folder)
         assertTrue(f.shell.runs.isEmpty() && f.termux.runs.isEmpty())
         // A character outside the basic plane is a pair of surrogates and passes, as do other scripts and emoji.
         for (command in listOf("echo \uD83D\uDE00", "echo größe 日本語 \uD83D\uDC4D\uD83C\uDFFD", "echo keep?")) {

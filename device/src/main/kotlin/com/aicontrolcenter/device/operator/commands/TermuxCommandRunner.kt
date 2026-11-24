@@ -46,7 +46,7 @@ internal class TermuxCommandRunner(context: Context) : TermuxRunner {
             TermuxAvailability.READY -> Unit
         }
         if (command.isBlank()) return CommandOutcome.Failed("There is no command.")
-        // Termux hands the text to bash as UTF-8: what cannot be encoded would arrive as another character.
+        // Termux hands the text to bash as UTF-8: what cannot be encoded would arrive as another character, and a NUL would end it.
         notExactProblem(command)?.let { return CommandOutcome.Failed(it) }
         if (command.length > MAX_COMMAND_CHARS) {
             return CommandOutcome.Failed("The command is longer than $MAX_COMMAND_CHARS characters; put longer scripts in a file in Termux and run that.")

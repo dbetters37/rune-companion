@@ -1,5 +1,7 @@
 package com.aicontrolcenter.device.operator.commands
 
+import com.aicontrolcenter.core.operator.ExactText
+
 /**
  * Why [command] would not reach a shell as the text it is, or null when it would.
  *
@@ -8,24 +10,9 @@ package com.aicontrolcenter.device.operator.commands
  * which a model can send as `\ud800` in its JSON, is no character: it cannot be encoded, and
  * Java puts a question mark in its place without a word. A shell reads that question mark as a
  * pattern for any one character, so `rm keep<half>` would remove `keep1` and `keepX`: not the
- * text the owner was shown. Such a command is refused here, as the last check before a process
- * gets it; the tools refuse it earlier, before anyone is asked.
+ * text the owner was shown. A NUL ends the text for the process. Such a command is refused
+ * here, as the last check before a process gets it; the tools refuse it earlier, before anyone
+ * is asked. The rule and its words are [ExactText]'s, the same in both places.
  */
-internal fun notExactProblem(command: String): String? {
-    var i = 0
-    while (i < command.length) {
-        val c = command[i]
-        if (Character.isHighSurrogate(c) && i + 1 < command.length && Character.isLowSurrogate(command[i + 1])) {
-            i += 2
-            continue
-        }
-        if (Character.isSurrogate(c)) return notExact(" (U+%04X, half of a two-part character)".format(c.code))
-        i++
-    }
-    // The same question asked of the encoder itself, whatever else it may not carry over unchanged.
-    return if (String(command.toByteArray(Charsets.UTF_8), Charsets.UTF_8) == command) null else notExact("")
-}
-
-private fun notExact(which: String): String =
-    "The command contains a character that cannot be passed on as it is$which. " +
-        "A shell would get a different text than the one that was shown, so the command was not run."
+internal fun notExactProblem(command: String): String? =
+    ExactText.problem(command)?.let { "The command contains $it, so the command was not run." }

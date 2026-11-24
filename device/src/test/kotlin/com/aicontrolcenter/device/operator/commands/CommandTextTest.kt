@@ -1,5 +1,6 @@
 package com.aicontrolcenter.device.operator.commands
 
+import com.aicontrolcenter.core.operator.ExactText
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -31,17 +32,28 @@ class CommandTextTest {
 
             assertTrue(code in problem, problem)
             assertTrue("was not run" in problem, problem)
+            // One rule, one wording: the words are the ones the tools use when they refuse the same text before anyone is asked.
+            assertEquals("The command contains ${ExactText.problem(text)}, so the command was not run.", problem)
         }
     }
 
     @Test
+    fun `a NUL, which ends the text for a program, is refused in the same words`() {
+        val problem = assertNotNull(notExactProblem("ls\u0000 -la"))
+
+        assertTrue("U+0000" in problem && "was not run" in problem, problem)
+        assertEquals("The command contains ${ExactText.problem("ls\u0000 -la")}, so the command was not run.", problem)
+    }
+
+    @Test
     fun `what is refused is exactly what Java would not encode as it is`() {
-        // Every code unit alone and after a letter: refused exactly when the UTF-8 bytes do not give the same text back.
+        // Every code unit alone and after a letter: refused exactly when the UTF-8 bytes do not give the same text back
+        // (and the NUL, which the bytes carry and a program stops at).
         for (unit in 0..0xFFFF) {
             val text = "a" + unit.toChar()
             val survives = String(text.toByteArray(Charsets.UTF_8), Charsets.UTF_8) == text
 
-            assertEquals(survives, notExactProblem(text) == null, "U+%04X".format(unit))
+            assertEquals(survives && unit != 0, notExactProblem(text) == null, "U+%04X".format(unit))
         }
     }
 }
