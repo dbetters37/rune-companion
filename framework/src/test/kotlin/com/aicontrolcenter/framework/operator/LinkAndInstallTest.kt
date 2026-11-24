@@ -98,7 +98,7 @@ class LinkAndInstallTest {
         val workspace = LocalWorkspace(FakeWorkspaceRoot(f.root), f.clock, io = EmptyCoroutineContext)
         val deps = OperatorToolDependencies(
             workspace = workspace, sharedFolders = d.sharedFolders, folders = d.folders, media = d.media, apps = apps, web = d.web,
-            screen = d.screen, authorisedApps = d.authorisedApps, protectedPackages = d.protectedPackages, shell = d.shell,
+            screen = d.screen, authorisedApps = d.authorisedApps, settings = d.settings, protectedPackages = d.protectedPackages, shell = d.shell,
             termux = d.termux, clock = d.clock, ownPackage = d.ownPackage, limits = d.limits,
         )
         val registry = DefaultToolRegistry()
