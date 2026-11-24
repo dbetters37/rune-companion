@@ -12,6 +12,7 @@ import com.aicontrolcenter.app.ui.tasks.AgentFaceUi
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.RequestId
+import com.aicontrolcenter.core.operator.OwnerGrants
 import com.aicontrolcenter.core.operator.OwnerRequest
 import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.OwnerRequestStatus
@@ -79,12 +80,16 @@ data class RequestsUiState(
  * The History tab: the history of permission and approval requests, newest first, with how
  * each ended, filtered by kind, outcome and agent. Each opens its Approval screen, which also
  * answers a request that is still waiting. A permission the owner refused keeps its agent from
- * asking again for a while; the owner can end that here ([letAskAgain]).
+ * asking again for a while; the owner can end that here ([letAskAgain]). Once a permission in
+ * force covers what was refused (given directly in Tools), the refusal holds nothing back and
+ * its card says no such thing.
  *
+ * @param grants the permissions in force.
  * @param ticker moves "waiting" to "expired" as time passes; tests pass a single tick.
  */
 class RequestsViewModel(
     private val requests: OwnerRequests,
+    grants: OwnerGrants,
     directory: RegistryDirectory,
     private val capabilityInfo: (Capability) -> CapabilityInfo?,
     private val clock: Clock,
@@ -95,7 +100,10 @@ class RequestsViewModel(
     private val message = MutableStateFlow<UserMessage?>(null)
     private var messageCounter = 0L
 
-    val uiState: StateFlow<RequestsUiState> = combine(requests.observeRecent(HISTORY_LIMIT), directory.observe(), filter, ticker, message) { recent, snapshot, filter, _, message ->
+    /** Who the agents are and what they are allowed now: what a request's card is read against. */
+    private val agentsAndGrants = combine(directory.observe(), grants.observeAll(), ::Pair)
+
+    val uiState: StateFlow<RequestsUiState> = combine(requests.observeRecent(HISTORY_LIMIT), agentsAndGrants, filter, ticker, message) { recent, (snapshot, grants), filter, _, message ->
         val now = clock.now()
         val newestFirst = recent.sortedWith(compareByDescending<OwnerRequest> { it.createdAt }.thenByDescending { it.id.value })
         val shown = newestFirst.filter { request ->
@@ -106,7 +114,7 @@ class RequestsViewModel(
         RequestsUiState(
             isLoading = false,
             filter = filter,
-            requests = shown.map { requestUi(it, snapshot, capabilityInfo, now, zone) },
+            requests = shown.map { requestUi(it, snapshot, capabilityInfo, now, zone, grants) },
             total = recent.size,
             agents = newestFirst.distinctBy { it.agentId }.map { request ->
                 val profile = snapshot.agentsById[request.agentId]?.profile

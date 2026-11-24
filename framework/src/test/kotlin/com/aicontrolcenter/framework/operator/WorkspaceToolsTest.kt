@@ -203,6 +203,34 @@ class WorkspaceToolsTest {
     }
 
     @Test
+    fun `W1 - with leftovers of an interrupted change in the trash, the tools do not call it empty`() = runTest {
+        // Two things in one holder and no record: nothing the trash can list or restore, but not nothing.
+        f.put(".trash/1700000000000-two/a.txt", "aaaa")
+        f.put(".trash/1700000000000-two/b.txt", "bb")
+        val refused = f.fails("workspace.empty_trash")
+        assertFalse("trash is empty" in refused.content, refused.content)
+        assertTrue("lists no items" in refused.content && "only the owner" in refused.content, refused.content)
+        val list = f.ok("workspace.restore")
+        assertFalse("is empty" in list.content, list.content)
+        assertTrue("lists no items" in list.content && "leftovers" in list.content, list.content)
+        assertTrue(f.file(".trash/1700000000000-two/a.txt").exists(), "an agent's call deletes none of it")
+
+        // With a listed item next to them, the list says both, and emptying deletes the listed item only.
+        f.put("one.txt", "1")
+        f.ok("workspace.trash", "paths" to listOf("one.txt"))
+        val both = f.ok("workspace.restore").content
+        assertTrue("holds 1 item" in both && "leftovers" in both, both)
+        val emptied = f.ok("workspace.empty_trash")
+        assertTrue("Deleted 1 item" in emptied.content, emptied.content)
+        assertTrue(f.file(".trash/1700000000000-two/b.txt").exists())
+
+        // Once the owner emptied the trash, it is empty and the tools say so.
+        assertEquals(DocResult.Ok(0), f.workspace.emptyTrash(null))
+        assertTrue("The trash is empty" in f.fails("workspace.empty_trash").content)
+        assertEquals("The workspace trash is empty.", f.ok("workspace.restore").content)
+    }
+
+    @Test
     fun `export opens the share screen for exactly the approved content`() = runTest {
         f.put("report.csv", "a,b")
         val assessment = f.assess("workspace.export", "path" to "report.csv")

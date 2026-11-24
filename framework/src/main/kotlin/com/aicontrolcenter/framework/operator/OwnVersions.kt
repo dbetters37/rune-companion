@@ -9,8 +9,10 @@ import com.aicontrolcenter.core.tools.ToolContext
  * content. An edit that replaces such a version does not keep it in the trash a second time, so
  * twenty small edits of one file keep what was there before the task's first change once, not
  * twenty copies. Everything else is not in here, and so is kept: the owner's file, another
- * task's or agent's version, a version this task wrote longer ago than [windowMs], and a file
- * changed in any other way since (its content, size or time no longer match).
+ * task's or agent's version, a version this task wrote longer ago than [windowMs], a file
+ * changed in any other way since (its content, size or time no longer match), and a version
+ * that `workspace.export` handed to another app ([forget]): what left the workspace can be
+ * restored.
  *
  * In memory only: after the app restarts, every replaced version is kept again.
  */

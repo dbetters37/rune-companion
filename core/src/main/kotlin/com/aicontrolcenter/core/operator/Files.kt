@@ -76,6 +76,12 @@ data class TrashItem(
     val isFolder: Boolean,
     val sizeBytes: Long? = null,
     val trashedAt: Long,
+    /**
+     * True for an item the workspace found in the trash without a usable record (a trash that an
+     * earlier version of the app was stopped in, or a damaged record) and gave a record again:
+     * where it was is not known, so [originalPath] is its name at the top of the workspace.
+     */
+    val recovered: Boolean = false,
 )
 
 /** What [Workspace.runCommand] did. */
@@ -100,8 +106,10 @@ data class WorkspaceHit(val path: RelativePath, val line: Int? = null, val excer
  * [DocResult.TooLarge]. Reads and lists never touch [TRASH_FOLDER] content except through the
  * trash methods.
  *
- * Trash format: [trash] moves the item to `.trash/<id>/<name>` and writes `.trash/<id>.json`
- * holding its [TrashItem]; [restore] moves it back to [TrashItem.originalPath] (missing parent
+ * Trash format: [trash] writes `.trash/<id>.json` holding the item's [TrashItem] and then moves
+ * the item to `.trash/<id>/<name>` (the record first, so an item that left its place always has
+ * one; a record whose content is not there is not an item); [restore] moves it back to
+ * [TrashItem.originalPath] (missing parent
  * folders recreated; [DocResult.AlreadyExists] if something is there now); [emptyTrash] deletes
  * both. A file that [write], [replaceText], [move] or [import] replaces is kept in the trash the
  * same way, so replacing a file can be undone like trashing it. It never leaves its place while
@@ -158,7 +166,11 @@ interface Workspace {
      */
     suspend fun move(from: RelativePath, to: RelativePath, overwrite: Boolean): DocResult<DocumentEntry>
 
-    /** Moves a file or folder to the trash. */
+    /**
+     * Moves a file or folder to the trash. The item's record counts against the size limit like
+     * any file: when it does not fit, nothing is trashed ([DocResult.Failed]), unless the trash is
+     * empty, since trashing and then emptying the trash is the way to make room.
+     */
     suspend fun trash(path: RelativePath): DocResult<TrashItem>
 
     /** Trash items, newest first. */
@@ -166,8 +178,19 @@ interface Workspace {
 
     suspend fun restore(id: String): DocResult<DocumentEntry>
 
-    /** Deletes [ids] from the trash for good, or everything when null. Returns how many items. */
+    /**
+     * Deletes [ids] from the trash for good, or everything when null: every item, and whatever
+     * else is under the trash folder ([trashLeftovers]). Returns how many items.
+     */
     suspend fun emptyTrash(ids: Set<String>?): DocResult<Int>
+
+    /**
+     * What is under the trash folder without being an item [listTrash] lists: the bytes of what
+     * a change that was interrupted left behind and that could not be given a record again, or
+     * null when there is nothing of the kind. It counts against the size limit and cannot be
+     * restored; only [emptyTrash] with null deletes it.
+     */
+    suspend fun trashLeftovers(): Long? = null
 
     /** Names, then text lines of UTF-8 files, containing [query] (case-insensitive), under [under]. */
     suspend fun search(query: String, under: RelativePath, maxResults: Int): DocResult<List<WorkspaceHit>>

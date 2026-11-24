@@ -8,6 +8,7 @@ import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.RequestId
 import com.aicontrolcenter.core.operator.DecideResult
 import com.aicontrolcenter.core.operator.GrantScope
+import com.aicontrolcenter.core.operator.OwnerGrants
 import com.aicontrolcenter.core.operator.OwnerRequest
 import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.OwnerRequestStatus
@@ -113,11 +114,14 @@ sealed interface AfterAnswer {
  * for any more (its call stopped with an earlier run of the app) is closed as soon as it is
  * shown ([OwnerRequests.closeIfAbandoned]) and reads "No longer waiting", never with answers.
  *
+ * @param grants the permissions in force: a refused request stops saying its agent is held once
+ * one of them covers what was refused (the owner gave it directly in Tools).
  * @param ticker moves the time left; tests pass a single tick.
  */
 class ApprovalViewModel(
     private val requestId: RequestId,
     private val requests: OwnerRequests,
+    grants: OwnerGrants,
     directory: RegistryDirectory,
     private val capabilityInfo: (Capability) -> CapabilityInfo?,
     private val clock: Clock,
@@ -141,12 +145,12 @@ class ApprovalViewModel(
         pending.firstOrNull { it.id == requestId } ?: requests.closeIfAbandoned(requestId)
     }.distinctUntilChanged()
 
-    val uiState: StateFlow<ApprovalUiState> = combine(request, directory.observe(), local, ticker) { request, snapshot, local, _ ->
+    val uiState: StateFlow<ApprovalUiState> = combine(request, directory.observe(), local, ticker, grants.observeAll()) { request, snapshot, local, _, grants ->
         val now = clock.now()
         ApprovalUiState(
             isLoading = false,
             notFound = request == null,
-            request = request?.let { requestUi(it, snapshot, capabilityInfo, now, zone) },
+            request = request?.let { requestUi(it, snapshot, capabilityInfo, now, zone, grants) },
             note = local.note,
             isBusy = local.isBusy,
             message = local.message,

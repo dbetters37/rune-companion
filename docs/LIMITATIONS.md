@@ -110,15 +110,30 @@ do it.
   (deleting, installing, paying, sending) always need your confirmation, whatever the model
   was told and whatever it was allowed before.
 
+- **The workspace trash.** Moving a file to the trash, or keeping a replaced version there,
+  first writes the trash's own note about the item and then moves the file. So if the app is
+  stopped in the middle, the file is in its place or in the trash, never lost in between. A
+  file that an earlier version of the app left in the trash without that note is listed again
+  after the next change to the workspace; where it was is no longer known, so restoring puts it
+  at the top of the workspace. Anything else in the trash that cannot be listed is shown as
+  leftovers. Only you can delete those, with "Empty the trash", which is offered whenever the
+  trash holds anything at all. The workspace's 2 GB count everything in it, also the trash's
+  notes (100 to 200 bytes per item, more for a very long path), and the last 4 KB are kept free
+  for those notes, so a full workspace can still move files to the trash. While the trash is empty one item can always be
+  moved there, even after a shell command filled the workspace completely; the workspace is
+  then over its limit by that note until you empty the trash.
 - **Replacing files.** In the workspace a file that is replaced (written over, edited, moved
   over or imported over) is kept in the workspace trash, so it can be restored; it keeps
   counting against the workspace's 2 GB until the trash is emptied. The file never leaves its
   place while this happens, so if the app is stopped in the middle, the file is still there.
   One exception keeps the trash from filling with drafts: when a task edits a version it wrote
   itself in the last 10 minutes, that version is not kept again, so the trash holds what was
-  there before the task's first change, not every step in between. Shared folders have no
+  there before the task's first change, not every step in between. A version the task shared
+  with another app in between is kept all the same. Shared folders have no
   trash, so replacing a file there asks you every time, like deleting one. Replacing, editing
-  or trashing more than 20 existing files within 10 minutes asks you. The files are counted
+  or trashing more than 20 existing files within 10 minutes asks you. Those 10 minutes run on
+  the clock and are not paused while a request waits for you: after an approval that took you
+  longer than that, the earlier changes no longer count. The files are counted
   across calls in three ways, and the largest count decides: per agent in one task, per agent
   across all its tasks, and per objective across all the agents working on it. The counts are
   kept in memory and start again when the app restarts.
@@ -194,6 +209,10 @@ do it.
   you can also give the permission directly in Tools > Folders or Tools > Screen.
 - **An answer "always" or "for this task"** also lets the other calls go on that were waiting
   for that same permission. It never answers an approval: each hard-to-undo action still asks.
+- **Time limits while you are asked.** The time a task waits for your answer does not count
+  against its time limit, and its screen says that the limit is paused. During Android's own
+  confirmation of an install or removal the task's screen still shows the earlier time-out
+  moment; it moves once that confirmation ends.
 
 - **What local-only mode blocks.** Models off this phone, reading web pages, opening links,
   shell and Termux commands, every action on another app's screen, and handing a text, a

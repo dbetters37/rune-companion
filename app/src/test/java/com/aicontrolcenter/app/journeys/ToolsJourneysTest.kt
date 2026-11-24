@@ -387,6 +387,27 @@ class ToolsJourneysTest {
     }
 
     @Test
+    fun `W1 - a trash that lists nothing but still holds leftovers of an interrupted change can be emptied`() {
+        val robot = app {
+            graph.workspace.write(RelativePath.of("notes.md"), "# Plan".toByteArray(), overwrite = false)
+            // Two things in one holder and no record: nothing the trash can list or restore, yet it is not empty.
+            File(workspaceRoot.directory(), ".trash/1700000000000-two").apply {
+                mkdirs()
+                File(this, "a.txt").writeText("aaaa")
+                File(this, "b.txt").writeText("bb")
+            }
+        }.openSectionViaMore("Tools").scrollListTo("Open the workspace").tap("Open the workspace")
+            .waitUntilShown("notes.md")
+        robot.waitForIcon("Trash, leftovers to clear").tapIcon("Trash, leftovers to clear")
+            .waitUntilShown("Nothing here can be restored")
+            .assertShown("The trash still holds leftovers of a change that was interrupted")
+            .tap("Empty the trash").assertShown("The leftovers of an interrupted change").tapInDialog("Empty trash")
+            .waitUntilShown("The trash is empty")
+        assertFalse(File(robot.app.workspaceRoot.directory(), ".trash/1700000000000-two").exists())
+        assertTrue(File(robot.app.workspaceRoot.directory(), "notes.md").exists())
+    }
+
+    @Test
     fun `the agent editor lists tools by family and links to the agent's permissions`() {
         app().openSection("Agents")
             .scrollListTo("Carries out approved actions")

@@ -96,7 +96,7 @@ fun ApprovalRoute(
 ) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel(key = "approval-${requestId.value}") {
-        ApprovalViewModel(requestId, graph.ownerRequests, graph.registryDirectory, graph.capabilities::info, graph.clock)
+        ApprovalViewModel(requestId, graph.ownerRequests, graph.ownerGrants, graph.registryDirectory, graph.capabilities::info, graph.clock)
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val activity = LocalActivity.current

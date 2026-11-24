@@ -238,7 +238,7 @@ fun ToolsSectionRoute(initialTab: ToolsTab, initialAgent: AgentId?, navigation: 
             })
         }
         ToolsTab.REQUESTS -> {
-            val viewModel = viewModel { RequestsViewModel(graph.ownerRequests, graph.registryDirectory, graph.capabilities::info, graph.clock) }
+            val viewModel = viewModel { RequestsViewModel(graph.ownerRequests, graph.ownerGrants, graph.registryDirectory, graph.capabilities::info, graph.clock) }
             val state by viewModel.uiState.collectAsStateWithLifecycle()
             message = state.message
             onMessageShown = viewModel::messageShown

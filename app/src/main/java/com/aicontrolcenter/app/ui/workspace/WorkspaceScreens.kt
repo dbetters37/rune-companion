@@ -61,6 +61,7 @@ import com.aicontrolcenter.app.ui.components.InlineTextEntry
 import com.aicontrolcenter.app.ui.components.KeyValueRow
 import com.aicontrolcenter.app.ui.components.ScreenScaffold
 import com.aicontrolcenter.app.ui.components.SectionHeader
+import com.aicontrolcenter.app.ui.components.formatBytes
 import com.aicontrolcenter.app.ui.components.plural
 import com.aicontrolcenter.app.ui.components.readableWidth
 import com.aicontrolcenter.app.ui.icons.AppIcons
@@ -182,7 +183,15 @@ fun WorkspaceScreen(state: WorkspaceUiState, navigation: WorkspaceNavigation, ac
                         }
                     },
                 ) {
-                    Icon(AppIcons.Delete, contentDescription = "Trash" + if (state.trashCount > 0) ", ${plural(state.trashCount, "item")}" else ", empty")
+                    Icon(
+                        AppIcons.Delete,
+                        contentDescription = "Trash" + when {
+                            state.trashCount > 0 -> ", ${plural(state.trashCount, "item")}"
+                            // Nothing to restore, but not empty: leftovers of an interrupted change wait to be cleared.
+                            state.trashHasLeftovers -> ", leftovers to clear"
+                            else -> ", empty"
+                        },
+                    )
                 }
             }
         },
@@ -439,7 +448,8 @@ fun WorkspaceTrashScreen(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    if (state.items.isNotEmpty()) {
+                    // Offered whenever anything is in the trash, also leftovers of an interrupted change that are not listed.
+                    if (state.canEmpty) {
                         OutlinedButton(
                             onClick = { confirmEmpty = true },
                             enabled = !state.isBusy,
@@ -453,7 +463,28 @@ fun WorkspaceTrashScreen(
                 }
             }
             if (state.items.isEmpty()) {
-                item(key = "empty") { EmptyState(icon = AppIcons.Delete, title = "The trash is empty", message = "Files moved to the trash wait here until it is emptied.") }
+                item(key = "empty") {
+                    val leftovers = state.leftoverBytes
+                    if (leftovers == null) {
+                        EmptyState(icon = AppIcons.Delete, title = "The trash is empty", message = "Files moved to the trash wait here until it is emptied.")
+                    } else {
+                        EmptyState(
+                            icon = AppIcons.Delete,
+                            title = "Nothing here can be restored",
+                            message = "The trash still holds leftovers of a change that was interrupted (${formatBytes(leftovers)}). " +
+                                "They count against the workspace's size until you empty the trash.",
+                        )
+                    }
+                }
+            } else if (state.leftoverBytes != null) {
+                item(key = "leftovers") {
+                    Text(
+                        "The trash also holds leftovers of a change that was interrupted (${formatBytes(state.leftoverBytes)}). " +
+                            "They cannot be restored; emptying the trash deletes them too.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             items(state.items, key = { it.id }) { item ->
                 AppCard(contentPadding = PaddingValues(start = Spacing.lg, top = Spacing.xs, bottom = Spacing.xs, end = Spacing.xs)) {
@@ -479,7 +510,7 @@ fun WorkspaceTrashScreen(
     if (confirmEmpty) {
         ConfirmDialog(
             title = "Empty the trash?",
-            message = "${plural(state.items.size, "item")} ${if (state.items.size == 1) "is" else "are"} deleted for good. This cannot be undone.",
+            message = state.emptyingDeletes,
             confirmLabel = "Empty trash",
             destructive = true,
             icon = AppIcons.Delete,

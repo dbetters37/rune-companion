@@ -1,5 +1,6 @@
 package com.aicontrolcenter.framework.operator
 
+import com.aicontrolcenter.core.operator.AppActionResult
 import com.aicontrolcenter.core.operator.ConsequentialControls
 import com.aicontrolcenter.core.operator.DocResult
 import com.aicontrolcenter.core.operator.DocumentEntry
@@ -379,7 +380,8 @@ internal class WorkspaceReplaceText(private val d: OperatorToolDependencies) : O
     "workspace.replace_text", "Edit a workspace file",
     "Replaces every occurrence of an exact piece of text in a workspace text file. With \"expected_count\", nothing changes unless " +
         "exactly that many occurrences are found. The version from before the edit is kept in the workspace trash; a version the " +
-        "same task wrote itself in the last ${ConsequentialControls.BULK_WINDOW_MS / 60_000} minutes is not kept again.",
+        "same task wrote itself in the last ${ConsequentialControls.BULK_WINDOW_MS / 60_000} minutes is not kept again, unless " +
+        "workspace_export shared it since.",
     objectSchema("path", "find", "replace") {
         stringProp("path", "The text file.")
         stringProp("find", "The exact text to find (case-sensitive).")
@@ -619,16 +621,18 @@ internal class WorkspaceRestore(private val d: OperatorToolDependencies) : Opera
     override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
         val id = Args(arguments).string("id")?.trim()
         val items = (d.workspace.listTrash() as? DocResult.Ok)?.value.orEmpty()
+        val leftovers = d.workspace.trashLeftovers()
         if (id.isNullOrEmpty()) {
             // Listing the trash is a read; nothing is restored.
-            return assessment("List the workspace trash", prepared { ToolOutcome.success(TrashText.list(items)) }, risk = RiskLevel.MODIFYING)
+            return assessment("List the workspace trash", prepared { ToolOutcome.success(TrashText.list(items, leftovers)) }, risk = RiskLevel.MODIFYING)
         }
         val item = items.firstOrNull { it.id == id }
-            ?: return assessment("Restore trash item ${q(id)}", failing("There is no item ${q(id)} in the trash. ${TrashText.list(items)}"))
+            ?: return assessment("Restore trash item ${q(id)}", failing("There is no item ${q(id)} in the trash. ${TrashText.list(items, leftovers)}"))
         val original = RelativePath.parse(item.originalPath) as? RelativePath.Check.Valid
             ?: return assessment("Restore trash item ${q(id)}", failing("The trash record of ${q(id)} is damaged."))
         val target = WorkspaceStates.of(d.workspace, original.path)
-        val summary = "Restore ${q(item.originalPath)} (${if (item.isFolder) "folder" else "file"}, ${size(item.sizeBytes)}) from the workspace trash"
+        val summary = "Restore ${q(item.originalPath)} (${if (item.isFolder) "folder" else "file"}, ${size(item.sizeBytes)}) from the workspace trash" +
+            if (item.recovered) " to the top of the workspace (where it was before is not known)" else ""
         if (target.exists) return assessment(summary, failing("Something is at ${q(item.originalPath)} now; move it away first."))
         return assessment(
             summary,
@@ -651,10 +655,24 @@ internal class WorkspaceRestore(private val d: OperatorToolDependencies) : Opera
 /** Trash descriptions. */
 internal object TrashText {
     fun line(item: TrashItem): String =
-        "${item.id}: ${q(item.originalPath)} (${if (item.isFolder) "folder" else "file"}, ${size(item.sizeBytes)}), trashed ${Instant.ofEpochMilli(item.trashedAt)}"
+        "${item.id}: ${q(item.originalPath)} (${if (item.isFolder) "folder" else "file"}, ${size(item.sizeBytes)}), trashed ${Instant.ofEpochMilli(item.trashedAt)}" +
+            if (item.recovered) "; found without its record, so where it was is not known: it is restored to the top of the workspace" else ""
 
-    fun list(items: List<TrashItem>): String =
-        if (items.isEmpty()) "The workspace trash is empty." else "The workspace trash holds ${OperatorText.count(items.size, "item")}:\n" + items.joinToString("\n") { line(it) }
+    /**
+     * The trash in words. [leftoverBytes]: what is under the trash folder without being an item
+     * ([Workspace.trashLeftovers]); with any of it the trash is never called empty.
+     */
+    fun list(items: List<TrashItem>, leftoverBytes: Long? = null): String = when {
+        items.isEmpty() && leftoverBytes == null -> "The workspace trash is empty."
+        items.isEmpty() -> "The workspace trash lists no items. ${leftovers(leftoverBytes!!, also = false)}"
+        else -> "The workspace trash holds ${OperatorText.count(items.size, "item")}:\n" + items.joinToString("\n") { line(it) } +
+            (leftoverBytes?.let { "\n" + leftovers(it, also = true) } ?: "")
+    }
+
+    /** What an agent is told about leftovers: they exist, cannot be restored, and only the owner clears them. */
+    fun leftovers(bytes: Long, also: Boolean): String =
+        "It ${if (also) "also " else ""}holds leftovers of a change that was interrupted (${size(bytes)}). They cannot be restored, and only " +
+            "the owner can delete them: with \"Empty the trash\" on the Workspace trash screen."
 }
 
 /** workspace.empty_trash */
@@ -676,7 +694,12 @@ internal class WorkspaceEmptyTrash(private val d: OperatorToolDependencies) : Op
         val details = chosen.map { TrashText.line(it) }
         return when {
             unknown.isNotEmpty() -> assessment(summary, failing("The trash has no item ${unknown.joinToString(", ") { q(it) }}; nothing was deleted."), details)
-            chosen.isEmpty() -> assessment(summary, failing("The trash is empty; nothing to delete."), details)
+            // Not empty while leftovers of an interrupted change are in it; those are the owner's to clear, on their own screen.
+            chosen.isEmpty() -> assessment(
+                summary,
+                failing(d.workspace.trashLeftovers()?.let { "The trash lists no items to delete. ${TrashText.leftovers(it, also = false)}" } ?: "The trash is empty; nothing to delete."),
+                details,
+            )
             else -> {
                 val chosenIds = chosen.map { it.id }.toSet()
                 assessment(
@@ -727,6 +750,9 @@ internal class WorkspaceExport(private val d: OperatorToolDependencies) : Operat
                     else -> return@prepared ToolOutcome.failure(OperatorText.problem(r, "Sharing ${q(path.value)}"))
                 }
                 val result = d.apps.shareFile(file, MimeTypes.of(path.name), app)
+                // Another app has this version now (or gets it when the owner taps Android's notification): it is no longer
+                // only the task's own draft, so the task's next edit keeps it in the trash like any other version.
+                if (result == AppActionResult.Started || result is AppActionResult.Deferred) d.ownVersions.forget(path)
                 // The receiving app can read the file from now on: logged as data leaving, by name and size, never its content.
                 AppTools.logHandOver(
                     d, ctx, result, "Workspace file handed to another app",

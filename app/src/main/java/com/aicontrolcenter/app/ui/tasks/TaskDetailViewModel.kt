@@ -216,7 +216,7 @@ class TaskDetailViewModel(
                     ReviewUi(faces.of(verdict.reviewer), verdict.decision.toStatusLabel(), verdict.summary, verdict.issues, formatCompactTimestamp(verdict.at, now, zone))
                 },
                 usage = usageOf(task.usage),
-                timing = timingOf(task, now, limitPaused = limitPaused(task, requests, now)),
+                timing = timingOf(task, now, limitPaused = limitPaused(task, tree, requests, now)),
                 canRetry = task.status in RETRYABLE && task.kind != TaskKind.REVIEW && task.kind != TaskKind.OBJECTIVE && task.delegationChain.isEmpty(),
                 canCancel = !task.status.isFinished && task.kind != TaskKind.OBJECTIVE,
                 retryNote = retryNote(task),
@@ -244,14 +244,21 @@ class TaskDetailViewModel(
     /**
      * Whether [task]'s time limit is paused now because a call waits for the owner: the task
      * itself waits for the owner (the broker marks it while its call waits), or it waits for a
-     * teammate whose call waits for the owner (team.ask_agent: that request names this task).
+     * teammate whose call waits for the owner (team.ask_agent: that request names this task),
+     * or it waits for a task it delegated (a work task whose parent it is, in [tree]) whose own
+     * limit is paused in one of these ways, any number of delegations down. That is the rule by
+     * which the stored deadlines move when such a wait ends (`StoredDeadlines.moveDelegating`:
+     * work tasks waiting for an agent, up the chain), so the screen says "paused" exactly where
+     * the time-out moment it would otherwise show is about to move.
      * An agent's own ask (`permissions.request`, no tool) never waits and pauses nothing, and
      * a task that is not waiting runs against its limit whatever is open (round 2, B4).
      * [requests] are the ones a live call or ask still waits for (`OwnerRequests.pending`).
      */
-    private fun limitPaused(task: TaskRecord, requests: List<OwnerRequest>, now: Long): Boolean = when (task.status) {
+    private fun limitPaused(task: TaskRecord, tree: List<TaskRecord>, requests: List<OwnerRequest>, now: Long, depth: Int = 0): Boolean = when (task.status) {
         TaskStatus.WAITING_FOR_OWNER -> true
-        TaskStatus.WAITING_FOR_AGENT -> requests.any { it.taskId == task.id && it.toolId != null && it.isOpenAt(now) }
+        TaskStatus.WAITING_FOR_AGENT -> requests.any { it.taskId == task.id && it.toolId != null && it.isOpenAt(now) } ||
+            task.kind == TaskKind.WORK && depth < MAX_DELEGATION_WALK &&
+            tree.any { it.parentId == task.id && it.id != task.id && it.kind == TaskKind.WORK && limitPaused(it, tree, requests, now, depth + 1) }
         else -> false
     }
 
@@ -299,6 +306,9 @@ class TaskDetailViewModel(
 
     private companion object {
         val RETRYABLE = setOf(TaskStatus.FAILED, TaskStatus.TIMED_OUT, TaskStatus.CANCELLED)
+
+        /** How far down delegated tasks are followed; the framework walks the same distance up (`StoredDeadlines`). */
+        const val MAX_DELEGATION_WALK = 16
     }
 }
 
