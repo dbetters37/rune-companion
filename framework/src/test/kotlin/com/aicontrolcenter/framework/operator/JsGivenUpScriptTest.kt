@@ -43,12 +43,14 @@ class JsGivenUpScriptTest {
 
             override fun write(path: String, text: String): String = path
         }
-        val sandbox = JsSandbox(JsLimits(timeoutMs = 100))
+        // A fresh JVM takes a while over its first script; the host function must be reached within the time limit.
+        assertIs<JsOutcome.Finished>(runBlocking { JsSandbox(JsLimits(timeoutMs = 20_000)).run("1 + 1", null, null) })
+        val sandbox = JsSandbox(JsLimits(timeoutMs = 1_000))
         try {
             repeat(2) { n ->
                 val outcome = runBlocking { sandbox.run("workspace.read('a')", null, host) }
                 assertIs<JsOutcome.Stopped>(outcome, "run ${n + 1}")
-                assertEquals(n + 1, threads.size)
+                assertEquals(n + 1, threads.size, "run ${n + 1} reached the host function: $outcome")
                 // Given up: from now on it gets the processor only when nothing else wants it.
                 assertEquals(Thread.MIN_PRIORITY, threads[n].priority, "the priority of the thread of run ${n + 1}, given up")
             }

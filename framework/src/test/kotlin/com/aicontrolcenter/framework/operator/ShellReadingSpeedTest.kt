@@ -73,6 +73,8 @@ class ShellReadingSpeedTest {
         assessTime("echo " + "{".repeat(7_990) + ",")
         assessTime("echo " + "[".repeat(7_990) + "[:a:]")
         assessTime("echo " + "[".repeat(7_990) + "]")
+        // A name that is a pattern is matched against the workspace's entries to pin what it matches.
+        assessTime("cat " + "[".repeat(7_995))
     }
 
     @Test(timeout = 60_000)
@@ -84,8 +86,16 @@ class ShellReadingSpeedTest {
     }
 
     @Test(timeout = 60_000)
+    fun `a script name of open brackets, which is a pattern matched against the workspace, is assessed in well under a second`() {
+        assessTime("sh " + "[".repeat(7_995))
+        assessTime("sh f", mapOf("f" to "sh " + "[".repeat(63_990) + "\n"))
+        assessTime("sh f", mapOf("f" to "sh x" + "[".repeat(63_990) + "*\n"))
+    }
+
+    @Test(timeout = 60_000)
     fun `a pattern name of 64,000 open brackets is made into a pattern at once`() {
-        // A set that is never closed is a plain "[" to the shell; the pattern made of such a name is built in one pass.
+        // A set that is never closed is a plain "[" to the shell; the pattern made of such a name is built in one pass,
+        // and the JVM's engine does not spend seconds preparing a search for it.
         val text = "[".repeat(64_000)
         val segment = ShellCommands.Segment(text, BooleanArray(text.length) { true })
         val started = System.nanoTime()
