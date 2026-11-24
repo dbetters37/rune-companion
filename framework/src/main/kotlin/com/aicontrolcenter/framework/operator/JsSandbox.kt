@@ -577,7 +577,7 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
 
         /** What a run is told that was still inside a host function when its time was up. */
         const val WAITED_FOR_HOST = "The script waited for the workspace longer than its time limit (a shell command may be running, and " +
-            "changes wait until it has ended). It was stopped, and what it was about to read or write was not done. Try again later."
+            "changes wait until it has ended). It was stopped, and a change that was still waiting was not made. Try again later."
         const val MAX_STUCK = 2
         const val MAX_FILES_WRITTEN = 20
 
