@@ -22,6 +22,7 @@ import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.OwnerResult
 import com.aicontrolcenter.core.operator.PermissionGrant
 import com.aicontrolcenter.core.operator.ProtectedPackages
+import com.aicontrolcenter.core.operator.ScreenActionPolicy
 import com.aicontrolcenter.core.operator.SharedFolder
 import com.aicontrolcenter.core.requestId
 import com.aicontrolcenter.core.settings.FrameworkSettings
@@ -187,13 +188,19 @@ class ReferenceOwnerOperatorApps(private val world: OperatorWorld) : OwnerOperat
         if (w.protectedPackages.isProtected(packageName)) return OwnerResult.Refused("$packageName is never operated by agents.")
         val now = w.clock.now()
         val existing = w.apps.get(packageName)
-        if (existing != null && existing.signingCertSha256 != signingCertSha256) {
-            // A different app under the same name: what was granted for the old one does not carry over.
+        val same = existing?.takeIf { it.signingCertSha256 == signingCertSha256 }
+        if (same == null) {
+            // A different app under the same name, or a newly authorised one: nothing granted earlier carries over.
             w.grants.revokeAllWithConstraint(CapabilityConstraint.App(packageName), now)
         }
-        val app = OperatorApp(packageName, label, existing?.takeIf { it.signingCertSha256 == signingCertSha256 }?.authorisedAt ?: now, signingCertSha256)
+        val app = OperatorApp(packageName, label, same?.authorisedAt ?: now, signingCertSha256, same?.policy ?: ScreenActionPolicy.ASK_EVERY_ACTION)
         w.apps.upsert(app)
         return OwnerResult.Done(app)
+    }
+
+    override suspend fun setPolicy(packageName: String, policy: ScreenActionPolicy): OperatorApp? {
+        val app = world.apps.get(packageName) ?: return null
+        return app.copy(policy = policy).also { world.apps.upsert(it) }
     }
 
     override suspend fun withdraw(packageName: String): Boolean {

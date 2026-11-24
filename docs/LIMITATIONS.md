@@ -25,10 +25,10 @@ A normal app cannot do these. The app does not attempt them.
 | Use Android's built-in "computer control" for AI assistants | Reserved for pre-installed assistants | Accessibility service on the real screen |
 | Read another app's private files, databases or tokens | Blocked by the app sandbox, also for all-files access | That app's own export or share feature, or what is visible on screen |
 | Read password fields, secure windows (banking, DRM), or views an app marks as sensitive | Hidden from accessibility services that are not assistive tools. On Android 16+ gestures onto such views are dropped | None. The agent hands back to you |
-| Grant itself permissions or special access | Only you can toggle these in system settings | The app opens the exact settings page and waits. The operator is forbidden from driving Settings, the permission dialog or the installer |
+| Grant itself permissions or special access | Only you can toggle these in system settings | Tools > All tools shows whether Android allows photo access, "Install unknown apps" and Termux commands, and opens Android's own permission dialog or the exact settings page; you decide there. The operator is forbidden from driving Settings, the permission dialog or the installer |
 | Install or uninstall apps silently | Every first-time install and every uninstall shows a system confirmation | The system dialog, after the app's own confirmation |
 | Complete purchases | No API | The agent can navigate to the purchase; the final confirmation is yours |
-| Run downloaded or generated native programs | Blocked for apps targeting Android 10+ | An embedded JavaScript sandbox, shell scripts with system tools inside the app sandbox, or Termux through its official `RUN_COMMAND` intent |
+| Run downloaded or generated native programs | Blocked for apps targeting Android 10+ on Android 10 and later. On Android 9 a program saved in the workspace can still be run by a shell command you approve | An embedded JavaScript sandbox, shell scripts with system tools inside the app sandbox, or Termux through its official `RUN_COMMAND` intent |
 | Read notifications, SMS, call log, contacts, calendar without permission | Each needs its own permission or special access | Could be added later as separate, individually granted capabilities |
 | Capture the screen without consent | Blocked | Screenshots through the enabled accessibility service (Android 11+) |
 | Unlock the phone or answer a biometric prompt | Blocked, and out of bounds | The run pauses while the phone is locked |
@@ -54,10 +54,11 @@ do it.
 | Director and multi-agent work | At least one usable model. Tool-calling models work best | Models without tool calling use a prompted protocol and are less reliable |
 | Files in the app's own workspace | Nothing | |
 | Files and folders in shared storage | You pick each folder once (Storage Access Framework), or turn on "All files access" in settings | `Android/data` and other apps' private folders stay out of reach either way |
-| Photos and media | The media permission, or "selected photos" on Android 14+ | |
-| Opening apps, sharing to apps, opening links | Nothing | |
+| Photos and media | The media permission, or "selected photos" on Android 14+ | Allow it, or change the selection, from Tools > All tools > Photos and videos |
+| Opening apps, sharing to apps, opening links | Nothing | Web addresses and map links open at once. Any other link (payment, call, meeting or chat links) asks you every time and names the app that opens it. Local-only mode blocks links |
 | Operating other apps' screens | You enable the app's accessibility service in Android settings, and authorise each target app in the registry | See section 4 for the extra step on sideloaded apps |
-| Scripts | Nothing for the JavaScript sandbox and in-sandbox shell. Termux, with `allow-external-apps=true` in its properties and the `RUN_COMMAND` permission granted, for full command-line tools | |
+| Scripts | Nothing for the JavaScript sandbox and in-sandbox shell. Termux, with `allow-external-apps=true` in its properties and the `RUN_COMMAND` permission granted (from Tools > All tools > Scripts), for full command-line tools | Shell and Termux commands can use the internet, so local-only mode blocks them, and each run is logged as possible data leaving the phone |
+| Being told that an agent waits for your answer, or is operating an app's screen | Notification permission (Android 13+). The app explains and asks when you turn the phone operator on, or at the first start with it already on | Without it, requests still wait in Approvals and in the chat or task that asked, and are refused if nobody answers in time. Approvals and Tools then show a warning with a button to Android's notification settings; requests that are waiting get their notification once you allow them |
 | Long runs while the screen is off | Notification permission (Android 13+). Exempting the app from battery optimisation helps on aggressive devices | Objectives run in a foreground service with a visible notification and a Pause action. Android only lets the app start it while the app is on screen |
 | Web search by agents | A search provider's API key, or a self-hosted search endpoint | Not built into Android. Without it agents can still open and read specific URLs |
 
@@ -109,6 +110,42 @@ do it.
   (deleting, installing, paying, sending) always need your confirmation. No such tools exist
   yet; they arrive with the phone operator.
 
+- **Replacing files.** In the workspace a file that is replaced (written over, moved over or
+  imported over) goes to the workspace trash first, so it can be restored; it keeps counting
+  against the workspace's 2 GB until the trash is emptied. Shared folders have no trash, so
+  replacing a file there asks you every time, like deleting one. Replacing, editing or trashing
+  more than 20 existing files within 10 minutes asks you, counted per agent and task across
+  calls; the count is kept in memory and starts again when the app restarts.
+- **Shell commands.** You see the command, the text of the scripts it runs (long scripts only
+  in part, with a note to read the rest in Workspace) and the workspace files it names; if any of
+  them change before it runs, it does not run. Files the command reaches only through names it
+  builds at run time are not checked. Commands that send work to the background (`&`, `nohup`,
+  `setsid`, `disown`, job control) are refused, and each command runs in its own process group
+  that is killed when it ends, at its time limit or when it is stopped. A process that
+  deliberately leaves that group (for example through a disguised `setsid`, or a downloaded
+  program on Android 9) could keep running until Android stops the app.
+- **Termux commands** keep running in Termux after the time limit; this app only stops
+  waiting for them.
+- **The JavaScript sandbox** checks every array built-in that would walk a huge array in one
+  step, and refuses it. A construct it does not know of could still keep a script thread busy
+  past its time limit; while two such threads run, new scripts are refused.
+- **Approval previews** show quote marks inside a quoted value as ⟨"⟩, count long runs of one
+  character and piles of combining marks, and mark every invisible or format character, so a
+  value cannot pretend to end early or hide what follows. The preview is always drawn left to
+  right.
+
+- **Questions to you do not outlive what asked them.** A request for a permission or an approval
+  can only be answered while the call that raised it still waits. If the app was stopped, the
+  chat or task was stopped, or you withdrew the app, removed the folder, revoked the permission
+  or pressed Stop on screen control, the request is closed as "No longer waiting" and nothing is
+  done; the agent has to ask again. Its notification is removed with it.
+- **After you refuse a permission**, the same agent cannot ask you for the same permission and
+  target again for 10 minutes: its calls are refused at once and the refusal in Tools > History
+  counts them. This does not apply to approvals of single actions, which are always put to you.
+  To change your mind sooner, give the permission in Tools > Allowed.
+- **An answer "always" or "for this task"** also lets the other calls go on that were waiting
+  for that same permission. It never answers an approval: each hard-to-undo action still asks.
+
 - **Memory sent to cloud models.** When an agent uses a cloud model, memories it recalls or
   finds with its search tool are sent to that provider as part of the conversation, and the
   call is logged as data leaving the device. Local-only mode prevents it. There is no
@@ -121,6 +158,14 @@ do it.
 - **Limits stop work, not cost already spent.** Caps on tasks, messages, model calls and time
   bound how much an objective can do. A cloud provider bills for the calls made before a limit
   was reached.
+- **Recognising a consequential control on another app's screen is a word list.** Every
+  authorised app therefore asks before every tap, typing, scroll, Back and Home by default, with
+  the window's text in the approval. For an app you set to ask only before buying, sending,
+  deleting and similar, the app recognises those from English words on the control, its row and
+  its window, prices, code fields and the keyboard's send key; a control worded some other way
+  (another language, an icon with a misleading label) can run without asking. Screen actions are
+  blocked in local-only mode, because the operated app may send data off the phone. Back is
+  allowed only when the home screen app is authorised too, since it can leave the app.
 
 ## 7. Not verifiable in the build environment
 

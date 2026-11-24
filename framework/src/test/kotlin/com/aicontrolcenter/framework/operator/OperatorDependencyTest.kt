@@ -1,6 +1,7 @@
 package com.aicontrolcenter.framework.operator
 
 import com.aicontrolcenter.core.operator.GrantStore
+import com.aicontrolcenter.core.operator.OperatorAppRepository
 import com.aicontrolcenter.core.operator.OwnerFolders
 import com.aicontrolcenter.core.operator.OwnerGrants
 import com.aicontrolcenter.core.operator.OwnerOperatorApps
@@ -9,6 +10,8 @@ import com.aicontrolcenter.core.operator.OwnerRequestRepository
 import com.aicontrolcenter.core.operator.OwnerRequests
 import com.aicontrolcenter.core.operator.PermissionRepository
 import com.aicontrolcenter.core.operator.ScreenControl
+import com.aicontrolcenter.core.operator.SharedFolderRepository
+import com.aicontrolcenter.core.operator.SharedFolders
 import com.aicontrolcenter.framework.TestWorld
 import com.aicontrolcenter.framework.agents.AgentRunner
 import com.aicontrolcenter.framework.orchestration.DefaultOrchestrator
@@ -22,12 +25,17 @@ import kotlin.test.assertTrue
  * Nothing reachable from the tool executor, the permission broker, the agent runner, the
  * orchestrator or any tool may hold an owner-only port: only the owner's screens can answer a
  * request, grant, or change folders, apps or Stop. Checked on declared field types, following
- * the framework's own classes (and their nested classes) field by field.
+ * the framework's own classes (and their nested classes) field by field. Since review 5 (R2) the
+ * stores of folders and authorised apps and the folder gateway's owner side are forbidden too:
+ * agent-facing classes declare the read-only lookups ([FolderDirectory], [AuthorisedApps]) and
+ * the gateway without taking or releasing access.
  */
 class OperatorDependencyTest {
     private val ownerOnly: List<Class<*>> = listOf(
         OwnerRequests::class.java, OwnerGrants::class.java, OwnerFolders::class.java, OwnerOperatorApps::class.java, ScreenControl::class.java,
         OwnerRequestDecisions::class.java, GrantStore::class.java, OwnerRequestRepository::class.java, PermissionRepository::class.java,
+        // Owner-capable mutators: adding and removing folders and apps, taking and releasing a folder's access.
+        SharedFolderRepository::class.java, OperatorAppRepository::class.java, SharedFolders::class.java,
     )
 
     /** Every type held by a field reachable from [root] through the framework's classes, with the path that reaches it. */
@@ -63,6 +71,8 @@ class OperatorDependencyTest {
         // The walk does find what it looks for: the owner's own services hold the full stores.
         assertTrue(violations(DefaultOwnerRequests::class.java).isNotEmpty())
         assertTrue(violations(DefaultOwnerGrants::class.java).isNotEmpty())
+        assertTrue(violations(DefaultOwnerFolders::class.java).any { it.endsWith(": SharedFolders") }, "the folder gateway's owner side is looked for")
+        assertTrue(violations(DefaultOwnerOperatorApps::class.java).any { it.endsWith(": OperatorAppRepository") }, "and the stores of apps and folders")
         assertTrue(reachable(PermissionBroker::class.java).keys.any { it == com.aicontrolcenter.core.operator.OwnerRequestQueue::class.java })
     }
 

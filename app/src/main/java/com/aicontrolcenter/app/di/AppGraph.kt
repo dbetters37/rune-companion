@@ -56,6 +56,7 @@ import com.aicontrolcenter.framework.operator.DefaultOwnerGrants
 import com.aicontrolcenter.framework.operator.DefaultOwnerOperatorApps
 import com.aicontrolcenter.framework.operator.DefaultOwnerRequests
 import com.aicontrolcenter.framework.operator.LocalWorkspace
+import com.aicontrolcenter.framework.operator.OperatorEgress
 import com.aicontrolcenter.framework.operator.OperatorFacts
 import com.aicontrolcenter.framework.operator.OperatorTaskHooks
 import com.aicontrolcenter.framework.operator.OperatorToolDependencies
@@ -312,11 +313,15 @@ class AppGraph(
                 web = webReader,
                 screen = screenSessions,
                 authorisedApps = authorisedApps,
+                // Read-only: the screen tools check the operator switches and local-only mode before they look at a screen.
+                settings = ports.settings::get,
                 protectedPackages = protectedPackages,
                 shell = ports.operator.shell,
                 termux = ports.operator.termux,
                 clock = ports.clock,
                 ownPackage = ports.operator.ownPackage,
+                // Commands and links that may send data off the phone are logged as data transfers when they run.
+                egress = OperatorEgress.logTo(activityRecorder),
             ),
         ).forEach(registry::register)
         PermissionRequestTool.register(registry, capabilityRequester)

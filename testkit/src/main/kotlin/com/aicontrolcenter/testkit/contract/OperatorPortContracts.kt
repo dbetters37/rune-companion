@@ -18,6 +18,7 @@ import com.aicontrolcenter.core.operator.OwnerOperatorApps
 import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.OwnerResult
 import com.aicontrolcenter.core.operator.PermissionGrant
+import com.aicontrolcenter.core.operator.ScreenActionPolicy
 import com.aicontrolcenter.core.operator.SharedFolder
 import com.aicontrolcenter.core.tools.Capabilities
 import com.aicontrolcenter.core.tools.Capability
@@ -237,5 +238,48 @@ abstract class OwnerPortsContract {
         assertTrue(world.grants.get(onNotes.id)?.revokedAt != null)
         assertTrue(!owner.withdraw(app.packageName))
         assertEquals(listOf("com.example.mail"), owner.observeAll().first().map { it.packageName })
+    }
+
+    @Test
+    fun `a newly authorised app starts with no permission, and the same app authorised again keeps its own`() = runTest {
+        val world = OperatorWorld()
+        val (agent, _, _) = world.furnished()
+        val owner = createApps(world)
+        val calendar = CapabilityConstraint.App("com.example.calendar")
+        // Left behind for a package that is not authorised (an answer that crossed its withdrawal): it must never come into force.
+        val stale = PermissionGrant(GrantId("grt_stale"), agent.id, OperatorCapabilities.SCREEN_OPERATE, calendar, GrantScope.ALWAYS, grantedAt = 1)
+        world.grants.insert(stale)
+        assertIs<OwnerResult.Done<*>>(owner.authorise("com.example.calendar", "Calendar", "aa".repeat(32)))
+        assertTrue(world.grants.get(stale.id)?.revokedAt != null)
+
+        val given = stale.copy(id = GrantId("grt_given"), grantedAt = 2)
+        world.grants.insert(given)
+        assertIs<OwnerResult.Done<*>>(owner.authorise("com.example.calendar", "Calendar", "aa".repeat(32)))
+        assertNull(world.grants.get(given.id)?.revokedAt, "the same app, authorised again, keeps what the owner gave it")
+    }
+
+    @Test
+    fun `an app asks before every action until the owner chooses otherwise, and a different signer starts over`() = runTest {
+        val world = OperatorWorld()
+        val owner = createApps(world)
+        val mail = assertIs<OwnerResult.Done<OperatorApp>>(owner.authorise("com.example.mail", "Mail", "cd".repeat(32))).value
+        assertEquals(ScreenActionPolicy.ASK_EVERY_ACTION, mail.policy)
+        assertEquals(ScreenActionPolicy.ASK_EVERY_ACTION, world.apps.get("com.example.mail")?.policy)
+        val relaxed = owner.setPolicy("com.example.mail", ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY)
+        assertEquals(ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY, relaxed?.policy)
+        assertEquals(ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY, world.apps.get("com.example.mail")?.policy)
+        assertNull(owner.setPolicy("com.example.missing", ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY))
+        assertNull(world.apps.get("com.example.missing"))
+        // Authorising the same app again keeps the owner's choice.
+        assertEquals(
+            ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY,
+            assertIs<OwnerResult.Done<OperatorApp>>(owner.authorise("com.example.mail", "Mail", "cd".repeat(32))).value.policy,
+        )
+        // Another signer is another app: it asks every time again.
+        assertEquals(
+            ScreenActionPolicy.ASK_EVERY_ACTION,
+            assertIs<OwnerResult.Done<OperatorApp>>(owner.authorise("com.example.mail", "Mail", "ef".repeat(32))).value.policy,
+        )
+        assertEquals(ScreenActionPolicy.ASK_EVERY_ACTION, world.apps.get("com.example.mail")?.policy)
     }
 }

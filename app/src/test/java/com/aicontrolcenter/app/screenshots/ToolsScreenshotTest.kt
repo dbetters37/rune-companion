@@ -13,6 +13,8 @@ import com.aicontrolcenter.app.ui.tools.FoldersViewModel
 import com.aicontrolcenter.app.ui.tools.ScreenControlViewModel
 import com.aicontrolcenter.app.ui.tools.applyAccess
 import com.aicontrolcenter.core.RequestId
+import com.aicontrolcenter.core.operator.DeviceAccess
+import com.aicontrolcenter.core.operator.DeviceAccessState
 import com.aicontrolcenter.core.operator.GrantScope
 import com.aicontrolcenter.core.operator.OperatorCapabilities
 import com.aicontrolcenter.core.operator.OwnerResult
@@ -141,6 +143,19 @@ class ToolsScreenshotTest {
     @Config(qualifiers = NARROW)
     fun narrow() {
         app().everyScreen("narrow")
+    }
+
+    @Test
+    fun androidAccess() {
+        val robot = app {
+            atWork()
+            systemScreens.access[DeviceAccess.MEDIA] = DeviceAccessState.SELECTED_ONLY
+            systemScreens.access[DeviceAccess.TERMUX_RUN_COMMAND] = DeviceAccessState.NOT_ALLOWED
+        }.openSectionViaMore("Tools")
+        robot.scrollListTo("Photos and videos (Android permission)")
+        shoot("p5_tools_10_android_access_media_phone")
+        robot.scrollListTo("Run commands in Termux (Termux permission)")
+        shoot("p5_tools_10_android_access_termux_phone")
     }
 
     @Test

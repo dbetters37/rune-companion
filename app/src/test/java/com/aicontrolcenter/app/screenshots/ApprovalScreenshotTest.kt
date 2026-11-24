@@ -26,8 +26,9 @@ import org.robolectric.annotation.GraphicsMode
  * bar, on the rail's Approvals item), the list, and the Approval screen for an action that is
  * hard to undo, whose file name hides a direction change (its answers, Deny leading, and the
  * second step before Approve), and for a permission asked inside a task (its answers and the
- * "Always allow…" step). PHONE, WIDE and NARROW, the answers in the light theme too. Recorded
- * into `build/outputs/roborazzi`.
+ * "Always allow…" step). PHONE, WIDE and NARROW, the answers in the light theme too. Also the
+ * notification explanation and the "Notifications are off" warnings. Recorded into
+ * `build/outputs/roborazzi`.
  */
 @OptIn(ExperimentalRoborazziApi::class)
 @RunWith(AndroidJUnit4::class)
@@ -89,6 +90,27 @@ class ApprovalScreenshotTest {
         shoot("p5_approval_4_permission_answer_phone")
         robot.tap("Always allow…")
         shootScreen("p5_approval_5_always_confirm_phone")
+    }
+
+    /**
+     * Review 5, A2: the explanation shown before Android's own notification question, with the
+     * phone operator on and nothing asked yet, and the warning on the Approvals list and in
+     * Tools while notifications are off.
+     */
+    @Test
+    fun notificationsOff() {
+        val robot = AppRobot(compose).given {
+            waiting()
+            settings.update { it.copy(operatorEnabled = true) }
+            notifications.set(false)
+            notifications.askableForOperator = true
+        }.launch().also { robot = it }
+        robot.waitUntilShown("Be told when an agent waits for you?")
+        shootScreen("p5_notifications_1_explain_phone")
+        robot.tapInDialog("Not now").tap("2 requests wait for your answer")
+        shoot("p5_notifications_2_approvals_phone")
+        robot.back().openSectionViaMore("Tools")
+        shoot("p5_notifications_3_tools_phone")
     }
 
     @Test

@@ -102,6 +102,15 @@ interface PreparedAction {
      * the tool returns [ToolOutcome.changedSinceApproved] without acting.
      */
     suspend fun changedSince(): String?
+
+    /**
+     * [changedSince], called instead of it right after the owner answered a request for this
+     * call. The owner answered inside this app, so what the call acts on may be out of sight for
+     * a moment: a screen action first waits, for a bounded time that does not count against any
+     * time limit, until the app it operates is in front again, and then re-checks everything. The
+     * default is [changedSince].
+     */
+    suspend fun changedSinceOwnerAnswered(): String? = changedSince()
 }
 
 @Serializable

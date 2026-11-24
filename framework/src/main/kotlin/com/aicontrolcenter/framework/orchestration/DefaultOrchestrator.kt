@@ -71,7 +71,8 @@ import kotlin.time.TimeSource
  *    crash recovery treat both alike), and the objective's stored deadline moves with the pauses.
  *  - With [operatorHooks], a task that ends takes its permissions with it (its pending asks are
  *    withdrawn, its TASK and ONCE grants revoked), and the first recovery at start-up withdraws
- *    every request still pending, since no waiter survived the stop.
+ *    every pending request that no live call waits for, since no waiter survived the stop; a
+ *    request raised by work restarted before the recovery ran keeps its waiter and stays open.
  *
  * Wiring: build it, then register the team tools with [TeamTools.registerAll], then call
  * [recoverInterrupted] once at start-up before objectives are started.
@@ -349,7 +350,7 @@ class DefaultOrchestrator(
     }
 
     override suspend fun recoverInterrupted(): List<TaskId> {
-        // No waiter outlives the app: every question still open is withdrawn, before any task is recovered.
+        // No waiter outlives the app: every question left open by an earlier run is withdrawn, before any task is recovered.
         if (operatorHooks != null && startedUp.compareAndSet(false, true)) {
             try {
                 operatorHooks.startUp()

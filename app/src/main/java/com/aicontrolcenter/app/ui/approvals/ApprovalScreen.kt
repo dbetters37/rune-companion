@@ -1,5 +1,6 @@
 package com.aicontrolcenter.app.ui.approvals
 
+import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,6 +26,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -74,6 +76,11 @@ class ApprovalActions(
     val onOpenObjective: (TaskId) -> Unit,
     val onOpenConversation: (ConversationId) -> Unit,
     val onMessageShown: () -> Unit,
+    /** Puts this app behind the one the owner came from, so the app an agent operates comes back. */
+    val onReturnToApp: () -> Unit = {},
+    val onOpenRequest: (RequestId) -> Unit = {},
+    /** The screen went where [ApprovalUiState.afterAnswer] said. */
+    val onAfterAnswerDone: () -> Unit = {},
 )
 
 @Composable
@@ -83,15 +90,24 @@ fun ApprovalRoute(
     onOpenTask: (TaskId) -> Unit,
     onOpenObjective: (TaskId) -> Unit,
     onOpenConversation: (ConversationId) -> Unit,
+    onOpenRequest: (RequestId) -> Unit = {},
 ) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel(key = "approval-${requestId.value}") {
         ApprovalViewModel(requestId, graph.ownerRequests, graph.registryDirectory, graph.capabilities::info, graph.clock)
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val activity = LocalActivity.current
     ApprovalScreen(
         state,
-        ApprovalActions(onBack, viewModel::choose, viewModel::setNote, onOpenTask, onOpenObjective, onOpenConversation, viewModel::messageShown),
+        ApprovalActions(
+            onBack, viewModel::choose, viewModel::setNote, onOpenTask, onOpenObjective, onOpenConversation, viewModel::messageShown,
+            // The whole task goes behind the app the owner came from (on every Android version this app runs on), so the
+            // app an agent operates is in front again and its approved action can run.
+            onReturnToApp = { activity?.moveTaskToBack(true) },
+            onOpenRequest = onOpenRequest,
+            onAfterAnswerDone = viewModel::afterAnswerDone,
+        ),
     )
 }
 
@@ -107,6 +123,21 @@ fun ApprovalRoute(
 @Composable
 fun ApprovalScreen(state: ApprovalUiState, actions: ApprovalActions) {
     val request = state.request
+    // Allowed a call on another app's screen: open the same call's next question, or step aside so that app comes back.
+    LaunchedEffect(state.afterAnswer) {
+        when (val next = state.afterAnswer) {
+            null -> return@LaunchedEffect
+            is AfterAnswer.OpenRequest -> {
+                actions.onAfterAnswerDone()
+                actions.onOpenRequest(next.requestId)
+            }
+            is AfterAnswer.ReturnToApp -> {
+                actions.onAfterAnswerDone()
+                actions.onReturnToApp()
+                actions.onBack()
+            }
+        }
+    }
     ScreenScaffold(
         title = request?.title ?: "Request",
         onBack = actions.onBack,
@@ -208,7 +239,8 @@ private fun WhatItDoes(request: RequestUi) {
                     }
                 }
                 Text(
-                    "Shown exactly as the agent gave it. Highlighted marks stand for line breaks, tabs, runs of spaces and hidden characters.",
+                    "Shown exactly as the agent gave it. Highlighted marks stand for line breaks, tabs, repeated characters, quote marks inside " +
+                        "a quoted value (⟨\"⟩) and hidden characters.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -276,6 +308,7 @@ private fun Answer(request: RequestUi, state: ApprovalUiState, actions: Approval
     Column(verticalArrangement = Arrangement.spacedBy(Spacing.md)) {
         SectionHeader("Your answer")
         request.hardToUndo?.let { InfoBanner(title = request.risk.text, text = it, tone = StatusTone.UNAVAILABLE, icon = AppIcons.StatusAttention) }
+        request.returnsToApp?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         AppTextField(
             value = state.note,
             onValueChange = actions.onNoteChange,

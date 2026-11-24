@@ -31,8 +31,8 @@ internal object AiccMigrations {
  *
  * Then [COPY_AUTHORISED_APPS] carries the owner's earlier choice over: every AI app with
  * `accessibility_authorized` set becomes an operator app (package, label, stored signing
- * certificate, authorised now), because `operator_apps` is from now on the one record of which
- * apps may be operated through the screen. Where several AI app rows share a package (storage
+ * certificate, authorised now, asking before every action), because `operator_apps` is from now
+ * on the one record of which apps may be operated through the screen. Where several AI app rows share a package (storage
  * allows it; the registry avoids it), the oldest authorised one is used, as a lookup by
  * package returns the oldest row.
  */
@@ -61,17 +61,19 @@ internal object Migration4To5 : Migration(4, 5) {
             "`added_at` INTEGER NOT NULL, `read_only` INTEGER NOT NULL, PRIMARY KEY(`id`))",
         "CREATE UNIQUE INDEX IF NOT EXISTS `index_shared_folders_tree_uri` ON `shared_folders` (`tree_uri`)",
         "CREATE TABLE IF NOT EXISTS `operator_apps` (`package_name` TEXT NOT NULL, `label` TEXT NOT NULL, " +
-            "`authorised_at` INTEGER NOT NULL, `signing_cert_sha256` TEXT, PRIMARY KEY(`package_name`))",
+            "`authorised_at` INTEGER NOT NULL, `signing_cert_sha256` TEXT, `action_policy` TEXT NOT NULL, PRIMARY KEY(`package_name`))",
     )
 
     /**
      * Copies the authorised AI apps into `operator_apps`; the one parameter is the time of the
      * migration (epoch ms). Version 4's column names, which this step must keep using whatever
-     * later happens to the entity classes. `1` is how SQLite stores `true`.
+     * later happens to the entity classes. `1` is how SQLite stores `true`. Every copied app asks
+     * before every screen action (`ScreenActionPolicy.ASK_EVERY_ACTION`), as a newly authorised
+     * one does.
      */
     internal const val COPY_AUTHORISED_APPS =
-        "INSERT INTO `operator_apps` (`package_name`, `label`, `authorised_at`, `signing_cert_sha256`) " +
-            "SELECT a.`package_name`, a.`label`, ?, a.`signing_cert_sha256` FROM `ai_apps` AS a " +
+        "INSERT INTO `operator_apps` (`package_name`, `label`, `authorised_at`, `signing_cert_sha256`, `action_policy`) " +
+            "SELECT a.`package_name`, a.`label`, ?, a.`signing_cert_sha256`, 'ASK_EVERY_ACTION' FROM `ai_apps` AS a " +
             "WHERE a.`accessibility_authorized` = 1 AND NOT EXISTS (SELECT 1 FROM `ai_apps` AS b " +
             "WHERE b.`package_name` = a.`package_name` AND b.`accessibility_authorized` = 1 " +
             "AND (b.`first_seen_at` < a.`first_seen_at` OR (b.`first_seen_at` = a.`first_seen_at` AND b.`id` < a.`id`)))"

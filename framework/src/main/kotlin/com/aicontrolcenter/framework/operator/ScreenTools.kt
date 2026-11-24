@@ -5,6 +5,7 @@ import com.aicontrolcenter.core.operator.DocResult
 import com.aicontrolcenter.core.operator.GlobalAction
 import com.aicontrolcenter.core.operator.OperatorApp
 import com.aicontrolcenter.core.operator.RelativePath
+import com.aicontrolcenter.core.operator.ScreenActionPolicy
 import com.aicontrolcenter.core.operator.ScreenElement
 import com.aicontrolcenter.core.operator.ScreenPreview
 import com.aicontrolcenter.core.operator.ScreenResult
@@ -12,6 +13,7 @@ import com.aicontrolcenter.core.operator.ScreenServiceState
 import com.aicontrolcenter.core.operator.ScreenSnapshot
 import com.aicontrolcenter.core.operator.ScreenTarget
 import com.aicontrolcenter.core.operator.ScrollDirection
+import com.aicontrolcenter.core.tasks.WaitClock
 import com.aicontrolcenter.core.tools.ActionAssessment
 import com.aicontrolcenter.core.tools.CapabilityConstraint
 import com.aicontrolcenter.core.tools.RiskLevel
@@ -19,6 +21,8 @@ import com.aicontrolcenter.core.tools.Tool
 import com.aicontrolcenter.core.tools.ToolContext
 import com.aicontrolcenter.core.tools.ToolOutcome
 import com.aicontrolcenter.framework.operator.OperatorText.q
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.buildJsonObject
@@ -31,12 +35,24 @@ import java.util.Locale
 /**
  * The screen tools (`screen.*`) over the accessibility service
  * ([com.aicontrolcenter.core.operator.ScreenOperator]). Every call is constrained to the app in
- * front ([CapabilityConstraint.App]). Before anything of a screen is looked at, the tool checks
- * that the app is authorised and not protected; a refused call's summary holds no screen text.
- * Taps and typing are CONSEQUENTIAL when [ConsequentialControls.consequentialReason] finds the
- * control consequential, or when typing presses the keyboard's action key; their preview then
- * also shows what the fields on screen hold ([ScreenPreview.details]). HOME names the launcher in
- * [ActionAssessment.leadsTo], so it is refused unless the launcher is authorised too.
+ * front ([CapabilityConstraint.App]).
+ *
+ * Before anything of a screen is looked at, the owner's switches are read fresh (phone
+ * operation, screen control and, for the tools that act, local-only mode), then the app in front
+ * is checked to be authorised and not protected; a refused call's summary holds no screen text.
+ *
+ * Tap, type, scroll, Back and Home act on the app, which may send data off the phone, so
+ * local-only mode refuses them. Every app asks before each of them by default
+ * ([ScreenActionPolicy.ASK_EVERY_ACTION]): such a call is CONSEQUENTIAL. For an app the owner set
+ * to ask only before consequential actions, [ConsequentialControls] decides from the control, its
+ * row and its window. A consequential call's preview shows the window's title and every text in it
+ * ([ScreenPreview]), read without starting a session; before it acts, the window must still show
+ * exactly that (its digest is compared) and the control must be the same one. Right after the owner
+ * answered (inside this app), the call first waits, outside every time limit, for the app to be in
+ * front again ([com.aicontrolcenter.core.tools.PreparedAction.changedSinceOwnerAnswered]).
+ *
+ * Back and Home name the launcher in [ActionAssessment.leadsTo] (Back can leave the app too), so
+ * they are refused unless the owner authorised the launcher as well.
  */
 internal object ScreenTools {
     fun create(d: OperatorToolDependencies): List<Tool> = listOf(
@@ -47,6 +63,9 @@ internal object ScreenTools {
     class Front(val packageName: String, val app: OperatorApp?, val protected: Boolean) {
         val label: String get() = app?.label ?: packageName
         val constraint get() = CapabilityConstraint.App(packageName)
+
+        /** Every action in the app asks the owner (the default), rather than only consequential ones. */
+        val asksEveryTime: Boolean get() = (app?.policy ?: ScreenActionPolicy.ASK_EVERY_ACTION) == ScreenActionPolicy.ASK_EVERY_ACTION
 
         /** Why this app is not operated, or null. */
         val refusal: String?
@@ -59,7 +78,16 @@ internal object ScreenTools {
         fun name(): String = "${q(label)} ($packageName)"
     }
 
-    suspend fun front(d: OperatorToolDependencies): Front {
+    /**
+     * The app in front, after the owner's switches, read now: nothing of a screen is looked at
+     * for a call the broker would refuse on them. [acting]: the tool acts on the app, which may
+     * send data off the phone, so local-only mode refuses it.
+     */
+    suspend fun front(d: OperatorToolDependencies, title: String, acting: Boolean): Front {
+        val settings = d.settings()
+        if (!settings.operatorEnabled) throw ToolCallRejected("Phone operation is switched off in Settings, so \"$title\" cannot be used.")
+        if (!settings.accessibilityOperatorEnabled) throw ToolCallRejected("Screen control is switched off in Settings.")
+        if (acting && settings.localOnlyMode) throw ToolCallRejected(localOnly(title))
         val state = d.screen.state.value
         if (state != ScreenServiceState.READY) throw ToolCallRejected(unavailable(state))
         if (d.screen.stopped.value) throw ToolCallRejected(STOPPED)
@@ -68,11 +96,72 @@ internal object ScreenTools {
         return Front(window.packageName, if (protected) null else d.authorisedApps.get(window.packageName), protected)
     }
 
+    fun localOnly(title: String): String =
+        "Local-only mode is on, and \"$title\" may send data off this phone through the app it operates, so it was not run."
+
     /** Why the app in front is no longer [packageName], or null. */
     suspend fun frontChange(d: OperatorToolDependencies, packageName: String): String? {
         val now = d.screen.activeWindow()?.packageName
         return if (now == packageName) null else "the app in front changed (it is now ${now ?: "unknown"})"
     }
+
+    /** For a call assessed as not consequential: why it must now ask, because the owner set its app to ask before every action. */
+    suspend fun policyChange(d: OperatorToolDependencies, packageName: String): String? {
+        val app = d.authorisedApps.get(packageName) ?: return "the app is no longer authorised for screen control"
+        return if (app.policy == ScreenActionPolicy.ASK_EVERY_ACTION) "the owner set the app to ask before every action" else null
+    }
+
+    /** Why [packageName]'s window no longer shows what was approved ([ScreenPreview.digest]), or null. */
+    suspend fun windowChange(d: OperatorToolDependencies, packageName: String, digest: String): String? =
+        when (val r = d.screen.inspect(packageName)) {
+            is ScreenResult.Ok -> if (ScreenPreview.digest(r.value) == digest) null else "what the window shows changed"
+            else -> "the window could not be read again (${problem(r, "reading it").removeSuffix(".")})"
+        }
+
+    /**
+     * [check], right after the owner answered a request for a call on [front]'s app. The owner
+     * answered inside this app, which then steps aside: first wait, for at most
+     * [OperatorLimits.screenReturnMs], until [front]'s app is in front again, then until [check]
+     * holds, for at most [OperatorLimits.screenSettleMs] (a window can take a moment to show again
+     * what it showed). Time the owner spends, so it counts against no time limit
+     * ([WaitClock.pausedWhile]). Stop ends the wait.
+     */
+    suspend fun afterOwnerAnswered(d: OperatorToolDependencies, front: Front, check: suspend () -> String?): String? = WaitClock.pausedWhile {
+        when (withTimeoutOrNull(d.limits.screenReturnMs) { awaitFront(d, front.packageName) }) {
+            null -> {
+                val now = d.screen.activeWindow()?.packageName ?: "unknown"
+                return@pausedWhile "the app in front changed (it is now $now; ${q(front.label)} did not come back within " +
+                    "${d.limits.screenReturnMs / 1000} seconds of the owner's answer)"
+            }
+            false -> return@pausedWhile "the owner pressed Stop on screen control"
+            true -> Unit
+        }
+        var reason = check()
+        if (reason != null) {
+            withTimeoutOrNull(d.limits.screenSettleMs) {
+                while (reason != null) {
+                    delay(d.limits.screenPollMs)
+                    reason = check()
+                }
+            }
+        }
+        reason
+    }
+
+    /** True once [packageName] is in front; false when the owner pressed Stop first. */
+    private suspend fun awaitFront(d: OperatorToolDependencies, packageName: String): Boolean {
+        while (true) {
+            if (d.screen.stopped.value) return false
+            if (d.screen.activeWindow()?.packageName == packageName) return true
+            delay(d.limits.screenPollMs)
+        }
+    }
+
+    /** Why an action in [front]'s app asks when the app asks before every action; null for an app that asks only before consequential ones. */
+    fun everyTime(front: Front): String? = if (front.asksEveryTime) "${front.name()} is set to ask you before every action" else null
+
+    /** Where data may go when an agent acts in [front]'s app. */
+    fun dataLine(front: Front): String = "May send data off this phone through ${front.name()}."
 
     fun unavailable(state: ScreenServiceState): String = "Screen control is not available: " + when (state) {
         ScreenServiceState.NOT_ENABLED -> "the owner has not switched on this app's accessibility service."
@@ -150,10 +239,6 @@ internal object ScreenTools {
         if (s.truncated) append("(More elements were left out; scroll to reach them.)\n")
     }.trimEnd()
 
-    /** The text fields of a snapshot, by what names them, so a change between approval and action is seen. */
-    fun fields(s: ScreenSnapshot?): List<Pair<String, String?>> =
-        s?.elements?.filter { it.editable }?.map { (it.resourceId ?: it.hint ?: it.description ?: "field") to it.text }.orEmpty()
-
     /** A refused call's assessment: the app only, no screen text. */
     fun refused(tool: OperatorTool, front: Front, verb: String, failing: PreparedCall): ActionAssessment =
         ActionAssessment(tool.spec.risk, "$verb on the screen of ${front.packageName}", constraint = front.constraint, prepared = failing)
@@ -168,11 +253,11 @@ internal class ScreenRead(private val d: OperatorToolDependencies) : OperatorToo
 ) {
     override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
         val max = Args(arguments).int("max_elements", 150, 1..d.limits.maxScreenElements)
-        val front = ScreenTools.front(d)
+        val front = ScreenTools.front(d, spec.title, acting = false)
         front.refusal?.let { return ScreenTools.refused(this, front, "Read", failing(it)) }
         return assessment(
             "Read the screen of ${front.name()}",
-            prepared { ctx ->
+            prepared(afterOwner = { ScreenTools.afterOwnerAnswered(d, front) { ScreenTools.frontChange(d, front.packageName) } }) { ctx ->
                 when (val r = d.screen.read(ctx.agent.name, front.packageName, max)) {
                     is ScreenResult.Ok -> ToolOutcome.success(ScreenTools.format(r.value, front), snapshotJson(r.value))
                     else -> ToolOutcome.failure(ScreenTools.problem(r, "Reading the screen"))
@@ -204,11 +289,11 @@ internal class ScreenWaitFor(private val d: OperatorToolDependencies) : Operator
         val args = Args(arguments)
         val text = args.text("text", 500)!!
         val timeout = args.long("timeout_ms", 10_000, 100..d.limits.maxWaitMs)
-        val front = ScreenTools.front(d)
+        val front = ScreenTools.front(d, spec.title, acting = false)
         front.refusal?.let { return ScreenTools.refused(this, front, "Wait", failing(it)) }
         return assessment(
             "Wait up to ${timeout / 1000.0} s for ${q(text)} to appear in ${front.name()}",
-            prepared { ctx ->
+            prepared(afterOwner = { ScreenTools.afterOwnerAnswered(d, front) { ScreenTools.frontChange(d, front.packageName) } }) { ctx ->
                 when (val r = d.screen.waitFor(ctx.agent.name, front.packageName, text, timeout)) {
                     is ScreenResult.Ok -> ToolOutcome.success("It appeared: ${ScreenTools.line(r.value)} (snapshot ${r.value.snapshotId}).")
                     else -> ToolOutcome.failure(ScreenTools.problem(r, "Waiting for ${q(text)}"))
@@ -227,24 +312,21 @@ internal class ScreenScreenshot(private val d: OperatorToolDependencies) : Opera
 ) {
     override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
         val args = Args(arguments)
-        val front = ScreenTools.front(d)
+        val front = ScreenTools.front(d, spec.title, acting = false)
         val to = if (args.has("to")) args.entryPath("to") else RelativePath.of("Screenshots/${front.packageName}-${STAMP.format(Instant.ofEpochMilli(d.clock.now()))}.png")
         if (!to.name.lowercase(Locale.ROOT).endsWith(".png")) throw ToolCallRejected("\"to\" must end in .png.")
         front.refusal?.let { return ScreenTools.refused(this, front, "Take a screenshot", failing(it)) }
         val summary = "Save a screenshot of ${front.name()} to the workspace as ${q(to.value)}"
         val target = WorkspaceStates.of(d.workspace, to)
         if (target.exists) return assessment(summary, failing("${q(to.value)} already exists; screenshots never replace a file."), constraint = front.constraint)
+        val check: suspend () -> String? = { ScreenTools.frontChange(d, front.packageName) ?: target.changeTo(WorkspaceStates.of(d.workspace, to), q(to.value)) }
         return assessment(
             summary,
-            prepared(check = { ScreenTools.frontChange(d, front.packageName) ?: target.changeTo(WorkspaceStates.of(d.workspace, to), q(to.value)) }) { ctx ->
-                to.parent?.takeIf { !it.isRoot }?.let { parent ->
-                    (d.workspace.makeFolder(parent) as? DocResult.Ok) ?: return@prepared ToolOutcome.failure("The folder ${q(parent.value)} could not be created.")
-                }
-                val file = when (val r = d.workspace.resolve(to)) {
-                    is DocResult.Ok -> r.value
-                    else -> return@prepared ToolOutcome.failure(OperatorText.problem(r, "Saving to ${q(to.value)}"))
-                }
-                when (val r = d.screen.screenshot(ctx.agent.name, front.packageName, file)) {
+            prepared(check = check, afterOwner = { ScreenTools.afterOwnerAnswered(d, front, check) }) { ctx ->
+                // Through the workspace, so its size limits, lock and change signal apply to the picture.
+                val saved = d.workspace.receive(to, d.limits.maxCopyBytes) { file, _ -> DocResult.Ok(d.screen.screenshot(ctx.agent.name, front.packageName, file)) }
+                when (val r = (saved as? DocResult.Ok)?.value) {
+                    null -> ToolOutcome.failure(OperatorText.problem(saved, "Saving to ${q(to.value)}"))
                     is ScreenResult.Ok -> ToolOutcome.success("Saved a screenshot of ${front.label} as ${q(to.value)} (${r.value.widthPx}×${r.value.heightPx}, ${OperatorText.size(r.value.sizeBytes)}).")
                     else -> ToolOutcome.failure(ScreenTools.problem(r, "Taking the screenshot"))
                 }
@@ -259,21 +341,95 @@ internal class ScreenScreenshot(private val d: OperatorToolDependencies) : Opera
     }
 }
 
-/** What tap and type share: find the control, classify it, and re-check it before acting. */
-internal abstract class ScreenControlTool(
+/**
+ * What the tools that act on an app (tap, type, scroll, Back, Home) share: the owner's switches
+ * with local-only mode, the per-app policy, the whole-window preview of a consequential call and
+ * the re-checks before it acts.
+ */
+internal abstract class ScreenActingTool(
     protected val d: OperatorToolDependencies,
     id: String,
     title: String,
     description: String,
     parameters: JsonObject,
 ) : OperatorTool(id, title, description, parameters) {
+    /** The app in front for an action; local-only mode refuses it. */
+    protected suspend fun front(): ScreenTools.Front = ScreenTools.front(d, spec.title, acting = true)
+
+    /** The window, read without starting a session; null with an assessment that fails with why it could not be read. */
+    protected suspend fun inspect(front: ScreenTools.Front, summary: String, leadsTo: String? = null): Pair<ScreenSnapshot?, ActionAssessment?> =
+        when (val r = d.screen.inspect(front.packageName)) {
+            is ScreenResult.Ok -> r.value to null
+            else -> null to assessment(
+                summary, failing(ScreenTools.problem(r, "Reading the window to show the owner")), constraint = front.constraint, leadsTo = leadsTo,
+            )
+        }
+
+    /**
+     * The assessment of an action in [front]'s app: CONSEQUENTIAL when [reason] is not null, else
+     * MODIFYING.
+     * - The details name the app (and [element], the control acted on, with its row), then
+     *   [extra], where data may go, and why the owner is asked.
+     * - A consequential action shows the whole [window] (read now when not given): title, fields
+     *   and every text, and pins its [ScreenPreview.digest].
+     * - Before acting: the app is still in front; a MODIFYING call's app was not set meanwhile to
+     *   ask before every action; [pinned] (the control, the launcher) still holds; a consequential
+     *   call's window shows exactly what was approved.
+     * - Right after the owner answered, those checks wait for the app to be in front again
+     *   ([ScreenTools.afterOwnerAnswered]).
+     */
+    protected suspend fun acting(
+        front: ScreenTools.Front,
+        summary: String,
+        element: ScreenElement?,
+        reason: String?,
+        extra: List<String> = emptyList(),
+        window: ScreenSnapshot? = null,
+        leadsTo: String? = null,
+        pinned: suspend () -> String? = { null },
+        act: suspend (ToolContext) -> ToolOutcome,
+    ): ActionAssessment {
+        val consequential = reason != null
+        val shown = when {
+            !consequential -> null
+            window != null -> window
+            else -> inspect(front, summary, leadsTo).let { (read, failed) -> read ?: return failed!! }
+        }
+        val digest = shown?.let(ScreenPreview::digest)
+        val where = if (element != null) ScreenPreview.details(front.label, element, shown, consequential) else ScreenPreview.windowDetails(front.label, front.packageName, shown)
+        val details = where + extra + ScreenTools.dataLine(front) + listOfNotNull(reason?.let { "Asked because $it." })
+        val check: suspend () -> String? = {
+            ScreenTools.frontChange(d, front.packageName)
+                ?: (if (!consequential) ScreenTools.policyChange(d, front.packageName) else null)
+                ?: pinned()
+                ?: digest?.let { ScreenTools.windowChange(d, front.packageName, it) }
+        }
+        return assessment(
+            summary,
+            prepared(check = check, afterOwner = { ScreenTools.afterOwnerAnswered(d, front, check) }, action = act),
+            details,
+            risk = if (consequential) RiskLevel.CONSEQUENTIAL else RiskLevel.MODIFYING,
+            constraint = front.constraint,
+            leadsTo = leadsTo,
+        )
+    }
+}
+
+/** What tap and type share: find the control, classify it, and re-check it before acting. */
+internal abstract class ScreenControlTool(
+    d: OperatorToolDependencies,
+    id: String,
+    title: String,
+    description: String,
+    parameters: JsonObject,
+) : ScreenActingTool(d, id, title, description, parameters) {
     /** What was found for one call. */
     protected class Found(val front: ScreenTools.Front, val target: ScreenTarget, val element: ScreenElement)
 
     /** The element, or an assessment that refuses (app not usable) or fails (element not found). */
     protected suspend fun find(args: Args, verb: String): Pair<Found?, ActionAssessment?> {
         val target = ScreenTools.target(args)!!
-        val front = ScreenTools.front(d)
+        val front = front()
         front.refusal?.let { return null to ScreenTools.refused(this, front, verb, failing(it)) }
         return when (val r = d.screen.find(front.packageName, target)) {
             is ScreenResult.Ok -> Found(front, target, r.value) to null
@@ -281,48 +437,39 @@ internal abstract class ScreenControlTool(
         }
     }
 
-    /** The current fields, for a consequential preview; null when the screen cannot be read. */
-    protected suspend fun snapshot(context: ToolContext, front: ScreenTools.Front): ScreenSnapshot? =
-        (d.screen.read(context.agent.name, front.packageName) as? ScreenResult.Ok)?.value
-
-    /** Re-checks, after approval, the app, the control and (when consequential) the fields shown to the owner. */
-    protected suspend fun changed(found: Found, context: ToolContext, shownFields: List<Pair<String, String?>>?): String? {
-        ScreenTools.frontChange(d, found.front.packageName)?.let { return it }
+    /** Why [found]'s control is no longer the one assessed, or null. */
+    protected suspend fun controlChange(found: Found): String? {
         val again = d.screen.find(found.front.packageName, found.target)
-        if (again !is ScreenResult.Ok || !again.value.sameControlAs(found.element)) return "the control is no longer on screen as it was"
-        if (shownFields != null && ScreenTools.fields(snapshot(context, found.front)) != shownFields) return "the text in the fields on screen changed"
-        return null
+        return if (again !is ScreenResult.Ok || !again.value.sameControlAs(found.element)) "the control is no longer on screen as it was" else null
     }
 }
 
 /** screen.tap */
 internal class ScreenTap(d: OperatorToolDependencies) : ScreenControlTool(
     d, "screen.tap", "Tap on screen",
-    "Taps a control in the app in front, named by its number from screen_read or its exact text. Buying, sending, deleting and " +
-        "similar controls, and controls without a label, need the owner's approval each time.",
+    "Taps a control in the app in front, named by its number from screen_read or its exact text. The owner approves each tap, " +
+        "unless the owner set that app to ask only before buying, sending, deleting and similar.",
     objectSchema { with(ScreenTools) { targetProps("control") } },
 ) {
     override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
         val (found, early) = find(Args(arguments), "Tap")
         if (found == null) return early!!
+        val front = found.front
         val element = found.element
-        val reason = ConsequentialControls.consequentialReason(element)
-        val snapshot = if (reason != null) snapshot(context, found.front) else null
-        val shown = if (reason != null) ScreenTools.fields(snapshot) else null
-        val details = ScreenPreview.details(found.front.label, element, snapshot, consequential = reason != null) +
-            listOfNotNull(reason?.let { "Asked because $it." })
-        return assessment(
-            "Tap ${ScreenPreview.nameOf(element)} in ${found.front.name()}",
-            prepared(check = { changed(found, context, shown) }) { ctx ->
-                when (val r = d.screen.tap(ctx.agent.name, element)) {
-                    is ScreenResult.Ok -> ToolOutcome.success("Tapped ${ScreenPreview.nameOf(element)}. Read the screen again to see what changed.")
-                    else -> ToolOutcome.failure(ScreenTools.problem(r, "Tapping ${ScreenPreview.nameOf(element)}"))
-                }
-            },
-            details,
-            risk = if (reason != null) RiskLevel.CONSEQUENTIAL else RiskLevel.MODIFYING,
-            constraint = found.front.constraint,
-        )
+        val summary = "Tap ${ScreenPreview.nameOf(element)} in ${front.name()}"
+        var window: ScreenSnapshot? = null
+        val reason = ScreenTools.everyTime(front) ?: ConsequentialControls.consequentialReason(element) ?: run {
+            // "OK", "Yes", "Continue": what they answer is in the window around them.
+            if (!ConsequentialControls.isPositive(element)) return@run null
+            window = inspect(front, summary).let { (read, failed) -> read ?: return failed!! }
+            ConsequentialControls.consequentialReason(element, window)
+        }
+        return acting(front, summary, element, reason, window = window, pinned = { controlChange(found) }) { ctx ->
+            when (val r = d.screen.tap(ctx.agent.name, element)) {
+                is ScreenResult.Ok -> ToolOutcome.success("Tapped ${ScreenPreview.nameOf(element)}. Read the screen again to see what changed.")
+                else -> ToolOutcome.failure(ScreenTools.problem(r, "Tapping ${ScreenPreview.nameOf(element)}"))
+            }
+        }
     }
 }
 
@@ -330,7 +477,8 @@ internal class ScreenTap(d: OperatorToolDependencies) : ScreenControlTool(
 internal class ScreenType(d: OperatorToolDependencies) : ScreenControlTool(
     d, "screen.type", "Type on screen",
     "Replaces the text of an editable field in the app in front. With \"submit\": true it then presses the keyboard's action key " +
-        "(send, go, search), which needs the owner's approval each time.",
+        "(send, go, search). The owner approves each time, unless the owner set that app to ask only before consequential actions; " +
+        "pressing the action key and typing a code always ask.",
     objectSchema("text") {
         with(ScreenTools) { targetProps("field") }
         stringProp("text", "The text to put in the field.")
@@ -344,34 +492,28 @@ internal class ScreenType(d: OperatorToolDependencies) : ScreenControlTool(
         val submit = args.bool("submit", false)
         val (found, early) = find(args, "Type")
         if (found == null) return early!!
+        val front = found.front
         val element = found.element
-        val summary = "Type ${q(text)} into ${ScreenPreview.nameOf(element)} in ${found.front.name()}" +
+        val summary = "Type ${q(text)} into ${ScreenPreview.nameOf(element)} in ${front.name()}" +
             if (submit) ", then press the keyboard's action key (it may send)" else ""
-        if (!element.editable) return assessment(summary, failing("${ScreenPreview.nameOf(element)} does not take text."), constraint = found.front.constraint)
-        val reason = ConsequentialControls.consequentialReason(element) ?: if (submit) "pressing the keyboard's action key may send what is typed" else null
-        val snapshot = if (reason != null) snapshot(context, found.front) else null
-        val shown = if (reason != null) ScreenTools.fields(snapshot) else null
-        val details = ScreenPreview.details(found.front.label, element, snapshot, consequential = reason != null) +
-            listOfNotNull("Text to type: ${q(text)}", "Then: press the keyboard's action key.".takeIf { submit }, reason?.let { "Asked because $it." })
-        return assessment(
-            summary,
-            prepared(check = { changed(found, context, shown) }) { ctx ->
-                when (val r = d.screen.type(ctx.agent.name, element, text, submit)) {
-                    is ScreenResult.Ok -> ToolOutcome.success("Typed into ${ScreenPreview.nameOf(element)}${if (submit) " and pressed the action key" else ""}.")
-                    else -> ToolOutcome.failure(ScreenTools.problem(r, "Typing into ${ScreenPreview.nameOf(element)}"))
-                }
-            },
-            details,
-            risk = if (reason != null) RiskLevel.CONSEQUENTIAL else RiskLevel.MODIFYING,
-            constraint = found.front.constraint,
-        )
+        if (!element.editable) return assessment(summary, failing("${ScreenPreview.nameOf(element)} does not take text."), constraint = front.constraint)
+        val reason = ScreenTools.everyTime(front) ?: ConsequentialControls.typingReason(element)
+            ?: if (submit) "pressing the keyboard's action key may send what is typed" else null
+        val extra = listOfNotNull("Text to type: ${q(text)}", "Then: press the keyboard's action key.".takeIf { submit })
+        return acting(front, summary, element, reason, extra, pinned = { controlChange(found) }) { ctx ->
+            when (val r = d.screen.type(ctx.agent.name, element, text, submit)) {
+                is ScreenResult.Ok -> ToolOutcome.success("Typed into ${ScreenPreview.nameOf(element)}${if (submit) " and pressed the action key" else ""}.")
+                else -> ToolOutcome.failure(ScreenTools.problem(r, "Typing into ${ScreenPreview.nameOf(element)}"))
+            }
+        }
     }
 }
 
 /** screen.scroll */
 internal class ScreenScroll(d: OperatorToolDependencies) : ScreenControlTool(
     d, "screen.scroll", "Scroll the screen",
-    "Scrolls the app in front, or one scrollable element of it. \"down\" shows what is further down.",
+    "Scrolls the app in front, or one scrollable element of it. \"down\" shows what is further down. The owner approves each " +
+        "time, unless the owner set that app to ask only before consequential actions (a slider labelled \"Slide to pay\" still asks).",
     objectSchema("direction") {
         stringProp("direction", "Which way to bring content into view.", listOf("up", "down", "left", "right"))
         with(ScreenTools) { targetProps("scrollable element (optional)") }
@@ -383,84 +525,100 @@ internal class ScreenScroll(d: OperatorToolDependencies) : ScreenControlTool(
         val direction = ScrollDirection.entries.firstOrNull { it.name.equals(raw.trim(), ignoreCase = true) }
             ?: throw ToolCallRejected("\"direction\" must be up, down, left or right.")
         val word = direction.name.lowercase(Locale.ROOT)
-        val front: ScreenTools.Front
-        var element: ScreenElement? = null
-        var target: ScreenTarget? = null
         if (ScreenTools.target(args, optional = true) != null) {
             val (found, early) = find(args, "Scroll")
             if (found == null) return early!!
-            front = found.front
-            element = found.element
-            target = found.target
-        } else {
-            front = ScreenTools.front(d)
-            front.refusal?.let { return ScreenTools.refused(this, front, "Scroll", failing(it)) }
+            val element = found.element
+            // The same rule as a tap, on what is scrolled: a slider "Slide to pay" asks.
+            val reason = ScreenTools.everyTime(found.front) ?: ConsequentialControls.consequentialReason(element)
+            return acting(found.front, "Scroll ${ScreenPreview.nameOf(element)} $word in ${found.front.name()}", element, reason, pinned = { controlChange(found) }) { ctx ->
+                scroll(ctx, found.front, direction, element)
+            }
         }
-        return assessment(
-            "Scroll ${element?.let { ScreenPreview.nameOf(it) + " " } ?: ""}$word in ${front.name()}",
-            prepared(check = {
-                ScreenTools.frontChange(d, front.packageName) ?: if (element != null && target != null) {
-                    val again = d.screen.find(front.packageName, target)
-                    if (again !is ScreenResult.Ok || !again.value.sameControlAs(element)) "the element is no longer on screen as it was" else null
-                } else null
-            }) { ctx ->
-                when (val r = d.screen.scroll(ctx.agent.name, front.packageName, direction, element)) {
-                    is ScreenResult.Ok -> ToolOutcome.success("Scrolled $word. Read the screen again to see what is shown.")
-                    else -> ToolOutcome.failure(ScreenTools.problem(r, "Scrolling"))
-                }
-            },
-            constraint = front.constraint,
-        )
+        val front = front()
+        front.refusal?.let { return ScreenTools.refused(this, front, "Scroll", failing(it)) }
+        val summary = "Scroll $word in ${front.name()}"
+        var window: ScreenSnapshot? = null
+        val reason = ScreenTools.everyTime(front) ?: run {
+            // Without a target the first scrollable element moves: classify that one.
+            window = inspect(front, summary).let { (read, failed) -> read ?: return failed!! }
+            window?.elements?.firstOrNull { it.scrollable }?.let { ConsequentialControls.consequentialReason(it, window) }
+        }
+        return acting(front, summary, null, reason, window = window) { ctx -> scroll(ctx, front, direction, null) }
     }
+
+    private suspend fun scroll(ctx: ToolContext, front: ScreenTools.Front, direction: ScrollDirection, element: ScreenElement?): ToolOutcome =
+        when (val r = d.screen.scroll(ctx.agent.name, front.packageName, direction, element)) {
+            is ScreenResult.Ok -> ToolOutcome.success("Scrolled ${direction.name.lowercase(Locale.ROOT)}. Read the screen again to see what is shown.")
+            else -> ToolOutcome.failure(ScreenTools.problem(r, "Scrolling"))
+        }
+}
+
+/** What Back and Home share: both may leave the app, so both name the launcher and need it authorised too. */
+internal abstract class ScreenGlobalTool(
+    d: OperatorToolDependencies,
+    id: String,
+    title: String,
+    description: String,
+    private val action: GlobalAction,
+) : ScreenActingTool(d, id, title, description, objectSchema { }) {
+    protected abstract val verb: String
+
+    override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
+        val front = front()
+        val launcher = d.screen.launcherPackage() ?: throw ToolCallRejected("The home screen app is not known, and $verb can lead there, so it is not pressed.")
+        front.refusal?.let { return ScreenTools.refused(this, front, verb, failing(it)).copy(leadsTo = launcher) }
+        return acting(
+            front, summary(front, launcher), null, ScreenTools.everyTime(front), extra(front, launcher), leadsTo = launcher,
+            pinned = { d.screen.launcherPackage().let { if (it == launcher) null else "the home screen app changed" } },
+        ) { ctx ->
+            when (val r = d.screen.globalAction(ctx.agent.name, front.packageName, action)) {
+                is ScreenResult.Ok -> ToolOutcome.success(done(front, launcher, d.screen.activeWindow()?.packageName))
+                else -> ToolOutcome.failure(ScreenTools.problem(r, "Pressing $verb"))
+            }
+        }
+    }
+
+    protected abstract fun summary(front: ScreenTools.Front, launcher: String): String
+
+    protected abstract fun extra(front: ScreenTools.Front, launcher: String): List<String>
+
+    protected abstract fun done(front: ScreenTools.Front, launcher: String, now: String?): String
 }
 
 /** screen.back */
-internal class ScreenBack(private val d: OperatorToolDependencies) : OperatorTool(
-    "screen.back", "Press Back",
-    "Presses Android's Back button while an authorised app is in front. It may leave that app; screen tools then refuse apps that are not authorised.",
-    objectSchema { },
+internal class ScreenBack(d: OperatorToolDependencies) : ScreenGlobalTool(
+    d, "screen.back", "Press Back",
+    "Presses Android's Back button while an authorised app is in front. Back can leave the app, so it is allowed only when the owner " +
+        "also authorised the home screen app; the owner approves each time unless that app asks only before consequential actions.",
+    GlobalAction.BACK,
 ) {
-    override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
-        val front = ScreenTools.front(d)
-        front.refusal?.let { return ScreenTools.refused(this, front, "Press Back", failing(it)) }
-        return assessment(
-            "Press Back in ${front.name()}",
-            prepared(check = { ScreenTools.frontChange(d, front.packageName) }) { ctx ->
-                when (val r = d.screen.globalAction(ctx.agent.name, front.packageName, GlobalAction.BACK)) {
-                    is ScreenResult.Ok -> ToolOutcome.success("Pressed Back. Read the screen to see where it led.")
-                    else -> ToolOutcome.failure(ScreenTools.problem(r, "Pressing Back"))
-                }
-            },
-            listOf("App: ${front.name()}", "Back may close this app and show another one."),
-            constraint = front.constraint,
-        )
+    override val verb = "Back"
+
+    override fun summary(front: ScreenTools.Front, launcher: String) = "Press Back in ${front.name()}"
+
+    override fun extra(front: ScreenTools.Front, launcher: String) =
+        listOf("Back may close ${q(front.label)} and show the home screen ($launcher) or the app used before it.")
+
+    override fun done(front: ScreenTools.Front, launcher: String, now: String?) = when (now) {
+        front.packageName -> "Pressed Back; ${q(front.label)} is still in front. Read the screen to see where it led."
+        null -> "Pressed Back. Read the screen to see where it led."
+        else -> "Pressed Back; it left ${q(front.label)}, and $now is in front now. Screen tools work only in apps the owner authorised."
     }
 }
 
 /** screen.home */
-internal class ScreenHome(private val d: OperatorToolDependencies) : OperatorTool(
-    "screen.home", "Press Home",
-    "Presses Android's Home button while an authorised app is in front. Allowed only when the owner also authorised the home screen app.",
-    objectSchema { },
+internal class ScreenHome(d: OperatorToolDependencies) : ScreenGlobalTool(
+    d, "screen.home", "Press Home",
+    "Presses Android's Home button while an authorised app is in front. Allowed only when the owner also authorised the home screen " +
+        "app; the owner approves each time unless that app asks only before consequential actions.",
+    GlobalAction.HOME,
 ) {
-    override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
-        val front = ScreenTools.front(d)
-        val launcher = d.screen.launcherPackage() ?: throw ToolCallRejected("The home screen app is not known, so Home is not pressed.")
-        front.refusal?.let { return ScreenTools.refused(this, front, "Press Home", failing(it)).copy(leadsTo = launcher) }
-        return assessment(
-            "Press Home in ${front.name()}, which shows the home screen ($launcher)",
-            prepared(check = {
-                ScreenTools.frontChange(d, front.packageName)
-                    ?: (d.screen.launcherPackage()).let { if (it == launcher) null else "the home screen app changed" }
-            }) { ctx ->
-                when (val r = d.screen.globalAction(ctx.agent.name, front.packageName, GlobalAction.HOME)) {
-                    is ScreenResult.Ok -> ToolOutcome.success("Pressed Home; the home screen ($launcher) is in front.")
-                    else -> ToolOutcome.failure(ScreenTools.problem(r, "Pressing Home"))
-                }
-            },
-            listOf("From: ${front.name()}", "To: the home screen app $launcher"),
-            constraint = front.constraint,
-            leadsTo = launcher,
-        )
-    }
+    override val verb = "Home"
+
+    override fun summary(front: ScreenTools.Front, launcher: String) = "Press Home in ${front.name()}, which shows the home screen ($launcher)"
+
+    override fun extra(front: ScreenTools.Front, launcher: String) = listOf("To: the home screen app $launcher")
+
+    override fun done(front: ScreenTools.Front, launcher: String, now: String?) = "Pressed Home; the home screen ($launcher) is in front."
 }

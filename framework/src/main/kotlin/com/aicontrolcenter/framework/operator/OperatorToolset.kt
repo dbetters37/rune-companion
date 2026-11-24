@@ -17,6 +17,7 @@ import com.aicontrolcenter.core.operator.TermuxRunner
 import com.aicontrolcenter.core.operator.WebReadLimits
 import com.aicontrolcenter.core.operator.WebReader
 import com.aicontrolcenter.core.operator.Workspace
+import com.aicontrolcenter.core.settings.FrameworkSettings
 import com.aicontrolcenter.core.tools.Tool
 
 /**
@@ -74,6 +75,16 @@ data class OperatorLimits(
     val js: JsLimits = JsLimits(),
     val maxScreenElements: Int = 300,
     val maxWaitMs: Long = 30_000,
+    /**
+     * After the owner answers a request for a screen action (in this app), how long the action
+     * waits for the app it operates to be in front again. Time the owner spends, so it counts
+     * against no time limit.
+     */
+    val screenReturnMs: Long = 30_000,
+    /** Once that app is back, how long its window may take to settle into what was approved before the action is refused. */
+    val screenSettleMs: Long = 3_000,
+    /** How often the app in front and its window are looked at while waiting. */
+    val screenPollMs: Long = 250,
 )
 
 /** Everything the operator tools use: gateways, the workspace and read-only lookups. Nothing owner-only. */
@@ -87,6 +98,11 @@ class OperatorToolDependencies(
     val web: WebReader,
     val screen: ScreenOperator,
     val authorisedApps: AuthorisedApps,
+    /**
+     * The owner's settings, read fresh on every screen call before anything of a screen is
+     * looked at: the operator switches and local-only mode.
+     */
+    val settings: suspend () -> FrameworkSettings,
     /** Read on every call: `:device` resolves the device's protected handlers at start-up. */
     val protectedPackages: () -> ProtectedPackages,
     val shell: ShellRunner,
@@ -95,6 +111,10 @@ class OperatorToolDependencies(
     /** This app's package, for link checks. */
     val ownPackage: String?,
     val limits: OperatorLimits = OperatorLimits(),
+    /** Where hand-overs that may leave the phone (commands, links) are logged as they happen. */
+    val egress: OperatorEgress = OperatorEgress.NONE,
+    /** The files each agent changed recently: the bulk rule counts over a time window, not per call. */
+    val recentChanges: RecentFileChanges = RecentFileChanges(),
 )
 
 /**

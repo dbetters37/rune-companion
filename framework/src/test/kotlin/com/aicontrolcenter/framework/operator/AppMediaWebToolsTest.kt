@@ -65,9 +65,12 @@ class AppMediaWebToolsTest {
     fun `links go through the link policy and name where the address goes`() = runTest {
         val (link, outcome) = f.run("apps.open_link", "link" to "  HTTPS://example.com/a?b=1 ")
         assertEquals("example.com", link.dataGoesTo)
-        assertEquals("Open the link \"https://example.com/a?b=1\"", link.summary)
+        assertEquals("Open the link \"https://example.com/a?b=1\" in \"Example https app\" (com.example.https)", link.summary)
+        assertRisk(RiskLevel.MODIFYING, link)
         assertTrue(outcome.ok)
         assertEquals(AppCall.OpenLink("https://example.com/a?b=1"), f.apps.calls.last())
+        assertEquals("\"Example geo app\" (com.example.geo)", f.assess("apps.open_link", "link" to "geo:48.85,2.35").dataGoesTo)
+        f.apps.handledSchemes -= "geo"
         assertEquals("the app that opens geo: links", f.assess("apps.open_link", "link" to "geo:48.85,2.35").dataGoesTo)
         for (bad in listOf("intent://x#Intent;end", "javascript:alert(1)", "file:///sdcard/x", "mailto:a@b.c", "https://a.com/‮b", "${OperatorFixture.OWN}://approve")) {
             f.rejected("apps.open_link", "link" to bad)

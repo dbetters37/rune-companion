@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -34,6 +35,7 @@ import com.aicontrolcenter.app.ui.approvals.RiskChip
 import com.aicontrolcenter.app.ui.components.AppCard
 import com.aicontrolcenter.app.ui.components.InfoBanner
 import com.aicontrolcenter.app.ui.components.RowDivider
+import com.aicontrolcenter.app.ui.components.StatusChip
 import com.aicontrolcenter.app.ui.components.TintedChip
 import com.aicontrolcenter.app.ui.components.plural
 import com.aicontrolcenter.app.ui.components.readableWidth
@@ -46,15 +48,31 @@ import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.app.ui.theme.appColors
 import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.operator.DeviceAccess
+import com.aicontrolcenter.core.operator.DeviceAccessState
+
+/** What the owner can do about the Android access some families need. */
+class DeviceAccessActions(
+    /** Shows Android's own permission dialog for it. */
+    val onRequest: (DeviceAccess) -> Unit = {},
+    /** Opens Android's settings page for it. */
+    val onOpenSettings: (DeviceAccess) -> Unit = {},
+)
 
 /**
  * Every tool by family. A family opens to list its tools; each says what it does, its risk,
  * whether it sends data off the phone, the permission it needs, and the agents that have it
  * switched on (each a link to the agent). The Workspace family is also the way into the
- * workspace's files.
+ * workspace's files. Families whose tools need something from Android (photo access, "Install
+ * unknown apps", Termux's permission) show where it stands and a button that asks for it.
  */
 @Composable
-fun CatalogTab(state: ToolsCatalogUiState, onOpenAgent: (AgentId) -> Unit, onOpenWorkspace: () -> Unit) {
+fun CatalogTab(
+    state: ToolsCatalogUiState,
+    onOpenAgent: (AgentId) -> Unit,
+    onOpenWorkspace: () -> Unit,
+    access: DeviceAccessActions = DeviceAccessActions(),
+) {
     if (state.isLoading) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         return
@@ -69,8 +87,8 @@ fun CatalogTab(state: ToolsCatalogUiState, onOpenAgent: (AgentId) -> Unit, onOpe
             Column(verticalArrangement = Arrangement.spacedBy(Spacing.md)) {
                 Text(
                     "${plural(state.toolCount, "tool")} agents can be given. Switching a tool on for an agent, in its editor, does not give " +
-                        "it the permission the tool needs: the agent asks you the first time, and buying, sending, deleting or running a " +
-                        "command asks you every time.",
+                        "it the permission the tool needs: the agent asks you the first time, and deleting, installing or running a " +
+                        "command asks you every time, as does each action on another app's screen unless you set that app to ask less.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -83,6 +101,7 @@ fun CatalogTab(state: ToolsCatalogUiState, onOpenAgent: (AgentId) -> Unit, onOpe
                 onToggle = { open -> expanded = if (open) expanded + family.family.name else expanded - family.family.name },
                 onOpenAgent = onOpenAgent,
                 onOpenWorkspace = onOpenWorkspace.takeIf { family.family == ToolFamily.WORKSPACE },
+                access = access,
             )
         }
     }
@@ -96,6 +115,7 @@ private fun FamilyCard(
     onToggle: (Boolean) -> Unit,
     onOpenAgent: (AgentId) -> Unit,
     onOpenWorkspace: (() -> Unit)?,
+    access: DeviceAccessActions,
 ) {
     AppCard(contentPadding = PaddingValues(0.dp)) {
         Row(
@@ -120,6 +140,7 @@ private fun FamilyCard(
         Column(Modifier.padding(start = Spacing.lg, end = Spacing.lg, bottom = Spacing.lg), verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
             Caption(family.family.description)
             family.blockedBecause?.let { InfoBanner(it, tone = StatusTone.DISABLED) }
+            family.access.forEach { AccessRow(it, access) }
             onOpenWorkspace?.let {
                 OutlinedButton(onClick = it, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                     Icon(AppIcons.Folder, contentDescription = null, modifier = SmallIcon)
@@ -152,6 +173,44 @@ private fun ToolRow(tool: CatalogToolUi, onOpenAgent: (AgentId) -> Unit) {
         } else {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 tool.agents.forEach { agent -> AgentLinkChip(agent, onOpen = { agent.id?.let(onOpenAgent) }) }
+            }
+        }
+    }
+}
+
+/** One Android access a family needs: where it stands, and the buttons that change it. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AccessRow(item: DeviceAccessUi, actions: DeviceAccessActions) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(Spacing.xs),
+    ) {
+        RowDivider(Modifier.padding(vertical = Spacing.xs))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+            Text(item.title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f))
+            StatusChip(
+                when (item.state) {
+                    DeviceAccessState.ALLOWED -> "Allowed"
+                    DeviceAccessState.SELECTED_ONLY -> "Selected items"
+                    DeviceAccessState.NOT_ALLOWED -> "Not allowed"
+                    DeviceAccessState.NOT_INSTALLED -> "Not installed"
+                },
+                when (item.state) {
+                    DeviceAccessState.ALLOWED -> StatusTone.READY
+                    DeviceAccessState.SELECTED_ONLY -> StatusTone.WAITING
+                    DeviceAccessState.NOT_ALLOWED, DeviceAccessState.NOT_INSTALLED -> StatusTone.DISABLED
+                },
+            )
+        }
+        Text(item.status, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+        item.note?.let { Caption(it) }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(Spacing.sm), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+            item.requestLabel?.let { label ->
+                Button(onClick = { actions.onRequest(item.access) }, modifier = Modifier.heightIn(min = 48.dp)) { Text(label) }
+            }
+            item.settingsLabel?.let { label ->
+                OutlinedButton(onClick = { actions.onOpenSettings(item.access) }, modifier = Modifier.heightIn(min = 48.dp)) { Text(label) }
             }
         }
     }

@@ -2,19 +2,23 @@ package com.aicontrolcenter.device.screen
 
 import android.app.Application
 import android.content.Intent
+import android.provider.Settings
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aicontrolcenter.core.operator.OperatorAppRepository
 import com.aicontrolcenter.core.operator.ProtectedPackages
 import com.aicontrolcenter.core.operator.ScreenControl
+import com.aicontrolcenter.core.operator.ScreenServiceState
 import com.aicontrolcenter.testkit.InMemoryOperatorAppRepository
-import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
@@ -26,8 +30,10 @@ import org.robolectric.annotation.Config
 import java.lang.reflect.Modifier
 import java.util.IdentityHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlin.coroutines.CoroutineContext
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotSame
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -92,33 +98,62 @@ class ScreenStopTest {
         }
     }
 
+    /**
+     * Runs what is dispatched to it only when told to, the newest first: the order two threads of
+     * the IO pool can give two writes, where the write started last reaches the store first.
+     */
+    private class NewestFirst : CoroutineDispatcher() {
+        private val waiting = ArrayDeque<Runnable>()
+
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            synchronized(waiting) { waiting.addLast(block) }
+        }
+
+        fun runAll() {
+            while (true) (synchronized(waiting) { waiting.removeLastOrNull() } ?: return).run()
+        }
+    }
+
     @Test
-    fun `awaitWrites waits for every write started, not only the last one`() = runBlocking {
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    fun `awaitWrites waits for every write started, also when the one started last finishes first`() = runBlocking {
+        val threads = NewestFirst()
+        val scope = CoroutineScope(SupervisorJob() + threads)
         try {
-            val open = CompletableDeferred<Unit>()
+            val turns = Channel<Unit>(Channel.UNLIMITED)
             val written = CopyOnWriteArrayList<Boolean>()
             val store = object : StopStore {
                 override suspend fun read(): Boolean = false
 
                 override suspend fun write(stopped: Boolean) {
-                    open.await()
+                    turns.receive()
                     written += stopped
                 }
             }
             val switch = StopSwitch(store, scope)
+            threads.runAll()
             switch.awaitLoaded()
-            val writes = listOf(switch.stopAndSave(), switch.resumeAndSave(), switch.stopAndSave())
-            val waiting = async { switch.awaitWrites() }
-            delay(100)
-            assertFalse(waiting.isCompleted, "three writes are still waiting to be stored")
-            open.complete(Unit)
+            val first = switch.stopAndSave()
+            val second = switch.resumeAndSave()
+            val last = switch.stopAndSave()
+            // The write started last gets to the store first; the two before it queue behind it.
+            threads.runAll()
+            turns.send(Unit)
+            threads.runAll()
+            assertTrue(last.isCompleted, "the write started last has finished")
+            assertFalse(first.isCompleted || second.isCompleted, "the two started before it have not")
+
+            val waiting = async(Dispatchers.Unconfined) { switch.awaitWrites() }
+            assertFalse(waiting.isCompleted, "joining the last write alone is not enough: two are still to be stored (A6)")
+            repeat(2) {
+                turns.send(Unit)
+                threads.runAll()
+            }
             step("awaitWrites") { waiting.await() }
-            assertTrue(writes.all { it.isCompleted }, "every write had finished when awaitWrites returned")
-            assertEquals(3, written.size)
-            assertEquals(true, written.last(), "the last one stored is the current value")
+            assertTrue(first.isCompleted && second.isCompleted, "every write had finished when awaitWrites returned")
+            assertEquals(listOf(true, true, true), written.toList(), "each write stores the value current when it runs")
         } finally {
-            scope.coroutineContext[kotlinx.coroutines.Job]!!.cancelAndJoin()
+            scope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+            threads.runAll()
         }
     }
 
@@ -161,6 +196,24 @@ class ScreenStopTest {
         assertEquals(OperatorAccessibilityService::class.java.name, ScreenOperatorLayer.serviceComponent(context).className)
         assertEquals(context.packageName, ScreenOperatorLayer.serviceComponent(context).packageName)
         assertEquals("package:${context.packageName}", ScreenOperatorLayer.appInfoIntent(context).dataString)
+    }
+
+    @Test
+    fun `the layer reads Android's settings again in the background, never on the caller's thread`() {
+        val background = NewestFirst()
+        val layer = ScreenOperatorLayer(context, InMemoryOperatorAppRepository(), { ProtectedPackages(context.packageName) }, io = background)
+        // The first read is started by the layer itself, so no screen has to do it on the main thread.
+        background.runAll()
+        val before = layer.operator.state.value
+        assertNotEquals(ScreenServiceState.STARTING, before)
+
+        // The owner switches the service on in Android's settings and comes back to Screen control, on the main thread.
+        val me = ScreenOperatorLayer.serviceComponent(context)
+        Settings.Secure.putString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, me.flattenToString())
+        layer.refreshStateInBackground()
+        assertEquals(before, layer.operator.state.value, "nothing is read on the caller's thread (A7)")
+        background.runAll()
+        assertEquals(ScreenServiceState.STARTING, layer.operator.state.value, "the state follows once the background read is done")
     }
 
     @Test

@@ -27,6 +27,8 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.testTimeSource
+import com.aicontrolcenter.core.tasks.withPausableTimeout
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
@@ -458,6 +460,37 @@ class AndroidAppActionsTest {
 
         answer(sender, status(PackageInstaller.STATUS_SUCCESS))
         assertEquals(AppActionResult.Uninstalled("com.example.old"), result.await())
+    }
+
+    @Test
+    fun `the owner's time on Android's confirmation does not count against the task's limit`() = runTest {
+        device.install("com.example.old") { launcher() }
+
+        // The task has one second left; the owner reads Android's dialog for five.
+        val result = async { withPausableTimeout(1_000, testTimeSource) { actions.uninstall("com.example.old", waitMs = 60_000) } }
+        runCurrent()
+        val sender = assertNotNull(shadowOf(installer).getLastUninstalledStatusReceiver("com.example.old"))
+        answer(sender, status(PackageInstaller.STATUS_PENDING_USER_ACTION) { putExtra(Intent.EXTRA_INTENT, Intent("android.intent.action.UNINSTALL_PACKAGE")) })
+        advanceTimeBy(5_000)
+        answer(sender, status(PackageInstaller.STATUS_SUCCESS))
+
+        assertEquals(AppActionResult.Uninstalled("com.example.old"), result.await())
+    }
+
+    @Test
+    fun `the apps that would open a link are named, protected ones left out`() = runTest {
+        for (pkg in listOf("com.example.pay", "com.google.android.gms")) {
+            device.install(pkg, label = "Pay")
+            activity(pkg, "PayActivity", IntentFilter(Intent.ACTION_VIEW).apply {
+                addCategory(Intent.CATEGORY_DEFAULT)
+                addCategory(Intent.CATEGORY_BROWSABLE)
+                addDataScheme("upi")
+            })
+        }
+
+        assertEquals(listOf("com.example.pay"), actions.linkHandlers("upi://pay?pa=x@bank&am=500").map { it.packageName })
+        assertEquals(emptyList(), actions.linkHandlers("intent://x#Intent;end"), "a link the policy refuses has no handler")
+        assertEquals(emptyList(), actions.linkHandlers("skype:echo123?call"))
     }
 
     @Test

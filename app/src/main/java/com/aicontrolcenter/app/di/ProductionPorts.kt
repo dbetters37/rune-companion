@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.Intent
 import androidx.core.content.FileProvider
 import com.aicontrolcenter.app.operator.SystemScreens
+import com.aicontrolcenter.core.operator.DeviceAccess
+import com.aicontrolcenter.core.operator.DeviceAccessState
 import com.aicontrolcenter.core.operator.ScreenServiceState
 import com.aicontrolcenter.data.DataLayer
 import com.aicontrolcenter.device.DeviceLayer
@@ -81,7 +83,7 @@ fun createProductionPorts(context: Context): Ports {
             ownPackage = appContext.packageName,
             // Called from the main thread (the app coming to the front, the Screen control screen): read off it.
             refreshScreenState = { screen.refreshStateInBackground() },
-            systemScreens = AndroidSystemScreens(appContext),
+            systemScreens = AndroidSystemScreens(appContext, phone),
         ),
         packageChanges = device.packageChanges.map { },
     )
@@ -89,10 +91,17 @@ fun createProductionPorts(context: Context): Ports {
 
 /**
  * Android's screens for the owner, from `:device`: the accessibility settings and App info pages
- * the screen operator names, and the share sheet through the workspace file provider, which serves
- * `files/workspace` and nothing else, read-only, to the one app picked.
+ * the screen operator names, the share sheet through the workspace file provider, which serves
+ * `files/workspace` and nothing else, read-only, to the one app picked, and the phone tools'
+ * permissions and special access as [PhoneOperatorLayer] reads and names them.
  */
-private class AndroidSystemScreens(private val context: Context) : SystemScreens {
+private class AndroidSystemScreens(private val context: Context, private val phone: PhoneOperatorLayer) : SystemScreens {
+    override fun accessState(access: DeviceAccess): DeviceAccessState = phone.accessState(access)
+
+    override fun accessPermissions(access: DeviceAccess): List<String> = phone.runtimePermissions(access)
+
+    override fun accessSettings(access: DeviceAccess): Intent? = phone.settingsIntent(access)
+
     override fun accessibilitySettings(): Intent = ScreenOperatorLayer.accessibilitySettingsIntent()
 
     override fun appInfo(): Intent = ScreenOperatorLayer.appInfoIntent(context)

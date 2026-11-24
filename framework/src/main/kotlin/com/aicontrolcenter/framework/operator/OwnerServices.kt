@@ -32,6 +32,7 @@ import com.aicontrolcenter.core.operator.OwnerRequests
 import com.aicontrolcenter.core.operator.OwnerResult
 import com.aicontrolcenter.core.operator.PermissionGrant
 import com.aicontrolcenter.core.operator.ProtectedPackages
+import com.aicontrolcenter.core.operator.ScreenActionPolicy
 import com.aicontrolcenter.core.operator.SharedFolder
 import com.aicontrolcenter.core.operator.SharedFolderRepository
 import com.aicontrolcenter.core.operator.SharedFolders
@@ -294,8 +295,14 @@ class DefaultOwnerGrants(
     }
 
     override suspend fun revokeAll(agentId: AgentId): Int {
-        val count = grants.revokeAllFor(agentId, clock.now())
+        var count = grants.revokeAllFor(agentId, clock.now())
         val name = agents.get(agentId)?.name ?: "a deleted agent"
+        // Its open questions go too: what it asks for, and what waits on a permission it no longer has.
+        withdrawals.withdraw("Request withdrawn, permissions revoked", "You removed every permission of $name, so this was not done.") {
+            it.agentId == agentId && (it.kind == OwnerRequestKind.PERMISSION || (capabilities.info(it.capability)?.grantedByDefault != true && !coveredNow(it)))
+        }
+        // Once more, now that its questions are closed: an answer being written meanwhile stored its permission after the first pass.
+        count += grants.revokeAllFor(agentId, clock.now())
         if (count > 0) {
             logSafely {
                 activity.record(
@@ -303,10 +310,6 @@ class DefaultOwnerGrants(
                     agentId = agentId, data = buildJsonObject { put("count", count) },
                 )
             }
-        }
-        // Its open questions go too: what it asks for, and what waits on a permission it no longer has.
-        withdrawals.withdraw("Request withdrawn, permissions revoked", "You removed every permission of $name, so this was not done.") {
-            it.agentId == agentId && (it.kind == OwnerRequestKind.PERMISSION || (capabilities.info(it.capability)?.grantedByDefault != true && !coveredNow(it)))
         }
         return count
     }
@@ -336,7 +339,8 @@ class DefaultOwnerGrants(
 /**
  * The Folders screen ([OwnerFolders]), over [SharedFolders], [SharedFolderRepository] and
  * [GrantStore]. Removing narrows first: the folder's grants are revoked, then it is deleted,
- * then Android's access is released.
+ * then Android's access is released, then the questions still open about it are withdrawn
+ * (and a grant a crossing answer stored meanwhile is revoked).
  */
 class DefaultOwnerFolders(
     private val gateway: SharedFolders,
@@ -367,7 +371,8 @@ class DefaultOwnerFolders(
 
     override suspend fun remove(id: FolderId): Boolean = lock.withLock {
         val folder = folders.get(id) ?: return false
-        val revoked = grants.revokeAllWithConstraint(CapabilityConstraint.Folder(id), clock.now())
+        val constraint = CapabilityConstraint.Folder(id)
+        var revoked = grants.revokeAllWithConstraint(constraint, clock.now())
         folders.delete(id)
         try {
             gateway.releaseAccess(folder)
@@ -375,10 +380,13 @@ class DefaultOwnerFolders(
             rethrowIfCancelled(e)
             // The folder is gone from the app either way; Android drops an unused grant on its own.
         }
-        log("Folder removed: ${folder.displayName}", folder, "$revoked permission(s) for it revoked.")
         withdrawals.withdraw("Request withdrawn, folder removed", "You removed the folder \"${folder.displayName}\", so this was not done.") {
-            it.constraint == CapabilityConstraint.Folder(id)
+            it.constraint == constraint
         }
+        // Once more, now that its questions are closed: an answer being written while the folder was removed
+        // stored its permission after the first pass, and would otherwise stay listed for a folder that is gone.
+        revoked += grants.revokeAllWithConstraint(constraint, clock.now())
+        log("Folder removed: ${folder.displayName}", folder, "$revoked permission(s) for it revoked.")
         true
     }
 
@@ -403,7 +411,11 @@ class DefaultOwnerFolders(
 /**
  * The authorised apps of the Screen control screen ([OwnerOperatorApps]), over
  * [OperatorAppRepository] and [GrantStore]. Authorising the same package with a different
- * signing certificate is authorising a different app: earlier grants for it are revoked.
+ * signing certificate is authorising a different app: earlier grants for it are revoked and the
+ * questions still open about it are withdrawn. Withdrawing an app revokes its grants and
+ * withdraws its questions; whatever a crossing answer still stored is revoked with them, and
+ * again when the package is next authorised, so access to a withdrawn app never comes back by
+ * itself.
  */
 class DefaultOwnerOperatorApps(
     private val apps: OperatorAppRepository,
@@ -424,33 +436,71 @@ class DefaultOwnerOperatorApps(
         if (protectedPackages().isProtected(packageName)) return OwnerResult.Refused("$packageName is never operated by agents.")
         val now = clock.now()
         val existing = apps.get(packageName)
+        // The same app keeps when it was authorised and how often it asks; a new or different one asks before every action.
+        val same = existing?.takeIf { it.signingCertSha256 == signingCertSha256 }
         var revoked = 0
-        if (existing != null && existing.signingCertSha256 != signingCertSha256) {
-            // A different app under the same name: what was granted for the old one does not carry over.
+        if (same == null) {
+            // A different app under the same name: what was granted for the old one does not carry over. A newly
+            // authorised app starts with nothing either: a permission still stored for a package that was not
+            // authorised (an answer that crossed its withdrawal) is revoked here, so it can never come into force.
             revoked = grants.revokeAllWithConstraint(CapabilityConstraint.App(packageName), now)
         }
-        val app = OperatorApp(packageName, label, existing?.takeIf { it.signingCertSha256 == signingCertSha256 }?.authorisedAt ?: now, signingCertSha256)
+        val app = OperatorApp(packageName, label, same?.authorisedAt ?: now, signingCertSha256, same?.policy ?: ScreenActionPolicy.ASK_EVERY_ACTION)
         apps.upsert(app)
         log(
             "App authorised for screen control: ${app.label}", app,
-            if (revoked > 0) "Its signing certificate changed: $revoked earlier permission(s) for it revoked." else "",
+            when {
+                revoked == 0 -> ""
+                existing != null -> "Its signing certificate changed: $revoked earlier permission(s) for it revoked."
+                else -> "$revoked earlier permission(s) for it revoked."
+            },
         )
+        if (existing != null && same == null) {
+            // Questions asked about the app this one replaced are not answered for this one.
+            withdrawals.withdraw("Request withdrawn, a different app was authorised", "${app.label} is now a different app (its signing certificate changed), so this was not done.") {
+                it.constraint == CapabilityConstraint.App(packageName)
+            }
+        }
         OwnerResult.Done(app)
+    }
+
+    override suspend fun setPolicy(packageName: String, policy: ScreenActionPolicy): OperatorApp? = lock.withLock {
+        val app = apps.get(packageName) ?: return null
+        val changed = app.copy(policy = policy)
+        apps.upsert(changed)
+        log(
+            when (policy) {
+                ScreenActionPolicy.ASK_EVERY_ACTION -> "Every screen action asks first: ${app.label}"
+                ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY -> "Only buying, sending, deleting and similar ask first: ${app.label}"
+            },
+            changed, "",
+        )
+        changed
     }
 
     override suspend fun withdraw(packageName: String): Boolean = lock.withLock {
         val app = apps.get(packageName) ?: return false
-        val revoked = grants.revokeAllWithConstraint(CapabilityConstraint.App(packageName), clock.now())
+        val constraint = CapabilityConstraint.App(packageName)
+        var revoked = grants.revokeAllWithConstraint(constraint, clock.now())
         apps.delete(packageName)
-        log("App withdrawn from screen control: ${app.label}", app, "$revoked permission(s) for it revoked.")
         withdrawals.withdraw("Request withdrawn, app withdrawn", "You withdrew ${app.label} from screen control, so this was not done.") {
-            it.constraint == CapabilityConstraint.App(packageName)
+            it.constraint == constraint
         }
+        // Once more, now that its questions are closed: an answer that was being written while the app was
+        // withdrawn stored its permission after the first pass. No later answer can: there is nothing left to answer.
+        revoked += grants.revokeAllWithConstraint(constraint, clock.now())
+        log("App withdrawn from screen control: ${app.label}", app, "$revoked permission(s) for it revoked.")
         true
     }
 
     private suspend fun log(title: String, app: OperatorApp, detail: String) = logSafely {
-        activity.record(ActivityType.USER_ACTION, title, detail, data = buildJsonObject { put("packageName", app.packageName) })
+        activity.record(
+            ActivityType.USER_ACTION, title, detail,
+            data = buildJsonObject {
+                put("packageName", app.packageName)
+                put("policy", app.policy.name)
+            },
+        )
     }
 }
 

@@ -1,5 +1,6 @@
 package com.aicontrolcenter.framework.operator
 
+import com.aicontrolcenter.core.GrantId
 import com.aicontrolcenter.core.RequestId
 import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.ToolId
@@ -9,25 +10,33 @@ import com.aicontrolcenter.core.operator.DecideResult
 import com.aicontrolcenter.core.operator.GrantQuery
 import com.aicontrolcenter.core.operator.GrantScope
 import com.aicontrolcenter.core.operator.OperatorCapabilities
+import com.aicontrolcenter.core.operator.OwnerDecision
 import com.aicontrolcenter.core.operator.OwnerRequest
 import com.aicontrolcenter.core.operator.OwnerRequestKind
+import com.aicontrolcenter.core.operator.OwnerRequestRepository
 import com.aicontrolcenter.core.operator.OwnerRequestStatus
 import com.aicontrolcenter.core.operator.OwnerResult
 import com.aicontrolcenter.core.tools.Authorization
 import com.aicontrolcenter.core.tools.CapabilityConstraint
 import com.aicontrolcenter.core.tools.RiskLevel
+import com.aicontrolcenter.core.tasks.TaskStatus
 import com.aicontrolcenter.framework.operator.BrokerFixture.Companion.MINUTE
 import com.aicontrolcenter.testkit.FakeSharedFolders
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -54,6 +63,23 @@ class RequestLifecycleTest {
         )
         requests.create(request)
         return request
+    }
+
+    /**
+     * The request store as a withdrawal sees it when an answer crosses it: the first time the
+     * withdrawal lists the pending requests (its grants are revoked and its target is gone by
+     * then), [crossing] is written first, as an answer that passed its checks just before would be.
+     */
+    private class CrossedBy(private val store: OwnerRequestRepository, private val crossing: suspend () -> Unit) : OwnerRequestRepository by store {
+        private var crossed = false
+
+        override fun observePending(): Flow<List<OwnerRequest>> = flow {
+            if (!crossed) {
+                crossed = true
+                crossing()
+            }
+            emitAll(store.observePending())
+        }
     }
 
     // ---- INT-2: a request whose waiter is gone can never be answered ----
@@ -114,6 +140,27 @@ class RequestLifecycleTest {
         assertEquals(dead.taskId, logged.taskId)
     }
 
+    @Test
+    fun `a task that ends withdraws its agent's asks, each logged with its request id`() = runTest {
+        val f = fixture()
+        val requester = DefaultCapabilityRequester(f.facts, f.requests, f.grants, f.waiters, f.activity, f.ids, f.clock)
+        val ask = assertIs<AskResult.Raised>(requester.ask(f.context(task = "tsk_work"), OperatorCapabilities.WEB_READ, CapabilityConstraint.None, "To read reviews.")).requestId
+        val task = f.runningTask().copy(status = TaskStatus.CANCELLED)
+        val hooks = OperatorTaskHooks(f.requests, f.grants, f.waiters, f.activity, f.clock)
+
+        hooks.taskEnded(task)
+
+        assertEquals(OwnerRequestStatus.CANCELLED, f.requests.get(ask)?.status)
+        // INT-8: its own entry, naming the request, the agent and the task; the summary lists the ids too.
+        val logged = f.log.all.single { it.title.startsWith("Request withdrawn, its task ended") }
+        assertEquals(ask.value, logged.data?.get("requestId")?.jsonPrimitive?.content)
+        assertEquals(f.agent.id, logged.agentId)
+        assertEquals(task.id, logged.taskId)
+        assertEquals(task.rootId, logged.rootTaskId)
+        val summary = f.log.all.single { it.title.startsWith("Task permissions ended") }
+        assertEquals(listOf(ask.value), summary.data?.get("requestIds")?.jsonArray?.map { it.jsonPrimitive.content })
+    }
+
     // ---- INT-5: an answer for the task or always settles the other questions it covers ----
 
     @Test
@@ -169,6 +216,29 @@ class RequestLifecycleTest {
         assertIs<Authorization.AllowedByOwner>(x.await())
         assertTrue(y.isActive, "a once answer is for its own call only")
         y.cancel()
+    }
+
+    @Test
+    fun `an always never answers an action waiting for approval, which is still put to the owner`() = runTest {
+        val f = fixture()
+        // A delete allowed for this one call now waits for its approval; a write in another task asks for the same permission.
+        val delete = f.start(f.deleteInFolder, f.assessment(RiskLevel.CONSEQUENTIAL, summary = "Delete \"old.txt\" in Reports"), f.context(task = "tsk_a"))
+        f.owner.grant(f.pending().id, GrantScope.ONCE)
+        runCurrent()
+        val approval = f.pending()
+        assertEquals(OwnerRequestKind.APPROVAL, approval.kind)
+        val write = f.start(f.writeFolder, f.assessment(modifying, summary = "Write b.txt"), f.context(task = "tsk_b"))
+        val permission = f.requests.observePending().first().single { it.kind == OwnerRequestKind.PERMISSION }
+
+        assertIs<DecideResult.Decided>(f.owner.grant(permission.id, GrantScope.ALWAYS))
+        runCurrent()
+
+        assertIs<Authorization.AllowedByOwner>(write.await())
+        assertEquals(OwnerRequestStatus.PENDING, f.requests.get(approval.id)?.status, "the delete still waits for its own yes")
+        assertTrue(delete.isActive)
+        assertEquals(listOf(approval.id), f.owner.pending.first().map { it.id })
+        f.owner.deny(approval.id)
+        assertIs<Authorization.Denied>(delete.await())
     }
 
     @Test
@@ -273,6 +343,74 @@ class RequestLifecycleTest {
         assertIs<Authorization.Denied>(read.await())
         assertTrue(f.requests.observePending().first().isEmpty())
         assertEquals(4, f.log.all.count { it.title.startsWith("Request withdrawn, ") && it.data?.get("requestId") != null })
+    }
+
+    @Test
+    fun `an always written while its app is being withdrawn is revoked with the app and never comes back`() = runTest {
+        val f = fixture()
+        val tap = f.start(f.tap, f.assessment(modifying, f.inNotes, "Tap \"New note\" in Notes"))
+        val request = f.pending()
+        // The owner's Always passed its checks just before the withdrawal and is written in the middle of it.
+        val crossed = CrossedBy(f.requests) { f.requests.decide(request.id, OwnerDecision.Grant(GrantScope.ALWAYS), f.clock.now(), GrantId("grt_crossing")) }
+        val apps = DefaultOwnerOperatorApps(f.apps, f.grants, { f.protectedPackages }, crossed, f.activity, f.clock)
+
+        assertTrue(apps.withdraw(f.app.packageName))
+        runCurrent()
+
+        assertEquals(OwnerRequestStatus.APPROVED, f.requests.get(request.id)?.status, "the answer was written")
+        assertNotNull(f.grants.get(GrantId("grt_crossing"))?.revokedAt, "but what it granted went with the app")
+        assertIs<Authorization.Denied>(tap.await())
+        assertIs<OwnerResult.Done<*>>(apps.authorise(f.app.packageName, f.app.label, f.app.signingCertSha256))
+        val query = GrantQuery(f.agent.id, OperatorCapabilities.SCREEN_OPERATE, f.inNotes, TaskId("tsk_other"), f.clock.now())
+        assertTrue(f.grants.findMatching(query).isEmpty(), "authorised again, the app starts with no permission")
+    }
+
+    @Test
+    fun `an always written while every permission is revoked, or its folder removed, is revoked too`() = runTest {
+        val f = fixture()
+        val write = f.start(f.writeFolder, f.assessment(modifying))
+        val request = f.pending()
+        val crossed = CrossedBy(f.requests) { f.requests.decide(request.id, OwnerDecision.Grant(GrantScope.ALWAYS), f.clock.now(), GrantId("grt_crossing")) }
+        val grants = DefaultOwnerGrants(f.grants, f.agents, f.capabilities, f.folders, f.apps, { f.protectedPackages }, crossed, f.waiters, f.activity, f.ids, f.clock)
+
+        assertEquals(1, grants.revokeAll(f.agent.id), "the permission the crossing answer stored is counted and revoked")
+        runCurrent()
+        assertNotNull(f.grants.get(GrantId("grt_crossing"))?.revokedAt)
+        assertIs<Authorization.Denied>(write.await())
+
+        val read = f.start(f.readFolder, f.assessment(RiskLevel.SAFE))
+        val readRequest = f.pending()
+        val crossedAgain = CrossedBy(f.requests) { f.requests.decide(readRequest.id, OwnerDecision.Grant(GrantScope.ALWAYS), f.clock.now(), GrantId("grt_crossing_2")) }
+        val folders = DefaultOwnerFolders(FakeSharedFolders(f.folders), f.folders, f.grants, crossedAgain, f.activity, f.ids, f.clock)
+        assertTrue(folders.remove(f.folder.id))
+        runCurrent()
+        assertNotNull(f.grants.get(GrantId("grt_crossing_2"))?.revokedAt, "no permission stays listed for a folder that is gone")
+        assertIs<Authorization.Denied>(read.await())
+    }
+
+    @Test
+    fun `authorising a different app under the same name withdraws the questions about the old one`() = runTest {
+        val f = fixture()
+        val apps = DefaultOwnerOperatorApps(f.apps, f.grants, { f.protectedPackages }, f.requests, f.activity, f.clock)
+        val tap = f.start(f.tap, f.assessment(modifying, f.inNotes, "Tap \"New note\" in Notes"))
+        val request = f.pending()
+
+        // Same package, another signing certificate: not the app the question was about.
+        assertIs<OwnerResult.Done<*>>(apps.authorise(f.app.packageName, f.app.label, "cd".repeat(32)))
+        runCurrent()
+        val closed = f.requests.get(request.id)!!
+        assertEquals(OwnerRequestStatus.CANCELLED, closed.status)
+        assertTrue("different app" in closed.decisionNote!!, closed.decisionNote)
+        assertIs<Authorization.Denied>(tap.await())
+        assertIs<DecideResult.AlreadyClosed>(f.owner.grant(request.id, GrantScope.ALWAYS))
+
+        // Authorising the very same app again withdraws nothing.
+        val again = f.start(f.tap, f.assessment(modifying, f.inNotes, "Tap \"New note\" in Notes"))
+        assertIs<OwnerResult.Done<*>>(apps.authorise(f.app.packageName, f.app.label, "cd".repeat(32)))
+        runCurrent()
+        assertTrue(again.isActive)
+        assertEquals(OwnerRequestStatus.PENDING, f.pending().status)
+        again.cancel()
     }
 
     // ---- R4: no asking again right after a refusal ----

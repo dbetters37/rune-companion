@@ -226,7 +226,12 @@ interface OwnerRequestQueue {
     /** Closes every PENDING request with expiresAt ≤ [at] as EXPIRED. Returns those it closed, oldest first. */
     suspend fun closeOverdue(at: Long, note: String?): List<OwnerRequest>
 
-    /** Closes every PENDING request as CANCELLED; called at start-up, when no waiter can be alive. Returns those it closed, oldest first. */
+    /**
+     * Closes every PENDING request as CANCELLED. Returns those it closed, oldest first. The app's
+     * start-up does not use it (since review 5 it closes one by one only the requests no live
+     * call waits for, so work restarted before start-up finished keeps its question); it is for
+     * a store known to have no waiters at all.
+     */
     suspend fun cancelAllPending(at: Long, note: String?): List<OwnerRequest>
 
     /**

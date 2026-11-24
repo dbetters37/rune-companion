@@ -107,7 +107,7 @@ fun ApprovalNotificationsOffBanner(modifier: Modifier = Modifier) {
         InfoBanner(
             title = "Notifications are off",
             text = "You are not told when an agent waits for your answer, or while an agent operates an app's screen. Requests " +
-                "still wait here and in the chat or task that asked, and are refused if nobody answers in time.",
+                "still wait in Approvals and in the chat or task that asked, and are refused if nobody answers in time.",
             tone = StatusTone.ATTENTION,
         )
         TextButton(onClick = {

@@ -199,6 +199,15 @@ interface ScreenOperator {
     /** Finds an element in [packageName]'s window without acting. Side-effect free: for assessing a call. */
     suspend fun find(packageName: String, target: ScreenTarget): ScreenResult<ScreenElement>
 
+    /**
+     * Reads [packageName]'s window like [read], under the same checks, but side-effect free: no
+     * session or indicator starts and the snapshot is not kept, so its elements cannot be named
+     * by number ([ScreenSnapshot.id] is 0). For assessing a call and re-checking it before it
+     * acts: the approval preview shows, and the re-check compares, the whole window. At most
+     * [maxElements] elements; [ScreenSnapshot.truncated] says when more were left out.
+     */
+    suspend fun inspect(packageName: String, maxElements: Int = INSPECT_MAX_ELEMENTS): ScreenResult<ScreenSnapshot>
+
     suspend fun tap(agentName: String, element: ScreenElement): ScreenResult<Unit>
 
     /**
@@ -234,6 +243,9 @@ interface ScreenOperator {
     companion object {
         /** The indicator stays this long after an agent's last screen call. */
         const val SESSION_IDLE_MS: Long = 30_000
+
+        /** The most elements [inspect] returns by default: more than any read, so a preview covers the whole window. */
+        const val INSPECT_MAX_ELEMENTS: Int = 1_000
     }
 }
 
@@ -251,6 +263,25 @@ interface ScreenControl {
     fun resume()
 }
 
+/**
+ * How often screen actions in one authorised app ask the owner. Stored per app
+ * ([OperatorApp.policy]); a word list cannot recognise every consequential control, so the
+ * default asks every time.
+ */
+enum class ScreenActionPolicy {
+    /**
+     * Every tap, typing, scroll, Back and Home in the app needs the owner's approval, each time,
+     * with the window's text in the preview. The default for every authorised app.
+     */
+    ASK_EVERY_ACTION,
+
+    /**
+     * Only actions [ConsequentialControls] recognises as buying, sending, deleting, consenting
+     * and similar need the owner's approval; other actions run under the agent's permission.
+     */
+    ASK_CONSEQUENTIAL_ONLY,
+}
+
 /** An app the owner authorised for screen operation. Agents still need screen grants for it. */
 @Serializable
 data class OperatorApp(
@@ -263,6 +294,8 @@ data class OperatorApp(
      * under the same package name inherits nothing. Null only if it could not be read.
      */
     val signingCertSha256: String? = null,
+    /** How often its screen actions ask the owner; asking every time unless the owner chose otherwise. */
+    val policy: ScreenActionPolicy = ScreenActionPolicy.ASK_EVERY_ACTION,
 )
 
 /**
@@ -289,31 +322,102 @@ interface OperatorAppRepository {
 /**
  * The owner-facing description of a screen action, so every screen tool's approval preview
  * names the same things: the app and window, the control and where it is, and for a
- * consequential action what is on screen to be sent. Every value is [PreviewText.exact].
+ * consequential action everything the window shows. Every value is [PreviewText.exact].
  */
 object ScreenPreview {
+    /** The most texts of a window listed in a preview; the rest are counted. */
+    const val MAX_WINDOW_LINES: Int = 150
+
+    /** The most characters of one text in a preview. */
+    const val MAX_TEXT_CHARS: Int = 300
+
     /** The control's name: text, else description, else label, else hint, else view id, else "unlabelled". */
     fun nameOf(element: ScreenElement): String {
         val name = listOf(element.text, element.description, element.label, element.hint, element.resourceId?.substringAfter(":id/"))
             .firstOrNull { !it.isNullOrBlank() }
-        return if (name == null) "unlabelled ${element.role}" else "${element.role} \"${PreviewText.exact(name)}\""
+        return if (name == null) "unlabelled ${element.role}" else "${element.role} ${PreviewText.quoted(name)}"
     }
 
     /**
      * Details lines for an action on [element] in [appLabel]'s window. With [consequential],
-     * also every editable field in [snapshot] that has text (passwords and sensitive fields are
-     * never in a snapshot), so the owner sees what a "Send" would send.
+     * also every editable field in [snapshot] that has text and every other text of the window
+     * ([windowLines]), so the owner sees the payee, the price and what a "Send" would send
+     * (passwords and sensitive fields are never in a snapshot).
      */
     fun details(appLabel: String, element: ScreenElement, snapshot: ScreenSnapshot?, consequential: Boolean): List<String> = buildList {
-        val title = snapshot?.windowTitle?.let { ", window \"${PreviewText.exact(it)}\"" } ?: ""
-        add("App: ${PreviewText.exact(appLabel)} (${element.packageName})$title")
+        add(appLine(appLabel, element.packageName, snapshot))
         add("Control: ${nameOf(element)}")
         element.context?.takeIf { it.isNotBlank() }?.let { add("Where: ${PreviewText.exact(it)}") }
-        if (consequential && snapshot != null) {
-            for (field in snapshot.elements.filter { it.editable && !it.text.isNullOrEmpty() }) {
-                val name = field.hint ?: field.description ?: field.resourceId?.substringAfter(":id/") ?: "field ${field.number}"
-                add("Field \"${PreviewText.exact(name)}\" contains: \"${PreviewText.exact(field.text!!)}\"")
-            }
-        }
+        if (consequential && snapshot != null) addAll(contents(snapshot))
     }
+
+    /**
+     * Details lines for an action on [packageName]'s window as a whole (Back, Home, a scroll of
+     * the page): the app and window, and, given a [snapshot], everything in it as [details] shows.
+     */
+    fun windowDetails(appLabel: String, packageName: String, snapshot: ScreenSnapshot?): List<String> =
+        listOf(appLine(appLabel, packageName, snapshot)) + (snapshot?.let(::contents) ?: emptyList())
+
+    private fun appLine(appLabel: String, packageName: String, snapshot: ScreenSnapshot?): String {
+        val title = snapshot?.windowTitle?.let { ", window ${PreviewText.quoted(it)}" } ?: ""
+        return "App: ${PreviewText.exact(appLabel)} ($packageName)$title"
+    }
+
+    /** The fields that hold text, then [windowLines]. */
+    private fun contents(snapshot: ScreenSnapshot): List<String> = buildList {
+        for (field in snapshot.elements.filter { it.editable && !it.text.isNullOrEmpty() }) {
+            add("Field ${PreviewText.quoted(fieldName(field))} contains: ${PreviewText.quoted(field.text!!)}")
+        }
+        addAll(windowLines(snapshot))
+    }
+
+    /**
+     * The window's texts for an approval preview: one line per element that shows a text or a
+     * description and is not an editable field (those are listed by [details]), in reading
+     * order, each [PreviewText.exact] and at most [MAX_TEXT_CHARS] characters; at most
+     * [MAX_WINDOW_LINES] lines, then how many were left out. Notes password fields left out and
+     * a read that stopped early.
+     */
+    fun windowLines(snapshot: ScreenSnapshot): List<String> = buildList {
+        val texts = snapshot.elements.filter { !it.editable }.mapNotNull { e ->
+            listOfNotNull(e.text, e.description?.takeIf { it != e.text }).filter { it.isNotBlank() }.joinToString(" · ").ifEmpty { null }
+                ?.let { "${e.role}: ${PreviewText.quoted(clip(it))}" }
+        }
+        add("On screen now (${texts.size} ${if (texts.size == 1) "text" else "texts"}):")
+        texts.take(MAX_WINDOW_LINES).forEach { add("  $it") }
+        if (texts.size > MAX_WINDOW_LINES) add("  …and ${texts.size - MAX_WINDOW_LINES} more texts not listed here.")
+        if (snapshot.withheld > 0) add("  (${snapshot.withheld} password or sensitive ${if (snapshot.withheld == 1) "field is" else "fields are"} never shown.)")
+        if (snapshot.truncated) add("  (The window holds more than could be read; the rest is not shown.)")
+    }
+
+    /**
+     * A fingerprint of everything [windowLines] and [details] show of [snapshot], and more: the
+     * window title and, per element in order, its kind, text, description, hint, view id, label
+     * and checked state, plus how many fields were withheld. Positions and focus are left out, so
+     * moving the keyboard or the owner's return to the app do not change it; any changed text
+     * (a payee, a price, a field) does. SHA-256, hex.
+     */
+    fun digest(snapshot: ScreenSnapshot): String {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        fun add(value: String?) {
+            val bytes = (value ?: "\u0000null").toByteArray(Charsets.UTF_8)
+            md.update(bytes.size.toString().toByteArray(Charsets.UTF_8))
+            md.update(':'.code.toByte())
+            md.update(bytes)
+        }
+        add(snapshot.packageName)
+        add(snapshot.windowTitle)
+        add(snapshot.withheld.toString())
+        add(snapshot.truncated.toString())
+        for (e in snapshot.elements) {
+            add(e.role); add(e.text); add(e.description); add(e.hint); add(e.resourceId); add(e.label)
+            add(if (e.checkable) e.checked.toString() else "")
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun fieldName(field: ScreenElement): String =
+        field.hint ?: field.description ?: field.resourceId?.substringAfter(":id/") ?: "field ${field.number}"
+
+    private fun clip(s: String): String = if (s.length > MAX_TEXT_CHARS) s.take(MAX_TEXT_CHARS) + "…" else s
 }

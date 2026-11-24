@@ -2,9 +2,9 @@ package com.aicontrolcenter.app.ui.approvals
 
 import com.aicontrolcenter.app.testing.MainDispatcherRule
 import com.aicontrolcenter.app.testing.SampleObjectives
-import com.aicontrolcenter.app.testing.populateWithObjectives
 import com.aicontrolcenter.app.testing.TestApp
 import com.aicontrolcenter.app.testing.activeIn
+import com.aicontrolcenter.app.testing.populateWithObjectives
 import com.aicontrolcenter.app.testing.raise
 import com.aicontrolcenter.app.testing.sampleApproval
 import com.aicontrolcenter.app.testing.samplePermission
@@ -13,10 +13,16 @@ import com.aicontrolcenter.app.ui.chat.TranscriptItem
 import com.aicontrolcenter.app.ui.shell.ShellViewModel
 import com.aicontrolcenter.app.ui.tasks.TaskDetailViewModel
 import com.aicontrolcenter.core.RequestId
+import com.aicontrolcenter.core.ToolId
 import com.aicontrolcenter.core.activity.ActivityType
 import com.aicontrolcenter.core.operator.GrantScope
+import com.aicontrolcenter.core.operator.OperatorCapabilities
+import com.aicontrolcenter.core.operator.OwnerRequest
+import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.OwnerRequestStatus
 import com.aicontrolcenter.core.tasks.TaskStatus
+import com.aicontrolcenter.core.tools.CapabilityConstraint
+import com.aicontrolcenter.core.tools.RiskLevel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.TestScope
@@ -25,6 +31,7 @@ import org.junit.Rule
 import org.junit.Test
 import java.time.ZoneOffset
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -59,6 +66,60 @@ class ApprovalViewModelsTest {
 
         app.graph.ownerRequests.deny(RequestId("req_1"))
         assertEquals(listOf("req_2"), vm.uiState.value.requests.map { it.id.value })
+    }
+
+    private fun screenRequest(agent: com.aicontrolcenter.core.AgentId, kind: OwnerRequestKind, id: String, createdAt: Long) = OwnerRequest(
+        id = RequestId(id), kind = kind, agentId = agent, toolId = ToolId("screen.tap"), capability = OperatorCapabilities.SCREEN_OPERATE,
+        constraint = CapabilityConstraint.App("org.example.notes"),
+        risk = if (kind == OwnerRequestKind.APPROVAL) RiskLevel.CONSEQUENTIAL else RiskLevel.MODIFYING,
+        summary = "Tap Button \"Send\" in \"Notes\" (org.example.notes)", targetLabel = "Notes",
+        details = listOf("On screen now (1 text):", "  TextView: \"Sent messages cannot be undone\""),
+        createdAt = createdAt, expiresAt = createdAt + 30 * 60_000L,
+    )
+
+    /** Review 5, A1: the owner answers here, so after allowing a screen action this app steps aside for the app it operates. */
+    @Test
+    fun `approving a screen action steps aside so the operated app comes back`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope).started()
+        app.raise(screenRequest(app.operatorId(), OwnerRequestKind.APPROVAL, "req_tap", app.clock.current))
+        val vm = approval(app, "req_tap")
+        val shown = assertNotNull(vm.uiState.value.request)
+        assertEquals("May leave this phone through Notes", shown.dataGoesTo)
+        assertTrue(shown.returnsToApp!!.contains("this app steps aside so Notes comes back"), shown.returnsToApp)
+        // The other app's own words stay in the quoted preview; they are not lifted into this app's warning.
+        assertFalse("Sent messages" in shown.hardToUndo.orEmpty(), shown.hardToUndo)
+
+        vm.choose(RequestChoice.APPROVE)
+        testScheduler.advanceUntilIdle()
+        assertEquals(AfterAnswer.ReturnToApp("Notes"), vm.uiState.value.afterAnswer)
+        vm.afterAnswerDone()
+        assertNull(vm.uiState.value.afterAnswer)
+    }
+
+    @Test
+    fun `allowing a screen permission opens the same call's approval when it follows, and denying stays here`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope).started()
+        val operator = app.operatorId()
+        app.raise(screenRequest(operator, OwnerRequestKind.PERMISSION, "req_ask", app.clock.current))
+        val vm = approval(app, "req_ask")
+        vm.choose(RequestChoice.ALLOW_ONCE)
+        // The broker raises the call's approval right after the permission.
+        app.raise(screenRequest(operator, OwnerRequestKind.APPROVAL, "req_then", app.clock.current))
+        testScheduler.advanceUntilIdle()
+        assertEquals(AfterAnswer.OpenRequest(RequestId("req_then")), vm.uiState.value.afterAnswer)
+
+        // A permission with no approval after it: back to the app.
+        app.raise(screenRequest(operator, OwnerRequestKind.PERMISSION, "req_read", app.clock.current))
+        val read = approval(app, "req_read")
+        read.choose(RequestChoice.ALLOW_ONCE)
+        testScheduler.advanceUntilIdle()
+        assertEquals(AfterAnswer.ReturnToApp("Notes"), read.uiState.value.afterAnswer)
+
+        // Denied: nothing runs there, so the owner stays here.
+        val denied = approval(app, "req_then")
+        denied.choose(RequestChoice.DENY)
+        testScheduler.advanceUntilIdle()
+        assertNull(denied.uiState.value.afterAnswer)
     }
 
     @Test

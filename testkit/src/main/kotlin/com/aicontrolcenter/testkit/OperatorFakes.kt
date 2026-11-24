@@ -331,6 +331,15 @@ class FakeAppActions(var ownPackage: String = "com.aicontrolcenter.app") : AppAc
         }
     }
 
+    /** The apps [linkHandlers] names, by scheme; a scheme in [handledSchemes] without an entry is opened by one "Example <scheme> app". */
+    val linkApps: MutableMap<String, List<InstalledAppInfo>> = ConcurrentHashMap()
+
+    override suspend fun linkHandlers(link: String): List<InstalledAppInfo> {
+        val check = LinkPolicy.check(link, ownPackage) as? LinkPolicy.Check.Allowed ?: return emptyList()
+        return linkApps[check.scheme]
+            ?: if (check.scheme in handledSchemes) listOf(InstalledAppInfo("com.example.${check.scheme}", "Example ${check.scheme} app")) else emptyList()
+    }
+
     override suspend fun openInBrowser(url: String) = record(AppCall.OpenInBrowser(url)) {
         val check = LinkPolicy.check(url, ownPackage)
         if (check is LinkPolicy.Check.Allowed && (check.scheme == "http" || check.scheme == "https")) start()

@@ -20,6 +20,21 @@ enum class DeviceAccess {
     TERMUX_RUN_COMMAND,
 }
 
+/** Where a [DeviceAccess] stands now, as Android reports it. */
+enum class DeviceAccessState {
+    /** On. */
+    ALLOWED,
+
+    /** Photos and videos: on for the items the owner selected only (Android 14 and later). */
+    SELECTED_ONLY,
+
+    /** Off. */
+    NOT_ALLOWED,
+
+    /** The app it is about (Termux) is not installed. */
+    NOT_INSTALLED,
+}
+
 /** The outcome of asking Android to do something with another app. Every value says what is known to have happened, no more. */
 sealed interface AppActionResult {
     /**
@@ -85,6 +100,13 @@ interface AppActions {
     /** ACTION_VIEW of a web URL or an app link that [LinkPolicy.check] allows. */
     suspend fun openLink(link: String): AppActionResult
 
+    /**
+     * The apps that would open [link] (one [LinkPolicy.check] allows) as [openLink] opens it,
+     * protected apps left out, by label; empty when no installed app takes it. The link's
+     * preview names them, so the owner knows which app a deep link hands over to.
+     */
+    suspend fun linkHandlers(link: String): List<InstalledAppInfo> = emptyList()
+
     /** An http(s) URL in a Custom Tab or the default browser. */
     suspend fun openInBrowser(url: String): AppActionResult
 
@@ -105,7 +127,8 @@ interface AppActions {
 
     /**
      * Removes an app through `PackageInstaller.uninstall` with a status receiver (needs
-     * `REQUEST_DELETE_PACKAGES`), waiting up to [waitMs] for Android's confirmation:
+     * `REQUEST_DELETE_PACKAGES`), waiting up to [waitMs] for Android's confirmation (time spent
+     * on it is the owner's: implementations wait inside `WaitClock.pausedWhile`):
      * [AppActionResult.Uninstalled], [AppActionResult.UserCancelled], [AppActionResult.Failed]
      * or [AppActionResult.OutcomeUnknown]. Protected packages and this app are refused.
      */
@@ -113,7 +136,7 @@ interface AppActions {
 
     /**
      * Installs a workspace APK through a PackageInstaller session, waiting up to [waitMs] for the
-     * session's final status: [AppActionResult.Installed], [AppActionResult.UserCancelled]
+     * session's final status (inside `WaitClock.pausedWhile`, as for [uninstall]): [AppActionResult.Installed], [AppActionResult.UserCancelled]
      * (`STATUS_FAILURE_ABORTED`), [AppActionResult.Failed] with the status code, or
      * [AppActionResult.OutcomeUnknown].
      */
@@ -136,6 +159,13 @@ interface AppActions {
 object LinkPolicy {
     /** Schemes that prepare messages or calls; they belong to the compose tools and their capability. */
     val COMPOSE_SCHEMES: Set<String> = setOf("mailto", "sms", "smsto", "mms", "mmsto", "tel")
+
+    /**
+     * Schemes that only show something (a web page, a place on a map). Every other scheme an app
+     * registers (payment, call, meeting, chat links …) can make that app act as soon as it opens,
+     * so opening one is consequential and its preview names the app.
+     */
+    val PLAIN_SCHEMES: Set<String> = setOf("http", "https", "geo")
 
     const val MAX_LENGTH: Int = 4096
 

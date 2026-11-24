@@ -26,17 +26,21 @@ data class OperatorToolInfo(
 object OperatorTools {
     private val C = OperatorCapabilities
     private const val NO_OVERWRITE = "Never overwrites a workspace file: an existing target is refused."
+    private const val BULK = "CONSEQUENTIAL once more than BULK_FILE_LIMIT existing files are replaced, edited or removed by the agent " +
+        "in the task within BULK_WINDOW_MS (RecentFileChanges), counted across calls."
+    private const val KEEP_REPLACED = "A replaced file goes to the workspace trash first. $BULK"
+    private const val REPLACE_IN_FOLDER = "Replacing an existing file is CONSEQUENTIAL: shared folders have no trash."
 
     val all: List<OperatorToolInfo> = listOf(
         info("workspace.list", C.WORKSPACE_READ, RiskLevel.SAFE, ToolCategory.WORKSPACE),
         info("workspace.read", C.WORKSPACE_READ, RiskLevel.SAFE, ToolCategory.WORKSPACE),
         info("workspace.search", C.WORKSPACE_READ, RiskLevel.SAFE, ToolCategory.WORKSPACE),
-        info("workspace.write", C.WORKSPACE_WRITE, RiskLevel.MODIFYING, ToolCategory.WORKSPACE),
+        info("workspace.write", C.WORKSPACE_WRITE, RiskLevel.MODIFYING, ToolCategory.WORKSPACE, rule = KEEP_REPLACED),
         info("workspace.append", C.WORKSPACE_WRITE, RiskLevel.MODIFYING, ToolCategory.WORKSPACE),
-        info("workspace.replace_text", C.WORKSPACE_WRITE, RiskLevel.MODIFYING, ToolCategory.WORKSPACE),
+        info("workspace.replace_text", C.WORKSPACE_WRITE, RiskLevel.MODIFYING, ToolCategory.WORKSPACE, rule = BULK),
         info("workspace.make_folder", C.WORKSPACE_WRITE, RiskLevel.MODIFYING, ToolCategory.WORKSPACE),
-        info("workspace.move", C.WORKSPACE_WRITE, RiskLevel.MODIFYING, ToolCategory.WORKSPACE, rule = "Overwriting more than BULK_FILE_LIMIT files is CONSEQUENTIAL."),
-        info("workspace.trash", C.WORKSPACE_WRITE, RiskLevel.MODIFYING, ToolCategory.WORKSPACE),
+        info("workspace.move", C.WORKSPACE_WRITE, RiskLevel.MODIFYING, ToolCategory.WORKSPACE, rule = KEEP_REPLACED),
+        info("workspace.trash", C.WORKSPACE_WRITE, RiskLevel.MODIFYING, ToolCategory.WORKSPACE, rule = BULK),
         info("workspace.restore", C.WORKSPACE_WRITE, RiskLevel.MODIFYING, ToolCategory.WORKSPACE),
         info("workspace.empty_trash", C.WORKSPACE_WRITE, RiskLevel.CONSEQUENTIAL, ToolCategory.WORKSPACE),
         info(
@@ -46,10 +50,10 @@ object OperatorTools {
         info("folders.list", C.FOLDERS_READ, RiskLevel.SAFE, ToolCategory.FILES),
         info("folders.read", C.FOLDERS_READ, RiskLevel.SAFE, ToolCategory.FILES),
         info("folders.copy_to_workspace", C.FOLDERS_READ, RiskLevel.MODIFYING, ToolCategory.FILES, rule = NO_OVERWRITE),
-        info("folders.write", C.FOLDERS_WRITE, RiskLevel.MODIFYING, ToolCategory.FILES),
+        info("folders.write", C.FOLDERS_WRITE, RiskLevel.MODIFYING, ToolCategory.FILES, rule = REPLACE_IN_FOLDER),
         info("folders.make_folder", C.FOLDERS_WRITE, RiskLevel.MODIFYING, ToolCategory.FILES),
         info("folders.rename", C.FOLDERS_WRITE, RiskLevel.MODIFYING, ToolCategory.FILES),
-        info("folders.copy_from_workspace", C.FOLDERS_WRITE, RiskLevel.MODIFYING, ToolCategory.FILES),
+        info("folders.copy_from_workspace", C.FOLDERS_WRITE, RiskLevel.MODIFYING, ToolCategory.FILES, rule = REPLACE_IN_FOLDER),
         info("folders.delete", C.FOLDERS_WRITE, RiskLevel.CONSEQUENTIAL, ToolCategory.FILES),
         info("media.list", C.MEDIA_READ, RiskLevel.SAFE, ToolCategory.MEDIA),
         info("media.copy_to_workspace", C.MEDIA_READ, RiskLevel.MODIFYING, ToolCategory.MEDIA, rule = NO_OVERWRITE),
@@ -57,7 +61,8 @@ object OperatorTools {
         info("apps.open", C.APPS_OPEN, RiskLevel.MODIFYING, ToolCategory.APPS),
         info(
             "apps.open_link", C.APPS_OPEN, RiskLevel.MODIFYING, ToolCategory.APPS, sendsDataOffDevice = true,
-            rule = "LinkPolicy.check first; dataGoesTo is the link's host or app.",
+            rule = "LinkPolicy.check first; only LinkPolicy.PLAIN_SCHEMES stay MODIFYING, any other scheme is CONSEQUENTIAL with the app " +
+                "that opens it named. dataGoesTo is the web host, or that app for other schemes.",
         ),
         info("apps.share_text", C.APPS_COMPOSE, RiskLevel.MODIFYING, ToolCategory.APPS),
         info("apps.compose_email", C.APPS_COMPOSE, RiskLevel.MODIFYING, ToolCategory.APPS),
@@ -73,14 +78,38 @@ object OperatorTools {
         info("screen.read", C.SCREEN_READ, RiskLevel.SAFE, ToolCategory.ACCESSIBILITY),
         info("screen.wait_for", C.SCREEN_READ, RiskLevel.SAFE, ToolCategory.ACCESSIBILITY),
         info("screen.screenshot", C.SCREEN_READ, RiskLevel.MODIFYING, ToolCategory.ACCESSIBILITY, rule = NO_OVERWRITE),
-        info("screen.tap", C.SCREEN_OPERATE, RiskLevel.MODIFYING, ToolCategory.ACCESSIBILITY, rule = "CONSEQUENTIAL when ConsequentialControls.consequentialReason is not null."),
-        info("screen.type", C.SCREEN_OPERATE, RiskLevel.MODIFYING, ToolCategory.ACCESSIBILITY, rule = "CONSEQUENTIAL with submit, or on a consequential field."),
-        info("screen.scroll", C.SCREEN_OPERATE, RiskLevel.MODIFYING, ToolCategory.ACCESSIBILITY),
-        info("screen.back", C.SCREEN_OPERATE, RiskLevel.MODIFYING, ToolCategory.ACCESSIBILITY),
-        info("screen.home", C.SCREEN_OPERATE, RiskLevel.MODIFYING, ToolCategory.ACCESSIBILITY, rule = "Sets ActionAssessment.leadsTo to the launcher."),
+        // Acting on another app's screen may send data off the phone through that app (a browser's
+        // address bar, a chat), so local-only mode blocks these five; reading and screenshots stay.
+        info(
+            "screen.tap", C.SCREEN_OPERATE, RiskLevel.MODIFYING, ToolCategory.ACCESSIBILITY, sendsDataOffDevice = true,
+            rule = "CONSEQUENTIAL for an app that asks every time (ScreenActionPolicy), else when ConsequentialControls.consequentialReason is not null.",
+        ),
+        info(
+            "screen.type", C.SCREEN_OPERATE, RiskLevel.MODIFYING, ToolCategory.ACCESSIBILITY, sendsDataOffDevice = true,
+            rule = "CONSEQUENTIAL for an app that asks every time, with submit, or on a field ConsequentialControls.typingReason names.",
+        ),
+        info(
+            "screen.scroll", C.SCREEN_OPERATE, RiskLevel.MODIFYING, ToolCategory.ACCESSIBILITY, sendsDataOffDevice = true,
+            rule = "CONSEQUENTIAL for an app that asks every time, or on a target ConsequentialControls.consequentialReason names.",
+        ),
+        info(
+            "screen.back", C.SCREEN_OPERATE, RiskLevel.MODIFYING, ToolCategory.ACCESSIBILITY, sendsDataOffDevice = true,
+            rule = "Sets ActionAssessment.leadsTo to the launcher (Back may leave the app). CONSEQUENTIAL for an app that asks every time.",
+        ),
+        info(
+            "screen.home", C.SCREEN_OPERATE, RiskLevel.MODIFYING, ToolCategory.ACCESSIBILITY, sendsDataOffDevice = true,
+            rule = "Sets ActionAssessment.leadsTo to the launcher. CONSEQUENTIAL for an app that asks every time.",
+        ),
         info("scripts.run_js", C.SCRIPTS_JS, RiskLevel.MODIFYING, ToolCategory.SCRIPTS, rule = "Host functions reach the workspace only, through Workspace."),
-        info("scripts.run_shell", C.SCRIPTS_SHELL, RiskLevel.CONSEQUENTIAL, ToolCategory.SCRIPTS),
-        info("termux.run", C.SCRIPTS_TERMUX, RiskLevel.CONSEQUENTIAL, ToolCategory.SCRIPTS),
+        info(
+            "scripts.run_shell", C.SCRIPTS_SHELL, RiskLevel.CONSEQUENTIAL, ToolCategory.SCRIPTS, sendsDataOffDevice = true,
+            rule = "The command can use the network, so it is blocked in local-only mode. Workspace files it names are pinned and scripts " +
+                "shown; background work is refused and the command's process group is killed when it ends.",
+        ),
+        info(
+            "termux.run", C.SCRIPTS_TERMUX, RiskLevel.CONSEQUENTIAL, ToolCategory.SCRIPTS, sendsDataOffDevice = true,
+            rule = "Termux can use the network, so it is blocked in local-only mode.",
+        ),
         info(
             "permissions.request", Capabilities.BASIC_INFO, RiskLevel.SAFE, ToolCategory.SYSTEM,
             rule = "Its only dependency is CapabilityRequester; it never waits for the answer. Within OwnerRequest.REFUSAL_COOLDOWN_MS " +

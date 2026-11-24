@@ -46,6 +46,7 @@ import com.aicontrolcenter.app.ui.theme.appColors
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.RequestId
 import com.aicontrolcenter.core.ToolId
+import com.aicontrolcenter.core.operator.DeviceAccess
 import kotlinx.serialization.Serializable
 
 /** The Tools section's five views. Short names, so all five fit side by side on the narrowest phone. */
@@ -97,9 +98,44 @@ fun ToolsSectionRoute(initialTab: ToolsTab, initialAgent: AgentId?, navigation: 
     var onMessageShown: () -> Unit = {}
     val body: @Composable () -> Unit = when (tab) {
         ToolsTab.TOOLS -> {
-            val viewModel = viewModel { ToolsCatalogViewModel(graph.registryDirectory, graph.toolRegistry.all().map { it.spec }, graph.capabilities::info) }
+            val viewModel = viewModel {
+                ToolsCatalogViewModel(graph.registryDirectory, graph.toolRegistry.all().map { it.spec }, graph.capabilities::info, graph.systemScreens::accessState)
+            }
+            // Coming back from Android's settings: read every access again.
+            LifecycleResumeEffect(viewModel) {
+                viewModel.refreshAccess()
+                onPauseOrDispose { }
+            }
             val state by viewModel.uiState.collectAsStateWithLifecycle()
-            ({ CatalogTab(state, navigation.onOpenAgent, navigation.onOpenWorkspace) })
+            message = state.message
+            onMessageShown = viewModel::messageShown
+            // Android's own permission dialog; which access it was for is kept across the dialog.
+            var asked by rememberSaveable { mutableStateOf<DeviceAccess?>(null) }
+            val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+                asked?.let(viewModel::permissionAnswered)
+            }
+            ({
+                CatalogTab(
+                    state, navigation.onOpenAgent, navigation.onOpenWorkspace,
+                    DeviceAccessActions(
+                        onRequest = { access ->
+                            val wanted = graph.systemScreens.accessPermissions(access)
+                            if (wanted.isNotEmpty()) {
+                                asked = access
+                                permissions.launch(wanted.toTypedArray())
+                            }
+                        },
+                        onOpenSettings = { access ->
+                            val intent = graph.systemScreens.accessSettings(access)
+                            try {
+                                if (intent != null) context.startActivity(intent) else viewModel.couldNotOpen("that setting")
+                            } catch (_: ActivityNotFoundException) {
+                                viewModel.couldNotOpen("that setting")
+                            }
+                        },
+                    ),
+                )
+            })
         }
         ToolsTab.PERMISSIONS -> {
             val viewModel = viewModel {
@@ -196,6 +232,7 @@ fun ToolsSectionRoute(initialTab: ToolsTab, initialAgent: AgentId?, navigation: 
                         onAuthorise = viewModel::authorise,
                         onWithdraw = viewModel::withdraw,
                         onSetAccess = viewModel::setAccess,
+                        onSetPolicy = viewModel::setPolicy,
                     ),
                 )
             })
@@ -246,7 +283,7 @@ fun ToolsSectionRoute(initialTab: ToolsTab, initialAgent: AgentId?, navigation: 
             }
             // Agents wait for the owner's answers; without notifications the owner is not told (A2).
             val notificationsOn by graph.notifications.enabled.collectAsStateWithLifecycle()
-            if (!notificationsOn) ApprovalNotificationsOffBanner(Modifier.padding(horizontal = Spacing.screen))
+            if (!notificationsOn) ApprovalNotificationsOffBanner(Modifier.padding(start = Spacing.screen, end = Spacing.screen, top = Spacing.md))
             body()
         }
     }

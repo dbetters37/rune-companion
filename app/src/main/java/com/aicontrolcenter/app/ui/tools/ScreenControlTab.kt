@@ -14,12 +14,15 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -52,6 +55,7 @@ import com.aicontrolcenter.app.ui.theme.MonoTextStyle
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.operator.ScreenActionPolicy
 
 /** What the Screen control tab can ask for. */
 class ScreenControlActions(
@@ -66,6 +70,7 @@ class ScreenControlActions(
     val onAuthorise: (packageName: String, label: String) -> Unit,
     val onWithdraw: (String) -> Unit,
     val onSetAccess: (String, AgentId, AccessLevel) -> Unit,
+    val onSetPolicy: (String, ScreenActionPolicy) -> Unit = { _, _ -> },
 )
 
 /**
@@ -245,6 +250,8 @@ private fun AuthorisedAppCard(app: OperatorAppUi, isBusy: Boolean, actions: Scre
             ) { Text("Authorise again") }
         }
         RowDivider(Modifier.padding(vertical = Spacing.sm))
+        PolicyChoice(app, isBusy, actions)
+        RowDivider(Modifier.padding(vertical = Spacing.sm))
         SectionHeader("Who may use it")
         app.agents.forEach { access ->
             AgentAccessRow(
@@ -255,6 +262,61 @@ private fun AuthorisedAppCard(app: OperatorAppUi, isBusy: Boolean, actions: Scre
                 onChange = { level -> access.agent.id?.let { actions.onSetAccess(app.packageName, it, level) } },
             )
         }
+    }
+}
+
+/**
+ * How often the app's screen actions ask the owner. Asking before every action is the default;
+ * asking less is confirmed first, because a control worded in a way the app does not recognise
+ * then runs without asking.
+ */
+@Composable
+private fun PolicyChoice(app: OperatorAppUi, isBusy: Boolean, actions: ScreenControlActions) {
+    var confirmRelaxed by rememberSaveable(app.packageName) { mutableStateOf(false) }
+    SectionHeader("When it asks you")
+    Column(Modifier.selectableGroup()) {
+        for (policy in ScreenActionPolicy.entries) {
+            val chosen = app.policy == policy
+            Row(
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .selectable(selected = chosen, enabled = !isBusy, role = Role.RadioButton) {
+                        when {
+                            chosen -> Unit
+                            policy == ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY -> confirmRelaxed = true
+                            else -> actions.onSetPolicy(app.packageName, policy)
+                        }
+                    }
+                    .padding(vertical = Spacing.xs),
+            ) {
+                RadioButton(selected = chosen, onClick = null, enabled = !isBusy)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(ScreenPolicyText.title(policy), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+                    Caption(ScreenPolicyText.description(policy, app.label))
+                }
+            }
+        }
+    }
+    if (confirmRelaxed) {
+        ConfirmDialog(
+            title = "Ask less in ${app.label}?",
+            message = ScreenPolicyText.description(ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY, app.label) +
+                " Avoid this for banking, payment, shopping, mail and messaging apps.",
+            confirmLabel = "Ask less",
+            dismissLabel = "Back",
+            icon = AppIcons.Accessibility,
+            cautionary = true,
+            widens = true,
+            guarded = true,
+            onConfirm = {
+                confirmRelaxed = false
+                actions.onSetPolicy(app.packageName, ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY)
+            },
+            onDismiss = { confirmRelaxed = false },
+        )
     }
 }
 
@@ -271,8 +333,9 @@ private fun AppPicker(picker: AppPickerUi, actions: ScreenControlActions) {
         ConfirmDialog(
             title = "Authorise ${app.label}?",
             message = "Agents you then choose can see ${app.label}'s screen, and tap and type in it as if they were you, one action " +
-                "at a time. Take care with banking, payment, messaging and terminal apps: an agent allowed there can act as you " +
-                "there. Buying, sending, deleting and similar still ask you every time.",
+                "at a time. Each of those actions asks you first, with what the screen shows; you can make ${app.label} ask " +
+                "less afterwards. Take care with banking, payment, messaging and terminal apps: an agent allowed there can act " +
+                "as you there.",
             confirmLabel = "Authorise",
             dismissLabel = "Back",
             icon = AppIcons.Accessibility,

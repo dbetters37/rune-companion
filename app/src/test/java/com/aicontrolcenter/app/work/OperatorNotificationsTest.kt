@@ -110,6 +110,46 @@ class OperatorNotificationsTest {
     }
 
     @Test
+    fun `a notification left by an earlier run for a request nothing waits for is removed at start-up`() {
+        // Posted by the app's earlier run, which stopped before the owner answered: notifications outlive the process.
+        val dead = sampleApproval(operator, id = "req_dead", createdAt = app.clock.current, minutes = 240)
+        ApprovalNotifications.ensureChannel(context)
+        assertTrue(ApprovalNotifications.post(context, dead.id, ApprovalNotifications.build(context, dead, app.clock.current)))
+        runBlocking { app.raise(dead, waiting = false) }
+        assertEquals(setOf<String?>("req_dead"), tagsOfApprovals())
+        assertEquals(setOf(dead.id), ApprovalNotifications.showing(context))
+
+        ApprovalNotifier(context, app.graph.ownerRequests.pending, app.clock, scope).start()
+
+        assertTrue(tagsOfApprovals().isEmpty(), "\"Approval needed\" does not stand for a question that can no longer be answered (INT-2)")
+        runBlocking { app.raise(samplePermission(operator, agentName = "Operator", createdAt = app.clock.current, minutes = 240)) }
+        assertEquals(setOf<String?>("req_permission"), tagsOfApprovals(), "a request a live call waits for is shown as before")
+    }
+
+    @Test
+    fun `the phone operator's notifications are asked for apart from the objectives', once each`() {
+        val application = ApplicationProvider.getApplicationContext<android.app.Application>()
+        shadowOf(application).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        val access = AndroidNotificationAccess(context)
+        assertEquals(Manifest.permission.POST_NOTIFICATIONS, access.permission)
+        assertTrue(access.shouldAsk() && access.shouldAskForOperator())
+
+        // Refused when the first objective was started: no answer about approvals (A2).
+        access.markAsked()
+        assertFalse(access.shouldAsk())
+        assertTrue(access.shouldAskForOperator())
+        access.markAskedForOperator()
+        assertFalse(access.shouldAskForOperator())
+        assertFalse(AndroidNotificationAccess(context).shouldAskForOperator(), "remembered when the app starts again")
+
+        // Allowed: nothing to ask, whatever was recorded.
+        application.getSharedPreferences("notifications", Context.MODE_PRIVATE).edit().clear().commit()
+        assertTrue(AndroidNotificationAccess(context).shouldAskForOperator())
+        shadowOf(application).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        assertFalse(AndroidNotificationAccess(context).shouldAskForOperator())
+    }
+
+    @Test
     fun `what to post and what to remove`() {
         val a = sampleApproval(operator, id = "req_a")
         val b = sampleApproval(operator, id = "req_b")
@@ -136,6 +176,25 @@ class OperatorNotificationsTest {
         assertEquals("2 agents are operating apps", manager.activeNotifications.single { it.id == ScreenSessionNotifications.NOTIFICATION_ID }.notification.extras.getString(Notification.EXTRA_TITLE))
 
         sessions.value = emptyList()
+        assertTrue(manager.activeNotifications.none { it.id == ScreenSessionNotifications.NOTIFICATION_ID })
+    }
+
+    /** Review 5, A9: nothing names the agent or the app over the lock screen, and a notification a dead process left is removed. */
+    @Test
+    fun `the operating notification is private on the lock screen, and one left by a dead process goes at start-up`() {
+        val stop = PendingIntent.getBroadcast(context, 7, Intent("test.STOP").setPackage(context.packageName), PendingIntent.FLAG_IMMUTABLE)
+        val notification = ScreenSessionNotifications.build(context, listOf(ScreenSession("Operator", "org.example.bank", "Bank")), stop)
+        assertEquals(Notification.VISIBILITY_PRIVATE, notification.visibility)
+        val public = assertNotNull(notification.publicVersion)
+        val publicTitle = public.extras.getString(Notification.EXTRA_TITLE).orEmpty()
+        assertEquals(ScreenSessionNotifications.PUBLIC_TITLE, publicTitle)
+        assertFalse("Operator" in publicTitle || "Bank" in publicTitle)
+        assertEquals("Stop", public.actions.single().title.toString())
+
+        // The process died mid-session: the notification is still in the shade when the app starts again.
+        ScreenSessionNotifications.post(context, notification)
+        assertTrue(manager.activeNotifications.any { it.id == ScreenSessionNotifications.NOTIFICATION_ID })
+        (context as com.aicontrolcenter.app.AiControlCenterApp).onCreate()
         assertTrue(manager.activeNotifications.none { it.id == ScreenSessionNotifications.NOTIFICATION_ID })
     }
 }

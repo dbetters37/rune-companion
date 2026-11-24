@@ -7,19 +7,22 @@ import com.aicontrolcenter.app.testing.raise
 import com.aicontrolcenter.app.testing.sampleApproval
 import com.aicontrolcenter.app.testing.samplePermission
 import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.FolderId
 import com.aicontrolcenter.core.GrantId
 import com.aicontrolcenter.core.RequestId
 import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.ToolId
+import com.aicontrolcenter.core.operator.DeviceAccess
+import com.aicontrolcenter.core.operator.DeviceAccessState
 import com.aicontrolcenter.core.operator.GrantScope
 import com.aicontrolcenter.core.operator.OperatorCapabilities
 import com.aicontrolcenter.core.operator.OperatorTools
 import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.PermissionGrant
+import com.aicontrolcenter.core.operator.ScreenActionPolicy
 import com.aicontrolcenter.core.operator.ScreenServiceState
 import com.aicontrolcenter.core.registry.InstalledAppInfo
 import com.aicontrolcenter.core.tools.CapabilityConstraint
-import com.aicontrolcenter.core.FolderId
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.TestScope
@@ -65,7 +68,7 @@ class ToolsViewModelsTest {
         assertEquals(ToolFamily.entries.filter { f -> state.families.any { it.family == f } }, state.families.map { it.family }, "catalogue order")
         val workspace = state.families.first { it.family == ToolFamily.WORKSPACE }
         val write = workspace.tools.first { it.id == ToolId("workspace.write") }
-        assertEquals("Creates a text file in the workspace, or replaces one.", write.plainWords)
+        assertEquals("Creates a text file in the workspace, or replaces one. A replaced file goes to the workspace trash.", write.plainWords)
         assertEquals("Makes changes", write.risk.text)
         assertEquals("Change the workspace", write.permission)
         assertEquals("Needs your permission", write.permissionNote)
@@ -79,6 +82,44 @@ class ToolsViewModelsTest {
         assertEquals("Hard to undo", state.families.first { it.family == ToolFamily.SCRIPTS }.tools.first { it.id == ToolId("scripts.run_shell") }.risk.text)
         // Built-in tools keep the first sentence of their description.
         assertTrue(state.families.first { it.family == ToolFamily.MEMORY }.tools.all { it.plainWords.isNotBlank() })
+    }
+
+    @Test
+    fun `the photo, install and Termux families show what Android must allow, read again on return`() = runTest(mainRule.dispatcher) {
+        val app = started()
+        val states = mutableMapOf(
+            DeviceAccess.MEDIA to DeviceAccessState.SELECTED_ONLY,
+            DeviceAccess.INSTALL_UNKNOWN_APPS to DeviceAccessState.NOT_ALLOWED,
+            DeviceAccess.TERMUX_RUN_COMMAND to DeviceAccessState.NOT_INSTALLED,
+        )
+        val vm = ToolsCatalogViewModel(app.graph.registryDirectory, app.graph.toolRegistry.all().map { it.spec }, app.graph.capabilities::info) { states.getValue(it) }
+            .also { it.uiState.activeIn(backgroundScope) }
+        fun access(family: ToolFamily) = vm.uiState.value.families.first { it.family == family }.access
+
+        val media = access(ToolFamily.MEDIA).single()
+        assertEquals("Allowed for the photos and videos you selected only.", media.status)
+        assertEquals("Change selection", media.requestLabel)
+        val install = access(ToolFamily.APPS).single()
+        assertEquals(DeviceAccess.INSTALL_UNKNOWN_APPS, install.access)
+        assertNull(install.requestLabel, "only Android's settings page turns it on")
+        assertEquals("Open Android's setting", install.settingsLabel)
+        val termux = access(ToolFamily.SCRIPTS).single()
+        assertEquals("Termux is not installed, so Termux commands cannot run.", termux.status)
+        assertNull(termux.requestLabel)
+        assertTrue(access(ToolFamily.WORKSPACE).isEmpty())
+
+        // The owner allowed installs in Android's settings and came back.
+        states[DeviceAccess.INSTALL_UNKNOWN_APPS] = DeviceAccessState.ALLOWED
+        vm.refreshAccess()
+        assertEquals(DeviceAccessState.ALLOWED, access(ToolFamily.APPS).single().state)
+
+        // Android's dialog was answered no: the owner is told where else to allow it.
+        states[DeviceAccess.MEDIA] = DeviceAccessState.NOT_ALLOWED
+        vm.permissionAnswered(DeviceAccess.MEDIA)
+        assertEquals("Allow photos and videos", access(ToolFamily.MEDIA).single().requestLabel)
+        assertTrue("App info" in vm.uiState.value.message!!.text)
+        vm.messageShown()
+        assertNull(vm.uiState.value.message)
     }
 
     @Test
@@ -98,6 +139,8 @@ class ToolsViewModelsTest {
         app.settings.update { it.copy(accessibilityOperatorEnabled = true, localOnlyMode = true) }
         assertNull(blocked(ToolFamily.SCREEN))
         assertEquals("Local-only mode is on, so these are blocked: they send a web address off this phone.", blocked(ToolFamily.WEB))
+        assertTrue("shell and Termux commands are blocked" in blocked(ToolFamily.SCRIPTS)!!)
+        assertTrue("links are not opened" in blocked(ToolFamily.APPS)!!)
     }
 
     // --- Permissions ---
@@ -363,6 +406,33 @@ class ToolsViewModelsTest {
         assertNull(app.operatorApps.get("org.example.terminal"))
         vm.authorise("com.android.settings", "Settings")
         assertEquals("Settings is never operated by agents: it can change the phone's security.", vm.uiState.value.message?.text)
+    }
+
+    /** Review 5, P4: every authorised app asks before every action until the owner chooses to be asked less. */
+    @Test
+    fun `an authorised app asks before every action until the owner chooses fewer questions, and can go back`() = runTest(mainRule.dispatcher) {
+        val app = started()
+        app.installSampleApps()
+        app.certificates["org.example.notes"] = "12".repeat(32)
+        val vm = screen(app)
+        vm.authorise("org.example.notes", "Notes")
+        assertEquals(ScreenActionPolicy.ASK_EVERY_ACTION, vm.uiState.value.apps.single().policy)
+        assertEquals(ScreenActionPolicy.ASK_EVERY_ACTION, app.operatorApps.get("org.example.notes")?.policy)
+
+        vm.setPolicy("org.example.notes", ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY)
+        assertEquals("Only actions recognised as buying, sending, deleting and similar ask you first in Notes now.", vm.uiState.value.message?.text)
+        assertEquals(ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY, vm.uiState.value.apps.single().policy)
+        assertEquals(ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY, app.operatorApps.get("org.example.notes")?.policy)
+
+        vm.setPolicy("org.example.notes", ScreenActionPolicy.ASK_EVERY_ACTION)
+        assertEquals("Every action in Notes asks you first now.", vm.uiState.value.message?.text)
+        assertEquals(ScreenActionPolicy.ASK_EVERY_ACTION, app.operatorApps.get("org.example.notes")?.policy)
+        vm.setPolicy("org.example.gone", ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY)
+        assertEquals("That app is not authorised any more.", vm.uiState.value.message?.text)
+        // The owner is told plainly what the fewer questions can miss.
+        val relaxed = ScreenPolicyText.description(ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY, "Notes")
+        assertTrue("can be missed" in relaxed && "Other actions in Notes run without asking" in relaxed, relaxed)
+        assertTrue("Every tap, typing, scroll, Back and Home" in ScreenPolicyText.description(ScreenActionPolicy.ASK_EVERY_ACTION, "Notes"))
     }
 
     @Test

@@ -94,6 +94,22 @@ internal object ApprovalNotifications {
         NotificationManagerCompat.from(context).cancel(id.value, NOTIFICATION_ID)
     }
 
+    /**
+     * The requests whose notification Android is showing now. Right after the app starts these
+     * are the ones an earlier run of the app left behind: notifications outlive the process.
+     */
+    fun showing(context: Context): Set<RequestId> {
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return emptySet()
+        return try {
+            manager.activeNotifications
+                .filter { it.id == NOTIFICATION_ID && it.notification.channelId == CHANNEL_ID }
+                .mapNotNullTo(HashSet()) { shown -> shown.tag?.let(::RequestId) }
+        } catch (_: RuntimeException) {
+            // Android could not list them; one left behind then goes at its request's expiry.
+            emptySet()
+        }
+    }
+
     /** Opens the app on the request's Approval screen. Nothing else: no answer travels in it. */
     private fun openRequest(context: Context, id: RequestId): PendingIntent {
         val intent = Intent(context, MainActivity::class.java)
@@ -110,7 +126,9 @@ internal object ApprovalNotifications {
  * on every change to the stored requests (the start-up sweep closes those past their expiry).
  * A request whose notification Android did not take (notifications were off) is posted when
  * [enabled] says they are allowed again, so a permission given later still shows every request
- * that waits.
+ * that waits. It starts from the notifications Android still shows ([leftover]): one left by an
+ * earlier run of the app, for a request nothing waits for any more, is removed with the first
+ * look at [pending], so "Approval needed" never stands for a question that cannot be answered.
  */
 class ApprovalNotifier(
     private val context: Context,
@@ -123,10 +141,12 @@ class ApprovalNotifier(
         ApprovalNotifications.post(context, id, ApprovalNotifications.build(context, request, now))
     },
     private val cancel: (RequestId) -> Unit = { ApprovalNotifications.cancel(context, it) },
+    /** The requests whose notification is showing when this starts. */
+    private val leftover: () -> Set<RequestId> = { ApprovalNotifications.showing(context) },
 ) {
     fun start(): Job = scope.launch {
         ApprovalNotifications.ensureChannel(context)
-        var shown = emptySet<RequestId>()
+        var shown = leftover()
         combine(pending, enabled.distinctUntilChanged()) { requests, allowed -> requests to allowed }.collect { (requests, allowed) ->
             val now = clock.now()
             val open = requests.filter { it.isOpenAt(now) }

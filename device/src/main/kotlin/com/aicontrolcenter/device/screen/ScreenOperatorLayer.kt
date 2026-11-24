@@ -13,6 +13,7 @@ import com.aicontrolcenter.core.operator.ProtectedPackages
 import com.aicontrolcenter.core.operator.ScreenControl
 import com.aicontrolcenter.core.operator.ScreenOperator
 import com.aicontrolcenter.core.operator.ScreenServiceState
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -31,6 +32,8 @@ import kotlinx.coroutines.launch
  * @param protectedPackages from [ProtectedPackagesResolver.startResolving] at start-up, read on
  *   every check; the same set the broker and the owner ports use.
  * @param scope lives as long as the process: session timers, the Stop file, state updates.
+ * @param io where Android's settings, PackageManager and the screen are read; never the caller's
+ *   thread (tests pass a dispatcher they control).
  */
 class ScreenOperatorLayer(
     context: Context,
@@ -38,6 +41,7 @@ class ScreenOperatorLayer(
     protectedPackages: () -> ProtectedPackages,
     clock: Clock = WallClock,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val io: CoroutineDispatcher = Dispatchers.IO,
 ) {
     /** For a set known at once (tests). */
     constructor(context: Context, operatorApps: OperatorAppRepository, protectedPackages: ProtectedPackages) :
@@ -55,6 +59,7 @@ class ScreenOperatorLayer(
         device = AndroidDeviceFacts(appContext),
         clock = clock,
         scope = scope,
+        io = io,
     )
 
     /** Agent-facing: reads and drives authorised apps' windows. */
@@ -66,15 +71,16 @@ class ScreenOperatorLayer(
     init {
         // The first read of Android's settings and PackageManager happens here, off the main thread, rather than on
         // whichever thread first looks at the state (often the main thread, for the Screen control screen).
-        scope.launch(Dispatchers.IO) { impl.state }
+        scope.launch(io) { impl.state }
     }
 
-    /** Reads Android's settings again (Screen control calls it when it comes back into view: Android 9–12 send no change signal). */
-    fun refreshState(): ScreenServiceState = impl.refreshState()
-
-    /** [refreshState] off the caller's thread: the app calls it from the main thread, and the state updates when the read is done. */
+    /**
+     * Reads Android's settings again, off the caller's thread (Screen control asks for it when it comes back into
+     * view: Android 9–12 send no change signal). The app calls this from the main thread; [ScreenOperator.state]
+     * updates when the read is done. There is no variant that reads on the caller's thread.
+     */
     fun refreshStateInBackground() {
-        scope.launch(Dispatchers.IO) { impl.refreshState() }
+        scope.launch(io) { impl.refreshState() }
     }
 
     /** What the owner's Screen control screen needs to send them to Android's settings. */

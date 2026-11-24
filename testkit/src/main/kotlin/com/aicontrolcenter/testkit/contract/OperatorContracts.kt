@@ -20,6 +20,7 @@ import com.aicontrolcenter.core.operator.OwnerRequestRepository
 import com.aicontrolcenter.core.operator.OwnerRequestStatus
 import com.aicontrolcenter.core.operator.PermissionGrant
 import com.aicontrolcenter.core.operator.PermissionRepository
+import com.aicontrolcenter.core.operator.ScreenActionPolicy
 import com.aicontrolcenter.core.operator.SharedFolder
 import com.aicontrolcenter.core.operator.SharedFolderRepository
 import com.aicontrolcenter.core.tools.Capability
@@ -633,6 +634,10 @@ abstract class OperatorAppRepositoryContract {
         assertNull(repo.get("com.missing"))
         repo.upsert(notes.copy(label = "Notes"))
         assertEquals("Notes", repo.get(notes.packageName)?.label)
+        // The policy is stored; an app asks before every action unless the owner chose otherwise.
+        assertEquals(ScreenActionPolicy.ASK_EVERY_ACTION, repo.get(alpha.packageName)?.policy)
+        repo.upsert(notes.copy(label = "Notes", policy = ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY))
+        assertEquals(notes.copy(label = "Notes", policy = ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY), repo.get(notes.packageName))
         assertEquals(3, repo.getAll().size)
         repo.delete(alpha.packageName)
         repo.delete("com.missing")

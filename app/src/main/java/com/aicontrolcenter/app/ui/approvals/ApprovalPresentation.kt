@@ -101,6 +101,11 @@ data class RequestUi(
     val note: String?,
     /** A refused permission the agent asked for again right away: how often, in words; null otherwise. */
     val askedAgain: String? = null,
+    /**
+     * For a call on another app's screen: that the app comes back once the owner allows it, and
+     * that the call acts only if the app still shows what is described. Null for other requests.
+     */
+    val returnsToApp: String? = null,
     val taskId: TaskId?,
     val rootId: TaskId?,
     val conversationId: ConversationId?,
@@ -215,6 +220,9 @@ fun requestUi(
     val summary = shown(request.summary)
     val details = request.details.map(::shown)
     val action = actionOf(summary)
+    // Acting on another app's screen: that app may send what it is made to do off the phone.
+    val actsOnScreen = request.capability == OperatorCapabilities.SCREEN_OPERATE
+    val app = target ?: (request.constraint as? CapabilityConstraint.App)?.packageName
     val breadth = breadthOf(request.capability, permission, target)
     val notOnly = if (target == null && host != null) ", not only $host," else ""
     return RequestUi(
@@ -237,8 +245,8 @@ fun requestUi(
             is CapabilityConstraint.App -> "App"
             CapabilityConstraint.None -> null
         },
-        dataGoesTo = host?.let { "Sent to $it" } ?: "Stays on this phone",
-        dataLeavesPhone = host != null,
+        dataGoesTo = host?.let { "Sent to $it" } ?: if (actsOnScreen) "May leave this phone through ${target ?: "the app"}" else "Stays on this phone",
+        dataLeavesPhone = host != null || actsOnScreen,
         dataGoesToHost = host,
         riskLevel = request.risk,
         risk = request.risk.toRiskLabel(),
@@ -256,7 +264,7 @@ fun requestUi(
                 RequestChoice.ALLOW_FOR_TASK to "${agent.name} may $breadth$notOnly until this task ends.",
                 RequestChoice.ALLOW_ALWAYS to "${agent.name} may $breadth$notOnly in any task or chat, until you remove it in Tools › Allowed.",
                 RequestChoice.DENY to "${agent.name} is refused and told, with your note if you write one. It cannot ask you for this " +
-                    "again for ${OwnerRequest.REFUSAL_COOLDOWN_MS / MINUTE_MS} minutes.",
+                    "permission again for ${OwnerRequest.REFUSAL_COOLDOWN_MS / MINUTE_MS} minutes; you can still give it in Tools › Allowed.",
             ).filterKeys { it in choicesFor(request) }
         },
         approveLabel = action?.let { "Approve: " + it.replaceFirstChar(Char::lowercaseChar) } ?: RequestChoice.APPROVE.label,
@@ -264,11 +272,18 @@ fun requestUi(
         always = AlwaysUi(
             title = "Always let ${agent.name} $breadth?",
             message = "${agent.name} may then $breadth$notOnly in any task or chat without asking you, until you remove it in " +
-                "Tools › Allowed. Buying, sending, deleting and similar still ask you every time.",
+                "Tools › Allowed. " + if (actsOnScreen) {
+                    "Each action on ${app ?: "the app"}'s screen still asks you, unless you set the app to ask only before buying, " +
+                        "sending, deleting and similar."
+                } else {
+                    "Buying, sending, deleting and similar still ask you every time."
+                },
             confirm = "Always allow ${agent.name}",
         ),
         hardToUndo = if (request.risk != RiskLevel.CONSEQUENTIAL) null else {
-            details.filter { IRREVERSIBLE.containsMatchIn(it) }.joinToString(" ").ifEmpty { request.risk.toRiskLabel().detail }
+            // A screen action's details quote the other app's own text, which must not be lifted into this app's warning.
+            if (request.constraint is CapabilityConstraint.App) request.risk.toRiskLabel().detail
+            else details.filter { IRREVERSIBLE.containsMatchIn(it) }.joinToString(" ").ifEmpty { request.risk.toRiskLabel().detail }
         },
         hiddenWarning = hiddenCharacterWarning(marked),
         note = request.decisionNote?.let { inWords(PreviewText.exact(it)) },
@@ -276,6 +291,13 @@ fun requestUi(
         taskId = request.taskId,
         rootId = request.rootId,
         conversationId = request.conversationId,
+        returnsToApp = if (open && request.constraint is CapabilityConstraint.App) {
+            "You answer here, in AI Control Center. Once you allow it, this app steps aside so $app comes back, and the agent " +
+                "goes on once $app is in front again; an action runs only if $app still shows what is described above. If " +
+                "another app comes back instead, switch to $app within 30 seconds, or nothing is done."
+        } else {
+            null
+        },
     )
 }
 
@@ -397,16 +419,17 @@ fun hiddenCharacterWarning(texts: List<String>): String? {
 }
 
 /**
- * Where [text] holds one of [PreviewText]'s markers (⏎ and ⏎×N, ⇥, ␣ and ␣×N, ⟨U+XXXX⟩) or a
- * named one (⟨hidden: …⟩), as ranges in order, so a screen can draw them apart from the text
- * around them.
+ * Where [text] holds one of [PreviewText]'s markers (⏎ and ⏎×N, ⇥, ␣ and ␣×N, ⟨U+XXXX⟩ and
+ * ⟨U+XXXX⟩×N, a quote inside a value ⟨"⟩, a repeated character's ⟨×N⟩, a combining-mark count)
+ * or a named one (⟨hidden: …⟩), as ranges in order, so a screen can draw them apart from the
+ * text around them.
  */
 fun previewMarks(text: String): List<IntRange> = MARKER.findAll(text).map { it.range }.toList()
 
 /** True when [text] shows a hidden character (⟨U+XXXX⟩ or ⟨hidden: …⟩), as opposed to only line breaks or spaces. */
 fun hasHiddenMark(text: String): Boolean = HIDDEN_MARK.containsMatchIn(text)
 
-private val MARKER = Regex("""⏎(?:×\d+)?|⇥|␣(?:×\d+)?|⟨U\+[0-9A-F]{4,6}⟩|⟨hidden: [a-z -]+⟩""")
+private val MARKER = Regex("""⏎(?:×\d+)?|⇥|␣(?:×\d+)?|(?:⟨U\+[0-9A-F]{4,6}⟩|⟨hidden: [a-z -]+⟩)(?:×\d+)?|⟨"⟩|⟨×\d+⟩|⟨\d+ more combining marks⟩""")
 private val HIDDEN_MARK = Regex("""⟨U\+[0-9A-F]{4,6}⟩|⟨hidden: [a-z -]+⟩""")
 private val CODE_MARK = Regex("""⟨U\+([0-9A-F]{4,6})⟩""")
 
