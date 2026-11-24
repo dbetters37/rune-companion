@@ -383,18 +383,30 @@ internal object ShellSyntax {
         private fun readWord(): Word {
             val start = i
             val pieces = ArrayList<Piece>()
+            // The literal text the word ends with so far, quoted or not (null: none), not yet in [pieces]. It is put together
+            // once, not copied again for every character it gets (H1 of pass 4b: a word of 64,000 characters took seconds).
+            val literal = StringBuilder()
+            var literalQuoted: Boolean? = null
+
+            fun flush() {
+                literalQuoted?.let { pieces += Piece(Kind.LIT, literal.toString(), it) }
+                literal.setLength(0)
+                literalQuoted = null
+            }
 
             fun add(kind: Kind, text: String, quoted: Boolean) {
-                val last = pieces.lastOrNull()
-                if (kind == Kind.LIT && last != null && last.kind == Kind.LIT && last.quoted == quoted) pieces[pieces.size - 1] = last.copy(text = last.text + text)
-                else pieces += Piece(kind, text, quoted)
+                if (kind != Kind.LIT || literalQuoted != quoted) flush()
+                if (kind == Kind.LIT) {
+                    literal.append(text)
+                    literalQuoted = quoted
+                } else pieces += Piece(kind, text, quoted)
             }
 
             while (i < s.length) {
                 val c = s[i]
                 when {
                     // "@(a|b)" and its relatives are one pattern to mksh, part of the word, not a subshell.
-                    c == '(' && pieces.lastOrNull()?.let { it.kind == Kind.LIT && !it.quoted && it.text.last() in "@+?*!" } == true -> {
+                    c == '(' && literalQuoted == false && literal.isNotEmpty() && literal[literal.length - 1] in "@+?*!" -> {
                         val end = closing(i)
                         add(Kind.PAT, s.substring(i, minOf(s.length, end + 1)), false)
                         i = minOf(s.length, end + 1)
@@ -444,10 +456,11 @@ internal object ShellSyntax {
                     }
                 }
             }
+            flush()
             // "{a,b}" and "{1..3}" make several words in Android's shell, whatever is quoted inside them: such a word is only known when it runs.
             // Braces inside braces ("{a/,{x}}b") do too, so any unquoted "{" with a comma or two dots anywhere after it counts (R2 of round 4).
             val unquoted = pieces.joinToString("") { if (it.kind == Kind.LIT && !it.quoted) it.text else "\u0001" }
-            if (BRACE_EXPANSION.containsMatchIn(unquoted)) pieces += Piece(Kind.DYN, "", false)
+            if (bracesExpand(unquoted)) pieces += Piece(Kind.DYN, "", false)
             return Word(tilde(pieces), s.substring(start, minOf(i, s.length)))
         }
 
@@ -595,5 +608,13 @@ internal object ShellSyntax {
 
     private val CASE = Regex("""(?:^|[\s;&|(])case\s""")
 
-    private val BRACE_EXPANSION = Regex("""\{.*(,|\.\.)""", RegexOption.DOT_MATCHES_ALL)
+    /**
+     * True when [text] (the unquoted text of a word) has a "{" with a comma or two dots anywhere after it: then the
+     * word may be several words in Android's shell (R2 of round 4). One pass over the text (H1 of pass 4b): the first
+     * "{" has the most text after it, so it is the only one to look at.
+     */
+    fun bracesExpand(text: String): Boolean {
+        val open = text.indexOf('{')
+        return open >= 0 && (text.indexOf(',', open + 1) >= 0 || text.indexOf("..", open + 1) >= 0)
+    }
 }

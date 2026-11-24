@@ -173,8 +173,13 @@ internal object ShellCommands {
         }
 
         private val regex: Regex? by lazy {
-            val out = StringBuilder()
+            // "^" first, which changes nothing for a whole match: for an expression that starts with plain text the JVM's
+            // engine prepares a search, in time that grows with the square of that text's length (seconds for 64,000 "[").
+            val out = StringBuilder("^")
             var i = 0
+            // There is no "]" from this index on: a set opened later is not closed either, and is not looked for again (H1
+            // of pass 4b: a run of "[" was otherwise read to its end once for every "[" in it).
+            var unclosedFrom = Int.MAX_VALUE
             while (i < text.length) {
                 val c = text[i]
                 when {
@@ -188,8 +193,12 @@ internal object ShellCommands {
                         if (negated) j++
                         val start = j
                         if (j < text.length && text[j] == ']') j++
-                        while (j < text.length && text[j] != ']') j++
-                        if (j >= text.length) out.append(Regex.escape("[")) else {
+                        val from = j
+                        if (j >= unclosedFrom) j = text.length else while (j < text.length && text[j] != ']') j++
+                        if (j >= text.length) {
+                            unclosedFrom = minOf(unclosedFrom, from)
+                            out.append(Regex.escape("["))
+                        } else {
                             out.append(if (negated) "[^" else "[")
                             for (k in start until j) {
                                 val d = text[k]
@@ -481,7 +490,11 @@ internal object ShellCommands {
         }
 
         /** True when the shell would expand part of it against file names: `*`, `?`, or a `[…]` set (a lone `[` is the test command). */
-        fun hasPattern(): Boolean = text.indices.any { active[it] && (text[it] != '[' || text.indexOf(']', it + 2) > 0) }
+        fun hasPattern(): Boolean {
+            // A "]" two or more places after the "[" (looked up once, not once for every "[": H1 of pass 4b).
+            val lastClose = text.lastIndexOf(']')
+            return text.indices.any { active[it] && (text[it] != '[' || lastClose >= it + 2) }
+        }
 
         companion object {
             val EMPTY = Spelling("", BooleanArray(0))
@@ -1066,8 +1079,8 @@ internal object ShellCommands {
                 val options: List<Spelling> = when (piece.kind) {
                     Kind.LIT -> {
                         // {a,b} and {1..3} make several words in Android's shell.
-                        if (!piece.quoted && BRACES.containsMatchIn(piece.text)) return null
-                        if (!piece.quoted && CHARACTER_CLASS.containsMatchIn(piece.text)) return null.also { lastProblem = PATTERN }
+                        if (!piece.quoted && ShellSyntax.bracesExpand(piece.text)) return null
+                        if (!piece.quoted && hasCharacterClass(piece.text)) return null.also { lastProblem = PATTERN }
                         listOf(Spelling.of(piece.text, patterns = !piece.quoted))
                     }
                     Kind.VAR -> when (piece.text) {
@@ -1080,7 +1093,7 @@ internal object ShellCommands {
                                 val inner = spellings(value, variables, depth, nesting + 1) ?: return null
                                 // Unquoted, the value is split at spaces and its patterns are expanded, however it was quoted when assigned.
                                 if (!piece.quoted && inner.any { s -> s.text.any(Char::isWhitespace) }) return null
-                                if (!piece.quoted && inner.any { s -> CHARACTER_CLASS.containsMatchIn(s.text) }) return null.also { lastProblem = PATTERN }
+                                if (!piece.quoted && inner.any { s -> hasCharacterClass(s.text) }) return null.also { lastProblem = PATTERN }
                                 inner.map { Spelling(it.text, BooleanArray(it.text.length) { i -> !piece.quoted && it.text[i] in "*?[" }, it.home, it.fromFolder) }
                             }
                         }
@@ -1208,11 +1221,24 @@ internal object ShellCommands {
 
     private val OPTION_NAME = Regex("""^[A-Za-z][A-Za-z0-9_-]*$""")
 
-    /** R2: an open brace with a comma or two dots anywhere after it; nested braces and a missing end are not sorted out here. */
-    private val BRACES = Regex("""\{.*(,|\.\.)""", RegexOption.DOT_MATCHES_ALL)
-
-    /** `[[:alpha:]]`, `[[.x.]]`, `[[=x=]]`: a class, a collating symbol or an equivalence class inside a set. */
-    private val CHARACTER_CLASS = Regex("""\[[^\]]*\[[:.=]""")
+    /**
+     * True when [text] holds a class, a collating symbol or an equivalence class inside a set (`[[:alpha:]]`,
+     * `[[.x.]]`, `[[=x=]]`): a "[", then "[:", "[." or "[=" with no "]" between the two. One pass over the text (H1
+     * of pass 4b; a regular expression ran from every "[" to the end of the text and back).
+     */
+    fun hasCharacterClass(text: String): Boolean {
+        var open = false
+        for (k in text.indices) {
+            when (text[k]) {
+                ']' -> open = false
+                '[' -> {
+                    if (open && k + 1 < text.length && text[k + 1] in ":.=") return true
+                    open = true
+                }
+            }
+        }
+        return false
+    }
 
     private val AWK_FILE = Regex("""^-[fEi]""")
 

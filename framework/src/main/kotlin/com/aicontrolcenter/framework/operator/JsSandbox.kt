@@ -178,7 +178,9 @@ class JsHostError(message: String) : RuntimeException(message)
  * `next` is itself a built-in function (`Object`, say), walked by `new Set`, spread or
  * `Promise.all`, runs until the memory is full, or for ever. If a run does not stop within a grace period
  * after its time limit, the caller gets [JsOutcome.Stopped] at once and the thread is left to
- * finish on its own; while [MAX_STUCK] such threads are alive, new runs are refused.
+ * finish on its own, at the lowest priority; while [MAX_STUCK] such threads are alive, new runs
+ * are refused, with no promise that waiting helps: a thread that never ends ends only with the
+ * app's process.
  *
  * A host function can wait: a change to the workspace waits for the change lock, which a shell
  * command holds for as long as it runs. That wait counts as the script's time. When the run is
@@ -199,7 +201,12 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
             return JsOutcome.Stopped("The input is longer than ${limits.maxInputChars} characters.", emptyList(), false)
         }
         if (stuck.get() >= MAX_STUCK) {
-            return JsOutcome.Stopped("An earlier script has not stopped yet, so no new script is started. Try again in a minute.", emptyList(), false)
+            // No promise that waiting helps: a thread caught in a loop of built-ins never ends by itself (docs/LIMITATIONS.md).
+            return JsOutcome.Stopped(
+                "Two earlier scripts have not stopped, so no new script is started. If this is still so in a minute, close and reopen the app.",
+                emptyList(),
+                false,
+            )
         }
         val run = ScriptRun(code, inputJson, host, limits)
         val done = CompletableDeferred<JsOutcome>()
@@ -217,7 +224,11 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
         } finally {
             run.cancelled = true
             if (!done.isCompleted) {
-                if (run.state.compareAndSet(RUNNING, ABANDONED)) stuck.incrementAndGet()
+                if (run.state.compareAndSet(RUNNING, ABANDONED)) {
+                    stuck.incrementAndGet()
+                    // Given up: from now on the thread gets the processor only when nothing else wants it.
+                    runCatching { thread.priority = Thread.MIN_PRIORITY }
+                }
                 // A host function may be waiting: for the workspace's change lock, as long as a shell command runs. The run is
                 // over for its caller (its time is up, or the call was stopped), so the wait is given up and what it was
                 // about to do is not done later, behind the caller's back. A thread in script or native code is not
