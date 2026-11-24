@@ -380,7 +380,9 @@ class ToolsJourneysTest {
         robot.tapIcon("More for plan.md").tap("Move to trash").waitUntilShown("“plan.md” moved to the trash")
         robot.waitForIcon("Trash, 1 item").tapIcon("Trash, 1 item").waitUntilShown("From the workspace").tap("Restore").waitUntilShown("Restored to plan.md")
         robot.back().waitUntilShown("plan.md").tapIcon("More for trip.txt").tap("Move to trash").waitUntilShown("moved to the trash")
-        robot.waitForIcon("Trash, 1 item").tapIcon("Trash, 1 item").tap("Empty the trash").assertShown("deleted for good. This cannot be undone").tapInDialog("Empty trash")
+        // The trash screen loads its list off the main thread; the button is there once the item is.
+        robot.waitForIcon("Trash, 1 item").tapIcon("Trash, 1 item").waitUntilShown("From the workspace")
+            .tap("Empty the trash").assertShown("deleted for good. This cannot be undone").tapInDialog("Empty trash")
             .waitUntilShown("The trash is empty")
         assertFalse(File(robot.app.workspaceRoot.directory(), "trip.txt").exists())
         assertTrue(runBlocking { robot.app.graph.workspace.stat(RelativePath.of("plan.md")) } is DocResult.Ok)

@@ -81,7 +81,7 @@ class EncryptedOperatorStorageTest {
     }
 
     @Test
-    fun requestsAndGrantsAreStoredEncryptedAndFoundAgainAfterARestart() = runTest {
+    fun requestsAndGrantsAreStoredEncryptedAndFoundAgainAfterARestart(): Unit = runTest {
         val permission = request("req_1", 1_000)
         val approval = request("req_2", 1_100, OwnerRequestKind.APPROVAL)
         val left = request("req_3", 1_200)

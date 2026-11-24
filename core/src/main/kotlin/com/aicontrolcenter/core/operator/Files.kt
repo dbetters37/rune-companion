@@ -122,7 +122,10 @@ data class WorkspaceHit(val path: RelativePath, val line: Int? = null, val excer
  * holds every other change back while it runs.
  */
 interface Workspace {
-    /** Increases after every change, from any caller, so screens can refresh. */
+    /**
+     * Increases after every change, from any caller, so screens can refresh: [changeCount],
+     * handed on when the change that raised it has ended (and when a shell command starts).
+     */
     val changes: Flow<Long>
 
     /** Entries directly inside [path], folders first, then by name. */
@@ -180,7 +183,7 @@ interface Workspace {
      */
     suspend fun trash(path: RelativePath): DocResult<TrashItem>
 
-    /** Trash items, newest first. */
+    /** Trash items, newest first. Never waits for a change or a shell command. */
     suspend fun listTrash(): DocResult<List<TrashItem>>
 
     suspend fun restore(id: String): DocResult<DocumentEntry>
@@ -195,7 +198,9 @@ interface Workspace {
      * What is under the trash folder without being an item [listTrash] lists: the bytes of what
      * a change that was interrupted left behind and that could not be given a record again, or
      * null when there is nothing of the kind. It counts against the size limit and cannot be
-     * restored; only [emptyTrash] with null deletes it.
+     * restored; only [emptyTrash] with null deletes it. Also null while a change or a shell
+     * command is under way: what a change in flight has put there is no leftover, so nothing is
+     * claimed then. Never waits for a change.
      */
     suspend fun trashLeftovers(): Long? = null
 
@@ -227,11 +232,13 @@ interface Workspace {
     suspend fun resolve(path: RelativePath): DocResult<WorkspaceFile>
 
     /**
-     * The change counter now, the latest value of [changes]. Every change made through this
-     * service raises it, whoever makes it (a file tool, a script's host function, a gateway's
-     * copy, the owner's file manager), and so does a shell command when it starts and when it
-     * ends ([runCommand]). Two equal readings mean that nothing changed the workspace through
-     * this app in between.
+     * The change counter now; [changes] hands it on to listeners. Every change made through
+     * this service raises it when the change has ended, whoever makes it (a file tool, a
+     * script's host function, a gateway's copy, the owner's file manager), and so does a shell
+     * command when it starts and when it ends ([runCommand]). A change may raise it on its way
+     * as well (a folder it made first, the tidy after a start); it is always raised once more at
+     * the end. Two equal readings mean that nothing changed the workspace through this app in
+     * between.
      */
     fun changeCount(): Long
 

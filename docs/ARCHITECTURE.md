@@ -241,7 +241,7 @@ Rules that hold around this:
   shared folder, emptying the trash, and changing many files in a short time are consequential.
   The trash writes its record of an item before the item moves, so a kill leaves a file in its
   place or in the trash, and what a kill left behind is put right at the first change after a
-  start (`TrashItem.recovered`, `Workspace.trashLeftovers`). Trash records count against the
+  start, or the first look at the trash (`TrashItem.recovered`, `Workspace.trashLeftovers`). Trash records count against the
   workspace's size limit, and a little room is kept free for them.
 - **Scripts.** The JavaScript sandbox has a budget of instructions, time and memory, and its
   host functions reach the workspace only. A shell command is put to you every time. It runs

@@ -94,12 +94,14 @@ data class WorkspaceLimits(
  * A trash record is always written before the content goes into its holder, for a trashed item
  * and for a kept version alike, and a holder is filled in one step. So a kill leaves an item in
  * its place or in the trash with its record, never out of both. What it can leave behind is put
- * right before the first change after a start ([tidyOnce]): a staged file and a record whose
+ * right before the first change after a start, or before the trash is first looked at, whichever
+ * comes first ([tidyOnce]): a staged file and a record whose
  * content never arrived are removed, a kept "version" that is still the live file itself is
  * dropped, and a holder that has content but no usable record (an earlier version of the app
  * wrote the record last) gets a record again, so it is listed and can be restored; content is
  * never deleted there. Whatever is under the trash folder and still not a listed item
  * ([trashLeftovers]) is cleared by emptying the whole trash, which the owner's screen offers.
+ * While a change or a shell command is under way, nothing there is called a leftover.
  *
  * Sizes: the limit counts every file, the trash's records too. A change that writes a record
  * checks that it fits; a change that adds content also leaves [WorkspaceLimits.trashRecordRoomBytes]
@@ -124,7 +126,16 @@ class LocalWorkspace(
     val limits: WorkspaceLimits = WorkspaceLimits(),
     private val io: CoroutineContext = Dispatchers.IO,
 ) : Workspace {
+    /** The change counter ([changeCount]): raised under the change lock, at the end of every change. */
     private val changeCounter = MutableStateFlow(0L)
+
+    /**
+     * What the listeners of [changes] are given: the counter, handed on once the change lock is
+     * free again ([announce]). A screen that looks again on this signal then finds the change
+     * ended, and is not told "a change is under way" ([trashLeftovers]) by the very change that
+     * made it look.
+     */
+    private val announced = MutableStateFlow(0L)
     private val mutex = Mutex()
     private val random = SecureRandom()
 
@@ -147,7 +158,7 @@ class LocalWorkspace(
         beforeStep?.invoke(name)
     }
 
-    override val changes: Flow<Long> = changeCounter.asStateFlow()
+    override val changes: Flow<Long> = announced.asStateFlow()
 
     private fun base(): Path = root.directory().toPath().toAbsolutePath().normalize()
 
@@ -155,6 +166,12 @@ class LocalWorkspace(
 
     private fun changed() {
         changeCounter.update { it + 1 }
+    }
+
+    /** Tells the listeners of [changes] what the counter is now. Called when the change lock has been released, and when a command starts. */
+    private fun announce() {
+        val now = changeCounter.value
+        announced.update { maxOf(it, now) }
     }
 
     /** Marks the coroutine that runs a shell command inside [runCommand]: it holds the change lock already. */
@@ -165,7 +182,14 @@ class LocalWorkspace(
     private suspend fun holdsChangeLock(): Boolean = currentCoroutineContext()[HoldsChangeLock]?.workspace === this
 
     /** [block] with the change lock held. The command inside [runCommand] holds it already; its own calls do not wait for it. */
-    private suspend fun <T> locked(block: suspend () -> T): T = if (holdsChangeLock()) block() else mutex.withLock { block() }
+    private suspend fun <T> locked(block: suspend () -> T): T {
+        if (holdsChangeLock()) return block()
+        try {
+            return mutex.withLock { block() }
+        } finally {
+            announce()
+        }
+    }
 
     override fun changeCount(): Long = changeCounter.value
 
@@ -175,15 +199,26 @@ class LocalWorkspace(
 
     override suspend fun <T> runCommand(unchangedSince: Long, command: suspend () -> T): CommandTurn<T> = withContext(io) {
         check(!holdsChangeLock()) { "a shell command cannot start another one while it holds the change lock" }
+        try {
+            runCommandLocked(unchangedSince, command)
+        } finally {
+            // Its end is announced once the lock is free: what the screens then read is no longer "under way".
+            announce()
+        }
+    }
+
+    private suspend fun <T> runCommandLocked(unchangedSince: Long, command: suspend () -> T): CommandTurn<T> =
         mutex.withLock {
             // Under the lock: every change that was made has raised the counter, and none can be made from here on.
             if (changeCounter.value != unchangedSince) return@withLock CommandTurn.Changed
             commandRuns = true
             changed()
+            // The screens are told that it started; while it runs they claim nothing about what is under the trash folder.
+            announce()
             val result = try {
                 withContext(HoldsChangeLock(this@LocalWorkspace)) { command() }
             } finally {
-                // It has ended, however it ended: whatever it changed counts as a change, and the screens look again.
+                // It has ended, however it ended: whatever it changed counts as a change. (The screens are told when the lock is free.)
                 commandRuns = false
                 changed()
             }
@@ -194,23 +229,32 @@ class LocalWorkspace(
             }
             CommandTurn.Ran(result, if (used <= limits.maxTotalBytes) null else (fullProblem(used) as DocResult.Failed).reason)
         }
-    }
 
     private fun check(path: RelativePath): DocResult<WorkspaceFile> = WorkspaceFile.resolve(root.directory(), path)
 
     private suspend fun <T> reading(block: () -> DocResult<T>): DocResult<T> = withContext(io) { guard(block) }
 
+    /**
+     * One change, under the change lock. The counter is raised when the change has ENDED: when
+     * it returned Ok, and when it ended with an exception (also one that [guard] turns into a
+     * failure), since it may have changed something first. That last raise comes even when the
+     * tidy or a folder made on the way raised the counter earlier in the same change: those
+     * raises come before the file itself lands, and a shell command assessed between them and
+     * the end would otherwise read a counter that no longer moves although the workspace still
+     * does ([Workspace.changeCount]: two equal readings mean nothing changed in between). A
+     * change that was refused before it touched anything raises nothing.
+     */
     private suspend fun <T> changing(block: () -> DocResult<T>): DocResult<T> = withContext(io) {
         locked {
-            val before = changeCounter.value
             var result: DocResult<T>? = null
+            var threw = true
             try {
                 tidyOnce()
-                guard(block).also { result = it }
+                guard {
+                    block().also { threw = false }
+                }.also { result = it }
             } finally {
-                // Announced once per change (a folder made on the way has announced it already), and also when the
-                // change ended with an exception, since it may have changed something first.
-                if ((result == null || result is DocResult.Ok) && changeCounter.value == before) changed()
+                if (threw || result is DocResult.Ok) changed()
             }
         }
     }
@@ -386,7 +430,28 @@ class LocalWorkspace(
         DocResult.Ok(moveToTrash(path, source))
     }
 
-    override suspend fun listTrash(): DocResult<List<TrashItem>> = reading { DocResult.Ok(trashItems()) }
+    override suspend fun listTrash(): DocResult<List<TrashItem>> = withContext(io) {
+        tidyIfFree()
+        guard { DocResult.Ok(trashItems()) }
+    }
+
+    /**
+     * The tidy after a start, for a reader of the trash: run before the trash is first shown, so
+     * that a holder which gets its record back is listed (and can be restored) from the first
+     * look on, and is never counted among leftovers that "Empty the trash" would delete for
+     * good. A reader never waits: when a change or a shell command holds the change lock, the
+     * tidy is left to the next look or the next change. Like every tidy it counts as a change
+     * when it changed something.
+     */
+    private fun tidyIfFree() {
+        if (tidied || !mutex.tryLock()) return
+        try {
+            tidyOnce()
+        } finally {
+            mutex.unlock()
+            announce()
+        }
+    }
 
     override suspend fun restore(id: String): DocResult<DocumentEntry> = changing {
         val item = trashItem(id) ?: return@changing DocResult.NotFound("trash item $id")
@@ -434,10 +499,30 @@ class LocalWorkspace(
         DocResult.Ok(deleted)
     }
 
+    /**
+     * Nothing is claimed while a change or a shell command is under way (null): a change stages
+     * its new file and writes its trash record under the trash folder before the content
+     * arrives, and none of that is a leftover of anything. So this never waits for the change
+     * lock; it takes it only if it is free, and holds it for the look, so no change begins
+     * meanwhile. The tidy after a start runs first ([tidyIfFree]): what it can list again or
+     * remove is no leftover either. And nothing of 0 bytes is reported.
+     */
     override suspend fun trashLeftovers(): Long? = withContext(io) {
+        if (!mutex.tryLock()) return@withContext null
+        try {
+            tidyOnce()
+            leftoverBytes()
+        } finally {
+            mutex.unlock()
+            announce()
+        }
+    }
+
+    /** What is under the trash folder and is no listed item, in bytes; null when nothing, or nothing of any size. Called with the mutex held. */
+    private fun leftoverBytes(): Long? {
         try {
             val trash = trashDir()
-            if (!Files.isDirectory(trash, NOFOLLOW)) return@withContext null
+            if (!Files.isDirectory(trash, NOFOLLOW)) return null
             var found = false
             var bytes = 0L
             val listed = HashMap<String, Boolean>()
@@ -454,11 +539,11 @@ class LocalWorkspace(
                     bytes += treeSize(entry) ?: 0
                 }
             }
-            if (found) bytes else null
+            return if (found && bytes > 0) bytes else null
         } catch (e: IOException) {
-            null
+            return null
         } catch (e: RuntimeException) {
-            null
+            return null
         }
     }
 
@@ -714,14 +799,28 @@ class LocalWorkspace(
     }
 
     /**
+     * The staging folder, made when it is missing. Only a shell command can put something else
+     * under its name. An empty file or a link there is removed first: neither holds anything of
+     * anybody's, a link must not be written through, and with no size it would not be shown as
+     * a leftover ([trashLeftovers]), so nothing would tell the owner why every write fails. A
+     * file with content stays: writing fails, and it is shown as a leftover until the trash is
+     * emptied.
+     */
+    private fun stagingFolder(): Path {
+        val staging = trashDir().resolve(STAGING)
+        if (Files.isSymbolicLink(staging) || (Files.isRegularFile(staging, NOFOLLOW) && Files.size(staging) == 0L)) Files.delete(staging)
+        Files.createDirectories(staging)
+        return staging
+    }
+
+    /**
      * Writes through a staging file in the trash folder, then renames it to [target], over the
      * file there when [replace]. [keep] runs once the new content is complete and keeps the
      * version about to be replaced ([keepInTrash]); if the rename then fails, what it kept is
      * removed again, since the file never left its place.
      */
     private fun stageAndMove(target: Path, replace: Boolean, fill: (Path) -> Unit, keep: (() -> TrashItem)? = null, what: String = "the new file") {
-        val staging = trashDir().resolve(STAGING)
-        Files.createDirectories(staging)
+        val staging = stagingFolder()
         val temp = staging.resolve("w-" + java.lang.Long.toUnsignedString(random.nextLong(), 36))
         try {
             step("write $what to a staging file")
@@ -791,8 +890,7 @@ class LocalWorkspace(
             }
         }
         // A copy is made next to the staged files and moved into the holder in one step, so a holder never holds half a version.
-        val staging = trashDir().resolve(STAGING)
-        Files.createDirectories(staging)
+        val staging = stagingFolder()
         val temp = staging.resolve("k-" + java.lang.Long.toUnsignedString(random.nextLong(), 36))
         try {
             Files.copy(current, temp, StandardCopyOption.COPY_ATTRIBUTES, NOFOLLOW)
@@ -823,10 +921,11 @@ class LocalWorkspace(
     }
 
     /**
-     * Once after a start, before the first change: puts right what a change that was interrupted
-     * (the app was killed) left behind. Staged files go, and every trash id is looked at
-     * ([tidyItem]). Content is never deleted here. What it changes is a change like any other:
-     * it is announced, whether or not the change it runs before succeeds.
+     * Once after a start, before the first change or the first look at the trash: puts right
+     * what a change that was interrupted (the app was killed) left behind. Staged files go, and
+     * every trash id is looked at ([tidyItem]). Content is never deleted here. What it changes
+     * is a change like any other: it is announced when it is done, whether or not the change it
+     * runs before succeeds. Called with the mutex held.
      */
     private fun tidyOnce() {
         if (tidied) return

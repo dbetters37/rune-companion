@@ -365,8 +365,7 @@ class WorkspaceAtomicReplaceTest {
             File(root, ".trash/$id").mkdirs()
             File(root, ".trash/$id/report.txt").writeText("the owner's report")
             val ws = workspace(root, links = true)
-            assertTrue(ok(ws.listTrash()).isEmpty(), "reading changes nothing")
-            assertEquals(18L, ws.trashLeftovers(), "until the first change it is there, unlisted: the owner's screen must offer to empty the trash")
+            // (What the first look at the trash does when it comes before the first change: WorkspaceRound4Test.)
             ok(ws.makeFolder(RelativePath.of("after-restart")))
             val item = ok(ws.listTrash()).singleOrNull()
             assertEquals(id, item?.id, "the holder is listed again")
@@ -495,11 +494,13 @@ class WorkspaceAtomicReplaceTest {
         File(root, ".trash/stray.bin").writeText("stray")
         File(root, ".trash/.staging/w-killed").writeText("staged!")
         val reopened = workspace(root, links = true)
-        assertEquals(4L + 2 + 5 + 7, reopened.trashLeftovers())
+        // Round 4 (W3): the first look tidies before it counts, so the staged file of the killed write is not among the leftovers.
+        assertEquals(4L + 2 + 5, reopened.trashLeftovers())
+        assertFalse(File(root, ".trash/.staging/w-killed").exists())
         ok(reopened.makeFolder(RelativePath.of("after-restart")))
         assertEquals(listOf(listed.id), ok(reopened.listTrash()).map { it.id }, "only what can be restored is listed")
         assertTrue(File(root, ".trash/1700000000000-two/a.txt").exists() && File(root, ".trash/stray.bin").exists(), "nothing is deleted silently")
-        assertEquals(4L + 2 + 5, reopened.trashLeftovers(), "the staged file is cleared by the first change, the rest waits for the owner")
+        assertEquals(4L + 2 + 5, reopened.trashLeftovers(), "the rest waits for the owner")
 
         // Naming items deletes only those; emptying the whole trash clears all of it.
         assertEquals(0, ok(reopened.emptyTrash(setOf("1700000000000-nothing"))))

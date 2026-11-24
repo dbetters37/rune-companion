@@ -228,17 +228,19 @@ class WorkspaceViewModelsTest {
         val vm = trash(ws)
         val browser = folder(ws)
 
-        // Right after the start nothing is listed yet, but the screen knows that the trash is not empty.
-        assertTrue(vm.uiState.value.items.isEmpty())
-        assertEquals(40_006L, vm.uiState.value.leftoverBytes)
-        assertTrue(vm.uiState.value.canEmpty, "\"Empty the trash\" is offered")
-        assertTrue(browser.uiState.value.trashHasLeftovers && browser.uiState.value.trashCount == 0, "the trash button does not call it empty")
-
-        // The first change after the start, by a tool or the owner: what can be restored is listed again.
-        ws.put("after-restart.txt", "x")
+        // Round 4 (W3): the trash is put right before it is first shown. What can be restored is listed from the first
+        // look on, with no change needed first, and is never among the leftovers that emptying would delete for good.
         val item = vm.uiState.value.items.single()
         assertEquals("report.txt", item.name)
         assertTrue(item.detail.startsWith("Old place not known, so it is restored to the top of the workspace · trashed"), item.detail)
+        assertEquals(6L, vm.uiState.value.leftoverBytes, "only what no record can be written for is left over")
+        assertTrue(vm.uiState.value.canEmpty, "\"Empty the trash\" is offered")
+        assertTrue(vm.uiState.value.emptyingDeletes.startsWith("1 item and the leftovers of an interrupted change ("), vm.uiState.value.emptyingDeletes)
+        assertTrue(browser.uiState.value.trashHasLeftovers && browser.uiState.value.trashCount == 1)
+
+        // A change after that, by a tool or the owner, finds nothing more to put right.
+        ws.put("after-restart.txt", "x")
+        assertEquals(listOf(item.id), vm.uiState.value.items.map { it.id })
         assertEquals(6L, vm.uiState.value.leftoverBytes)
         assertEquals(1, browser.uiState.value.trashCount)
 
@@ -258,5 +260,83 @@ class WorkspaceViewModelsTest {
         assertEquals(40_001L, ws.usedBytes())
         vm.emptyTrash()
         assertEquals("The trash was already empty.", vm.uiState.value.message?.text)
+    }
+
+    @Test
+    fun `W3 - a file found in the trash without its record is shown as an item to restore, never as leftovers to delete`() = runTest(mainRule.dispatcher) {
+        // The verifier's state: the owner opens the trash first thing after a start, before any change was made.
+        val root = Files.createTempDirectory("aicc-trash-ui").toFile()
+        File(root, "report.txt").writeText("live")
+        File(root, ".trash/1700000000000-abc12345").mkdirs()
+        File(root, ".trash/1700000000000-abc12345/contract.txt").writeText("the owner's signed contract")
+        // And what a restore leaves when the app is killed right after it deleted the record: an empty holder.
+        File(root, ".trash/1700000000001-def67890").mkdirs()
+        val ws = LocalWorkspace(FakeWorkspaceRoot(root), clock, io = EmptyCoroutineContext)
+        val browser = folder(ws)
+        val vm = trash(ws)
+
+        val state = vm.uiState.value
+        assertEquals(listOf("contract.txt"), state.items.map { it.name })
+        assertNull(state.leftoverBytes, "nothing is called a leftover, and nothing of 0 bytes is")
+        assertEquals("1 item is deleted for good. This cannot be undone.", state.emptyingDeletes)
+        assertEquals(1 to false, browser.uiState.value.trashCount to browser.uiState.value.trashHasLeftovers)
+        assertFalse(File(root, ".trash/1700000000001-def67890").exists())
+
+        vm.restore(state.items.single().id)
+        assertEquals("Restored to contract.txt.", vm.uiState.value.message?.text)
+        assertEquals("the owner's signed contract", File(root, "contract.txt").readText())
+        assertFalse(vm.uiState.value.canEmpty, "the trash is empty now")
+    }
+
+    @Test
+    fun `W2 - while a shell command runs the trash screens claim no leftovers, and show them again when it has ended`() = runTest(mainRule.dispatcher) {
+        val root = Files.createTempDirectory("aicc-trash-ui").toFile()
+        // True leftovers: two things in one holder, which no record can be written for.
+        File(root, ".trash/1700000000000-two").mkdirs()
+        File(root, ".trash/1700000000000-two/a.txt").writeText("aaaa")
+        File(root, ".trash/1700000000000-two/b.txt").writeText("bb")
+        val ws = LocalWorkspace(FakeWorkspaceRoot(root), clock, io = EmptyCoroutineContext)
+        val vm = trash(ws)
+        val browser = folder(ws)
+        assertEquals(6L, vm.uiState.value.leftoverBytes)
+        assertTrue(browser.uiState.value.trashHasLeftovers)
+
+        ws.runCommand(ws.changeCount()) {
+            // The command's start was announced and the screens looked again. What is under the trash folder now may be the
+            // command's own work, so nothing is called a leftover of an interrupted change, and nothing is offered for deletion.
+            kotlinx.coroutines.yield()
+            assertNull(vm.uiState.value.leftoverBytes)
+            assertFalse(vm.uiState.value.canEmpty)
+            assertFalse(browser.uiState.value.trashHasLeftovers)
+        }
+
+        assertEquals(6L, vm.uiState.value.leftoverBytes, "its end was announced too, and the leftovers are shown again")
+        assertTrue(vm.uiState.value.canEmpty && browser.uiState.value.trashHasLeftovers)
+    }
+
+    @Test
+    fun `W2 - emptying the trash while another change is under way still says what was deleted`() = runTest(mainRule.dispatcher) {
+        val root = Files.createTempDirectory("aicc-trash-ui").toFile()
+        File(root, ".trash/1700000000000-two").mkdirs()
+        File(root, ".trash/1700000000000-two/a.txt").writeText("aaaa")
+        File(root, ".trash/1700000000000-two/b.txt").writeText("bb")
+        val real = LocalWorkspace(FakeWorkspaceRoot(root), clock, io = EmptyCoroutineContext)
+        // The workspace as it answers while an agent's change is in flight: no leftovers are claimed.
+        var changeUnderWay = false
+        val ws = object : com.aicontrolcenter.core.operator.Workspace by real {
+            override suspend fun trashLeftovers(): Long? = if (changeUnderWay) null else real.trashLeftovers()
+        }
+        val vm = WorkspaceTrashViewModel(ws, activity, clock, ZoneOffset.UTC).also { it.uiState.activeIn(backgroundScope) }
+        assertEquals(6L, vm.uiState.value.leftoverBytes)
+        assertTrue(vm.uiState.value.emptyingDeletes.startsWith("The leftovers of an interrupted change ("))
+
+        // The owner confirmed that; an agent's write begins at that moment.
+        changeUnderWay = true
+        vm.emptyTrash()
+        changeUnderWay = false
+
+        assertEquals("What was left in the trash was deleted for good.", vm.uiState.value.message?.text)
+        assertFalse(File(root, ".trash/1700000000000-two").exists())
+        assertTrue(log.all.last().detail.startsWith("Leftovers of an interrupted change ("), log.all.last().detail)
     }
 }

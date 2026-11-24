@@ -88,7 +88,7 @@ class EncryptedTaskStorageTest {
     }
 
     @Test
-    fun tasksAndMessagesAreStoredEncryptedAndFoundAgainAfterARestart() = runTest {
+    fun tasksAndMessagesAreStoredEncryptedAndFoundAgainAfterARestart(): Unit = runTest {
         val assignment = message("msg_1", 1_100, Participant.Agent(director), Participant.Agent(researcher), MessageType.ASSIGNMENT, "Find heat pumps")
         val findings = message("msg_2", 1_300, Participant.Agent(researcher), Participant.Agent(director), MessageType.FINDINGS, "Found three $MARKER")
         val status = message("msg_3", 1_300, Participant.System, Participant.Owner, MessageType.STATUS, "Research is under way")
