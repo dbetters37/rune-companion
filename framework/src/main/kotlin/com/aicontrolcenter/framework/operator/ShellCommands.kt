@@ -438,7 +438,8 @@ internal object ShellCommands {
                         when {
                             assigned != null && first in DECLARATIONS && !optioned -> values.getOrPut(assigned.first) { ArrayList() } += assigned.second
                             assigned != null -> unknown += assigned.first
-                            else -> arg.plain?.let { if (IDENTIFIER.matches(it)) unknown += it }
+                            // "export 'f=x'", "readonly \"f=$y\"": an assignment all the same, in a spelling whose value is not followed here.
+                            else -> assignedArgument(arg)?.let { unknown += it.first } ?: arg.plain?.let { if (IDENTIFIER.matches(it)) unknown += it }
                         }
                     }
                 }
@@ -638,14 +639,15 @@ internal object ShellCommands {
         }
 
         /**
-         * "$d ./lib", "$r x < name.txt": a command whose own name comes from a variable. True when
-         * that name is one of the commands that set variables ([ASSIGNERS]), or cannot be told.
+         * "$d ./lib", "$r x < name.txt", "command $d ./lib": a command whose own name comes from a
+         * variable. True when that name is one of the commands that set variables ([ASSIGNERS]),
+         * or cannot be told. (What [callsOf] doubts here it doubts again when the command is read.)
          */
         private fun mayAssign(simple: Simple, variables: Variables, depth: Int): Boolean {
-            val first = simple.words.firstOrNull() ?: return false
-            if (first.plain != null) return false
-            val name = programName(first, variables, depth) ?: return true
-            return name in ASSIGNERS
+            if (simple.words.all { it.plain != null }) return false
+            val first = simple.words.first()
+            if (first.plain == null && programName(first, variables, depth) == null) return true
+            return callsOf(simple.words, variables, depth).any { it.word.plain == null && it.name in ASSIGNERS }
         }
 
         /**

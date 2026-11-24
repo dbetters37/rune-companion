@@ -62,6 +62,7 @@ class ShellRound4Test {
     private val anyFile = "A shell command can run any file in the workspace. Only the scripts found in the command are shown here."
     private val notPlain = "This is not a plain \"sh file\" command, so the app cannot be sure which files it runs. What follows is its best reading."
     private val inTurn = "Scripts that script seems to run in turn (best reading):"
+    private val noScript = "It found no script in this command, which does not mean that none runs."
 
     /** A real shell behind the port, started as the app's runner starts it: HOME is an empty folder outside the workspace. */
     private fun realShell(f: OperatorFixture, launcher: List<String> = listOf("/bin/sh")) {
@@ -145,10 +146,11 @@ class ShellRound4Test {
             assertEquals(emptyList(), certain(a), "$name: nothing is called the script this command runs\n${a.preview}")
             assertEquals(notPlain, a.details[a.details.indexOf(anyFile) + 1], "$name: the line that says so comes right after the fixed one\n${a.preview}")
             assertTrue(reading in a.details, "$name\n${a.preview}")
+            assertFalse(noScript in a.details, name)
         }
-        // A command without any script carries the line too: the reader cannot know that it runs none.
+        // A command without any script carries the line too: the reader cannot know that it runs none, and says so.
         val ls = f.assess("scripts.run_shell", "command" to "ls -la")
-        assertEquals(notPlain, ls.details[ls.details.indexOf(anyFile) + 1], ls.preview)
+        assertEquals(listOf(notPlain, noScript), ls.details.subList(ls.details.indexOf(anyFile) + 1, ls.details.indexOf(anyFile) + 3), ls.preview)
         assertEquals(emptyList(), certain(ls) + readings(ls), ls.preview)
         // Whatever a script names in turn is a reading too, also under a plain command, and is announced as one.
         val nested = f.assess("scripts.run_shell", "command" to "sh a.sh")
@@ -200,6 +202,7 @@ class ShellRound4Test {
         for (command in listOf("awk 'BEGIN { system(\"cd sub; sh tidy.sh\") }'", "echo 'see tidy.sh for more'", "echo \"run tidy.sh now\"", "printf '%s' \"run tidy.sh now\"")) {
             val a = f.assess("scripts.run_shell", "command" to command)
             assertEquals(emptyList(), certain(a) + readings(a), "$command\n${a.preview}")
+            assertTrue(notPlain in a.details && noScript in a.details, a.preview)
             assertFalse(a.details.any { "harmless" in it }, "$command: its text is not shown\n${a.preview}")
             val listed = a.details.single { it.startsWith("Workspace files and folders it names: ") }
             assertTrue("\"tidy.sh\" (a file of 36 bytes)" in listed, listed)
@@ -209,6 +212,16 @@ class ShellRound4Test {
         val a = f.assess("scripts.run_shell", "command" to "echo 'see tidy.sh for more'")
         f.put("tidy.sh", "rm -rf keep\n")
         assertTrue("tidy.sh" in a.prepared!!.changedSince()!!)
+        // What a file that is only mentioned names in turn is not shown with its text either; it is listed and pinned like the file itself.
+        f.put("outer.sh", "sh inner.sh\n")
+        f.put("inner.sh", "echo inner text\n")
+        val nested = f.assess("scripts.run_shell", "command" to "echo 'see outer.sh for more'")
+        assertEquals(emptyList(), certain(nested) + readings(nested), nested.preview)
+        assertFalse(nested.details.any { "inner text" in it || "sh inner.sh" in it }, nested.preview)
+        val names = nested.details.single { it.startsWith("Workspace files and folders it names: ") }
+        assertTrue("\"outer.sh\"" in names && "\"inner.sh\"" in names, names)
+        f.put("inner.sh", "rm -rf keep\n")
+        assertTrue("inner.sh" in nested.prepared!!.changedSince()!!)
         // Named for real as well, it is a reading again.
         f.put("tidy.sh", "echo tidying\n")
         val both = f.assess("scripts.run_shell", "command" to "echo 'see tidy.sh for more'; cat tidy.sh | sh")
@@ -268,13 +281,15 @@ class ShellRound4Test {
             // A declaration with options changes the value (upper case, lower case, a number), or does not set this variable at all.
             "typeset -u f=run.sh; sh \"\$f\"", "typeset -l f=RUN.SH; sh \$f", "typeset -i n=1+1; sh \$n", "declare -u f=run.sh; sh \$f", "local -u f=run.sh; sh \$f",
             "export -n f=run.sh; sh \$f", "readonly -p f=run.sh; sh \$f", "typeset -x -u f=run.sh; sh \$f", "f=run.sh; typeset -u f; sh \$f", "integer n=1+1; sh \$n",
-            "command typeset -u f=run.sh; sh \$f", "typeset \"-u\" f=run.sh; sh \$f", "typeset +u f=run.sh; sh \$f",
+            "command typeset -u f=run.sh; sh \$f", "typeset \"-u\" f=run.sh; sh \$f", "typeset +u f=run.sh; sh \$f", "typeset \$o f=run.sh; sh \$f",
+            // An assignment handed to a declaration in quotes is one too, in a spelling whose value is not followed.
+            "f=ok.sh; export \"f=evil.sh\"; sh \$f", "f=ok.sh; readonly 'f'=evil.sh; sh \$f", "f=ok.sh; typeset f\\=evil.sh; sh \$f",
             // Arithmetic, read, getopts and trap set variables without an assignment the reader could follow.
             "x=1; ((x++)); sh \$x", "x=1; (( x = 2 )); sh \$x", "x=1; let x++; sh \$x", "x=1; let \"x = 2\"; sh \$x", "REPLY=ok.sh; read < name.txt; sh \$REPLY",
             "x=ok.sh; read -r y < name.txt; sh \$x", "x=ok.sh; command read; sh \$x", "x=ok; trap 'x=evil' USR1; kill -USR1 \$\$; sh \$x", "x=ok.sh; trap : INT; sh \$x",
             "OPTARG=ok; getopts a: o -a evil; sh \$OPTARG", "x=ok.sh; while getopts a o; do :; done; sh \$x",
             // A command whose own name comes from a variable may be any of these.
-            "d=.; x=ok; \$d ./lib; sh \$x", "r=read; x=ok.sh; \$r x < name.txt; sh \$x", "x=ok.sh; \"\$@\"; sh \$x",
+            "d=.; x=ok; \$d ./lib; sh \$x", "r=read; x=ok.sh; \$r x < name.txt; sh \$x", "x=ok.sh; \"\$@\"; sh \$x", "d=.; x=ok; command \$d ./lib; sh \$x",
         )
         for (command in refused) {
             val found = scripts(command).filter { it.problem != null }

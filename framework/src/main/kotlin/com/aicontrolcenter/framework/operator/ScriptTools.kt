@@ -521,14 +521,14 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
     }
 
     private fun doubtRefusal(doubt: String, runBy: RelativePath?): String =
-        "${subject(runBy)} $doubt. This tool cannot read that well enough to show the owner which scripts would run, so nothing was " +
-            "run. Write it more plainly; a script is best run as \"sh file\"."
+        "${subject(runBy)} $doubt. Nothing was run: this tool cannot read that well enough to show the owner which scripts would run. " +
+            "Write it more plainly; a script is best run as \"sh file\"."
 
+    /** The advice comes early: the executor hands the model only the first few hundred characters of a refusal. */
     private fun unsettledRefusal(raw: String, runBy: RelativePath?): String =
         "${subject(runBy)} names the script ${q(raw)} by a relative path, but it also changes folder (cd, pushd, find -execdir) or sets PATH, " +
-            "CDPATH, ENV, HOME or IFS, itself or in a script it reads in or was started from, so which file that name means is only known when it " +
-            "runs. Nothing was run. Name the script from the working folder and do not change folder in the same command: use the " +
-            "\"directory\" argument instead of cd."
+            "CDPATH, ENV, HOME or IFS, itself or in a script it reads in or was started from. So use the \"directory\" argument instead of cd, " +
+            "and name the script from the working folder. Nothing was run: which file that name means is only known when the command runs."
 
     /**
      * Details lines: what the reader found, worded by how sure it is (R1 of round 4).
@@ -541,7 +541,10 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
      * checked again before the command runs.
      */
     private fun preview(found: Found, plain: RelativePath?): List<String> {
-        val scripts = found.named.filter { it.asScript && !it.mentioned }
+        // A script that is only named inside a file the reader found mentioned is not shown with its text either.
+        val byPath = found.named.associateBy { it.path }
+        fun mentioned(n: Named, steps: Int = 0): Boolean = n.mentioned || (steps <= MAX_FOLLOWED + 1 && n.runBy?.let { byPath[it] }?.let { mentioned(it, steps + 1) } == true)
+        val scripts = found.named.filter { it.asScript && !mentioned(it) }
         // The plain form's script, named by the command itself. If the reader did not find it as that, nothing is called certain.
         val certain = plain?.let { p -> scripts.firstOrNull { it.path == p && it.runBy == null && it.state.exists } }
         val lines = ArrayList<String>()
@@ -575,6 +578,7 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
         val readings = scripts.filter { it !== certain }
         if (certain == null) {
             lines += NOT_PLAIN
+            if (readings.isEmpty()) lines += NO_SCRIPT
         } else {
             lines += line(certain, fact = true, hidden = false)
             if (readings.isNotEmpty()) lines += IN_TURN
@@ -582,7 +586,7 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
         val before = if (certain == null) 0 else 1
         for ((index, n) in readings.withIndex()) lines += line(n, fact = false, hidden = !n.shown || index + before >= MAX_SHOWN)
         lines += found.notes
-        val others = found.named.filterNot { it.asScript && !it.mentioned }
+        val others = found.named.filter { it !in scripts }
         if (others.isNotEmpty()) {
             val listed = others.take(MAX_LISTED).joinToString(", ") { "${q(it.path.value)} (${WorkspaceStates.describe(it.state)})" }
             lines += "Workspace files and folders it names: $listed" + (if (others.size > MAX_LISTED) " and ${others.size - MAX_LISTED} more" else "") + "."
@@ -600,6 +604,9 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
 
         /** R1: said right after [ANY_FILE] for every command that is not of the plain form ([ShellPlainForm]). */
         const val NOT_PLAIN = "This is not a plain \"sh file\" command, so the app cannot be sure which files it runs. What follows is its best reading."
+
+        /** R1: said after [NOT_PLAIN] when the reading has nothing to show, so that "what follows" is not followed by silence. */
+        const val NO_SCRIPT = "It found no script in this command, which does not mean that none runs."
 
         /** R1: said after the script of a plain-form command, before what that script names in turn. */
         const val IN_TURN = "Scripts that script seems to run in turn (best reading):"
