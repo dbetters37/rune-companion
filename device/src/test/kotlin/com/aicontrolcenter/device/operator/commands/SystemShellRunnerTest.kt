@@ -205,6 +205,25 @@ class SystemShellRunnerTest {
     }
 
     @Test
+    fun `a command that cannot reach the shell as the same text is not run`() = runBlocking {
+        val project = dir("exact")
+        File(project.file, "keep1").writeText("1")
+        File(project.file, "keepX").writeText("X")
+        // Half of a surrogate pair cannot be encoded: the shell would get "?" in its place, a pattern for any one character.
+        for (broken in listOf("rm keep\uD800", "rm keep\uDC00", "echo \uDC00\uD83D", "echo ok \uD83D")) {
+            val outcome = assertIs<CommandOutcome.Failed>(runner.run(broken, project, limits), "[$broken]")
+
+            assertTrue("cannot be passed on as it is" in outcome.reason && "was not run" in outcome.reason, outcome.reason)
+            assertTrue("U+D" in outcome.reason, "the character is named by its code: ${outcome.reason}")
+        }
+        assertEquals(listOf("keep1", "keepX"), project.file.list()!!.sorted(), "nothing ran")
+        assertFalse(home.exists(), "refused before anything was prepared")
+
+        // A whole pair is an ordinary character: that command runs.
+        assertEquals(0, finished(runner.run("echo '\uD83D\uDE00|\u00E9' > /dev/null", project, limits)).exitCode)
+    }
+
+    @Test
     fun `work a command leaves running in the background is stopped when it ends`() = runBlocking {
         val project = dir("bg")
         // The "&" is built at run time, as an obfuscated command would; the tool's text check cannot see it.

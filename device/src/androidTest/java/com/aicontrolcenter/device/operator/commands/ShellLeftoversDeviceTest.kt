@@ -28,14 +28,18 @@ import kotlin.test.assertTrue
  * G2 and G3 on a device or emulator, with Android's own shell and the app's real runner
  * ([SystemShellRunner.forApp], what the app wires): commands that try to get away from the call
  * (a background job, a new session, job control, nohup, a double fork) leave no process behind
- * when they end, at the time limit, or when the call is cancelled; and a shell the command
- * starts reads no start-up file from the workspace.
+ * when they end, at the time limit, or when the call is cancelled; a shell the command starts
+ * reads no start-up file from the workspace; and a command that takes its own rights to the
+ * shell's home folder away (or to the cache folder it is in) does not keep the next one from
+ * running.
  *
  * This runs only as an instrumented test, where the process is an Android app with a user id of
  * its own. It looks at the device's real process table, which on Android shows an app only its
  * own processes. The JVM tests never do that (see LeftoverSweeperTest).
  *
- * Method names are plain so they can be dexed for every supported API level.
+ * Method names are plain so they can be dexed for every supported API level. Every method JUnit
+ * runs has a block body or says ": Unit" (InstrumentedTestShapeTest checks that in the ordinary
+ * test run, because a class that breaks the rule runs no test at all on a device).
  */
 @RunWith(AndroidJUnit4::class)
 class ShellLeftoversDeviceTest {
@@ -80,15 +84,19 @@ class ShellLeftoversDeviceTest {
     }
 
     @Before
-    fun nothingRunsBefore() = runBlocking {
+    fun nothingRunsBefore(): Unit = runBlocking {
         assertIs<ProcessSweeper>(AndroidLeftovers.create(), "in an app process on a device the real sweeper is wired")
         runner.stopLeftovers()
         assertEquals(emptyList(), leftoversAfterSettling(), "a clean start")
     }
 
+    /**
+     * A block body, not `= runBlocking { … }`: that form takes its return type from the last
+     * expression (a Boolean here), and JUnit runs no test of a class whose `@After` returns a value.
+     */
     @After
-    fun cleanUp() = runBlocking {
-        runner.stopLeftovers()
+    fun cleanUp() {
+        runBlocking { runner.stopLeftovers() }
         root.deleteRecursively()
     }
 
@@ -106,7 +114,7 @@ class ShellLeftoversDeviceTest {
     )
 
     @Test
-    fun nothingACommandStartedIsLeftWhenItEnds() = runBlocking {
+    fun nothingACommandStartedIsLeftWhenItEnds(): Unit = runBlocking {
         for ((name, command) in escapes) {
             // The escapee gets a moment to start before the command ends.
             val outcome = runner.run("$command\nsleep 0.3", folder(), limits)
@@ -119,7 +127,7 @@ class ShellLeftoversDeviceTest {
     }
 
     @Test
-    fun theSweepIsWhatStopsAProcessThatLeftTheGroup() = runBlocking {
+    fun theSweepIsWhatStopsAProcessThatLeftTheGroup(): Unit = runBlocking {
         // Control: without the sweep, a process in a session of its own outlives the call. This is what G2 closes.
         assertIs<CommandOutcome.Finished>(withoutSweep.run("setsid sleep 300 &\nsleep 0.3", folder(), limits))
         Thread.sleep(500)
@@ -131,7 +139,7 @@ class ShellLeftoversDeviceTest {
     }
 
     @Test
-    fun nothingIsLeftAtTheTimeLimit() = runBlocking {
+    fun nothingIsLeftAtTheTimeLimit(): Unit = runBlocking {
         val outcome = runner.run("setsid sleep 300 & (sleep 300 &) & set -m; sleep 300 & sleep 300", folder(), CommandLimits(timeoutMs = 1_500, maxOutputChars = 4_000))
 
         assertFalse(assertIs<CommandOutcome.TimedOut>(outcome, "$outcome").leftRunning)
@@ -139,7 +147,7 @@ class ShellLeftoversDeviceTest {
     }
 
     @Test
-    fun nothingIsLeftWhenTheCallIsCancelled() = runBlocking {
+    fun nothingIsLeftWhenTheCallIsCancelled(): Unit = runBlocking {
         val call = async(Dispatchers.Default) { runner.run("setsid sleep 300 & (sleep 300 &) & sleep 300", folder(), limits) }
         var waited = 0
         while (leftovers().size < 3 && waited < 5_000) {
@@ -154,7 +162,7 @@ class ShellLeftoversDeviceTest {
     }
 
     @Test
-    fun aNewCommandStartsCleanAfterOneThatWasLeft() = runBlocking {
+    fun aNewCommandStartsCleanAfterOneThatWasLeft(): Unit = runBlocking {
         assertIs<CommandOutcome.Finished>(withoutSweep.run("setsid sleep 300 &\nsleep 0.3", folder(), limits))
         Thread.sleep(300)
 
@@ -165,7 +173,7 @@ class ShellLeftoversDeviceTest {
     }
 
     @Test
-    fun aLoginShellReadsNoProfileFromTheWorkspace() = runBlocking {
+    fun aLoginShellReadsNoProfileFromTheWorkspace(): Unit = runBlocking {
         val dir = folder()
         // What an agent can do without approval: write a file into the workspace.
         File(dir.file, ".profile").writeText("echo PROFILE-RAN\n")
@@ -182,7 +190,7 @@ class ShellLeftoversDeviceTest {
     }
 
     @Test
-    fun homeIsEmptyBeforeEveryCommand() = runBlocking {
+    fun homeIsEmptyBeforeEveryCommand(): Unit = runBlocking {
         val dir = folder()
         assertIs<CommandOutcome.Finished>(runner.run("echo 'echo LEFT-BEHIND' > \"\$HOME/.profile\"; ln -s '${dir.file.path}' \"\$HOME/link\"", dir, limits))
         File(dir.file, "keep.txt").writeText("owner data")
@@ -192,4 +200,55 @@ class ShellLeftoversDeviceTest {
         assertEquals("second\n", out.stdout)
         assertEquals("owner data", File(dir.file, "keep.txt").readText(), "the link in HOME was removed, not followed")
     }
+
+    /** What the next command finds: nothing in HOME, and it can write there. Prints "writable" and where HOME is. */
+    private val lookAtHome = "ls -A \"\$HOME\"; echo ok > \"\$HOME/new\" && echo writable; echo \"home=\$HOME\""
+
+    @Test
+    fun aCommandCannotLockTheHomeFolder(): Unit = runBlocking {
+        val dir = folder()
+        val home = File(context.cacheDir, "shell-home")
+        // HOME is emptied before every command. A command can take its own rights to it away, with something inside.
+        val locks = listOf(
+            "a folder in HOME without any rights, with a file in it" to
+                "mkdir \"\$HOME/a\"; echo x > \"\$HOME/a/f\"; chmod 000 \"\$HOME/a\"",
+            "HOME without the right to list it, with a file in it" to
+                "echo x > \"\$HOME/f\"; chmod 300 \"\$HOME\"",
+            "HOME without any rights, with a file in it" to
+                "echo x > \"\$HOME/f\"; chmod 000 \"\$HOME\"",
+            "locked folders in a locked folder in a locked HOME" to
+                "mkdir -p \"\$HOME/a/b\"; echo x > \"\$HOME/a/b/f\"; chmod 000 \"\$HOME/a/b\"; chmod 000 \"\$HOME/a\"; chmod 000 \"\$HOME\"",
+        )
+        for ((name, lock) in locks) {
+            assertIs<CommandOutcome.Finished>(runner.run(lock, dir, limits), "$name: the command that locks it")
+
+            val next = runner.run(lookAtHome, dir, limits)
+
+            val out = assertIs<CommandOutcome.Finished>(next, "$name: the next command must run, but: $next").stdout
+            assertEquals("writable\nhome=${home.path}\n", out, "$name: HOME is empty, can be written to and is in its usual place")
+        }
+        assertEquals(emptyList(), putAside(), "the folder's rights were given back and it was emptied; nothing had to be put aside")
+    }
+
+    @Test
+    fun aLockedCacheFolderDoesNotStopTheNextCommand(): Unit = runBlocking {
+        val dir = folder()
+        val home = File(context.cacheDir, "shell-home")
+        // HOME is removed and made anew in the app's cache folder; a command can take the rights to that folder away too.
+        for (mode in listOf("500", "000")) {
+            assertIs<CommandOutcome.Finished>(runner.run("echo x > \"\$HOME/f\"; chmod $mode \"\$HOME/..\"", dir, limits), "chmod $mode")
+
+            val next = runner.run(lookAtHome, dir, limits)
+
+            val out = assertIs<CommandOutcome.Finished>(next, "cache folder $mode: the next command must run, but: $next").stdout
+            assertEquals("writable\nhome=${home.path}\n", out, "cache folder $mode")
+            // Whatever was put aside on the way is gone once another command has run.
+            assertIs<CommandOutcome.Finished>(runner.run("true", dir, limits))
+            assertEquals(emptyList(), putAside(), "cache folder $mode")
+        }
+        assertTrue(context.cacheDir.canRead() && context.cacheDir.canWrite(), "the app has its cache folder back")
+    }
+
+    /** Home folders that were put aside because they could not be emptied, or made beside the usual one. */
+    private fun putAside(): List<String> = context.cacheDir.list().orEmpty().filter { it.startsWith("shell-home.") }
 }

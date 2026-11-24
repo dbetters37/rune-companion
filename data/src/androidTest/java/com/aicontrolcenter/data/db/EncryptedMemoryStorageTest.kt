@@ -89,7 +89,7 @@ class EncryptedMemoryStorageTest {
     }
 
     @Test
-    fun memoriesWithEmbeddingsAreStoredEncryptedSearchedAndDeleted() = runTest {
+    fun memoriesWithEmbeddingsAreStoredEncryptedSearchedAndDeleted(): Unit = runTest {
         val boiler = memory("mem_boiler", agent, 300, "Boiler", "Der Kessel im Keller über der Tür heißt $MARKER")
         val alarm = memory("mem_alarm", MemoryScope.Shared(space.id), 200, "Alarm code", "Ask the owner, never store it")
         val task = memory("mem_task", MemoryScope.Task(TaskId("tsk_1"), AgentId("agt_researcher")), 100, "Step", "Check the boiler")
@@ -132,7 +132,7 @@ class EncryptedMemoryStorageTest {
     }
 
     @Test
-    fun foreignKeysAreEnforcedOnTheEncryptedDatabase() = runTest {
+    fun foreignKeysAreEnforcedOnTheEncryptedDatabase(): Unit = runTest {
         val data = encryptedLayer()
         data.memories.upsert(memory("mem_a", agent, 100, "A", "First"))
         data.memories.upsert(memory("mem_b", agent, 200, "B", "Second"))

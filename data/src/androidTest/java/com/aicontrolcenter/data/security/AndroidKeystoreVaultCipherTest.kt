@@ -143,7 +143,7 @@ class AndroidKeystoreVaultCipherTest {
     }
 
     @Test
-    fun vaultStoresReadsAndForgetsSecretsWithTheKeystoreKey() = runTest {
+    fun vaultStoresReadsAndForgetsSecretsWithTheKeystoreKey(): Unit = runTest {
         val secret = "sk-live-0123456789-ключ-🔑"
         val vault = EncryptedFileSecretVault(vaultFile, cipher)
         vault.put("provider/a", secret)
@@ -161,7 +161,7 @@ class AndroidKeystoreVaultCipherTest {
     }
 
     @Test
-    fun vaultReportsALostKeyAsAVaultError() = runTest {
+    fun vaultReportsALostKeyAsAVaultError(): Unit = runTest {
         val vault = EncryptedFileSecretVault(vaultFile, cipher)
         vault.put("provider/a", "sk-alpha")
         keyStore.deleteEntry(keyAlias)

@@ -21,7 +21,8 @@ import java.util.concurrent.TimeUnit
 /**
  * Commands in Termux through its documented `RUN_COMMAND` intent: `bash -s` in Termux's home
  * folder with the command on standard input (never split into arguments), run in the
- * background, the result coming back through a private [ResultMailbox].
+ * background, the result coming back through a private [ResultMailbox]. A command that would
+ * not arrive there as the same text ([notExactProblem]) is not sent.
  *
  * Termux must be installed, this app must hold Termux's "Run commands in Termux environment"
  * permission, and `allow-external-apps=true` must be set in `~/.termux/termux.properties`; each
@@ -45,6 +46,8 @@ internal class TermuxCommandRunner(context: Context) : TermuxRunner {
             TermuxAvailability.READY -> Unit
         }
         if (command.isBlank()) return CommandOutcome.Failed("There is no command.")
+        // Termux hands the text to bash as UTF-8: what cannot be encoded would arrive as another character.
+        notExactProblem(command)?.let { return CommandOutcome.Failed(it) }
         if (command.length > MAX_COMMAND_CHARS) {
             return CommandOutcome.Failed("The command is longer than $MAX_COMMAND_CHARS characters; put longer scripts in a file in Termux and run that.")
         }

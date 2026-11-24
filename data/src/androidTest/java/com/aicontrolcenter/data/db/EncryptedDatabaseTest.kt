@@ -88,7 +88,7 @@ class EncryptedDatabaseTest {
     }
 
     @Test
-    fun dataWrittenToTheEncryptedDatabaseIsThereAfterReopening() = runTest {
+    fun dataWrittenToTheEncryptedDatabaseIsThereAfterReopening(): Unit = runTest {
         val first = encryptedLayer()
         first.agents.upsert(agent)
         first.agents.updateStats(agent.id) { it.copy(tasksCompleted = 3) }
@@ -102,7 +102,7 @@ class EncryptedDatabaseTest {
     }
 
     @Test
-    fun theDatabaseFileIsNotPlainSqliteAndDoesNotRevealItsContent() = runTest {
+    fun theDatabaseFileIsNotPlainSqliteAndDoesNotRevealItsContent(): Unit = runTest {
         val encrypted = encryptedLayer()
         encrypted.agents.upsert(agent)
         encrypted.close()
@@ -124,7 +124,7 @@ class EncryptedDatabaseTest {
     }
 
     @Test
-    fun conversationsWithLargeMessagesAreStoredEncryptedAndRemovedWithTheirEntries() = runTest {
+    fun conversationsWithLargeMessagesAreStoredEncryptedAndRemovedWithTheirEntries(): Unit = runTest {
         val conversation = Conversation(ConversationId("cnv_encrypted"), agent.id, MARKER, createdAt = 1_000, updatedAt = 1_000)
         // The size of a photo attached to a message: more than fits into one cursor window.
         val photo = ImageContent("image/jpeg", "QUJD".repeat(1_000_000))
@@ -152,7 +152,7 @@ class EncryptedDatabaseTest {
     }
 
     @Test
-    fun openingWithAWrongKeyFailsAndLeavesTheDatabaseReadable() = runTest {
+    fun openingWithAWrongKeyFailsAndLeavesTheDatabaseReadable(): Unit = runTest {
         val rightKey = ByteArray(32) { (it + 1).toByte() }
         val wrongKey = ByteArray(32) { (it + 2).toByte() }
 
@@ -182,7 +182,7 @@ class EncryptedDatabaseTest {
     }
 
     @Test
-    fun aLostKeystoreKeyIsReportedAndNeitherKeyNorDatabaseIsReplaced() = runTest {
+    fun aLostKeystoreKeyIsReportedAndNeitherKeyNorDatabaseIsReplaced(): Unit = runTest {
         val first = encryptedLayer()
         first.agents.upsert(agent)
         first.close()
@@ -199,7 +199,7 @@ class EncryptedDatabaseTest {
     }
 
     @Test
-    fun aDatabaseWhoseSealedKeyIsMissingIsReportedAndNoNewKeyIsCreated() = runTest {
+    fun aDatabaseWhoseSealedKeyIsMissingIsReportedAndNoNewKeyIsCreated(): Unit = runTest {
         val first = encryptedLayer()
         first.agents.upsert(agent)
         first.close()
@@ -213,7 +213,7 @@ class EncryptedDatabaseTest {
     }
 
     @Test
-    fun encryptedDatabasesWithDifferentNamesHaveDifferentKeys() = runTest {
+    fun encryptedDatabasesWithDifferentNamesHaveDifferentKeys(): Unit = runTest {
         val first = encryptedLayer()
         first.agents.upsert(agent)
         first.close()

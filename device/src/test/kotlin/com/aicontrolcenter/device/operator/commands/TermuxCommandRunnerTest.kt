@@ -181,4 +181,22 @@ class TermuxCommandRunnerTest {
         assertIs<CommandOutcome.Failed>(runner.run("  ", limits))
         assertNull(shadowOf(app).nextStartedService)
     }
+
+    @Test
+    fun `a command that would not arrive in Termux as the same text is not sent`() = runTest {
+        ready()
+
+        for (broken in listOf("rm keep\uD800", "rm keep\uDC00 x", "echo \uDC00\uD83D")) {
+            val outcome = assertIs<CommandOutcome.Failed>(runner.run(broken, limits), "[$broken]")
+
+            assertTrue("cannot be passed on as it is" in outcome.reason && "U+D" in outcome.reason, outcome.reason)
+            assertNull(shadowOf(app).nextStartedService, "Termux was not asked")
+        }
+
+        // A whole pair is an ordinary character.
+        val (request, call) = started("echo '\uD83D\uDE00'")
+        assertEquals("echo '\uD83D\uDE00'", request.getStringExtra(TermuxCommandRunner.EXTRA_STDIN))
+        answer(request, result { putString("stdout", "ok"); putInt("exitCode", 0) })
+        assertIs<CommandOutcome.Finished>(call.await())
+    }
 }
