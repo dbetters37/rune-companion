@@ -120,6 +120,9 @@ internal object WorkspaceStates {
 
     fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
 
+    /** SHA-256 of [bytes], as [sha256] of a file gives it. */
+    fun sha256(bytes: ByteArray): String = hex(MessageDigest.getInstance("SHA-256").digest(bytes))
+
     fun describe(e: EntryState): String = when {
         !e.exists -> "nothing"
         e.isFolder && e.tree != null -> "a folder with ${OperatorText.count(e.tree.files, "file")}, ${size(e.tree.bytes)}"
@@ -308,10 +311,14 @@ internal class WorkspaceWrite(private val d: OperatorToolDependencies) : Operato
                     prepared(check = { before.changeTo(WorkspaceStates.of(d.workspace, path), q(path.value)) }) { ctx ->
                         BulkRule.take(d, ctx, replaced, risk)?.let { return@prepared ToolOutcome.failure(it) }
                         when (val r = d.workspace.write(path, bytes, overwrite = before.exists)) {
-                            is DocResult.Ok -> ToolOutcome.success(
-                                if (before.exists) "Replaced ${q(path.value)} (${size(r.value.sizeBytes)}); the previous version is in the workspace trash (workspace_restore lists it)."
-                                else "Created ${q(path.value)} (${size(r.value.sizeBytes)}).",
-                            )
+                            is DocResult.Ok -> {
+                                // What the task wrote itself: a later edit of exactly this version does not keep it again.
+                                d.ownVersions.wrote(OwnVersions.author(ctx), path, WorkspaceStates.sha256(bytes), r.value.sizeBytes, r.value.modifiedAt, d.clock.now())
+                                ToolOutcome.success(
+                                    if (before.exists) "Replaced ${q(path.value)} (${size(r.value.sizeBytes)}); the previous version is in the workspace trash (workspace_restore lists it)."
+                                    else "Created ${q(path.value)} (${size(r.value.sizeBytes)}).",
+                                )
+                            }
                             else -> ToolOutcome.failure(OperatorText.problem(r, "Writing ${q(path.value)}"))
                         }
                     },
@@ -371,7 +378,8 @@ internal class WorkspaceAppend(private val d: OperatorToolDependencies) : Operat
 internal class WorkspaceReplaceText(private val d: OperatorToolDependencies) : OperatorTool(
     "workspace.replace_text", "Edit a workspace file",
     "Replaces every occurrence of an exact piece of text in a workspace text file. With \"expected_count\", nothing changes unless " +
-        "exactly that many occurrences are found.",
+        "exactly that many occurrences are found. The version from before the edit is kept in the workspace trash; a version the " +
+        "same task wrote itself in the last ${ConsequentialControls.BULK_WINDOW_MS / 60_000} minutes is not kept again.",
     objectSchema("path", "find", "replace") {
         stringProp("path", "The text file.")
         stringProp("find", "The exact text to find (case-sensitive).")
@@ -404,20 +412,58 @@ internal class WorkspaceReplaceText(private val d: OperatorToolDependencies) : O
                 assessment(summary, failing("${q(find)} occurs ${OperatorText.count(count, "time")} in ${q(path.value)}, not $expected; nothing was changed."), details)
             else -> {
                 val risk = BulkRule.risk(d, context, 1)
+                // The version being edited is kept in the trash, unless it is one this same task wrote itself a short while ago.
+                val ownNow = d.ownVersions.isOwn(OwnVersions.author(context), path, before, d.clock.now())
                 assessment(
-                    "Replace ${OperatorText.count(count, "occurrence")} of ${q(find)} with ${q(replacement)} in the workspace file ${q(path.value)}",
+                    "Replace ${OperatorText.count(count, "occurrence")} of ${q(find)} with ${q(replacement)} in the workspace file ${q(path.value)}" +
+                        if (ownNow) "" else "; the version before the edit is kept in the workspace trash",
                     prepared(check = { before.changeTo(WorkspaceStates.of(d.workspace, path, hashUpTo = d.limits.maxCopyBytes), q(path.value)) }) { ctx ->
                         BulkRule.take(d, ctx, 1, risk)?.let { return@prepared ToolOutcome.failure(it) }
-                        when (val r = d.workspace.replaceText(path, find, replacement, expectedCount = count)) {
-                            is DocResult.Ok -> ToolOutcome.success("Replaced ${OperatorText.count(r.value, "occurrence")} in ${q(path.value)}.")
+                        val author = OwnVersions.author(ctx)
+                        // Decided again now: the minutes may have passed while the owner was asked.
+                        val own = before.sha256?.takeIf { d.ownVersions.isOwn(author, path, before, d.clock.now()) }
+                        when (val r = d.workspace.replaceText(path, find, replacement, expectedCount = count, ownVersionSha256 = own)) {
+                            is DocResult.Ok -> {
+                                remember(author, path, text.replace(find, replacement))
+                                ToolOutcome.success(
+                                    "Replaced ${OperatorText.count(r.value, "occurrence")} in ${q(path.value)}. " +
+                                        if (own == null) "The version from before this edit is in the workspace trash (workspace_restore lists it)."
+                                        else "The version from before this edit was one ${ctx.agent.name} wrote itself minutes ago, so it was not kept again.",
+                                )
+                            }
                             else -> ToolOutcome.failure(OperatorText.problem(r, "Editing ${q(path.value)}"))
                         }
                     },
-                    details + listOfNotNull(BulkRule.detail(d, context, 1)),
+                    details + listOfNotNull(if (ownNow) ownVersion(context) else KEPT_IN_TRASH, BulkRule.detail(d, context, 1)),
                     risk = risk,
                 )
             }
         }
+    }
+
+    /** Notes the version the edit produced as the task's own, when the file now is what the edit made of the text it was checked with. */
+    private suspend fun remember(author: String, path: RelativePath, updated: String) {
+        val bytes = updated.toByteArray(Charsets.UTF_8)
+        val now = try {
+            WorkspaceStates.of(d.workspace, path)
+        } catch (e: ToolCallRejected) {
+            // The edit is done; a file that cannot be looked at any more is simply not remembered.
+            EntryState.ABSENT
+        }
+        if (now.exists && !now.isFolder && now.sizeBytes == bytes.size.toLong()) {
+            d.ownVersions.wrote(author, path, WorkspaceStates.sha256(bytes), now.sizeBytes, now.modifiedAt, d.clock.now())
+        } else {
+            d.ownVersions.forget(path)
+        }
+    }
+
+    private fun ownVersion(context: ToolContext): String =
+        "The version before this edit is one ${context.agent.name} wrote itself less than ${ConsequentialControls.BULK_WINDOW_MS / 60_000} minutes ago" +
+            "${if (context.taskId != null) " in this task" else ""}, so it is not kept again. Versions it did not write itself are kept in the workspace trash."
+
+    companion object {
+        /** The details line of an edit that keeps the version it replaces. */
+        const val KEPT_IN_TRASH = "The version before this edit is kept in the workspace trash, from where it can be restored."
     }
 
     private fun String.windowedCount(find: String): Int {

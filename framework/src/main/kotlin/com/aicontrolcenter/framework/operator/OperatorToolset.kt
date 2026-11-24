@@ -115,6 +115,8 @@ class OperatorToolDependencies(
     val egress: OperatorEgress = OperatorEgress.NONE,
     /** The files each agent changed recently: the bulk rule counts over a time window, not per call. */
     val recentChanges: RecentFileChanges = RecentFileChanges(),
+    /** The file versions each task wrote itself a short while ago: an edit does not keep those in the trash again. */
+    val ownVersions: OwnVersions = OwnVersions(),
 )
 
 /**

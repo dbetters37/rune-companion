@@ -17,7 +17,9 @@ import java.util.Locale
 object ConsequentialControls {
     /**
      * Replacing, editing or deleting more than this many existing files is consequential: counted
-     * per agent and task over [BULK_WINDOW_MS], not per call, so many small calls add up.
+     * over [BULK_WINDOW_MS], not per call, so many small calls add up, and counted per agent and
+     * task, per agent across its tasks and per root objective across its agents, so neither a
+     * new task nor a helper agent starts again at zero.
      */
     const val BULK_FILE_LIMIT: Int = 20
 

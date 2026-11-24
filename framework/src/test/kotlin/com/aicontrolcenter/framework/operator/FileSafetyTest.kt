@@ -87,7 +87,7 @@ class FileSafetyTest {
     }
 
     @Test
-    fun `the bulk rule counts files changed across calls, per agent and task, over ten minutes`() = runTest {
+    fun `the bulk rule counts files changed across calls over ten minutes`() = runTest {
         val limit = ConsequentialControls.BULK_FILE_LIMIT
         repeat(limit + 5) { f.put("f$it.md", "owner text $it") }
         val risks = (0 until limit + 5).map { i ->
@@ -101,9 +101,9 @@ class FileSafetyTest {
         // Edits and trashing count the same way; creating new files never does.
         assertRisk(RiskLevel.CONSEQUENTIAL, f.assess("workspace.trash", "paths" to listOf("f1.md")))
         assertRisk(RiskLevel.MODIFYING, f.assess("workspace.write", "path" to "brand-new.md", "content" to "x"))
-        // Another task of the same agent has its own count.
+        // Another task of the same agent does not start again at zero (BulkWindowScopeTest has the other counts).
         val otherTask = f.context.copy(taskId = TaskId("tsk_other"))
-        assertRisk(RiskLevel.MODIFYING, f.tool("workspace.write").assess(json("path" to "f0.md", "content" to "x", "overwrite" to true), otherTask))
+        assertRisk(RiskLevel.CONSEQUENTIAL, f.tool("workspace.write").assess(json("path" to "f0.md", "content" to "x", "overwrite" to true), otherTask))
         // Ten minutes later the window has moved on.
         f.clock.advance(ConsequentialControls.BULK_WINDOW_MS)
         assertRisk(RiskLevel.MODIFYING, f.assess("workspace.write", "path" to "f0.md", "content" to "x", "overwrite" to true))

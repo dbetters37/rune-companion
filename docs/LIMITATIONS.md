@@ -110,20 +110,34 @@ do it.
   (deleting, installing, paying, sending) always need your confirmation. No such tools exist
   yet; they arrive with the phone operator.
 
-- **Replacing files.** In the workspace a file that is replaced (written over, moved over or
-  imported over) goes to the workspace trash first, so it can be restored; it keeps counting
-  against the workspace's 2 GB until the trash is emptied. Shared folders have no trash, so
-  replacing a file there asks you every time, like deleting one. Replacing, editing or trashing
-  more than 20 existing files within 10 minutes asks you, counted per agent and task across
-  calls; the count is kept in memory and starts again when the app restarts.
+- **Replacing files.** In the workspace a file that is replaced (written over, edited, moved
+  over or imported over) is kept in the workspace trash, so it can be restored; it keeps
+  counting against the workspace's 2 GB until the trash is emptied. The file never leaves its
+  place while this happens, so if the app is stopped in the middle, the file is still there.
+  One exception keeps the trash from filling with drafts: when a task edits a version it wrote
+  itself in the last 10 minutes, that version is not kept again, so the trash holds what was
+  there before the task's first change, not every step in between. Shared folders have no
+  trash, so replacing a file there asks you every time, like deleting one. Replacing, editing
+  or trashing more than 20 existing files within 10 minutes asks you. The files are counted
+  across calls in three ways, and the largest count decides: per agent in one task, per agent
+  across all its tasks, and per objective across all the agents working on it. The counts are
+  kept in memory and start again when the app restarts.
 - **Shell commands.** You see the command, the text of the scripts it runs (long scripts only
   in part, with a note to read the rest in Workspace) and the workspace files it names; if any of
-  them change before it runs, it does not run. Files the command reaches only through names it
-  builds at run time are not checked. Commands that send work to the background (`&`, `nohup`,
-  `setsid`, `disown`, job control) are refused, and each command runs in its own process group
-  that is killed when it ends, at its time limit or when it is stopped. A process that
-  deliberately leaves that group (for example through a disguised `setsid`, or a downloaded
-  program on Android 9) could keep running until Android stops the app.
+  them change before it runs, it does not run. A script is found however its name is spelled,
+  as long as the spelling is fixed (quotes, `..`, `$HOME`, `$PWD`, the workspace's full path,
+  patterns such as `t*.sh`), and so are the scripts that script runs, two levels down; scripts
+  one level further are checked but not shown. A command that runs a script whose name is only
+  put together while the command runs, that lies outside the workspace or is a link, is refused
+  before you are asked. Still not checked: a file the command only reads, through a name put
+  together while it runs (for example with `cat`), and text the command puts together itself
+  and hands to a shell. Commands that send work to the background (`&`,
+  `nohup`, `setsid`, `disown`, job control) are refused, also when the word is hidden by
+  quotes or the program's name is put together while the command runs, and so are scripts
+  that use `nohup`, `setsid` or job control. Each command runs in its own process group that
+  is killed when it ends, at its time limit or when it is stopped. A process that still leaves
+  that group (for example a program downloaded on Android 9, or a script too long to be read
+  here) could keep running until Android stops the app.
 - **Termux commands** keep running in Termux after the time limit; this app only stops
   waiting for them.
 - **The JavaScript sandbox** checks every array built-in that would walk a huge array in one

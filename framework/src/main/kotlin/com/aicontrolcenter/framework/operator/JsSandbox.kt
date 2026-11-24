@@ -6,6 +6,7 @@ import org.mozilla.javascript.ClassShutter
 import org.mozilla.javascript.Context
 import org.mozilla.javascript.ContextFactory
 import org.mozilla.javascript.LambdaFunction
+import org.mozilla.javascript.NativeArray
 import org.mozilla.javascript.NativeJSON
 import org.mozilla.javascript.RhinoException
 import org.mozilla.javascript.Scriptable
@@ -100,10 +101,14 @@ class JsHostError(message: String) : RuntimeException(message)
  *   recursion ends as an error rather than taking down a shared thread;
  * - built-ins that can build huge strings or walk huge arrays in one native call (`repeat`,
  *   `padStart`, `padEnd`, `split("")`, every array method that walks the length — `join`,
- *   `forEach`, `map`, `reduce`, `slice`, `concat` and the rest — `Array.from`, `apply` with an
- *   array-like, and `JSON.stringify`, also for the result and console output) refuse beyond
- *   [JsLimits.maxStringChars] / [JsLimits.maxArrayLength]; host functions cap what they accept
- *   and return;
+ *   `forEach`, `map`, `reduce`, `slice`, `concat`, `flat` and the rest, also as Rhino's
+ *   `Array.forEach(list, …)` forms and `toSource` — `Array.from`, `apply` with an array-like,
+ *   and `JSON.stringify`, also for the result and console output) refuse beyond
+ *   [JsLimits.maxStringChars] / [JsLimits.maxArrayLength]. Their wrappers read each value
+ *   a script controls once and hand the built-in what they read: a real array (whose length
+ *   cannot lie), or a bounded copy of anything that only looks like one, so a `length` that
+ *   answers small to the check and huge to the built-in gets nowhere. Host functions cap what
+ *   they accept and return;
  * - input is JSON (`input`), output is the JSON of the last expression, and `console.log`
  *   is captured.
  *
@@ -186,7 +191,9 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
             val input: Any? = inputJson?.let { JsonParser(cx, scope).parseValue(it) }
             ScriptableObject.defineProperty(scope, "input", input, ScriptableObject.DONTENUM)
             host?.let { ScriptableObject.defineProperty(scope, "workspace", workspace(cx, scope, it), ScriptableObject.DONTENUM or ScriptableObject.READONLY) }
-            cx.evaluateString(scope, guards(), "sandbox", 1, null)
+            // The guards get the one test a script cannot fake or replace: is this value a real array (never a look-alike or a Proxy)?
+            val isRealArray = function(scope, "isRealArray", 1) { _, _, args -> args.getOrNull(0) is NativeArray }
+            (cx.evaluateString(scope, guards(), "sandbox", 1, null) as org.mozilla.javascript.Function).call(cx, scope, scope, arrayOf<Any?>(isRealArray))
             // The guarded JSON.stringify, held here so a script that replaces the global cannot take the check away.
             val jsonObject = ScriptableObject.getProperty(scope, "JSON") as Scriptable
             val guarded = ScriptableObject.getProperty(jsonObject, "stringify") as org.mozilla.javascript.Function
@@ -336,56 +343,262 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
 
         val DENY_ALL = ClassShutter { false }
 
-        /** Wraps built-ins that can do unbounded native work in one call. Runs before the script, in its scope. */
+        /**
+         * Wraps built-ins that can do unbounded native work in one call. A function taking the native test for a real
+         * array; called once before the script, in its scope.
+         *
+         * The rule every wrapper follows: a value a script controls is read exactly once, here, and the built-in is then
+         * called with what was read, so the built-in can never see a different length, count or list than the one that
+         * was checked. A real array's length is its own and cannot lie. Anything else that looks like an array (an
+         * object with a "length", which may be a getter or have a valueOf that answers differently each time) is copied
+         * here, in script code the budget reaches, into a real array of at most MAX_ARR elements, and the built-in works
+         * on that copy; the built-ins that change an array in place take real arrays only.
+         */
         val GUARDS = """
-            (function () {
+            (function (isRealArray) {
+              "use strict";
               var MAXS = MAX_STR, MAXA = MAX_ARR;
               // The originals, captured before anything is wrapped: the wrappers call through them, never through what a script can replace.
               var callApply = Function.prototype.call.bind(Function.prototype.apply);
-              function guard(owner, name, check) {
+              var toObject = Object, toNumber = Number, toText = String, floor = Math.floor, keysOf = Object.keys, RegExpType = RegExp;
+              var NumberType = Number, StringType = String, BooleanType = Boolean, booleanValue = Boolean.prototype.valueOf;
+              var isArray = Array.isArray, define = Object.defineProperty;
+              var iteratorKey = typeof Symbol === "function" ? Symbol.iterator : undefined;
+              var spreadKey = typeof Symbol === "function" ? Symbol.isConcatSpreadable : undefined;
+              function replace(owner, name, make) {
                 var original = owner[name];
                 if (typeof original !== "function") return;
-                Object.defineProperty(owner, name, {
-                  value: function () { callApply(check, this, arguments); return callApply(original, this, arguments); },
-                  writable: true, configurable: true, enumerable: false
-                });
+                Object.defineProperty(owner, name, { value: make(original), writable: true, configurable: true, enumerable: false });
               }
-              function tooLong(n) { if (Number(n) > MAXS) throw new RangeError("Strings longer than " + MAXS + " characters are not allowed here."); }
-              function tooMany(n) { if (Number(n) > MAXA) throw new RangeError("Arrays longer than " + MAXA + " elements are not allowed here."); }
-              guard(String.prototype, "repeat", function (count) { tooLong(Object(this).length * Number(count)); });
-              guard(String.prototype, "padStart", function (length) { tooLong(length); });
-              guard(String.prototype, "padEnd", function (length) { tooLong(length); });
+              function tooLong(n) { if (n > MAXS) throw new RangeError("Strings longer than " + MAXS + " characters are not allowed here."); }
+              function tooMany(n) { if (n > MAXA) throw new RangeError("Arrays longer than " + MAXA + " elements are not allowed here."); }
+              function isObject(v) { return v !== null && (typeof v === "object" || typeof v === "function"); }
+              // The value as a real array of at most MAXA elements: itself when it is one, else a copy made here.
+              function realArray(value) {
+                if (isRealArray(value)) { tooMany(value.length); return value; }
+                if (value === null || value === undefined) throw new TypeError("An array method was called on null or undefined.");
+                var source = toObject(value);
+                var n = toNumber(source.length);
+                n = n > 0 ? floor(n) : 0;
+                tooMany(n);
+                var copy = [];
+                for (var i = 0; i < n; i++) if (i in source) copy[i] = source[i];
+                copy.length = n;
+                return copy;
+              }
+              // An argument list (for apply): null, undefined and non-objects are left for the built-in to judge.
+              function list(args) { return isObject(args) ? realArray(args) : args; }
+              function text(value) { return typeof value === "string" ? value : toText(value); }
+
+              replace(String.prototype, "repeat", function (original) {
+                return function (count) {
+                  if (this === null || this === undefined) return callApply(original, this, arguments);
+                  var s = text(this), n = toNumber(count);
+                  tooLong(s.length * n);
+                  return callApply(original, s, [n]);
+                };
+              });
+              ["padStart", "padEnd"].forEach(function (name) {
+                replace(String.prototype, name, function (original) {
+                  return function (length, fill) {
+                    if (this === null || this === undefined) return callApply(original, this, arguments);
+                    var s = text(this), n = toNumber(length);
+                    tooLong(n);
+                    return fill === undefined ? callApply(original, s, [n]) : callApply(original, s, [n, text(fill)]);
+                  };
+                });
+              });
               // Splitting at every character makes one array element per character in a single native call.
-              guard(String.prototype, "split", function (separator) { if (separator === "") tooMany(Object(this).length); });
+              replace(String.prototype, "split", function (original) {
+                return function (separator, limit) {
+                  if (this === null || this === undefined) return callApply(original, this, arguments);
+                  var s = text(this), sep = separator;
+                  if (isObject(sep) && !(sep instanceof RegExpType)) sep = text(sep);
+                  if (sep === "") tooMany(s.length);
+                  return limit === undefined ? callApply(original, s, [sep]) : callApply(original, s, [sep, limit]);
+                };
+              });
+
               // Every built-in that walks an array's length in one native call: a sparse array of length 2^32-1 would keep it
               // busy past the time limit, where the budget check cannot reach it.
-              ["join", "fill", "toString", "toLocaleString", "reverse", "sort", "copyWithin", "indexOf", "lastIndexOf", "includes", "flat",
-               "forEach", "map", "filter", "some", "every", "reduce", "reduceRight", "find", "findIndex", "findLast", "findLastIndex",
-               "slice", "splice", "shift", "unshift", "keys", "values", "entries", "flatMap", "toReversed", "toSorted", "toSpliced",
-               "with"].forEach(function (name) {
-                guard(Array.prototype, name, function () { tooMany(Object(this).length); });
+              var walking = ["join", "toString", "toLocaleString", "toSource", "indexOf", "lastIndexOf", "includes", "forEach", "map", "filter",
+               "some", "every", "reduce", "reduceRight", "find", "findIndex", "findLast", "findLastIndex", "slice", "keys", "values", "entries",
+               "toReversed", "toSorted", "toSpliced", "with"];
+              if (iteratorKey !== undefined) walking.push(iteratorKey);
+              walking.forEach(function (name) {
+                replace(Array.prototype, name, function (original) {
+                  return function () { return callApply(original, realArray(this), arguments); };
+                });
               });
-              guard(Array.prototype, "concat", function () {
-                tooMany(Object(this).length);
-                for (var i = 0; i < arguments.length; i++) if (arguments[i] != null && typeof arguments[i] === "object") tooMany(Object(arguments[i]).length);
+              // These change the array itself, so a copy would not do: real arrays only.
+              ["fill", "reverse", "sort", "copyWithin", "splice", "shift", "unshift"].forEach(function (name) {
+                replace(Array.prototype, name, function (original) {
+                  return function () {
+                    if (!isRealArray(this)) throw new TypeError("Array.prototype." + name + " works only on real arrays here; copy the value with Array.from first.");
+                    tooMany(this.length);
+                    return callApply(original, this, arguments);
+                  };
+                });
               });
-              guard(Array, "from", function (source) { if (source != null) tooMany(Object(source).length); });
+              // flat walks the arrays inside the array too, and an element can be a getter that hands over a different array each
+              // time it is read. So flat is done here, in script code: every element is read once, and the result stays within the limit.
+              replace(Array.prototype, "flat", function () {
+                return function (depth) {
+                  var levels = depth === undefined ? 1 : toNumber(depth), out = [];
+                  (function spread(source, left) {
+                    for (var i = 0, n = source.length; i < n; i++) {
+                      var item = source[i];
+                      if (item === undefined && !(i in source)) continue;
+                      if (left >= 1 && typeof item === "object" && item !== null && isArray(item)) spread(realArray(item), left - 1);
+                      else {
+                        out[out.length] = item;
+                        tooMany(out.length);
+                      }
+                    }
+                  })(realArray(this), levels);
+                  return out;
+                };
+              });
+              // flatMap spreads what its callback returns: all of that together must stay within the limit.
+              replace(Array.prototype, "flatMap", function (original) {
+                return function (callback, thisArg) {
+                  var self = realArray(this), total = 0;
+                  if (typeof callback !== "function") return callApply(original, self, arguments);
+                  return callApply(original, self, [function () {
+                    var result = callApply(callback, this, arguments);
+                    if (isRealArray(result)) tooMany(total += result.length);
+                    return result;
+                  }, thisArg]);
+                };
+              });
+              // concat spreads its arguments: each becomes a real array of checked length, or stays one element, and all together stay within the limit.
+              replace(Array.prototype, "concat", function (original) {
+                return function () {
+                  var total = 0, parts = [];
+                  function part(value) {
+                    var spread = isRealArray(value) ? value : (isObject(value) && spreadKey !== undefined && value[spreadKey]) ? realArray(value) : null;
+                    if (spread === null) return [value];
+                    tooMany(total += spread.length);
+                    return spread;
+                  }
+                  if (this === null || this === undefined) return callApply(original, this, arguments);
+                  // Called on something that is not a real array, the result starts empty and that value is its first part.
+                  var self = isRealArray(this) ? this : [];
+                  if (self === this) tooMany(total += self.length); else parts[0] = part(this);
+                  for (var i = 0; i < arguments.length; i++) parts[parts.length] = part(arguments[i]);
+                  return callApply(original, self, parts);
+                };
+              });
+              replace(Array, "from", function (original) {
+                return function (source, mapFn, thisArg) {
+                  var safe = source;
+                  if (typeof source === "string") tooMany(source.length);
+                  else if (isRealArray(source)) tooMany(source.length);
+                  else if (isObject(source)) {
+                    var method = iteratorKey === undefined ? undefined : source[iteratorKey];
+                    if (method !== null && method !== undefined) {
+                      // Walked here, in script code, so an endless iterator meets the budget and a long one the limit.
+                      var iterator = callApply(method, source, []);
+                      safe = [];
+                      for (var step = iterator.next(); !step.done; step = iterator.next()) {
+                        safe[safe.length] = step.value;
+                        tooMany(safe.length);
+                      }
+                    } else safe = realArray(source);
+                  }
+                  return arguments.length > 1 ? callApply(original, this, [safe, mapFn, thisArg]) : callApply(original, this, [safe]);
+                };
+              });
+              // Rhino also offers array and string methods as functions on Array and String themselves (Array.forEach(list, f),
+              // String.split(text, "")), which would walk around every wrapper above: each goes through the method it stands for.
+              [Array, String].forEach(function (owner) {
+                Object.getOwnPropertyNames(owner).forEach(function (name) {
+                  var method = owner.prototype[name];
+                  if (typeof owner[name] !== "function" || typeof method !== "function" || name === "constructor") return;
+                  Object.defineProperty(owner, name, {
+                    value: function (target) {
+                      var rest = [];
+                      for (var i = 1; i < arguments.length; i++) rest[i - 1] = arguments[i];
+                      return callApply(method, target, rest);
+                    },
+                    writable: true, configurable: true, enumerable: false
+                  });
+                });
+              });
               // Calling with an array-like copies every element first, natively.
-              guard(Function.prototype, "apply", function (self, args) { if (args != null) tooMany(Object(args).length); });
+              replace(Function.prototype, "apply", function (original) {
+                return function (self, args) { return callApply(original, this, [self, list(args)]); };
+              });
               if (typeof Reflect === "object") {
-                guard(Reflect, "apply", function (target, self, args) { if (args != null) tooMany(Object(args).length); });
-                guard(Reflect, "construct", function (target, args) { if (args != null) tooMany(Object(args).length); });
+                replace(Reflect, "apply", function (original) {
+                  return function (target, self, args) { return callApply(original, this, [target, self, list(args)]); };
+                });
+                replace(Reflect, "construct", function (original) {
+                  return function (target, args, newTarget) {
+                    return arguments.length > 2 ? callApply(original, this, [target, list(args), newTarget]) : callApply(original, this, [target, list(args)]);
+                  };
+                });
               }
-              // JSON.stringify walks every array it meets natively: check them all first, in script code the budget reaches.
-              guard(JSON, "stringify", function (value) { checkArrays(value, []); });
-              function checkArrays(value, seen) {
-                if (value === null || typeof value !== "object" || seen.indexOf(value) >= 0) return;
-                seen.push(value);
-                if (Array.isArray(value)) tooMany(value.length);
-                var keys = Object.keys(value);
-                for (var i = 0; i < keys.length; i++) checkArrays(value[keys[i]], seen);
-              }
-            })();
+              // JSON.stringify reads what it serialises natively, and a getter, a toJSON or a replacer can hand it a huge array
+              // that no check saw before. So the value is walked once here, with toJSON and the replacer applied as the built-in
+              // would, in script code the budget reaches, into fresh plain objects and real arrays of checked length. The
+              // built-in then only formats that copy.
+              replace(JSON, "stringify", function (original) {
+                return function (value, replacer, space) {
+                  var change = typeof replacer === "function" ? replacer : null, pick = null, stack = [];
+                  if (change === null && isArray(replacer)) {
+                    var listed = realArray(replacer);
+                    pick = [];
+                    for (var p = 0; p < listed.length; p++) {
+                      var name = listed[p];
+                      if (typeof name === "number" || name instanceof NumberType || name instanceof StringType) name = text(name);
+                      if (typeof name === "string") pick[pick.length] = name;
+                    }
+                  }
+                  // Plain values are copied in the loops below without a call, so a long list of numbers costs little budget.
+                  function plain(holder, key, v) {
+                    if (v !== null && (typeof v === "object" || typeof v === "function")) {
+                      var toJSON = v.toJSON;
+                      if (typeof toJSON === "function") v = callApply(toJSON, v, [key]);
+                    }
+                    if (change !== null) v = callApply(change, holder, [key, v]);
+                    if (v === null || typeof v !== "object") return typeof v === "function" ? undefined : v;
+                    if (v instanceof NumberType) return toNumber(v);
+                    if (v instanceof StringType) return text(v);
+                    if (v instanceof BooleanType) return callApply(booleanValue, v, []) === true;
+                    for (var s = 0; s < stack.length; s++) if (stack[s] === v) throw new TypeError("Cyclic object value: it cannot be turned into JSON.");
+                    stack[stack.length] = v;
+                    var out, item;
+                    if (isArray(v)) {
+                      var n = isRealArray(v) ? v.length : toNumber(v.length);
+                      n = n > 0 ? floor(n) : 0;
+                      tooMany(n);
+                      out = [];
+                      for (var i = 0; i < n; i++) {
+                        item = v[i];
+                        out[i] = change === null && (item === null || (typeof item !== "object" && typeof item !== "function")) ? item : plain(v, toText(i), item);
+                      }
+                      out.length = n;
+                    } else {
+                      out = {};
+                      var keys = pick !== null ? pick : keysOf(v);
+                      for (var k = 0; k < keys.length; k++) {
+                        item = v[keys[k]];
+                        if (change !== null || (item !== null && (typeof item === "object" || typeof item === "function"))) item = plain(v, keys[k], item);
+                        if (item === undefined) continue;
+                        // Assigning to "__proto__" would set the copy's prototype instead of a member.
+                        if (keys[k] === "__proto__") define(out, keys[k], { value: item, enumerable: true, writable: true, configurable: true });
+                        else out[keys[k]] = item;
+                      }
+                    }
+                    stack.length = stack.length - 1;
+                    return out;
+                  }
+                  var indent = space instanceof NumberType ? toNumber(space) : space instanceof StringType ? text(space) : isObject(space) ? undefined : space;
+                  return callApply(original, this, [plain({ "": value }, "", value), null, indent]);
+                };
+              });
+            })
         """.trimIndent()
     }
 }
