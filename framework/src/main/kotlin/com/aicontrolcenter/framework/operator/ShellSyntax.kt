@@ -103,6 +103,7 @@ internal object ShellSyntax {
      * @property operators every control operator and redirection operator, in order
      * @property doubts why the text may mean something else to the shell than what was read here; each completes "The command …"
      * @property openCase a `case` was left without its `esac`
+     * @property functions the names of the functions the text defines (`name() { … }`, `function name { … }`); their bodies are among [commands]
      */
     class Script(
         val commands: List<Simple>,
@@ -111,6 +112,7 @@ internal object ShellSyntax {
         val operators: List<String>,
         val doubts: List<String> = emptyList(),
         val openCase: Boolean = false,
+        val functions: List<String> = emptyList(),
     )
 
     /** The end word of a here-document that is beyond doubt: a plain word, bare or in one pair of quotes. */
@@ -141,6 +143,7 @@ internal object ShellSyntax {
         val commands = ArrayList<Simple>()
         val loops = ArrayList<Loop>()
         val extras = ArrayList<Word>()
+        val functions = ArrayList<String>()
         var assignments = ArrayList<Pair<String, Word>>()
         var words = ArrayList<Word>()
         var redirects = ArrayList<Redirect>()
@@ -208,7 +211,15 @@ internal object ShellSyntax {
                             patterns = true
                         }
                         reserved == "esac" -> if (cases > 0) cases--
-                        reserved == "function" -> if (tokens.getOrNull(i) is WordToken) i++
+                        reserved == "function" -> (tokens.getOrNull(i) as? WordToken)?.let {
+                            functions += it.word.plain ?: it.word.raw
+                            i++
+                        }
+                        // "name() …": a definition, not a call of name.
+                        starts && assignments.isEmpty() && (tokens.getOrNull(i) as? Op)?.text == "(" && (tokens.getOrNull(i + 1) as? Op)?.text == ")" -> {
+                            functions += word.plain ?: word.raw
+                            i += 2
+                        }
                         // "time -p command": its options are not the command.
                         reserved == "time" -> while ((tokens.getOrNull(i) as? WordToken)?.word?.let { it.bare && it.plain.orEmpty().startsWith("-") } == true) i++
                         reserved != null && reserved in TRANSPARENT -> Unit
@@ -219,7 +230,7 @@ internal object ShellSyntax {
             }
         }
         finish(pipesOn = false)
-        return Script(commands, loops, extras, tokens.mapNotNull { (it as? Op)?.text ?: (it as? Redirect)?.op }, lexer.doubts.distinct(), openCase = cases > 0)
+        return Script(commands, loops, extras, tokens.mapNotNull { (it as? Op)?.text ?: (it as? Redirect)?.op }, lexer.doubts.distinct(), openCase = cases > 0, functions = functions)
     }
 
     private fun assignmentOf(word: Word): Pair<String, Word>? = word.assignment()
@@ -433,6 +444,9 @@ internal object ShellSyntax {
                     }
                 }
             }
+            // "{a,b}" and "{1..3}" make several words in Android's shell, whatever is quoted inside them: such a word is only known when it runs.
+            val unquoted = pieces.joinToString("") { if (it.kind == Kind.LIT && !it.quoted) it.text else "\u0001" }
+            if (BRACE_EXPANSION.containsMatchIn(unquoted)) pieces += Piece(Kind.DYN, "", false)
             return Word(tilde(pieces), s.substring(start, minOf(i, s.length)))
         }
 
@@ -579,4 +593,6 @@ internal object ShellSyntax {
     }
 
     private val CASE = Regex("""(?:^|[\s;&|(])case\s""")
+
+    private val BRACE_EXPANSION = Regex("""\{[^{}]*(,|\.\.)[^{}]*\}""")
 }

@@ -91,6 +91,7 @@ class ShellSafetyTest {
             assertTrue(a.details.any { "Everything the command starts is stopped when it ends, at the limit or when you stop it." in it }, "$command\n${a.preview}")
         }
         assertTrue("Everything the command starts is stopped when it ends" in f.tool("scripts.run_shell").spec.description)
+        assertTrue(f.tool("scripts.run_shell").spec.description.length <= 1024, "some providers refuse a tool description longer than 1024 characters")
         assertFalse("refused" in f.tool("scripts.run_shell").spec.description.substringBefore("The owner approves"), "background work is not said to be refused")
 
         // What the runner reports is passed on.

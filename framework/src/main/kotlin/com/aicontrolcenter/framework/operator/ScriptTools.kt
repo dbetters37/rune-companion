@@ -162,18 +162,15 @@ internal class WorkspaceJsHost(private val workspace: Workspace, override val ca
  */
 internal class ScriptsRunShell(private val d: OperatorToolDependencies) : OperatorTool(
     "scripts.run_shell", "Run a shell command",
+    // Kept under 1024 characters: some providers refuse a longer tool description.
     "Runs one command with Android's shell (/system/bin/sh, toybox tools) as this app, in a workspace folder, with a time limit. " +
-        "On Android 10 and later it cannot run programs downloaded into the workspace. Everything the command starts is stopped " +
-        "when it ends, also background jobs (&, nohup, setsid): nothing keeps running after the call. The command can use the " +
-        "internet, so it is blocked in local-only mode. The owner approves every command. While a command waits for approval " +
-        "and runs, nothing else may change the workspace: if any file in it changes after you asked, the command is not run and " +
-        "you ask again; one command runs at a time. A script it runs (sh file, . ./file, source ./file, awk -f file) must be an " +
-        "existing workspace file named by its plain path: a script whose name is only put together when the command runs, that " +
-        "lies outside the workspace or is a link, is refused. HOME (~) is an empty folder outside the workspace, so do not name " +
-        "scripts through ~ or \$HOME, and do not set HOME, ENV or PATH to a workspace folder. Use \"directory\" rather than cd " +
-        "to run in a folder: after cd, or after setting PATH, a script named by a relative path is refused. Text for a shell must be fixed (sh -c '…', eval '…', sh <<'EOF'), and a " +
-        "shell is only fed from a file (sh < file, cat file | sh) or fixed text (echo text | sh); anything the tool cannot read " +
-        "with certainty is refused with the reason.",
+        "It can use the internet, so it is blocked in local-only mode. The owner approves every command. If anything in the " +
+        "workspace changes after you asked, it is not run: ask again. One command runs at a time. Everything the command starts " +
+        "is stopped when it ends, also background jobs. A script it runs (sh file, . ./file, awk -f file) must be an existing " +
+        "workspace file named by a fixed path; ~ and \$HOME are outside the workspace. Use \"directory\" rather than cd: after " +
+        "cd or a change of PATH, a script named by a relative path is refused. Give a shell fixed text or a file (sh -c '…', " +
+        "sh < file, cat file | sh, sh <<'EOF'). What the tool cannot read with certainty is refused with the reason. On Android " +
+        "10 and later it cannot run programs downloaded into the workspace.",
     objectSchema("command") {
         stringProp("command", "The command line, e.g. \"ls -la && wc -l notes.md\".")
         stringProp("directory", "Workspace folder to run in. Default: the top level.")

@@ -202,6 +202,10 @@ class ShellCommandsTest {
             "trap \"\$cleanup\" EXIT" to ShellCommands.DOUBT_TEXT, "sh <<< \"\$x\"" to ShellCommands.DOUBT_TEXT, "eval ls *.txt" to ShellCommands.DOUBT_TEXT,
             "sh <<EOF\nsh \$f\nEOF" to ShellCommands.DOUBT_HERE_EXPANDS, "cat <<EOF | sh\necho \$(date)\nEOF" to ShellCommands.DOUBT_HERE_EXPANDS,
             "alias x='sh '; x run.sh" to ShellCommands.DOUBT_ALIAS, "alias ls=sh" to ShellCommands.DOUBT_ALIAS,
+            // A function named like a command the reader gives a meaning to.
+            "cat() { command cat /proc/self/cwd/hidden.sh; }; cat run.sh | sh" to ShellCommands.doubtFunction("cat"),
+            "function echo { command echo sh /proc/self/cwd/hidden.sh; }; echo ls | sh" to ShellCommands.doubtFunction("echo"),
+            "sh() { command sh sub/run.sh; }; sh run.sh" to ShellCommands.doubtFunction("sh"), "cd() { :; }" to ShellCommands.doubtFunction("cd"),
             // Through xargs the script's name is what xargs reads.
             "echo run | xargs sh" to ShellCommands.DOUBT_FED_ARGUMENTS, "ls | xargs -n 1 sh -e" to ShellCommands.DOUBT_FED_ARGUMENTS, "echo ./run | xargs ." to ShellCommands.DOUBT_FED_ARGUMENTS,
         )
@@ -209,6 +213,9 @@ class ShellCommandsTest {
         assertEquals(ShellCommands.RUN_TIME, scripts("echo prog | xargs awk -f").single().problem)
         assertRuns("proj/run.sh", "ls | xargs -n 1 sh run.sh")
         assertRuns("proj/run.sh", "ls | xargs sh -c 'sh run.sh'")
+        // Other functions are fine; their bodies are read like the rest.
+        assertEquals(emptyList(), read("tidy() { ls; }; tidy").doubts)
+        assertRuns("proj/run.sh", "go() { sh run.sh; }; go")
         // Fixed text is read, also with values the text itself assigns.
         for (command in listOf("sh -c 'echo \"\$1\"' x arg", "dir=out; sh -c \"ls \$dir\"", "sh -c \"echo \$HOME\"", "eval 'x=1; echo \$x'", "sh <<'EOF'\necho \$HOME \$(date)\nEOF", "alias", "unalias x")) {
             assertEquals(emptyList(), read(command).doubts, command)
@@ -220,6 +227,12 @@ class ShellCommandsTest {
         for (command in listOf("\$CMD run.sh", "\"\$@\"", "/system/bin/s? run.sh", "s* run.sh", "\$(cat name) run.sh", "env \$S run.sh", "find . -exec \$S {} ;", "@(sh|ls) run.sh")) {
             assertTrue(read(command).doubts.any { "only put together when it runs" in it }, "$command: ${read(command).doubts}")
         }
+        // Brace expansion makes the words, also across quotes.
+        for (command in listOf("{sh,/proc/self/cwd/run.sh}", "{s,}h run.sh", "s{h,x} run.sh", "{sh,'/proc/self/cwd/run.sh'}")) {
+            assertTrue(read(command).doubts.any { "only put together when it runs" in it }, "$command: ${read(command).doubts}")
+        }
+        assertEquals(ShellCommands.RUN_TIME, scripts("sh {-c,'sh /proc/self/cwd/run.sh'}").single().problem)
+        assertEquals(ShellCommands.RUN_TIME, scripts("sh ru{n,x}.sh").single().problem)
         // A name the text itself fixes is read through; the test command is no pattern.
         assertRuns("proj/run.sh", "S=sh; \$S run.sh")
         assertRuns("proj/run.sh", "X=sh; ba\$X run.sh")
@@ -323,6 +336,28 @@ class ShellCommandsTest {
         assertEquals(listOf("proj/b.sh"), paths(ShellCommands.read("echo notes.md\n. ./b.sh\n", places, everyWord = false).names))
         // Wrapped too deeply to be read: a doubt, not a guess.
         assertNotNull(read("echo \$(echo \$(echo \$(echo \$(echo \$(echo \$(sh run.sh))))))").doubts.singleOrNull { it == ShellCommands.DOUBT_TOO_MUCH })
+    }
+
+    @Test
+    fun `everyday commands are read without a doubt and without a script that is none`() {
+        val everyday = listOf(
+            "ls -la | head -20", "find . -name '*.md' -exec wc -l {} +", "for f in *.txt; do wc -l \"\$f\"; done", "cat f | while read l; do echo \"\$l\"; done",
+            "X=\$(date +%s); echo \$X", "[ -d out ] || mkdir out", "awk '{print \$1}' data.txt", "sed -i 's/a/b/' x.txt", "tar -xf a.tar", "time ls",
+            "if grep -q x f; then echo y; fi", "a=1; b=2; echo \$((a+b))", ": > empty.txt", "printf '%s\\n' \"\$@\"", "cat > notes.md <<EOF\nline & more bg\nEOF",
+            "echo \$(echo \$(echo \$(echo deep)))", "ls 2>/dev/null >&2", "grep -c '&' notes.md", "x=\${y:-z}; echo \"\$x\"", "f() { ls; }; f", "mkdir -p a/b && cp x a/b/",
+            "wc -l < notes.md", "sort data.csv | uniq -c | sort -rn | head", "grep -rn TODO . | cut -d: -f1 | sort -u", "date; uname -a; id",
+            "echo \"\$HOME\" \"\$PWD\" \"\$TMPDIR\"", "while IFS= read -r line; do echo \"\$line\"; done < notes.md", "test -f x && echo yes || echo no",
+            "cat a.txt b.txt > c.txt", "head -c 100 big.bin | xxd", "du -sh * | sort -h", "sleep 1 & wait", "trap 'rm -f tmp.\$\$' EXIT; echo x > tmp.\$\$",
+            "case \$x in bg) echo yes;; *) echo no;; esac", "tee out.txt <<'EOF'\nR&D; bg\nsetup & teardown\nEOF", "cat <<-EOF > x\n\tR&D\n\tEOF", "ls # list & count",
+            "nohup sleep 5 &", "setsid sleep 5", "set -m; sleep 1 &", "sleep 5 & disown", "ls |& cat", "echo hi &> out.txt", "(sleep 1; echo late > late.txt) &",
+            "grep -n 'sh -c' notes.md", "echo 'eval \$x'", "ls ~", "cp notes.md ~/copy.md", "curl -s https://example.org | head -5", "echo done | tee log.txt",
+            "xargs -n 1 echo < list.txt", "env | sort", "export LANG=C; sort x", "command -v toybox", "echo \"a\" 'b' c\\ d", "cat <<EOF\n\$HOME is home\nEOF",
+        )
+        for (command in everyday) {
+            val reading = read(command)
+            assertEquals(emptyList(), reading.doubts, command.replace("\n", "\\n"))
+            assertEquals(emptyList(), reading.names.filter { it.must || it.problem != null }.map { it.raw }, command.replace("\n", "\\n"))
+        }
     }
 
     @Test

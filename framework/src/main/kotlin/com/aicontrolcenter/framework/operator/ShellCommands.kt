@@ -78,6 +78,12 @@ internal object ShellCommands {
     /** Variables that decide where a name is looked up, or how the words of a command are split. */
     private val LOOKUP_VARIABLES = listOf("PATH", "CDPATH", "ENV", "HOME", "IFS", "PWD", "OLDPWD")
 
+    /** Every command name this reader gives a meaning to. */
+    private val MEANINGFUL: Set<String> by lazy {
+        SHELLS + SOURCE + PROGRAM_FILE + PREFIXES + STARTERS + ARGUMENT_FEEDERS + FOLDER_CHANGES + DECLARATIONS + DATA_READERS +
+            setOf("eval", "trap", "alias", "unalias", "echo", "find", "pwd", "read", "unset", "getopts", "set", "nameref")
+    }
+
     /** Variables that decide which start-up files a shell reads, and where a program is looked up. */
     private val START_UP_VARIABLES = setOf("HOME", "ENV", "PATH")
 
@@ -117,6 +123,8 @@ internal object ShellCommands {
     const val DOUBT_ALIAS = "defines an alias, which changes what the words after it mean"
     fun doubtStartUp(name: String) = "sets $name to a place in the workspace, or to a value that is only known when the command runs; what is started " +
         "after that would be looked up there, or would read its start-up files from there, and could not be shown"
+
+    fun doubtFunction(name: String) = "defines a function named ${OperatorText.q(name.take(40))}, which changes what that command means in the rest of it"
 
     const val DOUBT_FED_ARGUMENTS = "starts a shell through xargs without naming its script, so what it runs comes from what xargs reads"
 
@@ -436,6 +444,8 @@ internal object ShellCommands {
             val variables = Variables.read(script, parent)
             if (setsLookupVariable(script)) unsettledBy = unsettledBy ?: UNSETTLED_LOOKUP
             startUpDoubts(script)
+            // "cat() { … }; cat file | sh": a function named like a command this reader gives a meaning to takes that meaning away.
+            script.functions.firstOrNull { it.lowercase(Locale.ROOT) in MEANINGFUL }?.let { doubt(doubtFunction(it)) }
             val roles = java.util.IdentityHashMap<Word, Boolean>()
             // Here-documents that are certainly a shell's input: their text is commands, and it must reach the shell as written.
             val shellFed = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<ShellSyntax.Redirect, Boolean>())
