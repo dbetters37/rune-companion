@@ -231,9 +231,11 @@ do it.
   `next` is itself a built-in function (`Object`, say), walked by `new Set`, `[...o]` or
   `Promise.all`, runs for ever, or until the app's memory is full, which can make Android
   close the app. Nobody writes that by accident, but an agent can write it on purpose. In both
-  cases the script is reported as stopped at its time limit while its thread goes on; while two
-  such threads run, new scripts are refused, and an endless one ends only when the app is
-  restarted. The memory limit is measured roughly, on the whole app: a script is stopped when
+  cases the script is reported as stopped at its time limit while its thread goes on, at the
+  lowest priority from then on; while two such threads run, new scripts are refused with a
+  message that says so, and an endless one ends only with the app itself: closing the app ends
+  it, and when Android keeps the app running in the background (for an objective, or for
+  screen control), Force stop in Android's settings for the app does. The memory limit is measured roughly, on the whole app: a script is stopped when
   the app's memory grew by more than 96 MB since it began, or when less than an eighth of the
   memory Android gives the app (and less than 96 MB) is left, whichever comes first. Telling
   what a script keeps from what it has thrown away costs time, so after the first few times it
@@ -255,8 +257,11 @@ do it.
   left as they are. Half of a two-part character whose other half is missing, which cannot
   be passed on as it is, is shown by its code as well (⟨U+D800⟩). The marking of look-alikes
   is help for your eye, and no list of look-alikes is ever complete. What you can rely on is
-  the line that shows the value itself, such as "Command:" for a shell command: it is the
-  exact text, and every character of it is either drawn as it is or named by its code.
+  the line that shows the value itself, such as "Command:" for a shell command: it shows the
+  exact text, and every character of it is either drawn as it is or named by its code, with one
+  exception: when one character carries more than four combining marks, the marks after the
+  fourth are only counted (⟨2 more combining marks⟩), not named, unless they are all the same
+  mark. Two values that differ only in such marks look the same there.
 - **Approvals of screen actions** list at most 150 texts of the window, each up to 300
   characters, and say whether a control is checked, selected or disabled. What does not fit is
   counted and still checked: if anything in the window changes before the action runs, it is

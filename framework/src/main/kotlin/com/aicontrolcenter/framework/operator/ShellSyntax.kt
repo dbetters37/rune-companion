@@ -596,4 +596,14 @@ internal object ShellSyntax {
     private val CASE = Regex("""(?:^|[\s;&|(])case\s""")
 
     private val BRACE_EXPANSION = Regex("""\{.*(,|\.\.)""", RegexOption.DOT_MATCHES_ALL)
+
+    /**
+     * True when [text] (the unquoted text of a word) has a "{" with a comma or two dots anywhere after it: then the
+     * word may be several words in Android's shell (R2 of round 4). One pass over the text (H1 of pass 4b): the first
+     * "{" has the most text after it, so it is the only one to look at.
+     */
+    fun bracesExpand(text: String): Boolean {
+        val open = text.indexOf('{')
+        return open >= 0 && (text.indexOf(',', open + 1) >= 0 || text.indexOf("..", open + 1) >= 0)
+    }
 }

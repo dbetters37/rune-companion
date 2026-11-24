@@ -1214,6 +1214,25 @@ internal object ShellCommands {
     /** `[[:alpha:]]`, `[[.x.]]`, `[[=x=]]`: a class, a collating symbol or an equivalence class inside a set. */
     private val CHARACTER_CLASS = Regex("""\[[^\]]*\[[:.=]""")
 
+    /**
+     * True when [text] holds a class, a collating symbol or an equivalence class inside a set (`[[:alpha:]]`,
+     * `[[.x.]]`, `[[=x=]]`): a "[", then "[:", "[." or "[=" with no "]" between the two. One pass over the text (H1
+     * of pass 4b; a regular expression ran from every "[" to the end of the text and back).
+     */
+    fun hasCharacterClass(text: String): Boolean {
+        var open = false
+        for (k in text.indices) {
+            when (text[k]) {
+                ']' -> open = false
+                '[' -> {
+                    if (open && k + 1 < text.length && text[k + 1] in ":.=") return true
+                    open = true
+                }
+            }
+        }
+        return false
+    }
+
     private val AWK_FILE = Regex("""^-[fEi]""")
 
     /** `-f`, also after sed's options that take no value (`-nf`). */
