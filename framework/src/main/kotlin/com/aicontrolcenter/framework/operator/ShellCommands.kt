@@ -51,7 +51,15 @@ internal object ShellCommands {
     )
 
     /** Prefix commands that take a word of their own before the command they start (a duration, a mask, an architecture), so which word that command is, is not certain. */
-    private val PREFIXES_WITH_OPERAND = setOf("timeout", "chrt", "taskset", "ionice", "setarch", "prlimit", "setpriv", "run-as", "uclampset", "strace", "ltrace", "sudo", "doas", "logwrapper")
+    private val PREFIXES_WITH_OPERAND = setOf("taskset", "setarch", "prlimit", "setpriv", "run-as", "strace", "ltrace", "sudo", "doas", "logwrapper")
+
+    private val DECLARATIONS = setOf("export", "readonly", "local", "typeset", "declare")
+
+    /** Programs that hand what they read to the command they start, as its arguments. */
+    private val ARGUMENT_FEEDERS = setOf("xargs", "parallel")
+
+    /** Commands after which a bare name is a variable they set or unset. */
+    private val VARIABLE_COMMANDS = DECLARATIONS + setOf("read", "unset", "getopts")
 
     /** The dynamic loader started by hand: it runs the program named after it. */
     private val LOADER = Regex("""^ld(?:64|-linux[^/]*|-musl[^/]*)?\.so(?:\.[0-9]+)*$""")
@@ -64,7 +72,6 @@ internal object ShellCommands {
     /** Programs that take a here-document as plain data. */
     private val DATA_READERS = setOf("cat", "tee")
 
-    private val DECLARATIONS = setOf("export", "readonly", "local", "typeset", "declare")
 
     private val FOLDER_CHANGES = setOf("cd", "pushd", "popd", "chdir")
 
@@ -105,6 +112,7 @@ internal object ShellCommands {
     const val DOUBT_TEXT = "hands a shell text that is only put together when the command runs (sh -c, eval, trap), so what it runs cannot be read"
     const val DOUBT_HERE_EXPANDS = "feeds a shell a here-document whose text is changed before the shell reads it (quote the end word: <<'EOF')"
     const val DOUBT_ALIAS = "defines an alias, which changes what the words after it mean"
+    const val DOUBT_FED_ARGUMENTS = "starts a shell through xargs without naming its script, so what it runs comes from what xargs reads"
 
     fun doubtProgram(raw: String) = "starts a program whose name is only put together when it runs (${OperatorText.q(raw.take(80))}); write the program's name plainly"
 
@@ -421,7 +429,7 @@ internal object ShellCommands {
             val script = ShellSyntax.parse(text)
             doubts += script.doubts
             val variables = Variables.read(script, parent)
-            if (LOOKUP_VARIABLES.any { variables.touches(it) && !parent.touches(it) }) unsettledBy = unsettledBy ?: UNSETTLED_LOOKUP
+            if (setsLookupVariable(script)) unsettledBy = unsettledBy ?: UNSETTLED_LOOKUP
             val roles = java.util.IdentityHashMap<Word, Boolean>()
             // Here-documents that are certainly a shell's input: their text is commands, and it must reach the shell as written.
             val shellFed = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<ShellSyntax.Redirect, Boolean>())
@@ -432,7 +440,10 @@ internal object ShellCommands {
             }
 
             for ((index, simple) in script.commands.withIndex()) {
-                for (call in callsOf(simple.words, variables, depth)) {
+                val calls = callsOf(simple.words, variables, depth)
+                // "xargs sh": the script's name is the first thing xargs reads.
+                val fedArguments = calls.firstOrNull()?.name in ARGUMENT_FEEDERS
+                for (call in calls) {
                     when (call.name) {
                         in SHELLS -> {
                             val use = shellUse(call.args)
@@ -444,9 +455,13 @@ internal object ShellCommands {
                                 // The string is expanded by this shell, then read by the new one, which has none of this one's variables.
                                 textFor(listOf(command), variables, depth, sameShell = false)
                             }
-                            if (use.readsInput) inputOf(simple, index, script, variables, depth, shellFed, roles)
+                            if (use.readsInput) {
+                                if (fedArguments) doubt(DOUBT_FED_ARGUMENTS) else inputOf(simple, index, script, variables, depth, shellFed, roles)
+                            }
                         }
-                        in SOURCE -> call.args.firstOrNull()?.let { file ->
+                        in SOURCE -> if (call.args.isEmpty()) {
+                            if (fedArguments) doubt(DOUBT_FED_ARGUMENTS)
+                        } else call.args.first().let { file ->
                             // "." looks a name without a slash up through PATH first, so only "./name" is certain.
                             val spelled = spellings(file, variables, depth)
                             if (spelled != null && spelled.any { '/' !in it.text }) {
@@ -495,6 +510,30 @@ internal object ShellCommands {
                 substitutions(word, variables, depth)
             }
             hereDocuments(script, variables, depth, shellFed)
+        }
+
+        /**
+         * True when [script] assigns, or may assign, one of [LOOKUP_VARIABLES]: plainly, in front
+         * of a command, through export, read, unset and their like, as a loop's variable, or
+         * with `${NAME:=…}`. The one thing left out is `IFS= read …`, the usual way of reading a
+         * line, where the assignment holds for that `read` alone.
+         */
+        private fun setsLookupVariable(script: ShellSyntax.Script): Boolean {
+            val set = HashSet<String>()
+            for (simple in script.commands) {
+                val first = plainNames(simple).firstOrNull()
+                simple.assignments.forEach { (name, _) -> if (!(name == "IFS" && first == "read")) set += name }
+                for (arg in simple.words.drop(1)) {
+                    arg.assignment()?.let { set += it.first }
+                    if (first in VARIABLE_COMMANDS || first == "env") arg.plain?.let { if (IDENTIFIER.matches(it)) set += it }
+                }
+            }
+            script.loops.forEach { set += it.name }
+            for (word in allWords(script)) {
+                word.pieces.filter { it.kind == Kind.DYN }.forEach { p -> ASSIGNING_EXPANSION.findAll(p.text).forEach { set += it.groupValues[1] } }
+                word.pieces.firstOrNull()?.let { p -> if (p.kind == Kind.LIT && !p.quoted) APPENDS.find(p.text)?.let { set += it.groupValues[1] } }
+            }
+            return LOOKUP_VARIABLES.any { it in set }
         }
 
         /**
@@ -672,6 +711,8 @@ internal object ShellCommands {
                 out += Call(name, words[k], words.subList(k + 1, words.size))
                 used += k
                 if (name !in PREFIXES && !LOADER.matches(name)) break
+                // "command -v sh" only asks where sh is.
+                if (name == "command" && words.getOrNull(k + 1)?.plain.let { it == "-v" || it == "-V" }) break
                 if (name in PREFIXES_WITH_OPERAND) unsure = true
                 // What a prefix command starts: the first later word that is not an option, an assignment or a number.
                 k++
@@ -699,7 +740,8 @@ internal object ShellCommands {
                 for (j in 1 until words.size) {
                     if (j in used) continue
                     val name = words[j].plain?.let { programName(words[j], variables, depth) } ?: continue
-                    if (name in SHELLS || name in PROGRAM_FILE || name == "eval" || name in SOURCE) out += Call(name, words[j], words.subList(j + 1, words.size))
+                    // Not ".": as an argument it is the folder, far more often than the command.
+                    if (name in SHELLS || name in PROGRAM_FILE || name == "eval" || name == "source") out += Call(name, words[j], words.subList(j + 1, words.size))
                 }
             }
             return out
@@ -732,11 +774,13 @@ internal object ShellCommands {
                 if (first == "--") break
                 val match = glued.find(first)
                 val option = long.firstOrNull { first == it || first.startsWith("$it=") }
+                // An option that names a program file but has no word after it gets that word from elsewhere (xargs): not known here.
+                val next = { call.args.getOrNull(i++)?.let { out += it } ?: run { names += problemName(first, RUN_TIME) } }
                 when {
                     option != null && first.length > option.length -> out += rest(arg, option.length + 1)
-                    option != null && arg.pieces.size == 1 -> call.args.getOrNull(i++)?.let { out += it }
+                    option != null && arg.pieces.size == 1 -> next()
                     match != null && (match.value.length < first.length || arg.pieces.size > 1) -> out += rest(arg, match.value.length)
-                    match != null -> call.args.getOrNull(i++)?.let { out += it }
+                    match != null -> next()
                 }
             }
             return out
@@ -966,6 +1010,9 @@ internal object ShellCommands {
     private val APPENDS = Regex("""^([A-Za-z_][A-Za-z0-9_]*)\+=""")
 
     private val ASSIGNED = Regex("""^[A-Za-z_][A-Za-z0-9_]*=""")
+
+    /** `${NAME:=value}` and `${NAME=value}`. */
+    private val ASSIGNING_EXPANSION = Regex("""\$\{([A-Za-z_][A-Za-z0-9_]*):?=""")
 
     private val OPTION_NAME = Regex("""^[A-Za-z][A-Za-z0-9_-]*$""")
 

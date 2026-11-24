@@ -93,8 +93,8 @@ internal val PLAIN_WORDS: Map<String, String> = mapOf(
     "screen.back" to "Presses Back in an authorised app, only when you also authorised the home screen app, as Back can leave the app. Asks you every time, unless you set that app to ask less.",
     "screen.home" to "Presses Home, only when you also authorised the home screen app. Asks you every time, unless you set that app to ask less.",
     "scripts.run_js" to "Runs a small JavaScript program in a sealed sandbox with no access to the phone or the network.",
-    "scripts.run_shell" to "Runs a command with Android's shell in the workspace. You approve each command and see the scripts it runs. " +
-        "It can use the internet, so local-only mode blocks it.",
+    "scripts.run_shell" to "Runs a command with Android's shell in the workspace. You approve each command and see the scripts found in it. " +
+        "Everything it starts is stopped when it ends. It can use the internet, so local-only mode blocks it.",
     "termux.run" to "Runs a command in the Termux app. You approve each command. It can use the internet, so local-only mode blocks it.",
     "permissions.request" to "Asks you for a permission it does not have, with its reason. It can never grant itself anything, and after you " +
         "refuse it cannot ask you for the same permission again for 10 minutes, unless you let it on the refused request in Tools › History.",

@@ -147,7 +147,10 @@ class ShellCommandsTest {
             assertEquals(ShellCommands.OUTSIDE, scripts(command).single().problem, command)
         }
         // A word that only looks like a shell's name, as an argument of an ordinary program, is none.
-        for (command in listOf("nice grep sh notes.md", "find . -name sh", "xargs grep -c sh", "env A=1 ls sh", "echo sh run.sh", "nohup cat bash")) {
+        for (command in listOf(
+            "nice grep sh notes.md", "find . -name sh", "xargs grep -c sh", "env A=1 ls sh", "echo sh run.sh", "nohup cat bash", "timeout 5 grep -r bash .",
+            "command -v sh", "command -V bash", "nice -n 5 ls . notes.md", "timeout -k 1 5 ls .", "type sh", "which sh",
+        )) {
             assertEquals(emptyList(), scripts(command), command)
             assertEquals(emptyList(), read(command).doubts, command)
         }
@@ -195,8 +198,13 @@ class ShellCommandsTest {
             "trap \"\$cleanup\" EXIT" to ShellCommands.DOUBT_TEXT, "sh <<< \"\$x\"" to ShellCommands.DOUBT_TEXT, "eval ls *.txt" to ShellCommands.DOUBT_TEXT,
             "sh <<EOF\nsh \$f\nEOF" to ShellCommands.DOUBT_HERE_EXPANDS, "cat <<EOF | sh\necho \$(date)\nEOF" to ShellCommands.DOUBT_HERE_EXPANDS,
             "alias x='sh '; x run.sh" to ShellCommands.DOUBT_ALIAS, "alias ls=sh" to ShellCommands.DOUBT_ALIAS,
+            // Through xargs the script's name is what xargs reads.
+            "echo run | xargs sh" to ShellCommands.DOUBT_FED_ARGUMENTS, "ls | xargs -n 1 sh -e" to ShellCommands.DOUBT_FED_ARGUMENTS, "echo ./run | xargs ." to ShellCommands.DOUBT_FED_ARGUMENTS,
         )
         for ((command, doubt) in doubts) assertTrue(doubt in read(command).doubts, "$command: ${read(command).doubts}")
+        assertEquals(ShellCommands.RUN_TIME, scripts("echo prog | xargs awk -f").single().problem)
+        assertRuns("proj/run.sh", "ls | xargs -n 1 sh run.sh")
+        assertRuns("proj/run.sh", "ls | xargs sh -c 'sh run.sh'")
         // Fixed text is read, also with values the text itself assigns.
         for (command in listOf("sh -c 'echo \"\$1\"' x arg", "dir=out; sh -c \"ls \$dir\"", "sh -c \"echo \$HOME\"", "eval 'x=1; echo \$x'", "sh <<'EOF'\necho \$HOME \$(date)\nEOF", "alias", "unalias x")) {
             assertEquals(emptyList(), read(command).doubts, command)
@@ -263,7 +271,11 @@ class ShellCommandsTest {
             "PATH=sub:\$PATH; . ./run.sh", "export PATH=sub", "PATH=sub sh run.sh", "env PATH=sub sh run.sh", "CDPATH=sub", "ENV=x.sh sh -i", "HOME=/data/ws", "IFS=n", "PWD=/x",
             "unset PATH", "read PATH", "for PATH in a b; do :; done", ": \${PATH:=sub}",
         )) assertEquals(ShellCommands.UNSETTLED_LOOKUP, read(command).unsettledBy, command)
-        for (command in listOf("sh run.sh", "ls && wc -l notes.md", "echo \$PATH", "x=1; y=\$HOME", "sh -c 'ls'", "echo cd")) assertNull(read(command).unsettledBy, command)
+        for (command in listOf(
+            "sh run.sh", "ls && wc -l notes.md", "echo \$PATH", "x=1; y=\$HOME", "sh -c 'ls'", "echo cd", "echo PATH", "printenv HOME", "echo \${PATH:-none}",
+            // The usual way of reading lines: the assignment holds for that read alone.
+            "while IFS= read -r line; do echo \"\$line\"; done < notes.md",
+        )) assertNull(read(command).unsettledBy, command)
 
         fun relative(command: String) = scripts(command).single().relative
         for (command in listOf("sh run.sh", "sh ./run.sh", "sh x/../run.sh", "sh \$PWD/run.sh", "sh \$(pwd)/run.sh", "sh r*.sh", "cat run.sh | sh", ". ./run.sh")) assertTrue(relative(command), command)

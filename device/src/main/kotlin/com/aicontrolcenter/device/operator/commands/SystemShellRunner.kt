@@ -287,6 +287,16 @@ internal class SystemShellRunner(
                 Files.walkFileTree(
                     path,
                     object : SimpleFileVisitor<Path>() {
+                        override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
+                            // A real folder (links are visited as files): a command may have taken its own rights away to keep it from being emptied.
+                            dir.toFile().apply {
+                                setReadable(true, true)
+                                setWritable(true, true)
+                                setExecutable(true, true)
+                            }
+                            return FileVisitResult.CONTINUE
+                        }
+
                         override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
                             Files.delete(file)
                             return FileVisitResult.CONTINUE
