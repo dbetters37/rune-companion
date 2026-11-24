@@ -46,7 +46,9 @@ internal class SnapshotStore(private val clock: Clock, private val keep: Int = K
 
     /**
      * [tree]'s visible elements as a snapshot that is neither numbered for later reference nor
-     * kept (id 0): what an assessment shows the owner and compares again before acting.
+     * kept (id 0): what an assessment shows the owner and compares again before acting. It
+     * carries the tree's fingerprint of the whole window, and how many elements that covers
+     * beyond the ones listed.
      */
     fun unrecorded(tree: ScreenTree, maxElements: Int): ScreenSnapshot {
         val visible = tree.visible
@@ -59,6 +61,8 @@ internal class SnapshotStore(private val clock: Clock, private val keep: Int = K
             withheld = tree.withheld,
             truncated = tree.truncated || visible.size > shown.size,
             capturedAt = clock.now(),
+            windowDigest = tree.digest,
+            unlisted = if (tree.digest != null) (tree.elementCount - shown.size).coerceAtLeast(0) else 0,
         )
     }
 

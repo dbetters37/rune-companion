@@ -6,6 +6,12 @@ import kotlinx.serialization.Serializable
 
 /** Whether the accessibility service can be used. */
 enum class ScreenServiceState {
+    /**
+     * Not known yet: Android's settings are read in the background when the app starts, never on
+     * the thread of whoever looks at the state first. It changes as soon as that read is done.
+     */
+    CHECKING,
+
     /** Not switched on in Android's accessibility settings. */
     NOT_ENABLED,
 
@@ -66,6 +72,12 @@ data class ScreenElement(
     val enabled: Boolean = true,
     val focused: Boolean = false,
     val selected: Boolean = false,
+    /**
+     * How many characters the reader left out of [text], [description] and [hint] together: each
+     * is cut at [ScreenOperator.MAX_TEXT_CHARS]. The uncut texts are still part of
+     * [ScreenSnapshot.windowDigest].
+     */
+    val cutChars: Int = 0,
 ) {
     /**
      * Whether [other] is the same control, read again: same app, role, text, description, view
@@ -91,7 +103,73 @@ data class ScreenSnapshot(
     /** More elements than the limit; the rest were left out. */
     val truncated: Boolean,
     val capturedAt: Long,
+    /**
+     * A fingerprint of the whole window as it was read for [ScreenOperator.inspect]
+     * ([WindowDigest]): every element in reading order, also those [elements] leaves out, each
+     * with its texts uncut. Null from a read that does not make one ([ScreenOperator.read]), and
+     * when the window could not be walked to its end (more than
+     * [ScreenOperator.DIGEST_MAX_ELEMENTS] elements, or nested too deep): then nothing vouches for
+     * what [elements] leaves out, and no action that needs the owner's approval is taken on it.
+     */
+    val windowDigest: String? = null,
+    /** How many elements of the window [elements] leaves out while [windowDigest] still covers them; 0 without one. */
+    val unlisted: Int = 0,
 )
+
+/**
+ * The fingerprint of a whole window, fed by whatever reads the screen while it walks it: every
+ * element in reading order with its texts uncut, and a mark for each password or sensitive field
+ * (never its content). `:device`'s operator and the testkit's fake both build
+ * [ScreenSnapshot.windowDigest] with this class, so it means the same from either: it changes
+ * when any text, checked, selected or enabled state anywhere in the window changes, listed or not.
+ * Positions and focus are left out, as in [ScreenPreview.digest]. SHA-256, hex.
+ */
+class WindowDigest {
+    private val md = java.security.MessageDigest.getInstance("SHA-256")
+
+    /** Elements and withheld fields fed so far. */
+    var count: Int = 0
+        private set
+
+    /** One element; [state] is whatever else the reader knows that says what the control shows (a state description, a merged label). */
+    fun element(
+        role: String,
+        text: String?,
+        description: String?,
+        hint: String?,
+        resourceId: String?,
+        state: String?,
+        checkable: Boolean,
+        checked: Boolean,
+        selected: Boolean,
+        enabled: Boolean,
+    ) {
+        md.field(role); md.field(text); md.field(description); md.field(hint); md.field(resourceId); md.field(state)
+        md.field(if (checkable) checked.toString() else "")
+        md.field(selected.toString())
+        md.field(enabled.toString())
+        count++
+    }
+
+    /** A password or sensitive field: that it is there, nothing of what it holds. */
+    fun withheld() {
+        md.field("\u0000withheld")
+        count++
+    }
+
+    /** The fingerprint of everything fed. Call once, when the walk reached the end of the window. */
+    fun finish(): String = md.digest().hex()
+}
+
+/** One length-prefixed field of a fingerprint, so neighbouring values cannot run into each other. */
+private fun java.security.MessageDigest.field(value: String?) {
+    val bytes = (value ?: "\u0000null").toByteArray(Charsets.UTF_8)
+    update(bytes.size.toString().toByteArray(Charsets.UTF_8))
+    update(':'.code.toByte())
+    update(bytes)
+}
+
+private fun ByteArray.hex(): String = joinToString("") { "%02x".format(it) }
 
 /** How the model names an element. */
 sealed interface ScreenTarget {
@@ -204,7 +282,10 @@ interface ScreenOperator {
      * session or indicator starts and the snapshot is not kept, so its elements cannot be named
      * by number ([ScreenSnapshot.id] is 0). For assessing a call and re-checking it before it
      * acts: the approval preview shows, and the re-check compares, the whole window. At most
-     * [maxElements] elements; [ScreenSnapshot.truncated] says when more were left out.
+     * [maxElements] elements are listed; [ScreenSnapshot.truncated] says when more were left out.
+     * The walk goes on past that limit only to fingerprint the rest
+     * ([ScreenSnapshot.windowDigest], up to [DIGEST_MAX_ELEMENTS] elements), so what is not listed
+     * is pinned all the same; a window larger than that has no fingerprint.
      */
     suspend fun inspect(packageName: String, maxElements: Int = INSPECT_MAX_ELEMENTS): ScreenResult<ScreenSnapshot>
 
@@ -246,6 +327,12 @@ interface ScreenOperator {
 
         /** The most elements [inspect] returns by default: more than any read, so a preview covers the whole window. */
         const val INSPECT_MAX_ELEMENTS: Int = 1_000
+
+        /** The most elements of one window [inspect] fingerprints; a larger window gets no [ScreenSnapshot.windowDigest]. */
+        const val DIGEST_MAX_ELEMENTS: Int = 10_000
+
+        /** The most characters of one text, description or hint a reader keeps on an element; the rest is counted in [ScreenElement.cutChars]. */
+        const val MAX_TEXT_CHARS: Int = 500
     }
 }
 
@@ -331,11 +418,25 @@ object ScreenPreview {
     /** The most characters of one text in a preview. */
     const val MAX_TEXT_CHARS: Int = 300
 
+    /** Closes a list that leaves something out which the pinned fingerprint still covers. */
+    const val STILL_CHECKED: String =
+        "  (What is not listed is still checked: if anything in the window changes before the action runs, it is not done.)"
+
     /** The control's name: text, else description, else label, else hint, else view id, else "unlabelled". */
     fun nameOf(element: ScreenElement): String {
         val name = listOf(element.text, element.description, element.label, element.hint, element.resourceId?.substringAfter(":id/"))
             .firstOrNull { !it.isNullOrBlank() }
         return if (name == null) "unlabelled ${element.role}" else "${element.role} ${PreviewText.quoted(name)}"
+    }
+
+    /**
+     * What state a control is in, as a preview line carries it: " [checked]" or " [not checked]"
+     * for a control that can be checked, " [selected]", " [disabled]"; empty for none of these.
+     */
+    fun stateOf(element: ScreenElement): String = buildString {
+        if (element.checkable) append(if (element.checked) " [checked]" else " [not checked]")
+        if (element.selected) append(" [selected]")
+        if (!element.enabled) append(" [disabled]")
     }
 
     /**
@@ -346,7 +447,7 @@ object ScreenPreview {
      */
     fun details(appLabel: String, element: ScreenElement, snapshot: ScreenSnapshot?, consequential: Boolean): List<String> = buildList {
         add(appLine(appLabel, element.packageName, snapshot))
-        add("Control: ${nameOf(element)}")
+        add("Control: ${nameOf(element)}${stateOf(element)}")
         element.context?.takeIf { it.isNotBlank() }?.let { add("Where: ${PreviewText.exact(it)}") }
         if (consequential && snapshot != null) addAll(contents(snapshot))
     }
@@ -363,61 +464,115 @@ object ScreenPreview {
         return "App: ${PreviewText.exact(appLabel)} ($packageName)$title"
     }
 
-    /** The fields that hold text, then [windowLines]. */
+    /** The fields that hold text (each with its state, and how much of a long text the reader left out), then [windowLines]. */
     private fun contents(snapshot: ScreenSnapshot): List<String> = buildList {
         for (field in snapshot.elements.filter { it.editable && !it.text.isNullOrEmpty() }) {
-            add("Field ${PreviewText.quoted(fieldName(field))} contains: ${PreviewText.quoted(field.text!!)}")
+            val text = field.text!! + if (field.cutChars > 0) "…" else ""
+            add("Field ${PreviewText.quoted(fieldName(field))} contains: ${PreviewText.quoted(text)}${leftOut(field.cutChars)}${stateOf(field)}")
         }
         addAll(windowLines(snapshot))
     }
 
     /**
-     * The window's texts for an approval preview: one line per element that shows a text or a
-     * description and is not an editable field (those are listed by [details]), in reading
-     * order, each [PreviewText.exact] and at most [MAX_TEXT_CHARS] characters; at most
-     * [MAX_WINDOW_LINES] lines, then how many were left out. Notes password fields left out and
-     * a read that stopped early.
+     * The window's texts for an approval preview: one line per element that is not an editable
+     * field (those are listed by [details]), in reading order, each [PreviewText.exact]:
+     * - its text and description; without either, the words of its label that no other line shows
+     *   (a row's label repeats the texts inside it), else its hint, marked as a hint;
+     * - its state ([stateOf]): "[checked]", "[selected]", "[disabled]". A control in such a state
+     *   is listed even when nothing else is left to say of it;
+     * - at most [MAX_TEXT_CHARS] characters, then how many more there are, counting what the
+     *   reader itself left out ([ScreenElement.cutChars]).
+     *
+     * At most [MAX_WINDOW_LINES] lines, then how many were left out. Notes password fields left
+     * out and a window with more elements than the list holds; when the snapshot carries a
+     * fingerprint of the whole window ([ScreenSnapshot.windowDigest]) it ends with [STILL_CHECKED]
+     * whenever anything was left out, since the pinned [digest] covers that too.
      */
     fun windowLines(snapshot: ScreenSnapshot): List<String> = buildList {
-        val texts = snapshot.elements.filter { !it.editable }.mapNotNull { e ->
-            listOfNotNull(e.text, e.description?.takeIf { it != e.text }).filter { it.isNotBlank() }.joinToString(" · ").ifEmpty { null }
-                ?.let { "${e.role}: ${PreviewText.quoted(clip(it))}" }
+        val listed = snapshot.elements.filter { !it.editable }
+        val ownLines = HashSet<String>()
+        for (e in listed) {
+            e.text?.let(ownLines::add)
+            e.description?.let(ownLines::add)
         }
+        val texts = listed.mapNotNull { e -> line(e, ownLines) }
         add("On screen now (${texts.size} ${if (texts.size == 1) "text" else "texts"}):")
-        texts.take(MAX_WINDOW_LINES).forEach { add("  $it") }
+        texts.take(MAX_WINDOW_LINES).forEach { add("  ${it.text}") }
         if (texts.size > MAX_WINDOW_LINES) add("  …and ${texts.size - MAX_WINDOW_LINES} more texts not listed here.")
         if (snapshot.withheld > 0) add("  (${snapshot.withheld} password or sensitive ${if (snapshot.withheld == 1) "field is" else "fields are"} never shown.)")
-        if (snapshot.truncated) add("  (The window holds more than could be read; the rest is not shown.)")
+        val pinned = snapshot.windowDigest != null
+        if (snapshot.truncated) {
+            add(
+                when {
+                    !pinned -> "  (The window holds more than could be read; the rest is not shown.)"
+                    snapshot.unlisted == 1 -> "  (The window holds 1 more element than could be read into this list.)"
+                    else -> "  (The window holds ${snapshot.unlisted} more elements than could be read into this list.)"
+                },
+            )
+        }
+        val cut = snapshot.elements.any { it.cutChars > 0 } || texts.take(MAX_WINDOW_LINES).any { it.cut }
+        if (pinned && (snapshot.truncated || cut || texts.size > MAX_WINDOW_LINES)) add(STILL_CHECKED)
+    }
+
+    /** One line of [windowLines]; [cut]: part of its text is left out. */
+    private class Line(val text: String, val cut: Boolean)
+
+    /** [e]'s line in [windowLines], or null when it has nothing to show; [ownLines]: the texts and descriptions that get lines of their own. */
+    private fun line(e: ScreenElement, ownLines: Set<String>): Line? {
+        val state = stateOf(e)
+        fun of(words: String, alreadyCut: Int, prefix: String = ""): Line =
+            Line("${e.role}: $prefix${clipped(words, alreadyCut)}$state", words.length > MAX_TEXT_CHARS || alreadyCut > 0)
+        val own = listOfNotNull(e.text, e.description?.takeIf { it != e.text }).filter { it.isNotBlank() }.joinToString(" · ")
+        if (own.isNotEmpty()) return of(own, e.cutChars)
+        val label = e.label?.takeIf { it.isNotBlank() }
+        if (label != null) {
+            // A control in a state worth showing keeps its whole label; otherwise only what no other line says.
+            val words = if (state.isNotEmpty()) label else label.split(" · ").filter { it.isNotBlank() && it !in ownLines }.joinToString(" · ")
+            if (words.isNotEmpty()) return of(words, 0)
+        }
+        e.hint?.takeIf { it.isNotBlank() }?.let { return of(it, e.cutChars, prefix = "hint ") }
+        return if (state.isEmpty()) null else Line("${e.role}:$state", cut = false)
     }
 
     /**
      * A fingerprint of everything [windowLines] and [details] show of [snapshot], and more: the
      * window title and, per element in order, its kind, text, description, hint, view id, label
-     * and checked state, plus how many fields were withheld. Positions and focus are left out, so
-     * moving the keyboard or the owner's return to the app do not change it; any changed text
-     * (a payee, a price, a field) does. SHA-256, hex.
+     * and checked, selected and enabled state, plus how many fields were withheld and the
+     * reader's fingerprint of the whole window ([ScreenSnapshot.windowDigest]: the elements the
+     * list leaves out and the uncut texts). Positions and focus are left out, so moving the
+     * keyboard or the owner's return to the app do not change it; any changed text (a payee, a
+     * price, a field) or state (a ticked box, the selected tab, a control switched off) does.
+     * SHA-256, hex.
      */
     fun digest(snapshot: ScreenSnapshot): String {
         val md = java.security.MessageDigest.getInstance("SHA-256")
-        fun add(value: String?) {
-            val bytes = (value ?: "\u0000null").toByteArray(Charsets.UTF_8)
-            md.update(bytes.size.toString().toByteArray(Charsets.UTF_8))
-            md.update(':'.code.toByte())
-            md.update(bytes)
-        }
-        add(snapshot.packageName)
-        add(snapshot.windowTitle)
-        add(snapshot.withheld.toString())
-        add(snapshot.truncated.toString())
+        md.field(snapshot.packageName)
+        md.field(snapshot.windowTitle)
+        md.field(snapshot.withheld.toString())
+        md.field(snapshot.truncated.toString())
+        md.field(snapshot.windowDigest)
         for (e in snapshot.elements) {
-            add(e.role); add(e.text); add(e.description); add(e.hint); add(e.resourceId); add(e.label)
-            add(if (e.checkable) e.checked.toString() else "")
+            md.field(e.role); md.field(e.text); md.field(e.description); md.field(e.hint); md.field(e.resourceId); md.field(e.label)
+            md.field(if (e.checkable) e.checked.toString() else "")
+            md.field(e.selected.toString())
+            md.field(e.enabled.toString())
         }
-        return md.digest().joinToString("") { "%02x".format(it) }
+        return md.digest().hex()
     }
 
     private fun fieldName(field: ScreenElement): String =
         field.hint ?: field.description ?: field.resourceId?.substringAfter(":id/") ?: "field ${field.number}"
 
-    private fun clip(s: String): String = if (s.length > MAX_TEXT_CHARS) s.take(MAX_TEXT_CHARS) + "…" else s
+    /** [s] between quotes, cut to [MAX_TEXT_CHARS], then how many characters are left out ([alreadyCut]: by the reader, before). */
+    private fun clipped(s: String, alreadyCut: Int): String {
+        val shown = if (s.length > MAX_TEXT_CHARS) s.take(MAX_TEXT_CHARS) else s
+        val left = s.length - shown.length + alreadyCut
+        return PreviewText.quoted(if (left > 0) "$shown…" else shown) + leftOut(left)
+    }
+
+    private fun leftOut(chars: Int): String = when {
+        chars <= 0 -> ""
+        chars == 1 -> " (1 more character not shown)"
+        else -> " ($chars more characters not shown)"
+    }
 }

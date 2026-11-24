@@ -26,7 +26,8 @@ import kotlinx.coroutines.launch
  * Hand [operator] to the screen tools and the broker (read-only `stopped`), and [control] only to
  * the owner's UI (Tools › Screen control, the banner, a notification's Stop): two separate
  * objects, so nothing holding the operator can reach Stop or Resume. Construction touches no
- * system service.
+ * system service, and neither does reading [ScreenOperator.state]: Android's settings are read on
+ * [io] only, and until the first read is done the state is `CHECKING`.
  *
  * @param operatorApps `operator_apps`, re-read on every call.
  * @param protectedPackages from [ProtectedPackagesResolver.startResolving] at start-up, read on
@@ -69,9 +70,10 @@ class ScreenOperatorLayer(
     val control: ScreenControl = SwitchScreenControl(switch)
 
     init {
-        // The first read of Android's settings and PackageManager happens here, off the main thread, rather than on
-        // whichever thread first looks at the state (often the main thread, for the Screen control screen).
-        scope.launch(io) { impl.state }
+        // The first read of Android's settings and PackageManager starts here, on [io]. A screen that looks at the state
+        // before it is done (often on the main thread, for the Screen control screen) reads nothing itself: it sees
+        // ScreenServiceState.CHECKING, and the state follows when the read lands.
+        impl.start()
     }
 
     /**

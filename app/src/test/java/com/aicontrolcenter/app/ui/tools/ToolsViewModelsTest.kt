@@ -346,6 +346,11 @@ class ToolsViewModelsTest {
 
         assertEquals("Ready", serviceStatusOf(ScreenServiceState.READY).label.text)
         assertEquals("Starting", serviceStatusOf(ScreenServiceState.STARTING).label.text)
+        // Round 2, S6: until Android's settings have been read in the background, the screen says so and offers no steps.
+        val checking = serviceStatusOf(ScreenServiceState.CHECKING)
+        assertEquals("Checking", checking.label.text)
+        assertTrue(checking.steps.isEmpty() && !checking.offerAccessibilitySettings && !checking.offerAppInfo)
+        assertEquals(ScreenServiceState.CHECKING, ScreenControlUiState().service.state, "before the first state arrives the screen claims nothing")
         assertEquals("AB:CD:EF:01 … 89:AB", ScreenControlViewModel.fingerprint("abcdef01" + "23".repeat(26) + "89ab"))
     }
 

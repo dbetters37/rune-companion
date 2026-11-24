@@ -32,6 +32,7 @@ internal class NodeBuilder(
     var scrollable = false
     var checkable = false
     var checked = false
+    var selected = false
     var enabled = true
     var visible = true
     var password = false
@@ -47,6 +48,9 @@ internal class NodeBuilder(
 
     /** Like Android's own text fields: the keyboard action is offered only once the field is focused (ACTION_FOCUS). */
     var imeWhenFocused = false
+
+    /** Can be focused through ACTION_FOCUS, and nothing more comes of it by itself (a test may add the keyboard action later). */
+    var focusable = false
     var labeledBy: NodeBuilder? = null
     val actions = mutableListOf<AccessibilityAction>()
     val children = mutableListOf<NodeBuilder>()
@@ -106,6 +110,7 @@ internal class NodeBuilder(
         node.isCheckable = checkable
         @Suppress("DEPRECATION")
         node.isChecked = checked
+        node.isSelected = selected
         node.isEnabled = enabled
         node.isVisibleToUser = visible
         node.isPassword = password
@@ -119,13 +124,13 @@ internal class NodeBuilder(
         actions.forEach(node::addAction)
         val shadow = shadowOf(node)
         shadow.setRefreshReturnValue(!stale)
-        if (imeWhenFocused) node.addAction(AccessibilityAction.ACTION_FOCUS)
+        if (imeWhenFocused || focusable) node.addAction(AccessibilityAction.ACTION_FOCUS)
         shadow.setOnPerformActionListener { action, arguments: Bundle? ->
             log += Performed(name, action, arguments?.getCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE))
-            if (imeWhenFocused && action == AccessibilityNodeInfo.ACTION_FOCUS && !refuse) {
-                // The app's view, now focused, reports itself anew: the next read sees the keyboard action.
+            if ((imeWhenFocused || focusable) && action == AccessibilityNodeInfo.ACTION_FOCUS && !refuse) {
+                // The app's view, now focused, reports itself anew: asked again, it has the keyboard action.
                 built.isFocused = true
-                built.addAction(AccessibilityAction.ACTION_IME_ENTER)
+                if (imeWhenFocused) built.addAction(AccessibilityAction.ACTION_IME_ENTER)
             }
             !refuse
         }

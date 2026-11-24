@@ -256,3 +256,45 @@ class OperatorFakesTest {
         assertTrue(termux.runs.isEmpty())
     }
 }
+
+/** Like the device's operator, the fake screen does not act on a control that is switched off. */
+class FakeScreenDisabledControlTest {
+    @Test
+    fun `a disabled control is neither tapped nor typed into`() = runTest {
+        val pkg = "com.example.notes"
+        val screen = FakeScreenOperator(
+            screen = FakeScreen(
+                pkg, "Draft",
+                listOf(FakeControl(text = "Send", enabled = false, nodeKey = "send"), FakeControl(role = "EditText", hint = "Body", editable = true, enabled = false, nodeKey = "body")),
+            ),
+        )
+        val read = assertIs<ScreenResult.Ok<ScreenSnapshot>>(screen.read("Operator", pkg)).value
+        assertTrue(read.elements.none { it.enabled })
+        assertIs<ScreenResult.NotSupported>(screen.tap("Operator", read.elements[0]))
+        assertIs<ScreenResult.NotSupported>(screen.type("Operator", read.elements[1], "hello", submit = false))
+        assertTrue(screen.performed.none { it is ScreenCall.Tap || it is ScreenCall.Type } && screen.typed.isEmpty())
+    }
+}
+
+/** The fake screen passes the same contract as `:device`'s operator over the accessibility service. */
+class FakeScreenInspectTest : com.aicontrolcenter.testkit.contract.ScreenInspectContract() {
+    override suspend fun kotlinx.coroutines.test.TestScope.screen(digestMaxElements: Int): com.aicontrolcenter.testkit.contract.InspectedScreen {
+        val fake = FakeScreenOperator(authorisedApps = listOf(PACKAGE), digestMaxElements = digestMaxElements)
+        return object : com.aicontrolcenter.testkit.contract.InspectedScreen {
+            override val operator = fake
+
+            override fun show(title: String, controls: List<com.aicontrolcenter.testkit.contract.ShownControl>) {
+                fake.screen = FakeScreen(
+                    PACKAGE, title,
+                    controls.mapIndexed { i, c ->
+                        FakeControl(
+                            role = c.role, text = c.text, description = c.description, hint = c.hint, nodeKey = "n$i", clickable = c.clickable,
+                            editable = c.editable, checkable = c.checkable, checked = c.checked, password = c.password, selected = c.selected,
+                            enabled = c.enabled,
+                        )
+                    },
+                )
+            }
+        }
+    }
+}

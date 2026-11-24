@@ -789,6 +789,9 @@ class AccessibilityScreenOperatorTest {
     @Test
     fun `the service state follows Android`() = runTest {
         val h = OperatorHarness(this, connected = false)
+        // The first read runs in the background; until it lands the state is not known (S6).
+        assertEquals(ScreenServiceState.CHECKING, h.operator.state.value)
+        runCurrent()
         assertEquals(ScreenServiceState.NOT_ENABLED, h.operator.state.value)
 
         h.availability.restricted = true
