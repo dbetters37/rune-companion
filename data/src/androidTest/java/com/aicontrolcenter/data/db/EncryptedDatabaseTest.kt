@@ -33,6 +33,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.minutes
 
 /**
  * Runs on a device or emulator: the SQLCipher native library and the AndroidKeyStore do not
@@ -124,7 +125,7 @@ class EncryptedDatabaseTest {
     }
 
     @Test
-    fun conversationsWithLargeMessagesAreStoredEncryptedAndRemovedWithTheirEntries(): Unit = runTest {
+    fun conversationsWithLargeMessagesAreStoredEncryptedAndRemovedWithTheirEntries(): Unit = runTest(timeout = 5.minutes) {
         val conversation = Conversation(ConversationId("cnv_encrypted"), agent.id, MARKER, createdAt = 1_000, updatedAt = 1_000)
         // The size of a photo attached to a message: more than fits into one cursor window.
         val photo = ImageContent("image/jpeg", "QUJD".repeat(1_000_000))

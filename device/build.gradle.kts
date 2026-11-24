@@ -32,6 +32,14 @@ kotlin {
     }
 }
 
+// InstrumentedTestShapeTest reads every module's instrumented sources from disk. They are declared inputs of the
+// unit-test task, so a change to them alone runs it again instead of reporting it UP-TO-DATE or FROM-CACHE.
+tasks.withType<Test>().configureEach {
+    inputs.files(fileTree(rootDir) { include("*/src/androidTest/**/*.kt") })
+        .withPropertyName("instrumentedSources")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+}
+
 dependencies {
     api(project(":core"))
     // Custom Tabs for AppActions.openInBrowser (the owner's own browser session, not a WebView).
