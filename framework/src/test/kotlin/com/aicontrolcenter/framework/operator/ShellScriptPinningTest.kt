@@ -14,20 +14,25 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * F3: a script a shell command runs is shown and pinned however its name is spelled, as long as
- * the spelling is static; a script that cannot be resolved to a regular workspace file is
- * refused before the owner is asked. A real /bin/sh runs behind the port, so "ran" means the
- * rewritten script really removed the owner's folder.
+ * F3 of round 2, as G4 of round 3 left it: a script a shell command runs is shown and pinned for
+ * the static spellings the reader resolves, and a script that cannot be resolved to an existing
+ * regular workspace file is refused before the owner is asked. Finding scripts is help for the
+ * owner, not the guarantee (that is the workspace's change counter, ShellWorkspaceLockTest); the
+ * rewrites here are made behind the workspace's back, so only the content pins can see them. A
+ * real /bin/sh runs behind the port, so "ran" means the rewritten script really removed the
+ * owner's folder.
  */
 class ShellScriptPinningTest {
     /** A workspace with tidy.sh (harmless), a folder to lose, a script that runs tidy.sh, and a link to it. */
     private fun fixture(): OperatorFixture {
         val f = OperatorFixture()
+        // As the app's runner does: HOME is an empty folder outside the workspace.
+        val home = Files.createTempDirectory("aicc-home").toFile()
         f.shell.respond = { command, dir ->
             val builder = ProcessBuilder("/bin/sh", "-c", command).directory(dir.file).redirectErrorStream(true)
             builder.environment().clear()
             builder.environment()["PATH"] = "/usr/bin:/bin"
-            builder.environment()["HOME"] = dir.file.path
+            builder.environment()["HOME"] = home.path
             val p = builder.start()
             p.outputStream.close()
             p.waitFor(10, TimeUnit.SECONDS)
@@ -43,8 +48,10 @@ class ShellScriptPinningTest {
 
     /** The static spellings of "run tidy.sh": the verifier's list, the ones that already worked and the ones that did not. */
     private fun spellings(root: String) = listOf(
-        "sh tidy.sh", ". ./tidy.sh", "source tidy.sh", "sh -x tidy.sh", "sh < tidy.sh", "cat tidy.sh | sh", "sh ././tidy.sh",
-        "sh \"\$HOME/tidy.sh\"", "sh ~/tidy.sh", "f=tidy.sh; sh \$f", "sh \$(echo tidy.sh)", "sh -c 'sh tidy.sh'", "eval \"\$(cat tidy.sh)\"",
+        "sh tidy.sh", ". ./tidy.sh", "source ./tidy.sh", "sh -x tidy.sh", "sh < tidy.sh", "cat tidy.sh | sh", "sh ././tidy.sh",
+        "f=tidy.sh; sh \$f", "sh \$(echo tidy.sh)", "sh -c 'sh tidy.sh'", "eval \"\$(cat tidy.sh)\"",
+        // Round 3: the shell's options read as mksh reads them, and the shell under other names.
+        "sh -xo errexit tidy.sh", "sh - tidy.sh", "sh -eo errexit ./tidy.sh", "sh <> tidy.sh", "nice sh tidy.sh", "timeout 5 sh tidy.sh", "env -i sh tidy.sh",
         // The rest of P2: none of these was shown or pinned.
         "sh ./sub/../tidy.sh", "sh $root/tidy.sh", "sh \$PWD/tidy.sh", "sh \${PWD}/tidy.sh", "sh \"\$(pwd)\"/tidy.sh", "sh t*.sh", "sh tidy.s[h]", "sh tid?.sh",
         "sh \"tidy\".sh", "sh tidy\\.sh", "sh ti''dy.sh", "sh 'tidy.sh'", "sh a.sh", "toybox sh tidy.sh || sh tidy.sh", "exec sh tidy.sh",
@@ -108,21 +115,36 @@ class ShellScriptPinningTest {
             "awk -f \$PROG name.txt" to "only put together when the command runs",
             "sed -nf /tmp/x.sed name.txt" to "outside the workspace",
             "sh nothere/../tidy.sh" to "not a folder",
-            "cd keep && sh ../tidy.sh" to "changes folder with cd",
-            "cd sub; sh tidy.sh" to "changes folder with cd",
+            "cd keep && sh ../tidy.sh" to "outside the workspace",
+            "cd keep && sh ./tidy.sh" to "changes folder",
+            "cd sub; sh tidy.sh" to "changes folder",
             "exec 3< tidy.sh; sh <&3" to "opened earlier",
             // Text that looks like a here-document to a quick reader, but that the shell runs as commands.
-            "(( 1 << 2 ))\nsh \$f\n" to "only put together when the command runs",
-            "cat <<EOF | sh\nsh \$f\nEOF" to "only put together when the command runs",
+            "(( 1 << 2 ))\nsh \$f\n" to "here-document",
+            "cat <<EOF | sh\nsh \$f\nEOF" to "here-document whose text is changed",
+            // Round 3 (G4): a script that is not there is not waved through, and a pattern that matches nothing is not either.
+            "sh missing.sh" to "there is no such file in the workspace",
+            ". ./missing.sh" to "there is no such file in the workspace",
+            "sh -xo errexit missing.sh" to "there is no such file in the workspace",
+            "awk -f missing.awk name.txt" to "there is no such file in the workspace",
+            "cat missing.sh | sh" to "there is no such file in the workspace",
+            "sh zz*.sh" to "no workspace file matches it",
+            "sh keep" to "it is a folder",
+            "find . -name '*.txt' -exec sh {} ;" to "there is no such file in the workspace",
+            // The home folder is outside the workspace (G3), and "." needs a path.
+            "sh ~/tidy.sh" to "outside the workspace",
+            "sh \"\$HOME/tidy.sh\"" to "outside the workspace",
+            ". tidy.sh" to "looked up through PATH",
+            "source tidy.sh" to "looked up through PATH",
         )
         for ((command, why) in refused) {
             val reason = f.rejected("scripts.run_shell", "command" to command)
             assertTrue(why in reason, "$command: $reason")
-            assertTrue("plain path inside the workspace" in reason, "$command: $reason")
+            assertTrue("othing was run" in reason, "$command: $reason")
         }
         assertTrue(f.shell.runs.isEmpty())
-        // Plain names still pass, also for the program files of awk and sed, and so does cd when the script is named from the home folder.
-        for (command in listOf("awk -f prog name.txt", "cd keep && sh ~/tidy.sh", "sh -c 'echo hi'", "sh -s < tidy.sh", "cut -f 2 name.txt", "rm -f gone.txt", "ls *.txt")) {
+        // Plain names still pass, also for the program files of awk and sed, and so does cd when the script is named by its full path.
+        for (command in listOf("awk -f prog name.txt", "cd keep && sh ${f.root.canonicalPath}/tidy.sh", "sh -c 'echo hi'", "sh -s < tidy.sh", "cut -f 2 name.txt", "rm -f gone.txt", "ls *.txt")) {
             f.assess("scripts.run_shell", "command" to command)
         }
         val awk = f.assess("scripts.run_shell", "command" to "awk -f prog name.txt")
@@ -138,7 +160,9 @@ class ShellScriptPinningTest {
         f.put("taaa.sh", "rm -rf keep\n")
         assertTrue("match" in pattern.prepared!!.changedSince()!!, pattern.prepared!!.changedSince())
 
-        val none = f.assess("scripts.run_shell", "command" to "sh zz*.sh")
+        // A pattern a shell would run must match something to be shown; one that is only an argument may match nothing yet.
+        assertTrue("no workspace file matches it" in f.rejected("scripts.run_shell", "command" to "sh zz*.sh"))
+        val none = f.assess("scripts.run_shell", "command" to "cat zz*.sh")
         assertTrue(none.details.any { "No file matches \"zz*.sh\" now" in it }, none.preview)
         f.put("zz1.sh", "rm -rf keep\n")
         assertNotNull(none.prepared!!.changedSince())
@@ -181,27 +205,62 @@ class ShellScriptPinningTest {
         f.put("outer.sh", "echo start\nsh \"\$1\"\n")
         val reason = f.rejected("scripts.run_shell", "command" to "sh outer.sh tidy.sh")
         assertTrue("\"outer.sh\"" in reason && "only put together when the command runs" in reason && "plain path inside the workspace" in reason, reason)
-        f.put("leaves.sh", "cd keep\nsh ../tidy.sh\n")
-        assertTrue("changes folder with cd" in f.rejected("scripts.run_shell", "command" to "sh leaves.sh"))
+        f.put("leaves.sh", "cd sub\nsh tidy.sh\n")
+        val leaves = f.rejected("scripts.run_shell", "command" to "sh leaves.sh")
+        assertTrue("The script \"leaves.sh\", which the command runs, names the script \"tidy.sh\" by a relative path" in leaves && "changes folder" in leaves, leaves)
     }
 
     @Test
-    fun `a script that would leave the call's reach is refused like such a command`() = runBlocking {
+    fun `where the folder or the look-up of names is not certain, a script named by a relative path is refused, not shown`() = runBlocking {
+        // The verifier's cases: the approval showed the top-level tidy.sh while sub/tidy.sh ran.
+        val f = fixture()
+        f.put("sub/tidy.sh", "echo the other one\n")
+        f.put("go.sh", "cd sub\n")
+        f.put("path.sh", "PATH=sub:\$PATH\n")
+        f.put("inner.sh", ". ./go.sh\n")
+        val root = f.root.canonicalPath
+        val refused = listOf(
+            ". ./go.sh; sh tidy.sh", ". ./go.sh; . ./tidy.sh", "PATH=sub:\$PATH; . ./tidy.sh", "cd sub && cat tidy.sh | sh", "cd sub && eval \"\$(cat tidy.sh)\"",
+            "(cd sub; cat tidy.sh) | sh", "cd sub && /proc/self/exe tidy.sh", "cd sub; sh \$PWD/tidy.sh", "cd sub; sh \$(pwd)/tidy.sh", "pushd sub; sh tidy.sh",
+            // Also a script the reader did not think must run: after cd, "cat tidy.sh" reads another file than the one that would be shown.
+            "cd sub && cat tidy.sh", "cd sub && ./tidy.sh", "export PATH=sub; sh tidy.sh", "IFS=x; sh tidy.sh", ". ./path.sh; sh tidy.sh",
+            // It is handed on: a script read in by a script that is read in, and a script started from where the folder is not certain.
+            ". ./inner.sh; sh tidy.sh", "cd sub; sh $root/a.sh", "eval 'cd sub'; sh tidy.sh", "sh -c 'cd sub'; sh tidy.sh",
+        )
+        for (command in refused) {
+            val reason = f.rejected("scripts.run_shell", "command" to command)
+            assertTrue("by a relative path" in reason && "use the \"directory\" argument instead of cd" in reason, "$command: $reason")
+        }
+        assertTrue("The script \"a.sh\", which the command runs, names the script \"tidy.sh\"" in f.rejected("scripts.run_shell", "command" to "cd sub; sh $root/a.sh"))
+        assertTrue(f.shell.runs.isEmpty())
+
+        // Certain: a name with the workspace's full path, and names without a script after cd.
+        val full = f.assess("scripts.run_shell", "command" to "cd sub && sh $root/tidy.sh")
+        assertTrue(full.details.any { it.startsWith("Script \"tidy.sh\"") && "echo tidying" in it }, full.preview)
+        f.assess("scripts.run_shell", "command" to "cd sub && cat note.txt && ls")
+
+        // A script that changes folder for itself, run as a program of its own, changes nothing for the command line:
+        // "sh tidy.sh" after it still means the file that is shown, and that is the one that runs.
+        f.put("build.sh", "cd sub\necho building in \$(basename \$PWD)\n")
+        val (assessment, outcome) = f.run("scripts.run_shell", "command" to "sh build.sh; sh tidy.sh")
+        assertTrue(assessment.details.any { it.startsWith("Script \"build.sh\"") } && assessment.details.any { it.startsWith("Script \"tidy.sh\"") && "echo tidying" in it }, assessment.preview)
+        assertTrue(outcome.ok && "building in sub" in outcome.content && "tidying" in outcome.content && "the other one" !in outcome.content, outcome.content)
+    }
+
+    @Test
+    fun `a script that sends work to the background is not refused for it any more`() = runBlocking {
+        // G2: the runner stops everything a command started, so the text is no longer searched for setsid, nohup or job control.
         val f = fixture()
         f.put("escape.sh", "echo start\nsetsid sh -c 'sleep 100' &\n")
         f.put("quoted.sh", "\"set\"\"sid\" sleep 100\n")
         f.put("nested.sh", "sh quoted.sh\n")
         f.put("jobs.sh", "set -m\nsleep 100 &\n")
         f.put("inner.sh", "sh -c 'nohup sleep 100'\n")
-        for ((command, word) in listOf("sh escape.sh" to "setsid", ". ./quoted.sh" to "setsid", "sh nested.sh" to "setsid", "sh jobs.sh" to "job control", "sh < inner.sh" to "nohup")) {
-            val reason = f.rejected("scripts.run_shell", "command" to command)
-            assertTrue(word in reason && "is not run" in reason, "$command: $reason")
+        for (command in listOf("sh escape.sh", ". ./quoted.sh", "sh nested.sh", "sh jobs.sh", "sh < inner.sh")) {
+            val a = f.assess("scripts.run_shell", "command" to command)
+            assertTrue(a.details.any { "Everything the command starts is stopped when it ends" in it }, a.preview)
+            assertTrue(a.details.any { it.startsWith("Script ") }, "$command: its script is still shown\n${a.preview}")
         }
-        assertTrue("\"quoted.sh\"" in f.rejected("scripts.run_shell", "command" to "sh nested.sh"))
-        // A plain "&" in a script is in the call's process group and ends with it; a word in a comment or in text is no command.
-        f.put("fine.sh", "# nohup and setsid are not used here\nsleep 1 &\nwait\necho \"about setsid: see the manual\"\n")
-        f.assess("scripts.run_shell", "command" to "sh fine.sh")
-        assertTrue(f.shell.runs.isEmpty())
     }
 
     @Test
@@ -220,6 +279,7 @@ class ShellScriptPinningTest {
         assertNotNull(many.prepared!!.changedSince())
 
         // More scripts than can be shown and checked, or commands wrapped too deeply to read: refused, not run half seen.
+        repeat(120) { f.put("s${it + 1}.sh", "echo $it\n") }
         assertTrue("more than 60 scripts" in f.rejected("scripts.run_shell", "command" to (1..70).joinToString("; ") { "sh s$it.sh" }))
         assertTrue("than can be read" in f.rejected("scripts.run_shell", "command" to (1..120).joinToString("; ") { "sh s$it.sh" }))
         val deep = f.rejected("scripts.run_shell", "command" to "x=\$(echo \$(echo \$(echo \$(echo \$(echo \$(sh tidy.sh))))))")

@@ -7,24 +7,35 @@ import com.aicontrolcenter.framework.operator.ShellSyntax.Word
 import java.util.Locale
 
 /**
- * What the shell tool reads out of a command line before the owner is asked: whether it would
- * start work that runs on after the call, and which workspace files and folders it names, the
- * scripts it runs among them. Text analysis over [ShellSyntax], not a shell: a name is resolved
- * the way the shell would for every static spelling (quotes and backslashes removed, `.` and
- * `..` followed inside the workspace, `~`, `$HOME`, `$PWD` and the workspace's own absolute path
- * mapped into it, patterns such as `t*.sh` left for the caller to expand against the workspace),
- * and a script whose name is only known when the command runs is reported as such, so the tool
- * can refuse it instead of running something the owner was never shown. It errs towards naming
- * too much and refusing too much.
+ * What the shell tool reads out of a command line before the owner is asked: the workspace
+ * files and folders it names, and the scripts it runs among them, so they can be shown and
+ * pinned. Text analysis over [ShellSyntax], not a shell.
+ *
+ * This is help for the owner, on a best-effort basis: a shell language cannot be read
+ * completely, and the tool's guarantees (nothing else changes the workspace while a command is
+ * asked for and runs; everything it starts is stopped when it ends) do not depend on it. What
+ * it does promise is that it does not guess:
+ *
+ *  - a name is resolved the way the shell would for a static spelling (quotes and backslashes
+ *    removed, `.` and `..` followed inside the workspace, `$PWD` and the workspace's own
+ *    absolute path mapped into it, patterns such as `t*.sh` left for the caller to expand), and
+ *    a script whose name it cannot resolve like that is reported with the reason ([Name.problem]);
+ *  - whatever makes it unsure what the command line means is reported as a doubt
+ *    ([Reading.doubts]): a shell option it does not know, a shell fed from something it cannot
+ *    resolve, text for a shell that is only put together when the command runs, a program whose
+ *    name is, and everything [ShellSyntax] is unsure of;
+ *  - when the text changes folder or the way names are looked up ([Reading.unsettledBy]), the
+ *    place a relative name points to is not certain, and the caller refuses scripts named so.
+ *
+ * The caller refuses a command with a problem or a doubt instead of running something the owner
+ * was not shown. The lists of shells and of programs that start other programs are incomplete by
+ * nature.
  */
 internal object ShellCommands {
-    /** Words that put work out of reach of the call's process group, wherever they stand (also inside quotes). */
-    private val ESCAPE_WORDS = listOf("nohup", "setsid")
+    private val SHELLS = setOf("sh", "ash", "bash", "dash", "ksh", "mksh", "lksh", "zsh", "rbash", "ksh93", "pdksh", "hush")
 
-    /** Commands that start or keep work running after the command returns; refused where a command starts, not as an argument. */
-    private val BACKGROUND_COMMANDS = listOf("disown", "daemon", "daemonize", "start-stop-daemon", "coproc", "bg")
-
-    private val SHELLS = setOf("sh", "ash", "bash", "dash", "ksh", "mksh", "zsh")
+    /** The running shell under its other name, and the same for any process: starting it starts a shell. */
+    private val PROCESS_PROGRAM = Regex("""^/proc/(?:self|thread-self|[0-9]+)(?:/task/[0-9]+)?/exe$""")
 
     /** Commands that run their first argument as a script in the current shell. */
     private val SOURCE = setOf(".", "source")
@@ -34,11 +45,19 @@ internal object ShellCommands {
 
     /** Commands that start the command written after their own options. */
     private val PREFIXES = setOf(
-        "toybox", "busybox", "env", "command", "exec", "builtin", "nice", "timeout", "nohup", "setsid", "stdbuf", "ionice", "chrt", "taskset", "strace", "sudo",
+        "toybox", "busybox", "toolbox", "env", "command", "exec", "builtin", "nice", "timeout", "time", "nohup", "setsid", "stdbuf", "ionice", "chrt",
+        "taskset", "strace", "ltrace", "sudo", "doas", "uclampset", "logwrapper", "linker", "linker64", "linker_asan", "linker_asan64", "setarch",
+        "linux32", "linux64", "prlimit", "setpriv", "run-as", "xargs",
     )
 
+    /** Prefix commands that take a word of their own before the command they start (a duration, a mask, an architecture), so which word that command is, is not certain. */
+    private val PREFIXES_WITH_OPERAND = setOf("timeout", "chrt", "taskset", "ionice", "setarch", "prlimit", "setpriv", "run-as", "uclampset", "strace", "ltrace", "sudo", "doas", "logwrapper")
+
+    /** The dynamic loader started by hand: it runs the program named after it. */
+    private val LOADER = Regex("""^ld(?:64|-linux[^/]*|-musl[^/]*)?\.so(?:\.[0-9]+)*$""")
+
     /** Commands that start a command named somewhere among their arguments. */
-    private val STARTERS = PREFIXES + setOf("find", "xargs", "watch", "su", "flock", "script", "unshare", "chroot", "nsenter", "runcon")
+    private val STARTERS = setOf("watch", "su", "flock", "script", "unshare", "chroot", "nsenter", "runcon", "parallel", "start-stop-daemon", "daemonize")
 
     private val FIND_EXEC = setOf("-exec", "-execdir", "-ok", "-okdir")
 
@@ -48,6 +67,12 @@ internal object ShellCommands {
     private val DECLARATIONS = setOf("export", "readonly", "local", "typeset", "declare")
 
     private val FOLDER_CHANGES = setOf("cd", "pushd", "popd", "chdir")
+
+    /** Variables that decide where a name is looked up, or how the words of a command are split. */
+    private val LOOKUP_VARIABLES = listOf("PATH", "CDPATH", "ENV", "HOME", "IFS", "PWD", "OLDPWD")
+
+    /** The single-letter options of Android's shell (mksh) that take no value. `c`, `s` and `o` are read on their own. */
+    private const val SHELL_FLAGS = "abCefhiklmnpruUvxX"
 
     private val SHELL_ENDINGS = listOf(".sh", ".bash", ".ksh", ".mksh", ".zsh")
 
@@ -67,281 +92,27 @@ internal object ShellCommands {
 
     const val RUN_TIME = "its name is only put together when the command runs"
     const val OUTSIDE = "it is outside the workspace"
-    const val TOO_MUCH = "the command runs more scripts, or wraps commands in commands more deeply, than can be read"
-    private const val AFTER_CD = "the command changes folder with cd, so the place a relative name points to is only known when it runs " +
-        "(use the \"directory\" argument instead of cd, or start the name with ~/)"
-    private const val OPEN_FILE = "it is read from a file the command opened earlier"
+    const val HOME = "it is named through ~ or \$HOME, which is a folder outside the workspace"
+    const val PATTERN = "its name uses a pattern this tool cannot match the way the shell does (a character class such as [[:alpha:]], " +
+        "an escape inside brackets, or a pattern list such as @(a|b))"
+    const val NO_SLASH = "a name without a slash is looked up through PATH by \".\" and source (write ./name)"
 
-    // ---------------------------------------------------------------- background work
+    const val DOUBT_TOO_MUCH = "runs more scripts, or wraps commands in commands (sh -c, eval, \$(…)) more deeply, than can be read"
+    const val DOUBT_NO_INPUT = "starts a shell that reads its commands from its input, and where that input comes from cannot be told with certainty " +
+        "(give the shell its commands directly: sh file, sh -c '…', sh < file or sh <<'EOF')"
+    const val DOUBT_PIPE = "pipes into a shell something other than plain files (cat file | sh) or fixed text (echo text | sh)"
+    const val DOUBT_OPEN_FILE = "feeds a shell from a file the command opened earlier (<&)"
+    const val DOUBT_TEXT = "hands a shell text that is only put together when the command runs (sh -c, eval, trap), so what it runs cannot be read"
+    const val DOUBT_HERE_EXPANDS = "feeds a shell a here-document whose text is changed before the shell reads it (quote the end word: <<'EOF')"
+    const val DOUBT_ALIAS = "defines an alias, which changes what the words after it mean"
 
-    /**
-     * Why [command] is refused because it would leave something running after the call, or
-     * null. Refused: a `&` that sends work to the background (`&&` and redirections such as
-     * `2>&1` are fine), `&>` and `|&`; `nohup` and `setsid` anywhere, however they are quoted;
-     * `bg`, `disown`, `coproc` and the daemon starters where a command starts (not as an
-     * argument: `grep bg notes.md` is fine); a command whose own name is only put together when
-     * it runs, since it could be any of these; and job control (`set -m`, `set -o monitor`, a
-     * shell started with `-m` or `-i`), which moves jobs out of the call's process group. All of
-     * this is also looked for in the commands a command runs from text: `sh -c '…'`, `eval`,
-     * `trap`, `$(…)`, here-documents and text piped into a shell.
-     */
-    fun backgroundProblem(command: String): String? = background(command, 0)
+    fun doubtProgram(raw: String) = "starts a program whose name is only put together when it runs (${OperatorText.q(raw.take(80))}); write the program's name plainly"
 
-    private fun background(text: String, depth: Int): String? {
-        val script = ShellSyntax.parse(text)
-        backgroundOperator(script)?.let { return it }
-        // As written (any quoting splits a word here) and as the shell reads it (quotes removed).
-        val written = TOKEN.findAll(text.lowercase(Locale.ROOT)).map { it.value.substringAfterLast('/') }.toSet()
-        val read = wordsRead(script)
-        ESCAPE_WORDS.firstOrNull { it in written || it in read }?.let { return keepsRunning(it) }
-        for (simple in script.commands) {
-            for ((index, call) in calls(simple).withIndex()) {
-                if (index == 0 && builtAtRunTime(call.word)) {
-                    return "The command starts a program whose name is only put together when it runs (${OperatorText.q(call.word.raw.take(80))}), so it cannot be " +
-                        "checked for work it would leave running, and it is not run. Write the program's name plainly."
-                }
-                if (call.name in BACKGROUND_COMMANDS) return keepsRunning(call.name!!)
-                val jobControl = when (call.name) {
-                    "set" -> jobControlOptions(call.args, stopAtOperand = false)
-                    in SHELLS -> shellUse(call.args).jobControl
-                    else -> false
-                }
-                if (jobControl) return JOB_CONTROL_PROBLEM
-            }
-        }
-        if (JOB_CONTROL.containsMatchIn(text)) return JOB_CONTROL_PROBLEM
-        val inner = innerTexts(script)
-        if (depth >= MAX_DEPTH && inner.isNotEmpty()) return TOO_DEEP
-        for (text in inner) background(text, depth + 1)?.let { return it }
-        return null
-    }
+    fun doubtOption(option: String) = "starts a shell with an option this tool does not know (${OperatorText.q(option.take(40))})"
 
-    private const val TOO_DEEP = "The command wraps commands in commands (sh -c, eval, \$(…)) more than $MAX_DEPTH deep, too deep to be " +
-        "checked for work it would leave running, so it is not run. Write it more plainly."
-
-    private const val JOB_CONTROL_PROBLEM = "The command turns on job control, which lets work escape when the command ends, so it is not run."
-
-    /**
-     * Why the shell script [text] must not be run because it would put work out of reach of the
-     * call, as the end of a sentence about it; null when it would not. A script may use a plain
-     * `&`: what that starts stays in the call's process group and ends with it. It may not use
-     * `nohup` or `setsid` (however they are quoted) or turn on job control, here or in text it
-     * hands to a shell. Comments do not count.
-     */
-    fun escapeProblem(text: String): String? = escape(text, 0)
-
-    private fun escape(text: String, depth: Int): String? {
-        val script = ShellSyntax.parse(text)
-        val read = wordsRead(script)
-        ESCAPE_WORDS.firstOrNull { it in read }?.let { return "it uses \"$it\", which keeps work running after the command ends" }
-        for (simple in script.commands) {
-            for (call in calls(simple)) {
-                val jobControl = when (call.name) {
-                    "set" -> jobControlOptions(call.args, stopAtOperand = false)
-                    in SHELLS -> shellUse(call.args).jobControl
-                    else -> false
-                }
-                if (jobControl) return "it turns on job control, which lets work escape when the command ends"
-            }
-        }
-        val inner = innerTexts(script)
-        if (depth >= MAX_DEPTH && inner.isNotEmpty()) return "it wraps commands in commands more than $MAX_DEPTH deep, too deep to be checked"
-        for (text in inner) escape(text, depth + 1)?.let { return it }
-        return null
-    }
-
-    /** Every word of [script] as the shell reads it (quotes removed), lower case, also the parts around `=` and `:`, without folders. */
-    private fun wordsRead(script: ShellSyntax.Script): Set<String> =
-        allWords(script).mapNotNull { it.plain?.lowercase(Locale.ROOT) }.flatMap { it.split('=', ':') }.map { it.substringAfterLast('/') }.toSet()
-
-    private fun keepsRunning(word: String) =
-        "\"$word\" keeps work running after the command ends, and such commands are not run: everything a command starts " +
-            "must end with it. Run the work in the foreground instead."
-
-    /**
-     * A `&` that sends work to the background, `|&` or `&>`, read as the shell reads the text:
-     * not inside quotes, comments or the text of a here-document, and neither `&&` nor a
-     * redirection such as `2>&1`.
-     */
-    private fun backgroundOperator(script: ShellSyntax.Script): String? {
-        for (operator in script.operators) {
-            when (operator) {
-                "|&" -> return "\"|&\" starts a co-process that keeps running in the background, so the command is not run."
-                "&>" -> return "\"&>\" can send work to the background in Android's shell, so the command is not run. Write \">file 2>&1\" instead."
-                "&" -> return "A single \"&\" sends work to the background, where it would keep running after the call ends, " +
-                    "so the command is not run. Run the work in the foreground (use \"&&\" to chain commands)."
-            }
-        }
-        return null
-    }
-
-    /** True when part of the command's own name is only known at run time: an expansion other than the home or working folder, or a pattern. */
-    private fun builtAtRunTime(word: Word): Boolean =
-        word.pieces.any { p ->
-            when (p.kind) {
-                Kind.LIT -> !p.quoted && isPattern(p.text)
-                Kind.VAR -> p.text != "HOME" && p.text != "PWD"
-                Kind.SUB, Kind.DYN -> true
-            }
-        }
-
-    /** `*`, `?` or a `[…]` set. A lone `[` (the test command) is not one. */
-    private fun isPattern(text: String): Boolean = '*' in text || '?' in text || text.indexOf('[').let { it >= 0 && text.indexOf(']', it + 2) > 0 }
-
-    // ---------------------------------------------------------------- reading commands
-
-    /** A command as it would be started: its [name] (the last part of its path, lower case; null when only known at run time) and arguments. */
-    private class Call(val name: String?, val word: Word, val args: List<Word>)
-
-    private fun nameOf(word: Word): String? = word.plain?.substringAfterLast('/')?.lowercase(Locale.ROOT)
-
-    /** The command [simple] starts, and the commands that one starts in turn when it is a wrapper (`env`, `toybox`, `find -exec` …). */
-    private fun calls(simple: Simple): List<Call> {
-        val words = simple.words
-        val out = ArrayList<Call>()
-        val used = HashSet<Int>()
-        var k = 0
-        while (k < words.size) {
-            val call = Call(nameOf(words[k]), words[k], words.subList(k + 1, words.size))
-            out += call
-            used += k
-            if (call.name !in PREFIXES) break
-            // What a prefix command starts: the first later word that is not an option, an assignment or a number.
-            k++
-            while (k < words.size && words[k].plain.let { it != null && (it.startsWith("-") || it.startsWith("+") || '=' in it || NUMBER.matches(it)) }) k++
-        }
-        if (out.firstOrNull()?.name in STARTERS) {
-            // Which of the later words is the command they start is not always clear (options take values), so every
-            // word that names a shell or another program that runs a script file counts, and what follows find's -exec.
-            for (j in 1 until words.size) {
-                if (j in used) continue
-                val name = nameOf(words[j])
-                val afterExec = words[j - 1].plain in FIND_EXEC
-                if (afterExec || (name != null && (name in SHELLS || name in PROGRAM_FILE || name == "eval" || name == "source"))) {
-                    out += Call(name, words[j], words.subList(j + 1, words.size))
-                }
-            }
-        }
-        return out
-    }
-
-    /** How a shell is started: with a command string (`-c`), a script file, files it reads first, or nothing (it reads its input). */
-    private class ShellUse(val jobControl: Boolean, val commandString: Word?, val script: Word?, val startFiles: List<Word>)
-
-    private fun shellUse(args: List<Word>): ShellUse {
-        var takesCommand = false
-        var readsInput = false
-        val startFiles = ArrayList<Word>()
-        var i = 0
-        while (i < args.size) {
-            val option = args[i].plain
-            if (option == null || option.length < 2 || (option[0] != '-' && option[0] != '+')) break
-            i++
-            when {
-                option == "--" -> break
-                option == "--rcfile" || option == "--init-file" -> args.getOrNull(i++)?.let { startFiles += it }
-                option.startsWith("--") -> Unit
-                option.drop(1) == "o" -> i++
-                else -> {
-                    if ('c' in option) takesCommand = true
-                    if ('s' in option) readsInput = true
-                }
-            }
-        }
-        val operand = args.getOrNull(i)
-        return ShellUse(
-            jobControl = jobControlOptions(args, stopAtOperand = true),
-            commandString = if (takesCommand) operand else null,
-            script = if (takesCommand || readsInput) null else operand,
-            startFiles = startFiles,
-        )
-    }
-
-    /** `-m`, `-i` (for a shell) or `-o monitor` among [args]. */
-    private fun jobControlOptions(args: List<Word>, stopAtOperand: Boolean): Boolean {
-        var i = 0
-        while (i < args.size) {
-            val option = args[i].plain
-            val isOption = option != null && option.length >= 2 && (option[0] == '-' || option[0] == '+')
-            if (!isOption) {
-                if (stopAtOperand) return false
-                i++
-                continue
-            }
-            if (option == "--") return false
-            if (option[0] == '-' && !option.startsWith("--")) {
-                if (option == "-o") {
-                    if (args.getOrNull(i + 1)?.plain == "monitor") return true
-                    i += 2
-                    continue
-                }
-                if (option == "-omonitor") return true
-                // For "set", -i does nothing; for a shell it makes it interactive, which turns job control on.
-                if ('m' in option || (stopAtOperand && 'i' in option)) return true
-            }
-            i++
-        }
-        return false
-    }
-
-    private fun allWords(script: ShellSyntax.Script): List<Word> = buildList {
-        for (simple in script.commands) {
-            addAll(simple.words)
-            simple.assignments.forEach { add(it.second) }
-            simple.redirects.forEach { r -> r.target?.let(::add) }
-        }
-        script.loops.forEach { addAll(it.values) }
-        addAll(script.extras)
-    }
-
-    /** Text the commands of [script] hand to a shell to run: command substitutions, `sh -c`, `eval`, `trap`, `alias`, and what a bare shell is fed. */
-    private fun innerTexts(script: ShellSyntax.Script): List<String> = buildList {
-        for (word in allWords(script)) word.pieces.filter { it.kind == Kind.SUB }.forEach { add(it.text) }
-        addAll(hereTexts(script))
-        for ((index, simple) in script.commands.withIndex()) {
-            for (call in calls(simple)) {
-                when (call.name) {
-                    in SHELLS -> {
-                        val use = shellUse(call.args)
-                        use.commandString?.plain?.let(::add)
-                        if (use.commandString == null && use.script == null) {
-                            simple.redirects.forEach { r ->
-                                if (r.op == "<<<") r.target?.plain?.let(::add)
-                            }
-                            // "echo '…' | sh": what is printed is what runs.
-                            if (simple.pipedInto) script.commands.getOrNull(index - 1)?.let { before ->
-                                if (nameOf(before.words.firstOrNull() ?: return@let) in setOf("echo", "printf")) {
-                                    add(before.words.drop(1).mapNotNull { it.plain }.joinToString(" "))
-                                }
-                            }
-                        }
-                    }
-                    "eval" -> add(call.args.mapNotNull { it.plain }.joinToString(" "))
-                    "trap" -> call.args.firstOrNull { it.plain?.startsWith("-") != true }?.plain?.let(::add)
-                    "alias" -> call.args.forEach { a -> a.assignment()?.second?.plain?.let(::add) }
-                }
-            }
-        }
-    }
-
-    /**
-     * The here-documents of [script] that may be run as commands: all of them, except a document
-     * that is plainly data, which is one handed to `cat` or `tee` (the way a file is written),
-     * with a plain end word, in a command line where no shell reads from a pipe.
-     */
-    private fun hereTexts(script: ShellSyntax.Script): List<String> {
-        val pipedShell = script.commands.any { simple -> simple.pipedInto && calls(simple).any { it.name in SHELLS } }
-        return script.commands.flatMap { simple ->
-            val data = !pipedShell && nameOf(simple.words.firstOrNull() ?: return@flatMap emptyList<String>()) in DATA_READERS
-            simple.redirects.filter { (it.op == "<<" || it.op == "<<-") && !(data && it.plainEnd) }.mapNotNull { it.body }
-        }
-    }
-
-    private fun changesFolder(text: String, depth: Int): Boolean {
-        val script = ShellSyntax.parse(text)
-        if (script.commands.any { simple -> calls(simple).any { it.name in FOLDER_CHANGES } }) return true
-        return depth < MAX_DEPTH && innerTexts(script).any { changesFolder(it, depth + 1) }
-    }
+    /** What makes the place a relative name points to uncertain, for messages. */
+    const val UNSETTLED_FOLDER = "changes folder (cd)"
+    const val UNSETTLED_LOOKUP = "sets or may set a variable that decides where names are looked up (PATH, CDPATH, ENV, HOME, IFS, PWD)"
 
     // ---------------------------------------------------------------- names
 
@@ -349,7 +120,7 @@ internal object ShellCommands {
     class Places(roots: List<String>, val dir: RelativePath) {
         val roots: List<String> = roots.map { it.trimEnd('/') }.filter { it.isNotEmpty() }.distinct()
 
-        /** The working folder as an absolute path: what `$HOME`, `~` and, before any `cd`, `$PWD` stand for. */
+        /** The working folder as an absolute path: what `$PWD` stands for before any `cd`. */
         val here: String = (this.roots.firstOrNull() ?: "/") + if (dir.isRoot) "" else "/" + dir.value
     }
 
@@ -420,9 +191,12 @@ internal object ShellCommands {
      * A word of a command that names, or may name, something in the workspace.
      *
      * @property raw how it was written
-     * @property asScript its text is run: show it
-     * @property must it is the script a shell, `.`, `source` or `-f` runs: when it cannot be resolved ([problem]), the command must not run
+     * @property asScript its text is run, or may be: show it
+     * @property must it is the script a shell, `.`, `source` or `-f` runs, or what a shell is fed: it must be an existing workspace file, or the command must not run
      * @property shell it is run by a shell, so the scripts it names in turn can be followed
+     * @property sourced it is read into the shell that names it (`.`, `source`, `eval "$(cat …)"`): what it changes (the folder, PATH) changes for that shell too
+     * @property relative where it points depends on the folder the shell is in when it gets there (no leading `/`, or built on `$PWD`)
+     * @property incidental it was only found as a piece of text (inside quotes, after `=`), not as a word of a command
      * @property onlyExisting it matters only when there is such an entry now
      * @property targets what it stands for; several when a variable has several values; empty with a [problem]
      * @property problem why it cannot be resolved to a place in the workspace, as the end of a sentence about it
@@ -432,32 +206,123 @@ internal object ShellCommands {
         val asScript: Boolean,
         val must: Boolean,
         val shell: Boolean,
+        val sourced: Boolean,
+        val relative: Boolean,
+        val incidental: Boolean,
         val onlyExisting: Boolean,
         val targets: List<Target>,
         val problem: String?,
     )
 
     /**
-     * The names in [text] (a command line, or the text of a shell script), at most [MAX_NAMES].
-     * With [everyWord], every word that could name a file or folder is returned (also the parts
-     * of words split at quotes and `=`); without, only the scripts. [afterFolderChange]: the
-     * text runs where an earlier `cd` may have changed the folder.
+     * What was read out of one text.
+     *
+     * @property names the names, at most [MAX_NAMES] that are not scripts
+     * @property doubts why the text cannot be read with certainty; each completes "The command …" (or "The script … "). With one, nothing may run
+     * @property unsettledBy what in this text makes the place of a relative name uncertain ([UNSETTLED_FOLDER], [UNSETTLED_LOOKUP]), or null
      */
-    fun names(text: String, places: Places, everyWord: Boolean = true, afterFolderChange: Boolean = false): List<Name> {
-        val reader = Reader(places, afterFolderChange || changesFolder(text, 0))
-        reader.read(text, Variables.NONE, depth = 0, feedsShell = false)
+    class Reading(val names: List<Name>, val doubts: List<String>, val unsettledBy: String?)
+
+    /**
+     * Reads [text], a command line or the text of a shell script. With [everyWord], every word
+     * that could name a file or folder is returned (also the parts of words split at quotes and
+     * `=`); without, only the scripts.
+     */
+    fun read(text: String, places: Places, everyWord: Boolean = true): Reading {
+        val reader = Reader(places)
+        reader.read(text, Variables.NONE, depth = 0)
         if (everyWord) reader.splitFurther(text)
-        // What could not be read is reported as a script that cannot be resolved, so nothing runs unseen.
-        val unread = if (reader.unread) listOf(Name("", asScript = true, must = true, shell = true, onlyExisting = false, emptyList(), TOO_MUCH)) else emptyList()
-        return unread + reader.names.filter { everyWord || it.asScript }
+        return Reading(reader.names.filter { everyWord || it.asScript }, reader.doubts.distinct(), reader.unsettledBy)
     }
 
-    /** True when [text] has a command that changes the working folder. */
-    fun changesFolder(text: String): Boolean = changesFolder(text, 0)
+    // ---------------------------------------------------------------- reading commands
+
+    /** A command as it would be started: its [name] (the last part of its path, lower case; "sh" for the shell under another name) and arguments. */
+    private class Call(val name: String, val word: Word, val args: List<Word>)
+
+    /** `*`, `?` or a `[…]` set. A lone `[` (the test command) is not one. */
+    private fun isPattern(text: String): Boolean = '*' in text || '?' in text || text.indexOf('[').let { it >= 0 && text.indexOf(']', it + 2) > 0 }
+
+    /** True when [word] starts with an unquoted "-": an option to the program it is given to. */
+    private fun isOption(word: Word): Boolean = word.pieces.firstOrNull()?.let { it.kind == Kind.LIT && !it.quoted && it.text.startsWith("-") } == true
+
+    /** The first words of [simple] as far as they are plain names: enough to tell a declaration, `eval` or `.`. */
+    private fun plainNames(simple: Simple): List<String> =
+        simple.words.takeWhile { it.plain != null }.take(4).map { it.plain!!.substringAfterLast('/').lowercase(Locale.ROOT) }
+
+    /** How a shell is started: with a command string (`-c`), a script file, files it reads first, or nothing (it reads its input). */
+    private class ShellUse(val commandString: Word?, val script: Word?, val startFiles: List<Word>, val unknownOption: String?) {
+        /** It has neither a script nor a command string: its commands come from its input. */
+        val readsInput: Boolean get() = commandString == null && script == null
+    }
+
+    /**
+     * Reads a shell's own arguments the way mksh does: single-letter options in groups after `-`
+     * or `+`, where `o` takes the option's name from the rest of its group or from the next word
+     * (`-o errexit`, `-eo errexit`, `-oerrexit`); `--` or a lone `-` ends the options; with `-c`
+     * the first word after them is the command string, with `-s` the commands come from the
+     * input, otherwise the first word after them is the script. Anything else that looks like an
+     * option is not known here and is reported.
+     */
+    private fun shellUse(args: List<Word>): ShellUse {
+        var takesCommand = false
+        var fromInput = false
+        var unknown: String? = null
+        val startFiles = ArrayList<Word>()
+        var i = 0
+        while (i < args.size) {
+            // A word that is not plain text could be an option, the script or nothing at all: it is taken as the operand and checked there.
+            val option = args[i].plain ?: break
+            if (option == "--" || option == "-") {
+                i++
+                break
+            }
+            if (option.length < 2 || (option[0] != '-' && option[0] != '+')) break
+            i++
+            if (option.startsWith("--")) {
+                // bash's two options that name a file it reads first; no other long option is known.
+                if (option == "--rcfile" || option == "--init-file") args.getOrNull(i++)?.let { startFiles += it } else unknown = unknown ?: option
+                continue
+            }
+            var j = 1
+            while (j < option.length) {
+                when (val c = option[j++]) {
+                    'c' -> takesCommand = true
+                    's' -> fromInput = true
+                    'o' -> {
+                        val name = if (j < option.length) option.substring(j) else args.getOrNull(i++)?.plain
+                        if (name == null || !OPTION_NAME.matches(name)) unknown = unknown ?: option
+                        j = option.length
+                    }
+                    else -> if (c !in SHELL_FLAGS) unknown = unknown ?: option
+                }
+            }
+        }
+        val operand = args.getOrNull(i)
+        return ShellUse(
+            commandString = if (takesCommand) operand else null,
+            script = if (takesCommand || fromInput) null else operand,
+            startFiles = startFiles,
+            unknownOption = unknown,
+        )
+    }
+
+    private fun allWords(script: ShellSyntax.Script): List<Word> = buildList {
+        for (simple in script.commands) {
+            addAll(simple.words)
+            simple.assignments.forEach { add(it.second) }
+            simple.redirects.forEach { r -> r.target?.let(::add) }
+        }
+        script.loops.forEach { addAll(it.values) }
+        addAll(script.extras)
+    }
 
     /** What the variables of a piece of shell text can hold, as far as the text itself says. */
     private class Variables(val values: Map<String, List<Word>>, val unknown: Set<String>, val allUnknown: Boolean) {
         fun of(name: String): List<Word>? = if (allUnknown || name in unknown) null else values[name]
+
+        /** True when the text assigns [name], or may. */
+        fun touches(name: String): Boolean = name in unknown || name in values
 
         companion object {
             val NONE = Variables(emptyMap(), emptySet(), false)
@@ -468,10 +333,10 @@ internal object ShellCommands {
                 val unknown = HashSet(parent.unknown)
                 var allUnknown = parent.allUnknown
                 for (simple in script.commands) {
-                    val calls = calls(simple)
-                    val first = calls.firstOrNull()?.name
+                    val names = plainNames(simple)
+                    val first = names.firstOrNull()
                     // A sourced or evaluated text can set anything, and so can changing how words are split.
-                    if (calls.any { it.name == "eval" || it.name in SOURCE }) allUnknown = true
+                    if (names.any { it == "eval" || it in SOURCE }) allUnknown = true
                     if (simple.words.isEmpty()) {
                         simple.assignments.forEach { (name, value) ->
                             if (name == "IFS") allUnknown = true
@@ -499,9 +364,35 @@ internal object ShellCommands {
         }
     }
 
-    /** A word with nothing left to expand: its text, and which of its characters act as a pattern. */
-    private class Spelling(val text: String, val active: BooleanArray) {
-        operator fun plus(other: Spelling) = Spelling(text + other.text, active + other.active)
+    /**
+     * A word with nothing left to expand: its text, and which of its characters act as a pattern.
+     * [home]: part of it is the home folder (`~`, `$HOME`), which is outside the workspace; the
+     * text then holds `${HOME}` in its place. [fromFolder]: part of it is the folder the shell is
+     * in (`$PWD`, `$(pwd)`).
+     */
+    private class Spelling(val text: String, val active: BooleanArray, val home: Boolean = false, val fromFolder: Boolean = false) {
+        operator fun plus(other: Spelling) = Spelling(text + other.text, active + other.active, home || other.home, fromFolder || other.fromFolder)
+
+        /** True when the text ends inside a `[…` set that an unquoted `[` opened. */
+        fun inOpenSet(): Boolean {
+            var k = 0
+            while (k < text.length) {
+                if (!(active[k] && text[k] == '[')) {
+                    k++
+                    continue
+                }
+                var j = k + 1
+                if (j < text.length && (text[j] == '!' || text[j] == '^')) j++
+                if (j < text.length && text[j] == ']') j++
+                val close = text.indexOf(']', j)
+                if (close < 0) return true
+                k = close + 1
+            }
+            return false
+        }
+
+        /** True when the shell would expand part of it against file names: `*`, `?`, or a `[…]` set (a lone `[` is the test command). */
+        fun hasPattern(): Boolean = text.indices.any { active[it] && (text[it] != '[' || text.indexOf(']', it + 2) > 0) }
 
         companion object {
             val EMPTY = Spelling("", BooleanArray(0))
@@ -510,112 +401,340 @@ internal object ShellCommands {
         }
     }
 
-    private class Reader(private val places: Places, private val afterFolderChange: Boolean) {
+    private class Reader(private val places: Places) {
         val names = ArrayList<Name>()
-
-        /** True when part of the text was not read: it is nested too deeply, or names too many scripts. */
-        var unread = false
+        val doubts = ArrayList<String>()
+        var unsettledBy: String? = null
         private var plain = 0
         private var scripts = 0
 
-        fun read(text: String, parent: Variables, depth: Int, feedsShell: Boolean) {
+        private fun doubt(reason: String) {
+            doubts += reason
+        }
+
+        /** Reads [text] as commands; [parent] holds what the variables of the shell that runs it can be. */
+        fun read(text: String, parent: Variables, depth: Int) {
             if (depth > MAX_DEPTH) {
-                unread = true
+                doubt(DOUBT_TOO_MUCH)
                 return
             }
             val script = ShellSyntax.parse(text)
+            doubts += script.doubts
             val variables = Variables.read(script, parent)
+            if (LOOKUP_VARIABLES.any { variables.touches(it) && !parent.touches(it) }) unsettledBy = unsettledBy ?: UNSETTLED_LOOKUP
             val roles = java.util.IdentityHashMap<Word, Boolean>()
+            // Here-documents that are certainly a shell's input: their text is commands, and it must reach the shell as written.
+            val shellFed = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<ShellSyntax.Redirect, Boolean>())
 
-            fun script(word: Word, shell: Boolean) {
+            fun script(word: Word, shell: Boolean, sourced: Boolean = false) {
                 roles[word] = true
-                add(word, variables, depth, asScript = true, must = true, shell = shell, onlyExisting = false, feedsShell = false)
+                addScript(word, variables, depth, shell, sourced)
             }
 
             for ((index, simple) in script.commands.withIndex()) {
-                for (call in calls(simple)) {
+                for (call in callsOf(simple.words, variables, depth)) {
                     when (call.name) {
                         in SHELLS -> {
                             val use = shellUse(call.args)
+                            use.unknownOption?.let { doubt(doubtOption(it)) }
                             use.startFiles.forEach { script(it, shell = true) }
                             use.script?.let { script(it, shell = true) }
                             use.commandString?.let { command ->
                                 roles[command] = true
                                 // The string is expanded by this shell, then read by the new one, which has none of this one's variables.
-                                spellings(command, variables, depth)?.forEach { read(it.text, Variables.NONE, depth + 1, feedsShell = false) }
-                                substitutions(command, variables, depth, feedsShell = true)
+                                textFor(listOf(command), variables, depth, sameShell = false)
                             }
-                            if (use.script == null && use.commandString == null) {
-                                // A shell with no script reads its input: a file redirected into it is the script.
-                                for (r in simple.redirects) {
-                                    when (r.op) {
-                                        "<" -> r.target?.let { script(it, shell = true) }
-                                        "<&" -> names += Name("<&" + r.target?.raw.orEmpty(), asScript = true, must = true, shell = true, onlyExisting = false, emptyList(), OPEN_FILE)
-                                        "<<<" -> r.target?.let { t ->
-                                            roles[t] = true
-                                            spellings(t, variables, depth)?.forEach { read(it.text, Variables.NONE, depth + 1, feedsShell = false) }
-                                            substitutions(t, variables, depth, feedsShell = true)
-                                        }
-                                    }
-                                }
-                                // "cat x | sh": the files the command before names are what runs.
-                                if (simple.pipedInto) script.commands.getOrNull(index - 1)?.let { before ->
-                                    before.words.drop(1).forEach { w ->
-                                        add(w, variables, depth, asScript = true, must = false, shell = true, onlyExisting = true, feedsShell = false)
-                                    }
-                                }
+                            if (use.readsInput) inputOf(simple, index, script, variables, depth, shellFed, roles)
+                        }
+                        in SOURCE -> call.args.firstOrNull()?.let { file ->
+                            // "." looks a name without a slash up through PATH first, so only "./name" is certain.
+                            val spelled = spellings(file, variables, depth)
+                            if (spelled != null && spelled.any { '/' !in it.text }) {
+                                roles[file] = true
+                                names += problemName(file.raw, NO_SLASH)
+                            } else {
+                                script(file, shell = true, sourced = true)
                             }
                         }
-                        in SOURCE -> call.args.firstOrNull()?.let { script(it, shell = true) }
                         in PROGRAM_FILE -> programFiles(call).forEach { script(it, shell = false) }
                         "eval" -> {
                             call.args.forEach { roles[it] = true }
-                            val joined = call.args.map { spellings(it, variables, depth)?.singleOrNull()?.text }
-                            if (joined.all { it != null }) read(joined.joinToString(" "), variables, depth + 1, feedsShell = false)
-                            call.args.forEach { substitutions(it, variables, depth, feedsShell = true) }
+                            if (call.args.isNotEmpty()) textFor(call.args, variables, depth, sameShell = true)
                         }
-                        "trap" -> call.args.firstOrNull { it.plain?.startsWith("-") != true }?.plain?.let { read(it, variables, depth + 1, feedsShell = false) }
-                        "alias" -> call.args.forEach { a -> a.assignment()?.second?.plain?.let { read(it, variables, depth + 1, feedsShell = true) } }
+                        "trap" -> call.args.firstOrNull { it.plain?.startsWith("-") != true || it.plain == "-" }?.let { action ->
+                            // "trap - INT" and "trap '' INT" run nothing; "trap INT" alone names a signal.
+                            if (call.args.size > 1 && action.plain != "-" && action.plain != "") {
+                                roles[action] = true
+                                textFor(listOf(action), variables, depth, sameShell = true)
+                            }
+                        }
+                        "alias" -> if (call.args.any { it.assignment() != null || it.plain == null }) doubt(DOUBT_ALIAS)
+                        in FOLDER_CHANGES -> unsettledBy = UNSETTLED_FOLDER
                     }
                     // A program started by its path: when that path is a workspace file, it is what runs.
                     if ('/' in call.word.raw || call.word.pieces.any { it.kind == Kind.VAR }) {
                         if (roles.put(call.word, true) == null) {
-                            add(call.word, variables, depth, asScript = true, must = false, shell = true, onlyExisting = true, feedsShell = false)
+                            val spelled = spellings(call.word, variables, depth)?.singleOrNull()?.text
+                            if (spelled != null && spelled.startsWith("/proc/") && !PROCESS_PROGRAM.matches(spelled)) {
+                                // "/proc/self/cwd/x" is a workspace file under a name that cannot be resolved here.
+                                names += problemName(call.word.raw, OUTSIDE)
+                            } else {
+                                add(call.word, variables, depth, asScript = true, shell = true, onlyExisting = true)
+                            }
                         }
                     }
                 }
                 val rest = simple.words + simple.assignments.map { it.second } + simple.redirects.filter { it.op != "<<" && it.op != "<<-" }.mapNotNull { it.target }
                 for (word in rest) {
-                    if (roles[word] != true) add(word, variables, depth, asScript = false, must = false, shell = false, onlyExisting = true, feedsShell = feedsShell)
-                    if (roles[word] != true || word === simple.words.firstOrNull()) substitutions(word, variables, depth, feedsShell)
+                    if (roles[word] != true) add(word, variables, depth, asScript = false, shell = false, onlyExisting = true)
+                    if (roles[word] != true || word === simple.words.firstOrNull()) substitutions(word, variables, depth)
                 }
             }
             for (word in script.loops.flatMap { it.values } + script.extras) {
-                add(word, variables, depth, asScript = false, must = false, shell = false, onlyExisting = true, feedsShell = feedsShell)
-                substitutions(word, variables, depth, feedsShell)
+                add(word, variables, depth, asScript = false, shell = false, onlyExisting = true)
+                substitutions(word, variables, depth)
             }
-            // A here-document a shell may run: its commands count like the command line's own.
-            hereTexts(script).forEach { read(it, Variables.NONE, depth + 1, feedsShell = false) }
+            hereDocuments(script, variables, depth, shellFed)
         }
 
-        /** The commands inside the `$(…)` of [word]. With [feedsShell], what they print is run, so the files they name are scripts. */
-        private fun substitutions(word: Word, variables: Variables, depth: Int, feedsShell: Boolean) {
-            word.pieces.filter { it.kind == Kind.SUB }.forEach { read(it.text, variables, depth + 1, feedsShell) }
+        /**
+         * The here-documents of [script]. One that is plainly data (handed to `cat` or `tee`, the
+         * way a file is written, in a command line where no shell reads from a pipe) is not read
+         * as commands; every other one may be a shell's input and is. Whoever it is for, the
+         * `$(…)` in a document whose end word is not quoted are commands that run.
+         */
+        private fun hereDocuments(script: ShellSyntax.Script, variables: Variables, depth: Int, shellFed: Set<ShellSyntax.Redirect>) {
+            val pipedShell = script.commands.any { simple -> simple.pipedInto && plainNames(simple).any { it in SHELLS } }
+            for (simple in script.commands) {
+                val data = !pipedShell && plainNames(simple).firstOrNull() in DATA_READERS
+                for (redirect in simple.redirects) {
+                    if (redirect.op != "<<" && redirect.op != "<<-") continue
+                    val body = redirect.body ?: continue
+                    val forShell = redirect in shellFed
+                    // A shell must get its commands as they are written here, or what it runs is not what was read.
+                    if (forShell && !redirect.quotedEnd && redirect.expansions.isNotEmpty()) doubt(DOUBT_HERE_EXPANDS)
+                    if (forShell || !data) read(body, Variables.NONE, depth + 1)
+                    redirect.expansions.filter { it.kind == Kind.SUB }.forEach { read(it.text, variables, depth + 1) }
+                }
+            }
         }
 
-        /** The files `-f` and `--file` name for awk and sed. */
+        /**
+         * Where the shell started by [simple] without a script or a command string gets its
+         * commands: a file redirected into it, a here-document or here-string, or a pipe from
+         * `cat` of plain files or `echo` of fixed text. Anything else is a doubt: a bare shell
+         * inside braces or a subshell whose input is redirected outside, one fed by `exec <`, by
+         * a pipe from another program, or by nothing that can be seen.
+         */
+        private fun inputOf(
+            simple: Simple,
+            index: Int,
+            script: ShellSyntax.Script,
+            variables: Variables,
+            depth: Int,
+            shellFed: MutableSet<ShellSyntax.Redirect>,
+            roles: java.util.IdentityHashMap<Word, Boolean>,
+        ) {
+            var fed = false
+            for (r in simple.redirects) {
+                when (r.op) {
+                    "<", "<>" -> {
+                        fed = true
+                        val target = r.target
+                        if (target == null) doubt(DOUBT_NO_INPUT) else {
+                            roles[target] = true
+                            addScript(target, variables, depth, shell = true, sourced = false)
+                        }
+                    }
+                    "<&" -> {
+                        fed = true
+                        doubt(DOUBT_OPEN_FILE)
+                    }
+                    "<<<" -> {
+                        fed = true
+                        r.target?.let { t ->
+                            roles[t] = true
+                            textFor(listOf(t), variables, depth, sameShell = false)
+                        }
+                    }
+                    "<<", "<<-" -> {
+                        fed = true
+                        shellFed += r
+                    }
+                }
+            }
+            if (fed) return
+            val before = if (simple.pipedInto) script.commands.getOrNull(index - 1) else null
+            if (before == null) {
+                doubt(DOUBT_NO_INPUT)
+                return
+            }
+            val program = before.words.firstOrNull()?.takeIf { it.bare }?.plain
+            val operands = before.words.drop(1)
+            when {
+                program == "cat" -> {
+                    // Options change what cat prints; only "--" is read.
+                    if (operands.any { it.plain != "--" && isOption(it) }) {
+                        doubt(DOUBT_PIPE)
+                        return
+                    }
+                    val files = operands.filter { it.plain != "--" }.toMutableList()
+                    var other = false
+                    for (r in before.redirects) {
+                        when (r.op) {
+                            "<", "<>" -> r.target?.let { files += it } ?: doubt(DOUBT_PIPE)
+                            "<<", "<<-" -> {
+                                shellFed += r
+                                other = true
+                            }
+                            "<<<" -> {
+                                other = true
+                                r.target?.let { t ->
+                                    roles[t] = true
+                                    textFor(listOf(t), variables, depth, sameShell = false)
+                                }
+                            }
+                            "<&" -> doubt(DOUBT_OPEN_FILE)
+                        }
+                    }
+                    if (files.isEmpty() && !other) doubt(DOUBT_PIPE)
+                    files.forEach { file ->
+                        roles[file] = true
+                        addScript(file, variables, depth, shell = true, sourced = false)
+                    }
+                }
+                program == "echo" -> {
+                    // "echo text | sh": what is printed is what runs. Options and backslashes change what is printed.
+                    val words = if (operands.firstOrNull()?.plain == "-n") operands.drop(1) else operands
+                    if (words.isEmpty() || words.any { w -> w.pieces.any { it.kind == Kind.LIT && '\\' in it.text } || (w.bare && w.plain.orEmpty().startsWith("-")) }) {
+                        doubt(DOUBT_PIPE)
+                        return
+                    }
+                    words.forEach { roles[it] = true }
+                    textFor(words, variables, depth, sameShell = false)
+                }
+                else -> doubt(DOUBT_PIPE)
+            }
+        }
+
+        /**
+         * [words] joined by spaces are text a shell runs (`sh -c`, `eval`, `trap`, a here-string).
+         * It is read when every word has one fixed spelling; or, for a single word that is just
+         * `$(cat file …)`, those files are the script. Otherwise the text is only known when the
+         * command runs, which is a doubt. [sameShell]: the text runs in the shell that holds
+         * these variables (`eval`), not in a new one.
+         */
+        private fun textFor(words: List<Word>, variables: Variables, depth: Int, sameShell: Boolean) {
+            val spelled = words.map { spellings(it, variables, depth)?.singleOrNull()?.takeIf { s -> !s.hasPattern() } }
+            if (spelled.all { it != null }) {
+                read(spelled.joinToString(" ") { it!!.text }, if (sameShell) variables else Variables.NONE, depth + 1)
+                return
+            }
+            val files = words.singleOrNull()?.let(::catFiles)
+            if (files == null) {
+                doubt(DOUBT_TEXT)
+                return
+            }
+            files.forEach { addScript(it, variables, depth, shell = true, sourced = sameShell) }
+        }
+
+        /** The files of a word that is exactly `$(cat file …)` or `$(<file)`, quoted or not; null for any other word. */
+        private fun catFiles(word: Word): List<Word>? {
+            val sub = word.pieces.filter { !(it.kind == Kind.LIT && it.text.isEmpty()) }.singleOrNull()?.takeIf { it.kind == Kind.SUB } ?: return null
+            val parsed = ShellSyntax.parse(sub.text)
+            val command = parsed.commands.singleOrNull() ?: return null
+            if (parsed.doubts.isNotEmpty() || command.assignments.isNotEmpty() || command.pipedInto || command.pipesOn) return null
+            val inputs = command.redirects.map { r -> r.target?.takeIf { r.op == "<" } ?: return null }
+            if (command.words.isEmpty()) return inputs.takeIf { it.size == 1 }
+            if (command.words.first().let { !it.bare || it.plain != "cat" }) return null
+            val operands = command.words.drop(1)
+            if (operands.any(::isOption)) return null
+            return (operands + inputs).takeIf { it.isNotEmpty() }
+        }
+
+        /**
+         * The command [words] start, and the commands that one starts in turn when it is a wrapper
+         * (`env`, `toybox`, `find -exec` …). A program whose name is only known when the command
+         * runs could be a shell, so it is a doubt.
+         */
+        private fun callsOf(words: List<Word>, variables: Variables, depth: Int): List<Call> {
+            val out = ArrayList<Call>()
+            val used = HashSet<Int>()
+            var k = 0
+            // The word taken as the wrapped command may be the value of the option before it.
+            var unsure = false
+            while (k < words.size) {
+                val name = programName(words[k], variables, depth)
+                if (name == null) {
+                    doubt(doubtProgram(words[k].raw))
+                    return out
+                }
+                out += Call(name, words[k], words.subList(k + 1, words.size))
+                used += k
+                if (name !in PREFIXES && !LOADER.matches(name)) break
+                if (name in PREFIXES_WITH_OPERAND) unsure = true
+                // What a prefix command starts: the first later word that is not an option, an assignment or a number.
+                k++
+                var afterOption = false
+                while (k < words.size) {
+                    val w = words[k].plain ?: break
+                    val option = w.startsWith("-") || w.startsWith("+")
+                    if (!option && !ASSIGNED.containsMatchIn(w) && !NUMBER.matches(w)) break
+                    afterOption = option
+                    k++
+                }
+                if (afterOption) unsure = true
+            }
+            val first = out.firstOrNull()?.name ?: return out
+            if (first == "find") {
+                // What follows -exec is a command of its own, up to ";" or "+".
+                for (j in 1 until words.size) {
+                    if (words[j - 1].plain !in FIND_EXEC) continue
+                    val end = (j until words.size).firstOrNull { words[it].plain == ";" || words[it].plain == "+" } ?: words.size
+                    out += callsOf(words.subList(j, end), variables, depth)
+                }
+            } else if (first in STARTERS || unsure) {
+                // Which of the later words is the command they start is not clear (options take values), so every
+                // word that names a shell or another program that runs a script file counts.
+                for (j in 1 until words.size) {
+                    if (j in used) continue
+                    val name = words[j].plain?.let { programName(words[j], variables, depth) } ?: continue
+                    if (name in SHELLS || name in PROGRAM_FILE || name == "eval" || name in SOURCE) out += Call(name, words[j], words.subList(j + 1, words.size))
+                }
+            }
+            return out
+        }
+
+        /** The program [word] starts: the last part of its path, lower case; "sh" for a process's own program; null when it is only known at run time. */
+        private fun programName(word: Word, variables: Variables, depth: Int): String? {
+            val text = word.plain?.also {
+                if (word.pieces.any { p -> !p.quoted && isPattern(p.text) }) return null
+            } ?: spellings(word, variables, depth)?.singleOrNull()?.takeIf { s -> !s.hasPattern() && s.text.isNotEmpty() }?.text ?: return null
+            if (PROCESS_PROGRAM.matches(text)) return "sh"
+            return text.substringAfterLast('/').lowercase(Locale.ROOT)
+        }
+
+        /** The commands inside the `$(…)` of [word]. */
+        private fun substitutions(word: Word, variables: Variables, depth: Int) {
+            word.pieces.filter { it.kind == Kind.SUB }.forEach { read(it.text, variables, depth + 1) }
+        }
+
+        /** The files `-f` and `--file` name for awk and sed, and gawk's other ways of naming a program file. */
         private fun programFiles(call: Call): List<Word> {
             val out = ArrayList<Word>()
-            val glued = if (call.name == "sed") SED_FILE else AWK_FILE
+            val sed = call.name == "sed"
+            val glued = if (sed) SED_FILE else AWK_FILE
+            val long = if (sed) listOf("--file") else listOf("--file", "--exec", "--include")
             var i = 0
             while (i < call.args.size) {
                 val arg = call.args[i++]
                 val first = arg.pieces.firstOrNull()?.takeIf { it.kind == Kind.LIT && !it.quoted }?.text ?: continue
                 if (first == "--") break
                 val match = glued.find(first)
+                val option = long.firstOrNull { first == it || first.startsWith("$it=") }
                 when {
-                    first.startsWith("--file=") -> out += rest(arg, "--file=".length)
-                    first == "--file" && arg.pieces.size == 1 -> call.args.getOrNull(i++)?.let { out += it }
+                    option != null && first.length > option.length -> out += rest(arg, option.length + 1)
+                    option != null && arg.pieces.size == 1 -> call.args.getOrNull(i++)?.let { out += it }
                     match != null && (match.value.length < first.length || arg.pieces.size > 1) -> out += rest(arg, match.value.length)
                     match != null -> call.args.getOrNull(i++)?.let { out += it }
                 }
@@ -630,62 +749,94 @@ internal object ShellCommands {
             return Word(pieces, word.raw)
         }
 
-        private fun add(word: Word, variables: Variables, depth: Int, asScript: Boolean, must: Boolean, shell: Boolean, onlyExisting: Boolean, feedsShell: Boolean) {
-            // Names that are not scripts are only pinned, so the hundredth may be left out; a script never is.
-            if (must || asScript) {
-                if (++scripts > MAX_SCRIPT_NAMES) {
-                    unread = true
-                    return
-                }
-            } else if (++plain > MAX_NAMES) return
-            val option = word.pieces.firstOrNull()?.let { it.kind == Kind.LIT && !it.quoted && it.text.startsWith("-") } == true
-            if (!must && (option || word.pieces.isEmpty())) return
+        private fun problemName(raw: String, problem: String) =
+            Name(raw, asScript = true, must = true, shell = true, sourced = false, relative = false, incidental = false, onlyExisting = false, emptyList(), problem)
+
+        /** [word] is the script a shell, `.`, `source` or `-f` runs, or a file a shell is fed: it must resolve to a place in the workspace. */
+        private fun addScript(word: Word, variables: Variables, depth: Int, shell: Boolean, sourced: Boolean) {
+            if (++scripts > MAX_SCRIPT_NAMES) {
+                doubt(DOUBT_TOO_MUCH)
+                return
+            }
             val spellings = spellings(word, variables, depth)
             if (spellings == null) {
-                if (must) names += Name(word.raw, asScript, must = true, shell, onlyExisting, emptyList(), lastProblem ?: RUN_TIME)
+                names += problemName(word.raw, lastProblem ?: RUN_TIME)
+                return
+            }
+            // Nothing to run: an empty input.
+            if (spellings.all { it.text == "/dev/null" }) return
+            // A word that expands to nothing is no word at all, and the shell takes the next one; one that expands to an option is not the script either.
+            if (spellings.any { it.text.isEmpty() || (word.plain == null && (it.text.startsWith("-") || it.text.startsWith("+"))) }) {
+                names += problemName(word.raw, RUN_TIME)
                 return
             }
             val targets = ArrayList<Target>()
-            var problem: String? = null
             for (spelling in spellings) {
-                if (spelling.text.isEmpty()) continue
-                when (val located = locate(spelling, must)) {
+                when (val located = locate(spelling)) {
                     is Target -> targets += located
-                    is String -> problem = problem ?: located
+                    is String -> {
+                        names += problemName(word.raw, located)
+                        return
+                    }
                 }
             }
-            if (problem != null && !must) problem = null
-            if (targets.isEmpty() && problem == null) return
+            names += Name(
+                word.raw, asScript = true, must = true, shell = shell, sourced = sourced, relative = spellings.any(::relative),
+                incidental = false, onlyExisting = false, targets = targets, problem = null,
+            )
+        }
+
+        /** [word] names, or may name, a workspace entry without being a script the reader is sure of. */
+        private fun add(word: Word, variables: Variables, depth: Int, asScript: Boolean, shell: Boolean, onlyExisting: Boolean) {
+            // Names that are not scripts are only pinned, so the hundredth may be left out; a script never is.
+            if (asScript) {
+                if (++scripts > MAX_SCRIPT_NAMES) {
+                    doubt(DOUBT_TOO_MUCH)
+                    return
+                }
+            } else if (++plain > MAX_NAMES) return
+            if (isOption(word) || word.pieces.isEmpty()) return
+            val spellings = spellings(word, variables, depth) ?: return
+            val targets = spellings.filter { it.text.isNotEmpty() }.mapNotNull { locate(it) as? Target }
+            if (targets.isEmpty()) return
             val ending = spellings.any { s -> SCRIPT_ENDINGS.any { s.text.lowercase(Locale.ROOT).endsWith(it) } }
             val shellEnding = spellings.any { s -> SHELL_ENDINGS.any { s.text.lowercase(Locale.ROOT).endsWith(it) } }
             names += Name(
                 word.raw,
-                asScript = asScript || ending || feedsShell,
-                must = must,
-                shell = shell || shellEnding || feedsShell,
+                asScript = asScript || ending,
+                must = false,
+                shell = shell || shellEnding,
+                sourced = false,
+                relative = spellings.any(::relative),
+                incidental = false,
                 // A script named by its ending is pinned even while it is missing: one that appears before the command runs stops it.
-                onlyExisting = !must && onlyExisting && !ending,
-                targets = if (problem != null) emptyList() else targets,
-                problem = problem,
+                onlyExisting = onlyExisting && !ending,
+                targets = targets,
+                problem = null,
             )
         }
 
+        private fun relative(spelling: Spelling): Boolean = spelling.fromFolder || !spelling.text.startsWith("/")
+
         private var lastProblem: String? = null
 
-        /** Every text [word] can stand for, or null when part of it is only known at run time ([lastProblem] says why). */
+        /** Every text [word] can stand for, or null when part of it is only known at run time ([lastProblem] says why, when it is not just that). */
         private fun spellings(word: Word, variables: Variables, depth: Int, nesting: Int = 0): List<Spelling>? {
             lastProblem = null
             var out = listOf(Spelling.EMPTY)
             for (piece in word.pieces) {
+                // Inside "[…": a quoted character, or one from a variable, is an escape in a set, which is not matched here as the shell does.
+                if (out.any { it.inOpenSet() } && !(piece.kind == Kind.LIT && !piece.quoted)) return null.also { lastProblem = PATTERN }
                 val options: List<Spelling> = when (piece.kind) {
                     Kind.LIT -> {
                         // {a,b} and {1..3} make several words in Android's shell.
                         if (!piece.quoted && BRACES.containsMatchIn(piece.text)) return null
+                        if (!piece.quoted && CHARACTER_CLASS.containsMatchIn(piece.text)) return null.also { lastProblem = PATTERN }
                         listOf(Spelling.of(piece.text, patterns = !piece.quoted))
                     }
                     Kind.VAR -> when (piece.text) {
-                        "HOME" -> listOf(Spelling.of(places.here, false))
-                        "PWD" -> if (afterFolderChange) return null.also { lastProblem = AFTER_CD } else listOf(Spelling.of(places.here, false))
+                        "HOME" -> listOf(Spelling("\${HOME}", BooleanArray(7), home = true))
+                        "PWD" -> listOf(Spelling(places.here, BooleanArray(places.here.length), fromFolder = true))
                         else -> {
                             val values = variables.of(piece.text)
                             if (values.isNullOrEmpty() || nesting > 3) return null
@@ -693,15 +844,17 @@ internal object ShellCommands {
                                 val inner = spellings(value, variables, depth, nesting + 1) ?: return null
                                 // Unquoted, the value is split at spaces and its patterns are expanded, however it was quoted when assigned.
                                 if (!piece.quoted && inner.any { s -> s.text.any(Char::isWhitespace) }) return null
-                                inner.map { Spelling.of(it.text, patterns = !piece.quoted) }
+                                if (!piece.quoted && inner.any { s -> CHARACTER_CLASS.containsMatchIn(s.text) }) return null.also { lastProblem = PATTERN }
+                                inner.map { Spelling(it.text, BooleanArray(it.text.length) { i -> !piece.quoted && it.text[i] in "*?[" }, it.home, it.fromFolder) }
                             }
                         }
                     }
                     Kind.SUB -> {
                         val printed = printed(piece.text, variables, depth, nesting) ?: return null
-                        if (!piece.quoted && printed.any(Char::isWhitespace)) return null
-                        listOf(Spelling.of(printed, patterns = !piece.quoted))
+                        if (!piece.quoted && printed.text.any(Char::isWhitespace)) return null
+                        listOf(Spelling(printed.text, BooleanArray(printed.text.length) { i -> !piece.quoted && printed.text[i] in "*?[" }, printed.home, printed.fromFolder))
                     }
+                    Kind.PAT -> return null.also { lastProblem = PATTERN }
                     Kind.DYN -> return null
                 }
                 out = out.flatMap { a -> options.map { a + it } }
@@ -711,24 +864,30 @@ internal object ShellCommands {
         }
 
         /** What `$(…)` prints when that can be read off its text: `pwd`, or `echo` with fixed words. */
-        private fun printed(inner: String, variables: Variables, depth: Int, nesting: Int): String? {
+        private fun printed(inner: String, variables: Variables, depth: Int, nesting: Int): Spelling? {
             if (nesting > 3) return null
-            val command = ShellSyntax.parse(inner).commands.singleOrNull() ?: return null
-            if (command.assignments.isNotEmpty() || command.redirects.isNotEmpty() || command.pipedInto || command.pipesOn) return null
+            val parsed = ShellSyntax.parse(inner)
+            val command = parsed.commands.singleOrNull() ?: return null
+            if (parsed.doubts.isNotEmpty() || command.assignments.isNotEmpty() || command.redirects.isNotEmpty() || command.pipedInto || command.pipesOn) return null
             val name = command.words.firstOrNull()?.takeIf { it.bare }?.plain ?: return null
             val args = command.words.drop(1)
             return when {
-                name == "pwd" && args.isEmpty() -> if (afterFolderChange) null.also { lastProblem = AFTER_CD } else places.here
-                name == "echo" && args.isNotEmpty() -> args.map { arg ->
-                    if (arg.plain?.startsWith("-") == true) return null
-                    (spellings(arg, variables, depth, nesting + 1) ?: return null).singleOrNull()?.takeIf { s -> s.active.none { it } }?.text ?: return null
-                }.joinToString(" ")
+                name == "pwd" && args.isEmpty() -> Spelling(places.here, BooleanArray(places.here.length), fromFolder = true)
+                name == "echo" && args.isNotEmpty() -> {
+                    val parts = args.map { arg ->
+                        if (arg.plain?.startsWith("-") == true) return null
+                        (spellings(arg, variables, depth, nesting + 1) ?: return null).singleOrNull()?.takeIf { s -> !s.hasPattern() && '\\' !in s.text } ?: return null
+                    }
+                    val text = parts.joinToString(" ") { it.text }
+                    Spelling(text, BooleanArray(text.length), parts.any { it.home }, parts.any { it.fromFolder })
+                }
                 else -> null
             }
         }
 
         /** [spelling] as a place in the workspace: a [Target], or why it is none (a String). */
-        private fun locate(spelling: Spelling, must: Boolean): Any {
+        private fun locate(spelling: Spelling): Any {
+            if (spelling.home) return HOME
             val text = spelling.text
             val start: List<String>
             val offset: Int
@@ -737,7 +896,6 @@ internal object ShellCommands {
                 start = emptyList()
                 offset = root.length
             } else {
-                if (must && afterFolderChange) return AFTER_CD
                 start = places.dir.segments
                 offset = 0
             }
@@ -784,11 +942,11 @@ internal object ShellCommands {
                     val word = ShellSyntax.word(part) ?: continue
                     spellings(word, Variables.NONE, 0)?.singleOrNull() ?: continue
                 }
-                val target = locate(spelling, must = false) as? Target ?: continue
+                val target = locate(spelling) as? Target ?: continue
                 val lower = spelling.text.lowercase(Locale.ROOT)
                 names += Name(
                     part, asScript = SCRIPT_ENDINGS.any { lower.endsWith(it) }, must = false, shell = SHELL_ENDINGS.any { lower.endsWith(it) },
-                    onlyExisting = true, targets = listOf(target), problem = null,
+                    sourced = false, relative = relative(spelling), incidental = true, onlyExisting = true, targets = listOf(target), problem = null,
                 )
             }
         }
@@ -807,13 +965,17 @@ internal object ShellCommands {
 
     private val APPENDS = Regex("""^([A-Za-z_][A-Za-z0-9_]*)\+=""")
 
+    private val ASSIGNED = Regex("""^[A-Za-z_][A-Za-z0-9_]*=""")
+
+    private val OPTION_NAME = Regex("""^[A-Za-z][A-Za-z0-9_-]*$""")
+
     private val BRACES = Regex("""\{[^{}]*(,|\.\.)[^{}]*\}""")
 
-    private val AWK_FILE = Regex("""^-f""")
+    /** `[[:alpha:]]`, `[[.x.]]`, `[[=x=]]`: a class, a collating symbol or an equivalence class inside a set. */
+    private val CHARACTER_CLASS = Regex("""\[[^\]]*\[[:.=]""")
+
+    private val AWK_FILE = Regex("""^-[fEi]""")
 
     /** `-f`, also after sed's options that take no value (`-nf`). */
     private val SED_FILE = Regex("""^-[nEirsuz]*f""")
-
-    /** `set -m`, `set -o monitor`, or a shell started with -m or -i (interactive shells turn job control on). */
-    private val JOB_CONTROL = Regex("""(?:^|[\s;&|(`'"])(?:set\s+-[A-Za-z]*m|(?:sh|ash|bash|dash|ksh|mksh|zsh)\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*[mi])""")
 }
