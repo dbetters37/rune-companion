@@ -370,9 +370,13 @@ class ScreenOperatorRound2Test {
         assertTrue(turned && window.log.isEmpty(), "nothing was clicked: ${window.log}")
     }
 
-    /** A scrolling page of plain text: its label keeps 300 characters, so only the start of the page is asked again before a scroll. */
+    /**
+     * A scrolling page of plain text. Since round 3 (A2) a scroll does not compare the page's label, which is the content
+     * that scrolling moves, so nothing under the page is asked from the app again, and a change of that content does not
+     * make a scroll stale.
+     */
     @Test
-    fun `a long page scrolls, and a change at its start makes the scroll stale`() = runTest {
+    fun `a long page scrolls, also after its content changed, and its paragraphs are not asked from the app again`() = runTest {
         val h = OperatorHarness(this)
         h.authorise()
         val window = TestWindow(NOTES, "Article") {
@@ -389,11 +393,11 @@ class ScreenOperatorRound2Test {
         PhoneNodeShadow.onRefresh = { asked++ }
 
         assertEquals(ScreenResult.Ok(Unit), h.operator.scroll("Scout", NOTES, ScrollDirection.DOWN, page))
-        assertTrue(asked < 40, "the whole page was asked from the app again: $asked nodes")
+        assertTrue(asked <= 4, "the page's content was asked from the app again: $asked nodes")
 
         window.node("p2").built.text = "Paragraph 2 was replaced"
-        assertEquals(ScreenResult.Stale, h.operator.scroll("Scout", NOTES, ScrollDirection.DOWN, page))
-        assertEquals(1, window.log.size, "only the first scroll ran: ${window.log}")
+        assertEquals(ScreenResult.Ok(Unit), h.operator.scroll("Scout", NOTES, ScrollDirection.DOWN, page))
+        assertEquals(2, window.log.size, "both scrolls ran: ${window.log}")
     }
 
     // ---- S6: the state before the first read ----

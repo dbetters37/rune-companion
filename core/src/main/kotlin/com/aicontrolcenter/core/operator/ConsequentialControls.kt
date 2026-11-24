@@ -50,8 +50,9 @@ object ConsequentialControls {
     /**
      * Words of a control that answers yes to whatever its window asks, or moves it on
      * ("Delete 248 photos?" · OK, "Total: 249.00 EUR" · Next). Such a control is consequential
-     * when its window or row mentions a consequential word, shows a price or an amount, or holds
-     * a filled-in field ([consequentialReason]).
+     * when its window or row mentions a consequential word (in a text that is not a control
+     * itself), shows a price or an amount (on a control too), or holds a filled-in field
+     * ([consequentialReason]).
      */
     val POSITIVE_WORDS: Set<String> = setOf(
         "ok", "okay", "yes", "continue", "done", "proceed", "confirm", "allow", "accept", "agree",
@@ -192,8 +193,12 @@ object ConsequentialControls {
      * - a clickable control with no label, whose effect cannot be shown to the owner;
      * - a yes-control ([isPositive]: OK, Yes, Continue, Next, Save, Done, Proceed…) whose row or
      *   window title, or any text of its window that is not a control itself, mentions a
-     *   consequential word, a price or a number written like an amount ([amountIn]): the "OK" of
-     *   "Delete 248 photos?", the "Next" under "Total: 249.00 EUR";
+     *   consequential word: the "OK" of "Delete 248 photos?" (a "Delete" button elsewhere in the
+     *   window does not make every OK a delete);
+     * - a yes-control whose row, window title or window shows a price or a number written like
+     *   an amount ([amountIn]) anywhere but in a field, also on a control: the "Next" under
+     *   "Total: 249.00 EUR", and the "OK" beside a tappable summary row that carries the total
+     *   itself;
      * - a yes-control in a window with a filled-in field (the "Next" beside an amount of 5000:
      *   it would pass on what was typed), or in a window that holds more than was read, so what
      *   it answers cannot be told.
@@ -206,17 +211,21 @@ object ConsequentialControls {
         priceIn(element)?.let { return "the control shows a price (\"${PreviewText.exact(it)}\")" }
         if (element.clickable && isUnlabelled(element)) return "the control has no label, so what it does cannot be shown"
         if (isPositive(element)) {
+            val sameApp = window?.elements?.filter { it.packageName == element.packageName }.orEmpty()
             val around = buildList {
                 add(element.context)
                 add(window?.windowTitle)
-                window?.elements?.filter { !it.clickable && !it.editable && it.packageName == element.packageName }?.forEach {
+                sameApp.filter { !it.clickable && !it.editable }.forEach {
                     add(it.text)
                     add(it.description)
                 }
             }.filterNotNull()
             around.firstNotNullOfOrNull { matchedWord(it) }?.let { return "it answers a screen that mentions \"$it\"" }
-            around.firstNotNullOfOrNull { priceIn(it) }?.let { return "it answers a screen that shows a price (\"${PreviewText.exact(it)}\")" }
-            around.firstNotNullOfOrNull { amountIn(it) }?.let { return "it answers a screen that shows an amount (\"${PreviewText.exact(it)}\")" }
+            // A price or an amount counts on a control too: a tappable summary row carries its text itself, or in its merged
+            // label. A field is judged below, by whether it is filled in (its hint may read "0.00").
+            val shown = around + sameApp.filter { it.clickable && !it.editable }.flatMap { listOfNotNull(it.text, it.description, it.label) }
+            shown.firstNotNullOfOrNull { priceIn(it) }?.let { return "it answers a screen that shows a price (\"${PreviewText.exact(it)}\")" }
+            shown.firstNotNullOfOrNull { amountIn(it) }?.let { return "it answers a screen that shows an amount (\"${PreviewText.exact(it)}\")" }
             // An empty field reports its hint as its text on some Android versions: that is not filled in.
             window?.elements?.firstOrNull { it.editable && it.packageName == element.packageName && !it.text.isNullOrBlank() && it.text != it.hint }
                 ?.let { return "it answers a screen with a filled-in field" }

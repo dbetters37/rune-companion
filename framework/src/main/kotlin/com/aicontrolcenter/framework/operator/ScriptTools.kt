@@ -57,7 +57,10 @@ internal class ScriptsRunJs(private val d: OperatorToolDependencies, private val
     "Runs a small JavaScript program in a sealed sandbox with no access to the phone, the network or Java. The value of the last " +
         "expression is returned as JSON; \"input\" is available as the global `input`; console.log output is returned too. " +
         "With \"workspace\": \"read\" the script can call workspace.read(path) and workspace.list(path); with \"write\" also " +
-        "workspace.write(path, text), which only creates new files (at most 20). Time and instructions are limited.",
+        "workspace.write(path, text), which only creates new files (at most 20). Time and instructions are limited. " +
+        "A result is cut after ${grouped(d.limits.js.maxResultChars)} characters: write a larger result to a workspace file with " +
+        "workspace.write (a text of up to ${grouped(d.limits.js.maxStringChars)} characters) and return a short summary. The array " +
+        "methods refuse arrays of more than ${grouped(d.limits.js.maxArrayLength)} elements.",
     objectSchema("code") {
         stringProp("code", "The JavaScript source (ES2015+).")
         putJsonObject("input") { put("description", "Any JSON value the script reads as `input`.") }
@@ -88,6 +91,11 @@ internal class ScriptsRunJs(private val d: OperatorToolDependencies, private val
             // JSON delimits itself, so the input is shown as it is rather than in quotes.
             listOfNotNull("Code: ${q(code)}", input?.let { "Input (JSON): ${PreviewText.exact(it)}" }, "Workspace access: $accessText", "Time limit: $timeout ms"),
         )
+    }
+
+    private companion object {
+        /** 100000 as "100,000". */
+        fun grouped(n: Int): String = String.format(java.util.Locale.ROOT, "%,d", n)
     }
 
     private fun answer(outcome: JsOutcome): ToolOutcome {

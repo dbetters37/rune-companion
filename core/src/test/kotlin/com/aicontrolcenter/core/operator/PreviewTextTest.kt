@@ -77,8 +77,8 @@ class PreviewTextTest {
         // Two apostrophes, or two of their look-alikes, draw like a double quote.
         assertEquals("\"ls⟨U+0027⟩⟨U+0027⟩ ; rm -rf x\"", PreviewText.quoted("ls'' ; rm -rf x"))
         assertEquals("\"a⟨U+2019⟩⟨U+2019⟩b⟨U+2018⟩⟨U+0027⟩c⟨U+0060⟩⟨U+0060⟩\"", PreviewText.quoted("a\u2019\u2019b\u2018'c``"))
-        // One alone is ordinary writing and stays as it is.
-        assertEquals("\"don't, it\u2019s 'so' `x`\"", PreviewText.quoted("don't, it\u2019s 'so' `x`"))
+        // One plain apostrophe or backtick alone is ordinary writing and stays as it is; a typographic one is shown by its code (round 3, P1).
+        assertEquals("\"don't, it⟨U+2019⟩s 'so' `x`\"", PreviewText.quoted("don't, it\u2019s 'so' `x`"))
         // Whatever is inside, the only plain double quotes left are the two around the value.
         for (value in listOf(fake, "a''b", "\u201Cx\u201D", "x\"\u201D''\"")) {
             assertEquals(2, PreviewText.quoted(value).replace(PreviewText.QUOTE, "").count { it == '"' }, value)
