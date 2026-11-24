@@ -179,30 +179,51 @@ interface Workspace {
     /**
      * Moves a file or folder to the trash. The item's record counts against the size limit like
      * any file: when it does not fit, nothing is trashed ([DocResult.Failed]), unless the trash is
-     * empty, since trashing and then emptying the trash is the way to make room.
+     * empty (no item, and nothing else under its folder: [trashLeftovers]), since trashing and
+     * then emptying the trash is the way to make room.
      */
     suspend fun trash(path: RelativePath): DocResult<TrashItem>
 
-    /** Trash items, newest first. Never waits for a change or a shell command. */
+    /** Trash items, newest first. Never waits for a change or a shell command, and changes nothing. */
     suspend fun listTrash(): DocResult<List<TrashItem>>
 
     suspend fun restore(id: String): DocResult<DocumentEntry>
 
     /**
-     * Deletes [ids] from the trash for good, or everything when null: every item, and whatever
-     * else is under the trash folder ([trashLeftovers]). Returns how many items.
+     * Deletes from the trash for good. With [ids]: those items and no other; an item that is in
+     * the trash without being named stays (it may have arrived after the caller looked). With
+     * null: every item. With [leftovers], also whatever else lies under the trash folder
+     * ([trashLeftovers]), which is the default when every item goes. Returns how many items.
      */
-    suspend fun emptyTrash(ids: Set<String>?): DocResult<Int>
+    suspend fun emptyTrash(ids: Set<String>?, leftovers: Boolean = ids == null): DocResult<Int>
 
     /**
-     * What is under the trash folder without being an item [listTrash] lists: the bytes of what
-     * a change that was interrupted left behind and that could not be given a record again, or
-     * null when there is nothing of the kind. It counts against the size limit and cannot be
-     * restored; only [emptyTrash] with null deletes it. Also null while a change or a shell
-     * command is under way: what a change in flight has put there is no leftover, so nothing is
-     * claimed then. Never waits for a change.
+     * What lies under the trash folder without being an item [listTrash] lists: the bytes of
+     * what a change that was interrupted left behind and that could not be given a record again,
+     * 0 when it has no size (an empty file or folder, a link), or null when nothing of the kind
+     * lies there. It cannot be restored; only [emptyTrash] with its `leftovers` deletes it. So
+     * the trash is empty exactly when nothing is listed and a look here finds nothing, and that
+     * is also when [trash] moves one item there whatever the size limit says.
+     *
+     * A change or another look under way is waited for (both are short): what a change in
+     * flight has put there is no leftover. Null is also the answer, without looking, while a
+     * shell command runs ([commandRunning]): what is there then may be the command's own work.
+     * A command's end is told to the listeners of [changes], who then look again. Changes
+     * nothing, so a call that is only being assessed may ask.
      */
     suspend fun trashLeftovers(): Long? = null
+
+    /**
+     * Puts right, once after a start, what a change left in the trash when the app was stopped
+     * in the middle of it: what it had staged is removed, and a file that is in the trash
+     * without its record gets one again, so it is listed ([TrashItem.recovered]) and not taken
+     * for a leftover. It counts as a change when it changed something. The app calls this when
+     * it starts, before any agent acts, and the owner's trash screen calls it before its first
+     * look; every change does it first as well. It is never called while a tool's call is only
+     * being assessed, which must have no side effects. A change under way is waited for; while a
+     * shell command runs nothing is done, and the next call or the next change does it.
+     */
+    suspend fun tidyTrash() {}
 
     /** Names, then text lines of UTF-8 files, containing [query] (case-insensitive), under [under]. */
     suspend fun search(query: String, under: RelativePath, maxResults: Int): DocResult<List<WorkspaceHit>>
@@ -217,7 +238,8 @@ interface Workspace {
      * while [write] runs; [write] gets the checked file and the most it may write (the smaller of
      * [maxBytes], the per-file limit and the room left); a file it leaves that breaks a size
      * limit is removed ([DocResult.TooLarge], or a full-workspace [DocResult.Failed]); and
-     * listeners of [changes] are told. Returns what [write] returned otherwise.
+     * once [write] was called, its end counts as a change ([changeCount]) whatever it left
+     * behind, and listeners of [changes] are told. Returns what [write] returned otherwise.
      */
     suspend fun <T> receive(path: RelativePath, maxBytes: Long, write: suspend (target: WorkspaceFile, maxBytes: Long) -> DocResult<T>): DocResult<T>
 

@@ -16,6 +16,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -94,14 +95,17 @@ data class WorkspaceLimits(
  * A trash record is always written before the content goes into its holder, for a trashed item
  * and for a kept version alike, and a holder is filled in one step. So a kill leaves an item in
  * its place or in the trash with its record, never out of both. What it can leave behind is put
- * right before the first change after a start, or before the trash is first looked at, whichever
- * comes first ([tidyOnce]): a staged file and a record whose
+ * right once after a start ([tidyOnce]): when the app starts and before the owner's trash screen
+ * first looks ([tidyTrash]), and before the first change in any case; never by a call that is
+ * only being assessed. A staged file and a record whose
  * content never arrived are removed, a kept "version" that is still the live file itself is
  * dropped, and a holder that has content but no usable record (an earlier version of the app
  * wrote the record last) gets a record again, so it is listed and can be restored; content is
- * never deleted there. Whatever is under the trash folder and still not a listed item
- * ([trashLeftovers]) is cleared by emptying the whole trash, which the owner's screen offers.
- * While a change or a shell command is under way, nothing there is called a leftover.
+ * never deleted there. Whatever lies under the trash folder and still is no listed item
+ * ([trashLeftovers]) is cleared by emptying the trash with its leftovers, which the owner's
+ * screen offers whenever anything lies there ([liesInTrash]). A look at it waits for a change
+ * under way, so nothing a change in flight put there is called a leftover, and claims nothing
+ * while a shell command runs.
  *
  * Sizes: the limit counts every file, the trash's records too. A change that writes a record
  * checks that it fits; a change that adds content also leaves [WorkspaceLimits.trashRecordRoomBytes]
@@ -136,6 +140,12 @@ class LocalWorkspace(
      * made it look.
      */
     private val announced = MutableStateFlow(0L)
+
+    /**
+     * Moves whenever the change lock was given back, and when a shell command has begun
+     * ([announce]). A look that found the lock taken waits for this ([looking]).
+     */
+    private val turns = MutableStateFlow(0L)
     private val mutex = Mutex()
     private val random = SecureRandom()
 
@@ -168,10 +178,15 @@ class LocalWorkspace(
         changeCounter.update { it + 1 }
     }
 
-    /** Tells the listeners of [changes] what the counter is now. Called when the change lock has been released, and when a command starts. */
+    /**
+     * Tells the listeners of [changes] what the counter is now, and a look that waits for the
+     * change lock that it may try again. Called when the change lock has been released, and when
+     * a command starts.
+     */
     private fun announce() {
         val now = changeCounter.value
         announced.update { maxOf(it, now) }
+        turns.update { it + 1 }
     }
 
     /** Marks the coroutine that runs a shell command inside [runCommand]: it holds the change lock already. */
@@ -187,6 +202,32 @@ class LocalWorkspace(
         try {
             return mutex.withLock { block() }
         } finally {
+            announce()
+        }
+    }
+
+    /**
+     * [look] with the change lock held: a look at what lies under the trash folder, or the tidy
+     * for a reader. No change begins meanwhile, so nothing that a change in flight has put there
+     * is taken for a leftover. The lock is waited for while a change or another look holds it:
+     * both are short, and neither says anything about what is in the trash. It is not waited for
+     * while a shell command holds it, which can take a minute: then nothing is looked at and
+     * [busy] is the answer. That is the one case in which a look is turned away, and a command's
+     * end is always announced ([runCommand]), so whoever was turned away looks again.
+     */
+    private suspend fun <T> looking(busy: T, look: () -> T): T {
+        while (true) {
+            // Read before the two checks, so that a move between them and the wait is not missed.
+            val turn = turns.value
+            if (commandRuns) return busy
+            if (mutex.tryLock()) break
+            // Whoever holds the lock gives it back, or turns out to be a command: either moves [turns].
+            turns.first { it != turn }
+        }
+        try {
+            return look()
+        } finally {
+            mutex.unlock()
             announce()
         }
     }
@@ -219,8 +260,9 @@ class LocalWorkspace(
                 withContext(HoldsChangeLock(this@LocalWorkspace)) { command() }
             } finally {
                 // It has ended, however it ended: whatever it changed counts as a change. (The screens are told when the lock is free.)
-                commandRuns = false
+                // Counted before it stops being "running": whoever reads "no command runs" and then the counter sees this raise.
                 changed()
+                commandRuns = false
             }
             val used = try {
                 treeSize(base()) ?: 0
@@ -430,27 +472,21 @@ class LocalWorkspace(
         DocResult.Ok(moveToTrash(path, source))
     }
 
-    override suspend fun listTrash(): DocResult<List<TrashItem>> = withContext(io) {
-        tidyIfFree()
-        guard { DocResult.Ok(trashItems()) }
-    }
+    /** Reads the records as they are: no lock is taken and nothing is tidied, so this is safe in a call that is only being assessed. */
+    override suspend fun listTrash(): DocResult<List<TrashItem>> = withContext(io) { guard { DocResult.Ok(trashItems()) } }
 
     /**
-     * The tidy after a start, for a reader of the trash: run before the trash is first shown, so
-     * that a holder which gets its record back is listed (and can be restored) from the first
-     * look on, and is never counted among leftovers that "Empty the trash" would delete for
-     * good. A reader never waits: when a change or a shell command holds the change lock, the
-     * tidy is left to the next look or the next change. Like every tidy it counts as a change
-     * when it changed something.
+     * The tidy after a start ([tidyOnce]) for whoever may change the workspace without being
+     * asked: the app when it starts, and the owner's trash screen before its first look. So a
+     * holder that gets its record back is listed (and can be restored) before anybody is shown
+     * the trash, and is never counted among leftovers that "Empty the trash" would delete for
+     * good. A change under way is waited for; while a shell command runs nothing is tidied, and
+     * the next call or the next change does it. Like every tidy it counts as a change when it
+     * changed something.
      */
-    private fun tidyIfFree() {
-        if (tidied || !mutex.tryLock()) return
-        try {
-            tidyOnce()
-        } finally {
-            mutex.unlock()
-            announce()
-        }
+    override suspend fun tidyTrash() {
+        if (tidied) return
+        withContext(io) { looking(busy = Unit) { tidyOnce() } }
     }
 
     override suspend fun restore(id: String): DocResult<DocumentEntry> = changing {
@@ -474,7 +510,7 @@ class LocalWorkspace(
         DocResult.Ok(entryOf(original, target))
     }
 
-    override suspend fun emptyTrash(ids: Set<String>?): DocResult<Int> = changing {
+    override suspend fun emptyTrash(ids: Set<String>?, leftovers: Boolean): DocResult<Int> = changing {
         val trash = trashDir()
         if (!Files.isDirectory(trash, NOFOLLOW)) return@changing DocResult.Ok(0)
         val targets = ids ?: trashItems().map { it.id }.toSet()
@@ -488,37 +524,33 @@ class LocalWorkspace(
             Files.deleteIfExists(record)
             if (existed) deleted++
         }
-        if (ids == null) {
-            // Everything else under the trash folder: what an interrupted trash, restore or replace left and the tidy could
-            // not list again, anything a shell command put there, and whatever was staged (changes are serialised, so
-            // nothing is being staged right now). The owner asked for the whole trash to go.
+        if (leftovers) {
+            // Everything else under the trash folder that is no listed item: what an interrupted trash, restore or replace
+            // left and the tidy could not list again, anything a shell command put there, and whatever was staged (changes
+            // are serialised, so nothing is being staged right now). An item that is still listed was not named: it stays.
             Files.newDirectoryStream(trash).use { stream -> stream.toList() }
-                .filter { it.fileName.toString() != STAGING || !Files.isDirectory(it, NOFOLLOW) }.forEach { deleteTree(it) }
+                .filter { it.fileName.toString() != STAGING || !Files.isDirectory(it, NOFOLLOW) }
+                .filter { trashItem(it.fileName.toString().removeSuffix(".json")) == null }
+                .forEach { deleteTree(it) }
             clearStaging()
         }
         DocResult.Ok(deleted)
     }
 
     /**
-     * Nothing is claimed while a change or a shell command is under way (null): a change stages
-     * its new file and writes its trash record under the trash folder before the content
-     * arrives, and none of that is a leftover of anything. So this never waits for the change
-     * lock; it takes it only if it is free, and holds it for the look, so no change begins
-     * meanwhile. The tidy after a start runs first ([tidyIfFree]): what it can list again or
-     * remove is no leftover either. And nothing of 0 bytes is reported.
+     * A look with the change lock held ([looking]): a change stages its new file and writes its
+     * trash record under the trash folder before the content arrives, and none of that is a
+     * leftover of anything, so a change under way is waited for, and so is another look. Null
+     * without looking only while a shell command runs. Nothing is tidied here: this is called
+     * while a tool's call is assessed.
      */
-    override suspend fun trashLeftovers(): Long? = withContext(io) {
-        if (!mutex.tryLock()) return@withContext null
-        try {
-            tidyOnce()
-            leftoverBytes()
-        } finally {
-            mutex.unlock()
-            announce()
-        }
-    }
+    override suspend fun trashLeftovers(): Long? = withContext(io) { looking(busy = null) { leftoverBytes() } }
 
-    /** What is under the trash folder and is no listed item, in bytes; null when nothing, or nothing of any size. Called with the mutex held. */
+    /**
+     * What lies under the trash folder and is no listed item, in bytes: 0 when it has no size (an
+     * empty file or folder, a link); null when nothing of the kind lies there. Called with the
+     * mutex held.
+     */
     private fun leftoverBytes(): Long? {
         try {
             val trash = trashDir()
@@ -527,19 +559,15 @@ class LocalWorkspace(
             var bytes = 0L
             val listed = HashMap<String, Boolean>()
             for (entry in Files.newDirectoryStream(trash).use { it.toList() }) {
-                val name = entry.fileName.toString()
-                // The staging folder itself is no leftover, what a killed change left in it is; a listed item's holder and record are not.
-                val leftover = if (name == STAGING && Files.isDirectory(entry, NOFOLLOW)) {
-                    Files.newDirectoryStream(entry).use { it.iterator().hasNext() }
-                } else {
-                    !listed.getOrPut(name.removeSuffix(".json")) { trashItem(name.removeSuffix(".json")) != null }
-                }
-                if (leftover) {
+                if (!liesInTrash(entry)) continue
+                // What lies there is a listed item's holder or record, or it is a leftover (what is in the staging folder now always is).
+                val id = entry.fileName.toString().removeSuffix(".json")
+                if (!listed.getOrPut(id) { trashItem(id) != null }) {
                     found = true
                     bytes += treeSize(entry) ?: 0
                 }
             }
-            return if (found && bytes > 0) bytes else null
+            return if (found) bytes else null
         } catch (e: IOException) {
             return null
         } catch (e: RuntimeException) {
@@ -635,7 +663,7 @@ class LocalWorkspace(
         write: suspend (target: WorkspaceFile, maxBytes: Long) -> DocResult<T>,
     ): DocResult<T> = withContext(io) {
         locked {
-            var touched = false
+            var called = false
             var ended = false
             try {
                 guard {
@@ -651,9 +679,9 @@ class LocalWorkspace(
                     if (room <= 0) return@guard fullProblem(used)
                     makeParents(path, includingSelf = false)?.let { return@guard it }
                     val limit = minOf(maxBytes, limits.maxFileBytes, room)
+                    called = true
                     val result = write(file, limit)
-                    touched = Files.exists(target, NOFOLLOW)
-                    if (touched) {
+                    if (Files.exists(target, NOFOLLOW)) {
                         // What the gateway left must keep every limit; it is new, so removing it loses nothing.
                         val size = if (Files.isRegularFile(target, NOFOLLOW)) Files.size(target) else null
                         val problem = when {
@@ -670,8 +698,9 @@ class LocalWorkspace(
                     if (result is DocResult.TooLarge && limit == room && room < minOf(maxBytes, limits.maxFileBytes)) fullProblem(used) else result
                 }.also { ended = true }
             } finally {
-                // Also when the gateway was cancelled or failed half way: it may have left part of a file.
-                if (touched || !ended) changed()
+                // Whenever the gateway was called, whatever it left behind: a copy that failed and removed its half-written
+                // file changed the workspace twice. Also when it was cancelled or failed half way.
+                if (called || !ended) changed()
             }
         }
     }
@@ -744,9 +773,9 @@ class LocalWorkspace(
 
     /**
      * Why [path] cannot be moved to the trash now, or null: its record must fit like any file.
-     * With nothing under the trash folder it is written all the same, since trashing and then
-     * emptying the trash is the only way to make room; changes made through this class always
-     * leave that room, a shell command may not have.
+     * With nothing in the trash ([trashIsBare]) it is written all the same, since trashing and
+     * then emptying the trash is the only way to make room; changes made through this class
+     * always leave that room, a shell command may not have.
      */
     private fun trashRoomProblem(path: RelativePath): DocResult<Nothing>? {
         val used = treeSize(base()) ?: 0
@@ -757,12 +786,26 @@ class LocalWorkspace(
         )
     }
 
-    /** Nothing is under the trash folder (apart from the staging folder), so emptying the trash would free nothing. */
+    /**
+     * Nothing lies in the trash ([liesInTrash]), so there is nothing to empty. The same test
+     * decides what the screens and tools say: with anything lying there, an item or a leftover
+     * ([leftoverBytes]) is shown and "Empty the trash" is offered, so whoever is told here to
+     * empty the trash first finds that offered.
+     */
     private fun trashIsBare(): Boolean {
         val trash = trashDir()
         if (!Files.isDirectory(trash, NOFOLLOW)) return true
-        return Files.newDirectoryStream(trash).use { stream -> stream.none { it.fileName.toString() != STAGING } }
+        return Files.newDirectoryStream(trash).use { stream -> stream.none(::liesInTrash) }
     }
+
+    /**
+     * Whether [entry], directly under the trash folder, counts as something in the trash.
+     * Everything does, with or without a size, except the staging folder while it is an empty
+     * folder. The one test for "the trash is empty".
+     */
+    private fun liesInTrash(entry: Path): Boolean =
+        entry.fileName.toString() != STAGING || !Files.isDirectory(entry, NOFOLLOW) ||
+            Files.newDirectoryStream(entry).use { it.iterator().hasNext() }
 
     /** The most bytes the trash record of an item from [path] takes. */
     private fun recordBytes(path: RelativePath): Long =
@@ -801,10 +844,8 @@ class LocalWorkspace(
     /**
      * The staging folder, made when it is missing. Only a shell command can put something else
      * under its name. An empty file or a link there is removed first: neither holds anything of
-     * anybody's, a link must not be written through, and with no size it would not be shown as
-     * a leftover ([trashLeftovers]), so nothing would tell the owner why every write fails. A
-     * file with content stays: writing fails, and it is shown as a leftover until the trash is
-     * emptied.
+     * anybody's, and a link must not be written through. A file with content stays: writing
+     * fails, and it is shown as a leftover ([trashLeftovers]) until the trash is emptied.
      */
     private fun stagingFolder(): Path {
         val staging = trashDir().resolve(STAGING)
@@ -921,8 +962,9 @@ class LocalWorkspace(
     }
 
     /**
-     * Once after a start, before the first change or the first look at the trash: puts right
-     * what a change that was interrupted (the app was killed) left behind. Staged files go, and
+     * Once after a start, before the first change at the latest ([tidyTrash] asks for it
+     * earlier): puts right what a change that was interrupted (the app was killed) left behind.
+     * Staged files go, and
      * every trash id is looked at ([tidyItem]). Content is never deleted here. What it changes
      * is a change like any other: it is announced when it is done, whether or not the change it
      * runs before succeeds. Called with the mutex held.

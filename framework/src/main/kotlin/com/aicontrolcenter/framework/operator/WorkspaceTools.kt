@@ -624,16 +624,15 @@ internal class WorkspaceRestore(private val d: OperatorToolDependencies) : Opera
 ) {
     override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
         val id = Args(arguments).string("id")?.trim()
+        // Looking changes nothing: neither the listing nor the leftovers figure tidies the trash (an assessment has no side effects).
         val items = (d.workspace.listTrash() as? DocResult.Ok)?.value.orEmpty()
-        val leftovers = d.workspace.trashLeftovers()
-        // While a shell command runs the workspace claims no leftovers; then the trash is not called empty either.
-        val commandRuns = d.workspace.commandRunning()
+        val (leftovers, looked) = TrashText.leftoversNow(d.workspace)
         if (id.isNullOrEmpty()) {
             // Listing the trash is a read; nothing is restored.
-            return assessment("List the workspace trash", prepared { ToolOutcome.success(TrashText.list(items, leftovers, commandRuns)) }, risk = RiskLevel.MODIFYING)
+            return assessment("List the workspace trash", prepared { ToolOutcome.success(TrashText.list(items, leftovers, looked)) }, risk = RiskLevel.MODIFYING)
         }
         val item = items.firstOrNull { it.id == id }
-            ?: return assessment("Restore trash item ${q(id)}", failing("There is no item ${q(id)} in the trash. ${TrashText.list(items, leftovers, commandRuns)}"))
+            ?: return assessment("Restore trash item ${q(id)}", failing("There is no item ${q(id)} in the trash. ${TrashText.list(items, leftovers, looked)}"))
         val original = RelativePath.parse(item.originalPath) as? RelativePath.Check.Valid
             ?: return assessment("Restore trash item ${q(id)}", failing("The trash record of ${q(id)} is damaged."))
         val target = WorkspaceStates.of(d.workspace, original.path)
@@ -665,28 +664,50 @@ internal object TrashText {
             if (item.recovered) "; found without its record, so where it was is not known: it is restored to the top of the workspace" else ""
 
     /**
-     * The trash in words. [leftoverBytes]: what is under the trash folder without being an item
-     * ([Workspace.trashLeftovers]); with any of it the trash is never called empty. Nor is it
-     * while a shell command runs ([commandRuns]): leftovers are not counted then, so only what
-     * is listed is said.
+     * The trash in words. [leftoverBytes]: what lies under the trash folder without being an item
+     * ([Workspace.trashLeftovers]); with any of it, of whatever size, the trash is never called
+     * empty. Nor is it when the leftovers were not [looked] at (a shell command held the
+     * workspace): then only what is listed is said.
      */
-    fun list(items: List<TrashItem>, leftoverBytes: Long? = null, commandRuns: Boolean = false): String = when {
-        items.isEmpty() && leftoverBytes == null -> if (commandRuns) "The workspace trash lists no items." else "The workspace trash is empty."
+    fun list(items: List<TrashItem>, leftoverBytes: Long? = null, looked: Boolean = true): String = when {
+        items.isEmpty() && leftoverBytes == null -> if (looked) "The workspace trash is empty." else "The workspace trash lists no items."
         items.isEmpty() -> "The workspace trash lists no items. ${leftovers(leftoverBytes!!, also = false)}"
         else -> "The workspace trash holds ${OperatorText.count(items.size, "item")}:\n" + items.joinToString("\n") { line(it) } +
             (leftoverBytes?.let { "\n" + leftovers(it, also = true) } ?: "")
     }
 
-    /** What an agent is told about leftovers: they exist, cannot be restored, and only the owner clears them. */
+    /**
+     * What an agent is told about leftovers: they exist, cannot be restored, and only the owner
+     * clears them. Their size is named when they have one, never "0 bytes".
+     */
     fun leftovers(bytes: Long, also: Boolean): String =
-        "It ${if (also) "also " else ""}holds leftovers of a change that was interrupted (${size(bytes)}). They cannot be restored, and only " +
-            "the owner can delete them: with \"Empty the trash\" on the Workspace trash screen."
+        "It ${if (also) "also " else ""}holds leftovers of a change that was interrupted${if (bytes > 0) " (${size(bytes)})" else ""}. " +
+            "They cannot be restored, and only the owner can delete them: with \"Empty the trash\" on the Workspace trash screen."
+
+    /**
+     * The leftovers figure for a tool, and whether it was really looked for.
+     * [Workspace.trashLeftovers] answers null both when nothing lies there and when it did not
+     * look because a shell command held the workspace. A command that ran at any moment of the
+     * look is still running afterwards or has raised the change counter since (it raises it
+     * when it starts and before it stops being "running"). So a null with neither was a look
+     * that found nothing, and only then may the trash be called empty.
+     */
+    suspend fun leftoversNow(workspace: Workspace): Pair<Long?, Boolean> {
+        val before = workspace.changeCount()
+        val bytes = workspace.trashLeftovers()
+        val looked = bytes != null || (!workspace.commandRunning() && workspace.changeCount() == before)
+        return bytes to looked
+    }
+
+    /** " 1 item that arrived meanwhile was kept.", or nothing when [count] is 0: what emptying did not delete because it was not listed when it was approved. */
+    fun keptMeanwhile(count: Int): String =
+        if (count == 0) "" else " ${OperatorText.count(count, "item")} that arrived meanwhile ${if (count == 1) "was" else "were"} kept."
 }
 
 /** workspace.empty_trash */
 internal class WorkspaceEmptyTrash(private val d: OperatorToolDependencies) : OperatorTool(
     "workspace.empty_trash", "Empty the workspace trash",
-    "Deletes items in the workspace trash for good: the ones named, or all of them. The owner approves every time.",
+    "Deletes items in the workspace trash for good: the ones named, or all that are listed when the owner is asked. The owner approves every time.",
     objectSchema { stringArrayProp("ids", "Trash item ids to delete. Omit to empty the whole trash.", 500) },
 ) {
     override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
@@ -703,14 +724,17 @@ internal class WorkspaceEmptyTrash(private val d: OperatorToolDependencies) : Op
         return when {
             unknown.isNotEmpty() -> assessment(summary, failing("The trash has no item ${unknown.joinToString(", ") { q(it) }}; nothing was deleted."), details)
             // Not empty while leftovers of an interrupted change are in it; those are the owner's to clear, on their own screen.
-            chosen.isEmpty() -> assessment(
-                summary,
-                failing(
-                    d.workspace.trashLeftovers()?.let { "The trash lists no items to delete. ${TrashText.leftovers(it, also = false)}" }
-                        ?: if (d.workspace.commandRunning()) "The trash lists no items to delete." else "The trash is empty; nothing to delete.",
-                ),
-                details,
-            )
+            chosen.isEmpty() -> {
+                val (leftovers, looked) = TrashText.leftoversNow(d.workspace)
+                assessment(
+                    summary,
+                    failing(
+                        leftovers?.let { "The trash lists no items to delete. ${TrashText.leftovers(it, also = false)}" }
+                            ?: if (looked) "The trash is empty; nothing to delete." else "The trash lists no items to delete.",
+                    ),
+                    details,
+                )
+            }
             else -> {
                 val chosenIds = chosen.map { it.id }.toSet()
                 assessment(
@@ -719,8 +743,13 @@ internal class WorkspaceEmptyTrash(private val d: OperatorToolDependencies) : Op
                         val now = (d.workspace.listTrash() as? DocResult.Ok)?.value?.filter { it.id in chosenIds }.orEmpty()
                         if (now.toSet() == chosen.toSet()) null else "the trash items to delete are no longer as they were"
                     }) {
+                        // Only the items the approval listed, also when the whole trash was asked for: under the change lock
+                        // exactly these are deleted, and what arrived in the trash after the owner was asked stays.
                         when (val r = d.workspace.emptyTrash(chosenIds)) {
-                            is DocResult.Ok -> ToolOutcome.success("Deleted ${OperatorText.count(r.value, "item")} from the trash for good.")
+                            is DocResult.Ok -> {
+                                val kept = if (ids != null) 0 else (d.workspace.listTrash() as? DocResult.Ok)?.value?.count { it.id !in chosenIds } ?: 0
+                                ToolOutcome.success("Deleted ${OperatorText.count(r.value, "item")} from the trash for good.${TrashText.keptMeanwhile(kept)}")
+                            }
                             else -> ToolOutcome.failure(OperatorText.problem(r, "Emptying the trash"))
                         }
                     },
