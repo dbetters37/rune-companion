@@ -799,14 +799,28 @@ class LocalWorkspace(
     }
 
     /**
+     * The staging folder, made when it is missing. Only a shell command can put something else
+     * under its name. An empty file or a link there is removed first: neither holds anything of
+     * anybody's, a link must not be written through, and with no size it would not be shown as
+     * a leftover ([trashLeftovers]), so nothing would tell the owner why every write fails. A
+     * file with content stays: writing fails, and it is shown as a leftover until the trash is
+     * emptied.
+     */
+    private fun stagingFolder(): Path {
+        val staging = trashDir().resolve(STAGING)
+        if (Files.isSymbolicLink(staging) || (Files.isRegularFile(staging, NOFOLLOW) && Files.size(staging) == 0L)) Files.delete(staging)
+        Files.createDirectories(staging)
+        return staging
+    }
+
+    /**
      * Writes through a staging file in the trash folder, then renames it to [target], over the
      * file there when [replace]. [keep] runs once the new content is complete and keeps the
      * version about to be replaced ([keepInTrash]); if the rename then fails, what it kept is
      * removed again, since the file never left its place.
      */
     private fun stageAndMove(target: Path, replace: Boolean, fill: (Path) -> Unit, keep: (() -> TrashItem)? = null, what: String = "the new file") {
-        val staging = trashDir().resolve(STAGING)
-        Files.createDirectories(staging)
+        val staging = stagingFolder()
         val temp = staging.resolve("w-" + java.lang.Long.toUnsignedString(random.nextLong(), 36))
         try {
             step("write $what to a staging file")
@@ -876,8 +890,7 @@ class LocalWorkspace(
             }
         }
         // A copy is made next to the staged files and moved into the holder in one step, so a holder never holds half a version.
-        val staging = trashDir().resolve(STAGING)
-        Files.createDirectories(staging)
+        val staging = stagingFolder()
         val temp = staging.resolve("k-" + java.lang.Long.toUnsignedString(random.nextLong(), 36))
         try {
             Files.copy(current, temp, StandardCopyOption.COPY_ATTRIBUTES, NOFOLLOW)

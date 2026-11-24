@@ -6,17 +6,23 @@ import com.aicontrolcenter.core.operator.RelativePath
 import com.aicontrolcenter.core.operator.TrashItem
 import com.aicontrolcenter.core.tools.ToolOutcome
 import com.aicontrolcenter.framework.operator.OperatorFixture.Companion.json
+import com.aicontrolcenter.testkit.FakeClock
+import com.aicontrolcenter.testkit.FakeWorkspaceRoot
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Test
 import java.io.ByteArrayInputStream
+import java.io.File
 import java.io.IOException
 import java.io.InputStream
+import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
@@ -319,6 +325,38 @@ class WorkspaceRound4Test {
         assertTrue("leftovers of a change that was interrupted" in f.ok("workspace.restore").content)
     }
 
+    @Test
+    fun `W2 - a listener that looks again when a change is announced finds the change ended`() = runBlocking<Unit> {
+        // A screen: it looks at the trash whenever the workspace says it changed. Everything on one thread here, so the
+        // listener runs at the very moment of the announcement. Were that made while the change still holds the change
+        // lock, the listener would be told "a change is under way, nothing is claimed", and nothing would make it look again.
+        val root = Files.createTempDirectory("aicc-announce").toFile()
+        File(root, ".trash").mkdirs()
+        File(root, ".trash/stray.bin").writeText("x".repeat(500))
+        val ws = LocalWorkspace(FakeWorkspaceRoot(root), FakeClock(autoAdvanceMs = 1), io = EmptyCoroutineContext)
+        val seen = ArrayList<Pair<Long, Long?>>()
+        val screen = launch(Dispatchers.Unconfined) { ws.changes.collect { seen += it to ws.trashLeftovers() } }
+        try {
+            assertEquals(listOf(0L to 500L), seen.toList())
+
+            assertIs<DocResult.Ok<*>>(ws.write(p("docs/a.txt"), "x".toByteArray(), overwrite = false))
+            assertEquals(ws.changeCount() to 500L, seen.last(), "after a change that made a folder first: $seen")
+
+            assertIs<DocResult.Ok<*>>(ws.trash(p("docs/a.txt")))
+            assertEquals(ws.changeCount() to 500L, seen.last(), "after a trash: $seen")
+
+            var duringTheCommand: Pair<Long, Long?>? = null
+            ws.runCommand(ws.changeCount()) { duringTheCommand = seen.last() }
+            assertNull(duringTheCommand!!.second, "the start of a command is announced, and while it runs nothing is claimed")
+            assertEquals(ws.changeCount() to 500L, seen.last(), "after a shell command: $seen")
+
+            ws.changedOutside()
+            assertEquals(ws.changeCount() to 500L, seen.last())
+        } finally {
+            screen.cancel()
+        }
+    }
+
     // ---- W3 ----
 
     @Test
@@ -372,6 +410,33 @@ class WorkspaceRound4Test {
         assertNull(f.workspace.trashLeftovers())
         f.put(".trash/one-byte", "x")
         assertEquals(1L, f.workspace.trashLeftovers())
+    }
+
+    @Test
+    fun `W3 - something without a size under the staging folder's name blocks no write, since it would not be shown`() = runBlocking<Unit> {
+        // Only a shell command can do this. Reported "leftovers (0 bytes)" were the way out before; now there is none to need.
+        val f = OperatorFixture()
+        f.put("keep/important.txt", "owner data")
+        f.put(".trash/.staging", "")
+        assertNull(f.workspace.trashLeftovers())
+        f.ok("workspace.write", "path" to "a.txt", "content" to "x")
+        assertTrue(f.file(".trash/.staging").isDirectory)
+
+        // A link in its place is removed as a link; nothing is staged through it.
+        f.file(".trash/.staging").deleteRecursively()
+        Files.createSymbolicLink(f.file(".trash/.staging").toPath(), f.file("keep").toPath())
+        assertNull(f.workspace.trashLeftovers())
+        f.ok("workspace.write", "path" to "a.txt", "content" to "y", "overwrite" to true)
+        assertTrue(f.file(".trash/.staging").isDirectory && !Files.isSymbolicLink(f.file(".trash/.staging").toPath()))
+        assertEquals(listOf("important.txt"), f.file("keep").list()!!.toList(), "nothing was written into what the link pointed to")
+        assertEquals("y", f.file("a.txt").readText())
+
+        // A file with content there is somebody's: it stays, writing fails, and it is shown, so the owner can clear it.
+        f.file(".trash/.staging").deleteRecursively()
+        f.put(".trash/.staging", "not a folder")
+        f.fails("workspace.write", "path" to "b.txt", "content" to "x")
+        assertEquals(12L, f.workspace.trashLeftovers())
+        assertEquals("not a folder", f.file(".trash/.staging").readText())
     }
 
     @Test
