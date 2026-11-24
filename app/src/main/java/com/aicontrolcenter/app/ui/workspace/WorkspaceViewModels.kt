@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -94,21 +95,27 @@ class WorkspaceViewModel(
     private val local = MutableStateFlow(Local())
     private var messageCounter = 0L
 
-    private data class Listing(val entries: List<WorkspaceEntryUi>, val problem: String?, val trashCount: Int, val trashHasLeftovers: Boolean = false)
+    private data class Listing(val entries: List<WorkspaceEntryUi>, val problem: String?, val trashCount: Int)
 
     private val listing = workspace.changes.map {
         if (parsed is RelativePath.Check.Invalid) return@map Listing(emptyList(), parsed.reason, 0)
         val now = clock.now()
         val trash = (workspace.listTrash() as? DocResult.Ok)?.value?.size ?: 0
-        val leftovers = workspace.trashLeftovers() != null
         when (val result = workspace.list(path)) {
-            is DocResult.Ok -> Listing(result.value.map { entryUi(it, now) }, null, trash, leftovers)
-            is DocResult.NotFound -> Listing(emptyList(), "This folder is no longer there. It may have been moved or put in the trash.", trash, leftovers)
-            else -> Listing(emptyList(), problemOf(result), trash, leftovers)
+            is DocResult.Ok -> Listing(result.value.map { entryUi(it, now) }, null, trash)
+            is DocResult.NotFound -> Listing(emptyList(), "This folder is no longer there. It may have been moved or put in the trash.", trash)
+            else -> Listing(emptyList(), problemOf(result), trash)
         }
     }
 
-    val uiState: StateFlow<WorkspaceUiState> = combine(listing, local) { listing, local ->
+    /**
+     * Whether the trash holds leftovers, looked at on its own: that look waits for a change under
+     * way (an import from a slow source can take a while), and the listing does not wait with it.
+     * False until the first look has ended, and while a shell command runs.
+     */
+    private val trashHasLeftovers = workspace.changes.map { workspace.trashLeftovers() != null }.onStart { emit(false) }
+
+    val uiState: StateFlow<WorkspaceUiState> = combine(listing, trashHasLeftovers, local) { listing, trashHasLeftovers, local ->
         WorkspaceUiState(
             isLoading = false,
             path = path,
@@ -116,7 +123,7 @@ class WorkspaceViewModel(
             entries = listing.entries,
             problem = listing.problem,
             trashCount = listing.trashCount,
-            trashHasLeftovers = listing.trashHasLeftovers,
+            trashHasLeftovers = trashHasLeftovers,
             isBusy = local.isBusy,
             share = local.share,
             message = local.message,
@@ -467,21 +474,22 @@ data class WorkspaceTrashUiState(
     val items: List<TrashItemUi> = emptyList(),
     /**
      * Bytes under the trash folder that are no listed item: what a change that was interrupted
-     * (the app was stopped in the middle) left behind and that cannot be restored. Null when
-     * there is nothing of the kind, and while a change or a shell command is under way: what is
-     * there then may be that change's own work, so the screen shows the listed items only.
+     * (the app was stopped in the middle) left behind and that cannot be restored; 0 when what
+     * lies there has no size (an empty file or folder, a link). Null when nothing of the kind lies
+     * there, and while a shell command runs: what is there then may be the command's own work,
+     * so the screen shows the listed items only. (A look waits for any other change to end.)
      */
     val leftoverBytes: Long? = null,
     val isBusy: Boolean = false,
     val message: UserMessage? = null,
 ) {
-    /** Emptying is offered whenever anything at all is in the trash, listed or not. */
+    /** Emptying is offered whenever anything at all is in the trash, listed or not, with or without a size. */
     val canEmpty: Boolean get() = items.isNotEmpty() || leftoverBytes != null
 
     /** What emptying the trash deletes, for the confirmation: the items, the leftovers, or both. */
     val emptyingDeletes: String
         get() {
-            val leftovers = leftoverBytes?.let { "leftovers of an interrupted change (${formatBytes(it)})" }
+            val leftovers = leftoverBytes?.let { "leftovers of an interrupted change${sizeOfLeftovers(it)}" }
             return when {
                 items.isEmpty() && leftovers == null -> "The trash is empty now."
                 items.isEmpty() -> "The $leftovers are deleted for good. This cannot be undone."
@@ -491,11 +499,16 @@ data class WorkspaceTrashUiState(
         }
 }
 
+/** " (6 bytes)" after the words for leftovers, or nothing when they have no size: never "0 bytes". */
+internal fun sizeOfLeftovers(bytes: Long): String = if (bytes > 0) " (${formatBytes(bytes)})" else ""
+
 /**
  * The workspace trash, newest first: restoring an item puts it back where it was; emptying
- * deletes everything in it for good, after the owner confirms on screen. That includes what is
- * in the trash without being listed (leftovers of a change the app was stopped in), which is why
- * emptying is offered whenever the trash folder holds anything at all.
+ * deletes for good what the screen showed when the owner confirmed. That includes what is in the
+ * trash without being listed (leftovers of a change the app was stopped in), which is why
+ * emptying is offered whenever the trash folder holds anything at all. Before its first look the
+ * screen has the trash put right after a start ([Workspace.tidyTrash]), if the app could not do
+ * that when it started.
  */
 class WorkspaceTrashViewModel(
     private val workspace: Workspace,
@@ -510,6 +523,9 @@ class WorkspaceTrashViewModel(
     private var messageCounter = 0L
 
     private val items = workspace.changes.map {
+        // The owner's own look, never an agent's: what a kill left that can be restored is listed before it is shown,
+        // and is never offered as leftovers to delete for good. After the first time this does nothing.
+        workspace.tidyTrash()
         val now = clock.now()
         val listed = when (val result = workspace.listTrash()) {
             is DocResult.Ok -> result.value.map { itemUi(it, now) }
@@ -530,24 +546,32 @@ class WorkspaceTrashViewModel(
         }
     }
 
-    /** Deletes everything in the trash for good, leftovers of interrupted changes included. The screen asks the owner first. */
-    fun emptyTrash() = run {
-        // While another change is under way the workspace claims no leftovers; what the owner was shown, and confirmed, still goes.
-        val leftovers = workspace.trashLeftovers() ?: uiState.value.leftoverBytes
-        when (val result = workspace.emptyTrash(null)) {
+    /**
+     * Deletes for good what the screen showed when the owner confirmed ([shown]): those items, and the leftovers of
+     * interrupted changes if it showed any. Emptying may wait for a shell command; an item that arrived in the trash
+     * meanwhile (an agent's move to the trash needs no approval) stays, and the owner is told so. The screen asks first.
+     */
+    fun emptyTrash(shown: WorkspaceTrashUiState = uiState.value) = run {
+        val ids = shown.items.map { it.id }.toSet()
+        val leftovers = shown.leftoverBytes
+        when (val result = workspace.emptyTrash(ids, leftovers = leftovers != null)) {
             is DocResult.Ok -> {
+                val kept = (workspace.listTrash() as? DocResult.Ok)?.value?.count { it.id !in ids } ?: 0
                 val deleted = when {
                     result.value > 0 && leftovers != null -> "${plural(result.value, "item")} and leftovers of an interrupted change"
                     result.value > 0 -> plural(result.value, "item")
-                    leftovers != null -> "Leftovers of an interrupted change (${formatBytes(leftovers)})"
+                    leftovers != null -> "Leftovers of an interrupted change${sizeOfLeftovers(leftovers)}"
                     else -> null
                 }
                 if (deleted != null) activity.record(ActivityType.USER_ACTION, "Workspace trash emptied", "$deleted deleted for good, at your request.")
-                when {
+                val keptMeanwhile = if (kept > 0) " ${plural(kept, "item")} that arrived meanwhile ${if (kept == 1) "was" else "were"} kept." else ""
+                val done = when {
                     result.value > 0 -> "${plural(result.value, "item")} deleted for good."
                     leftovers != null -> "What was left in the trash was deleted for good."
+                    kept > 0 -> "Nothing was deleted."
                     else -> "The trash was already empty."
                 }
+                done + keptMeanwhile
             }
             else -> problemOf(result)
         }

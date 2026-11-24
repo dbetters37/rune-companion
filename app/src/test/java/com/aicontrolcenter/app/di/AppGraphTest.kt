@@ -60,6 +60,29 @@ class AppGraphTest {
     }
 
     @Test
+    fun `F3 - starting puts the workspace trash right after the shell sweep, before any agent acts`() = runTest(mainRule.dispatcher) {
+        // What a kill can leave: content in a trash holder whose record was never written, and a half-staged file.
+        val app = TestApp(backgroundScope)
+        val root = app.workspaceRoot.directory()
+        java.io.File(root, ".trash/$LOST_ID").mkdirs()
+        java.io.File(root, ".trash/$LOST_ID/contract.txt").writeText("the owner's signed contract")
+        java.io.File(root, ".trash/.staging").mkdirs()
+        java.io.File(root, ".trash/.staging/w-half").writeText("half")
+        var recordAtSweep: Boolean? = null
+        app.duringShellSweep = { recordAtSweep = java.io.File(root, ".trash/$LOST_ID.json").exists() }
+
+        app.graph.start().join()
+
+        assertEquals(false, recordAtSweep, "the shell sweep comes first")
+        assertTrue(java.io.File(root, ".trash/$LOST_ID.json").exists(), "the holder got its record back at start")
+        assertTrue(java.io.File(root, ".trash/.staging").list().orEmpty().isEmpty(), "what was staged is gone")
+        val listed = (app.graph.workspace.listTrash() as com.aicontrolcenter.core.operator.DocResult.Ok).value
+        assertEquals(listOf(LOST_ID to true), listed.map { it.id to it.recovered }, "an agent's first look finds it listed, and its look changes nothing")
+        assertNull(app.graph.workspace.trashLeftovers())
+        assertTrue(app.activityLog.all.none { it.title == "Could not put the workspace trash right" })
+    }
+
+    @Test
     fun `registered apps are re-checked at start, on a package change and on return to the foreground`() = runTest(mainRule.dispatcher) {
         val app = TestApp(backgroundScope)
         app.installSampleApps()
@@ -159,5 +182,9 @@ class AppGraphTest {
         val conversation = app.graph.agentChat.startConversation(writer.id)
         app.graph.agentManager.delete(writer.id)
         assertNull(app.conversations.getConversation(conversation.id))
+    }
+
+    private companion object {
+        const val LOST_ID = "1700000000000-abc12345"
     }
 }

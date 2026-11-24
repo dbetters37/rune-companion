@@ -4,12 +4,15 @@ import com.aicontrolcenter.core.operator.CommandOutcome
 import com.aicontrolcenter.core.operator.DocResult
 import com.aicontrolcenter.core.operator.RelativePath
 import com.aicontrolcenter.core.operator.TrashItem
-import com.aicontrolcenter.core.tools.ToolOutcome
 import com.aicontrolcenter.framework.operator.OperatorFixture.Companion.json
 import com.aicontrolcenter.testkit.FakeClock
 import com.aicontrolcenter.testkit.FakeWorkspaceRoot
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -45,6 +48,11 @@ import kotlin.test.assertTrue
  * W3: the tidy after a start runs before the trash is first looked at, so a holder that gets its
  * record back is listed as a recovered item from the first look on, and is never offered as
  * leftovers that "Empty the trash" deletes for good. Nothing of 0 bytes is reported.
+ *
+ * Corrective pass 4b changed three of these, and the tests below say so where they do: a look
+ * waits for an ordinary change instead of claiming nothing (F1); what has no size is shown,
+ * without a size (F2); and the tidy runs when the app starts and at the owner's first look
+ * ([com.aicontrolcenter.core.operator.Workspace.tidyTrash]), never in an agent's look (F3).
  */
 class WorkspaceRound4Test {
     private fun p(s: String) = RelativePath.of(s)
@@ -249,6 +257,7 @@ class WorkspaceRound4Test {
 
     @Test
     fun `W2 - nothing is called a leftover while an ordinary change is under way`() = runBlocking<Unit> {
+        val lookers = CoroutineScope(Dispatchers.IO + Job())
         for (links in listOf(true, false)) {
             for (how in listOf("a write over a file", "an import over it", "an edit", "a move over it", "its trash")) {
                 val f = OperatorFixture()
@@ -256,17 +265,15 @@ class WorkspaceRound4Test {
                 val where = "links=$links, $how"
                 f.ok("workspace.write", "path" to "report.txt", "content" to "old ".repeat(10_000))
                 f.ok("workspace.write", "path" to "incoming.txt", "content" to "new ".repeat(7_000))
-                val seen = ArrayList<String>()
-                // As a reader sees it before each file-system step of the change: another agent's tool, or the owner's screen.
+                val seen = ArrayList<Pair<String, Deferred<Long?>>>()
+                // As a reader looks before each file-system step of the change: another agent's tool, or the owner's screen.
+                // Since corrective pass 4b (F1) such a look waits for the change to end rather than being answered "nothing",
+                // so it cannot take the change's own work in progress for a leftover.
                 f.workspace.beforeStep = { step ->
-                    runBlocking {
-                        val listed = withTimeout(5_000) { f.trash() }
-                        val leftovers = withTimeout(5_000) { f.workspace.trashLeftovers() }
-                        val words = TrashText.list(listed, leftovers)
-                        seen += step
-                        assertNull(leftovers, "$where, before \"$step\": ${listed.size} listed")
-                        assertFalse("leftovers" in words || "interrupted" in words, "$where, before \"$step\": $words")
-                    }
+                    val look = lookers.async { f.workspace.trashLeftovers() }
+                    Thread.sleep(20)
+                    assertFalse(look.isCompleted, "$where, before \"$step\": a look does not end while the change is under way")
+                    seen += step to look
                 }
                 val result: DocResult<*> = when (how) {
                     "a write over a file" -> f.workspace.write(p("report.txt"), "new ".repeat(7_000).toByteArray(), overwrite = true)
@@ -278,19 +285,27 @@ class WorkspaceRound4Test {
                 f.workspace.beforeStep = null
 
                 assertIs<DocResult.Ok<*>>(result, where)
-                assertTrue(seen.size >= 3, "$where: the change was looked at on its way: $seen")
+                assertTrue(seen.size >= 3, "$where: the change was looked at on its way: ${seen.map { it.first }}")
+                for ((step, look) in seen) {
+                    val leftovers = withTimeout(10_000) { look.await() }
+                    val words = TrashText.list(f.trash(), leftovers)
+                    assertNull(leftovers, "$where, looked at before \"$step\"")
+                    assertFalse("leftovers" in words || "interrupted" in words, "$where, looked at before \"$step\": $words")
+                }
                 assertEquals(1, f.trash().size, where)
                 assertNull(f.workspace.trashLeftovers(), where)
             }
         }
+        lookers.cancel()
     }
 
     @Test
-    fun `W2 - a look from another thread during a change does not wait and claims nothing, the tools included`() {
+    fun `W2 - a look from another thread during a change waits for it and then claims nothing, the tools included`() {
+        // Corrective pass 4b (F1): a look during an ordinary change is no longer turned away with "nothing is left over"
+        // (which nothing corrected afterwards when the change raised no counter); it waits for the change to end.
         val f = OperatorFixture()
         f.put("report.txt", "the report")
-        var restoreListing: ToolOutcome? = null
-        var emptying: ToolOutcome? = null
+        val lookers = CoroutineScope(Dispatchers.IO + Job())
 
         val held = heldAt(
             f, "link or copy the current version into the holder",
@@ -298,18 +313,37 @@ class WorkspaceRound4Test {
         ) {
             // The record of the version being kept is written and its holder is empty; the new file is staged.
             assertTrue(f.file(".trash/.staging").list().orEmpty().isNotEmpty(), "a file is staged right now")
-            restoreListing = f.ok("workspace.restore")
-            emptying = f.fails("workspace.empty_trash")
-            f.trash() to f.workspace.trashLeftovers()
+            val looks = Triple(
+                lookers.async { f.workspace.trashLeftovers() },
+                lookers.async { f.ok("workspace.restore").content },
+                lookers.async { f.assess("workspace.empty_trash") },
+            )
+            kotlinx.coroutines.delay(300)
+            assertFalse(looks.first.isCompleted || looks.second.isCompleted || looks.third.isCompleted, "the looks wait for the change")
+            f.trash() to looks
         }
 
-        assertEquals(emptyList<TrashItem>() to null, held.seen)
-        assertEquals("The workspace trash is empty.", restoreListing!!.content)
-        assertTrue("The trash is empty; nothing to delete." in emptying!!.content, emptying!!.content)
+        val (listedMeanwhile, looks) = held.seen
+        assertEquals(emptyList(), listedMeanwhile, "the listing itself never waits: the kept version had no content yet")
         runBlocking {
+            withTimeout(20_000) {
+                assertNull(looks.first.await(), "what the change had staged was no leftover")
+                val restoreListing = looks.second.await()
+                assertTrue(restoreListing.startsWith("The workspace trash holds 1 item:") && "leftovers" !in restoreListing, restoreListing)
+                // Its listing does not wait: taken during the change it lists nothing, and then it says only that (a change
+                // ended during its look, so the trash is not called empty); taken after it, the owner would be asked.
+                val emptying = looks.third.await()
+                if (emptying.details.isEmpty()) {
+                    val words = f.tool("workspace.empty_trash").execute(json(), f.context, emptying).content
+                    assertTrue("The trash lists no items to delete." in words && "is empty" !in words, words)
+                } else {
+                    assertEquals(1, emptying.details.size, emptying.summary)
+                }
+            }
             assertEquals(1, f.trash().size, "once the change has ended, the version it kept is listed")
             assertNull(f.workspace.trashLeftovers())
         }
+        lookers.cancel()
     }
 
     @Test
@@ -360,72 +394,87 @@ class WorkspaceRound4Test {
     // ---- W3 ----
 
     @Test
-    fun `W3 - the first look at the trash after a start lists a holder that lost its record and never calls it a leftover`() = runBlocking<Unit> {
-        for (first in listOf("the trash is listed first", "the leftovers are asked for first", "an agent lists the trash first")) {
+    fun `W3 - the tidy after a start lists a holder that lost its record and never calls it a leftover - an agent's look does not tidy`() = runBlocking<Unit> {
+        // Corrective pass 4b (F3): the tidy runs when the app starts and before the owner's trash screen first looks
+        // (Workspace.tidyTrash), and before the first change; never in an agent's look, which is only being assessed.
+        for (first in listOf("an agent lists the trash first", "the leftovers are asked for first", "nobody looks first")) {
             val f = OperatorFixture()
             // What a build before round 3 could leave when it was killed, or a damaged record: content in a holder, no record.
             f.put(".trash/$LOST_ID/contract.txt", "the owner's signed contract")
             val count = f.workspace.changeCount()
 
-            val leftoversFirst = if (first == "the leftovers are asked for first") f.workspace.trashLeftovers() else null
-            val words = if (first == "an agent lists the trash first") f.ok("workspace.restore").content else null
-            val listed = f.trash()
+            when (first) {
+                "an agent lists the trash first" -> assertTrue("contract.txt" !in f.ok("workspace.restore").content)
+                "the leftovers are asked for first" -> assertEquals(27L, f.workspace.trashLeftovers(), "before the tidy it is no listed item")
+            }
+            assertTrue(f.trash().isEmpty(), first)
+            assertEquals(count, f.workspace.changeCount(), "$first: looking changed nothing")
+            assertFalse(f.file(".trash/$LOST_ID.json").exists(), first)
 
-            assertNull(leftoversFirst, first)
-            val item = listed.singleOrNull()
+            // The app starts, or the owner opens the trash.
+            f.workspace.tidyTrash()
+            val item = f.trash().singleOrNull()
             assertEquals(LOST_ID to true, item?.id to item?.recovered, "$first: it is listed, as an item whose old place is not known")
             assertEquals("contract.txt", item!!.originalPath)
             assertNull(f.workspace.trashLeftovers(), "$first: nothing is offered as leftovers that would be deleted for good")
-            words?.let { assertTrue("contract.txt" in it && "leftovers" !in it, it) }
+            f.ok("workspace.restore").content.let { assertTrue("contract.txt" in it && "leftovers" !in it, it) }
             assertTrue(f.workspace.changeCount() > count, "$first: the tidy gave it a record, which is a change in the workspace")
             assertEquals("the owner's signed contract", f.file(".trash/$LOST_ID/contract.txt").readText())
 
             // So it can be restored, which the state before never offered.
             assertIs<DocResult.Ok<*>>(f.workspace.restore(LOST_ID))
             assertEquals("the owner's signed contract", f.file("contract.txt").readText())
-            // And looking again changes nothing more.
+            // And looking again, or tidying again, changes nothing more.
             val after = f.workspace.changeCount()
             f.trash()
             f.workspace.trashLeftovers()
+            f.workspace.tidyTrash()
             assertEquals(after, f.workspace.changeCount(), first)
         }
     }
 
     @Test
-    fun `W3 - an empty holder without a record is removed at the first look, and nothing of 0 bytes is reported`() = runBlocking<Unit> {
+    fun `W3 - an empty holder without a record is removed by the tidy, and what has no size is shown without one`() = runBlocking<Unit> {
         val f = OperatorFixture()
         // A restore that was killed after it deleted its record leaves the empty holder; a killed trash leaves a record alone.
         f.file(".trash/$EMPTY_ID").mkdirs()
         f.put(".trash/$LOST_ID.json", """{"id":"$LOST_ID","originalPath":"gone.txt","isFolder":false,"sizeBytes":1,"trashedAt":1700000000001}""")
 
-        assertNull(f.workspace.trashLeftovers(), "never \"leftovers (0 bytes)\"")
+        f.workspace.tidyTrash()
+        assertNull(f.workspace.trashLeftovers())
         assertTrue(f.trash().isEmpty())
         assertFalse(f.file(".trash/$EMPTY_ID").exists(), "the empty holder is simply removed")
         assertFalse(f.file(".trash/$LOST_ID.json").exists(), "and so is a record whose content never arrived")
         assertEquals("The workspace trash is empty.", f.ok("workspace.restore").content)
 
-        // Also what the tidy leaves alone is not reported while it has no size: an empty file or folder a shell command made.
+        // What the tidy leaves alone and has no size (an empty file or folder a shell command made) is shown all the same
+        // (4b, F2), so it can be emptied; no size is named for it.
         f.put(".trash/empty-file", "")
         f.file(".trash/empty-folder/inner").mkdirs()
-        assertNull(f.workspace.trashLeftovers())
+        assertEquals(0L, f.workspace.trashLeftovers())
+        f.ok("workspace.restore").content.let { words ->
+            assertTrue(words.startsWith("The workspace trash lists no items. It holds leftovers of a change that was interrupted. "), words)
+            assertFalse("bytes" in words, words)
+        }
         f.put(".trash/one-byte", "x")
         assertEquals(1L, f.workspace.trashLeftovers())
     }
 
     @Test
-    fun `W3 - something without a size under the staging folder's name blocks no write, since it would not be shown`() = runBlocking<Unit> {
-        // Only a shell command can do this. Reported "leftovers (0 bytes)" were the way out before; now there is none to need.
+    fun `W3 - something without a size under the staging folder's name blocks no write, and is shown until a write clears it`() = runBlocking<Unit> {
+        // Only a shell command can do this. It is shown as leftovers without a size (4b, F2), and a write needs no emptying.
         val f = OperatorFixture()
         f.put("keep/important.txt", "owner data")
         f.put(".trash/.staging", "")
-        assertNull(f.workspace.trashLeftovers())
+        assertEquals(0L, f.workspace.trashLeftovers())
         f.ok("workspace.write", "path" to "a.txt", "content" to "x")
         assertTrue(f.file(".trash/.staging").isDirectory)
+        assertNull(f.workspace.trashLeftovers(), "the empty staging folder is nothing in the trash")
 
         // A link in its place is removed as a link; nothing is staged through it.
         f.file(".trash/.staging").deleteRecursively()
         Files.createSymbolicLink(f.file(".trash/.staging").toPath(), f.file("keep").toPath())
-        assertNull(f.workspace.trashLeftovers())
+        assertEquals(0L, f.workspace.trashLeftovers())
         f.ok("workspace.write", "path" to "a.txt", "content" to "y", "overwrite" to true)
         assertTrue(f.file(".trash/.staging").isDirectory && !Files.isSymbolicLink(f.file(".trash/.staging").toPath()))
         assertEquals(listOf("important.txt"), f.file("keep").list()!!.toList(), "nothing was written into what the link pointed to")
@@ -440,7 +489,7 @@ class WorkspaceRound4Test {
     }
 
     @Test
-    fun `W3 - a first look while a shell command runs waits for nothing, tidies nothing and claims nothing - the look after it tidies`() = runBlocking<Unit> {
+    fun `W3 - a first look while a shell command runs waits for nothing, tidies nothing and claims nothing - the owner's look after it tidies`() = runBlocking<Unit> {
         val f = OperatorFixture()
         f.put(".trash/$LOST_ID/contract.txt", "the owner's signed contract")
         f.put(".trash/.staging/half-written", "x")
@@ -459,6 +508,8 @@ class WorkspaceRound4Test {
 
             assertTrue(withTimeout(5_000) { f.trash() }.isEmpty())
             assertNull(withTimeout(5_000) { f.workspace.trashLeftovers() })
+            // The owner's trash screen opens now: its tidy is left for later.
+            withTimeout(5_000) { f.workspace.tidyTrash() }
             assertTrue(f.file(".trash/.staging/half-written").exists(), "nothing was tidied under the command's feet")
             assertFalse(f.file(".trash/$LOST_ID.json").exists())
             // An agent that asks meanwhile is told what is listed, not that the trash is empty: nothing was counted.
@@ -469,7 +520,9 @@ class WorkspaceRound4Test {
         }
         assertTrue(withTimeout(20_000) { command.await() }.ok)
 
-        // No change is made; the next look alone puts the trash right.
+        // No change is made; the owner's next look at the trash puts it right (an agent's look would not: 4b, F3).
+        assertTrue(f.trash().isEmpty())
+        f.workspace.tidyTrash()
         assertEquals(listOf(LOST_ID), f.trash().map { it.id })
         assertFalse(f.file(".trash/.staging/half-written").exists())
         assertNull(f.workspace.trashLeftovers())

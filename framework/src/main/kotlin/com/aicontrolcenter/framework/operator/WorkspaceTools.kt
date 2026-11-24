@@ -625,14 +625,18 @@ internal class WorkspaceRestore(private val d: OperatorToolDependencies) : Opera
     override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
         val id = Args(arguments).string("id")?.trim()
         // Looking changes nothing: neither the listing nor the leftovers figure tidies the trash (an assessment has no side effects).
-        val items = (d.workspace.listTrash() as? DocResult.Ok)?.value.orEmpty()
-        val (leftovers, looked) = TrashText.leftoversNow(d.workspace)
         if (id.isNullOrEmpty()) {
+            // The leftovers first: that look waits for a change under way, so the listing after it shows where it ended.
+            val (leftovers, looked) = TrashText.leftoversNow(d.workspace)
+            val items = (d.workspace.listTrash() as? DocResult.Ok)?.value.orEmpty()
             // Listing the trash is a read; nothing is restored.
             return assessment("List the workspace trash", prepared { ToolOutcome.success(TrashText.list(items, leftovers, looked)) }, risk = RiskLevel.MODIFYING)
         }
-        val item = items.firstOrNull { it.id == id }
-            ?: return assessment("Restore trash item ${q(id)}", failing("There is no item ${q(id)} in the trash. ${TrashText.list(items, leftovers, looked)}"))
+        val items = (d.workspace.listTrash() as? DocResult.Ok)?.value.orEmpty()
+        val item = items.firstOrNull { it.id == id } ?: run {
+            val (leftovers, looked) = TrashText.leftoversNow(d.workspace)
+            return assessment("Restore trash item ${q(id)}", failing("There is no item ${q(id)} in the trash. ${TrashText.list(items, leftovers, looked)}"))
+        }
         val original = RelativePath.parse(item.originalPath) as? RelativePath.Check.Valid
             ?: return assessment("Restore trash item ${q(id)}", failing("The trash record of ${q(id)} is damaged."))
         val target = WorkspaceStates.of(d.workspace, original.path)
@@ -688,14 +692,16 @@ internal object TrashText {
      * The leftovers figure for a tool, and whether it was really looked for.
      * [Workspace.trashLeftovers] answers null both when nothing lies there and when it did not
      * look because a shell command held the workspace. A command that ran at any moment of the
-     * look is still running afterwards or has raised the change counter since (it raises it
-     * when it starts and before it stops being "running"). So a null with neither was a look
-     * that found nothing, and only then may the trash be called empty.
+     * look was running before it, or is still running afterwards, or has raised the change
+     * counter since (it raises it when it starts and before it stops being "running"). So a null
+     * with none of these was a look that found nothing, and only then may the trash be called
+     * empty; otherwise only what is listed is said.
      */
     suspend fun leftoversNow(workspace: Workspace): Pair<Long?, Boolean> {
         val before = workspace.changeCount()
+        val runningBefore = workspace.commandRunning()
         val bytes = workspace.trashLeftovers()
-        val looked = bytes != null || (!workspace.commandRunning() && workspace.changeCount() == before)
+        val looked = bytes != null || (!runningBefore && !workspace.commandRunning() && workspace.changeCount() == before)
         return bytes to looked
     }
 

@@ -61,7 +61,6 @@ import com.aicontrolcenter.app.ui.components.InlineTextEntry
 import com.aicontrolcenter.app.ui.components.KeyValueRow
 import com.aicontrolcenter.app.ui.components.ScreenScaffold
 import com.aicontrolcenter.app.ui.components.SectionHeader
-import com.aicontrolcenter.app.ui.components.formatBytes
 import com.aicontrolcenter.app.ui.components.plural
 import com.aicontrolcenter.app.ui.components.readableWidth
 import com.aicontrolcenter.app.ui.icons.AppIcons
@@ -417,16 +416,16 @@ fun WorkspaceTrashRoute(onBack: () -> Unit) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel { WorkspaceTrashViewModel(graph.workspace, graph.activityRecorder, graph.clock) }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    WorkspaceTrashScreen(state, onBack, viewModel::restore, viewModel::emptyTrash, viewModel::messageShown)
+    WorkspaceTrashScreen(state, onBack, viewModel::restore, { shown -> viewModel.emptyTrash(shown) }, viewModel::messageShown)
 }
 
-/** The workspace trash: restore an item, or empty it after confirming. */
+/** The workspace trash: restore an item, or empty it after confirming. [onEmpty] gets what the confirmation was shown for. */
 @Composable
 fun WorkspaceTrashScreen(
     state: WorkspaceTrashUiState,
     onBack: () -> Unit,
     onRestore: (String) -> Unit,
-    onEmpty: () -> Unit,
+    onEmpty: (WorkspaceTrashUiState) -> Unit,
     onMessageShown: () -> Unit,
 ) {
     var confirmEmpty by rememberSaveable { mutableStateOf(false) }
@@ -471,7 +470,7 @@ fun WorkspaceTrashScreen(
                         EmptyState(
                             icon = AppIcons.Delete,
                             title = "Nothing here can be restored",
-                            message = "The trash still holds leftovers of a change that was interrupted (${formatBytes(leftovers)}). " +
+                            message = "The trash still holds leftovers of a change that was interrupted${sizeOfLeftovers(leftovers)}. " +
                                 "They count against the workspace's size until you empty the trash.",
                         )
                     }
@@ -479,7 +478,7 @@ fun WorkspaceTrashScreen(
             } else if (state.leftoverBytes != null) {
                 item(key = "leftovers") {
                     Text(
-                        "The trash also holds leftovers of a change that was interrupted (${formatBytes(state.leftoverBytes)}). " +
+                        "The trash also holds leftovers of a change that was interrupted${sizeOfLeftovers(state.leftoverBytes)}. " +
                             "They cannot be restored; emptying the trash deletes them too.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -516,7 +515,8 @@ fun WorkspaceTrashScreen(
             icon = AppIcons.Delete,
             onConfirm = {
                 confirmEmpty = false
-                onEmpty()
+                // What this dialog named, and nothing that arrived in the trash after it was drawn.
+                onEmpty(state)
             },
             onDismiss = { confirmEmpty = false },
         )
