@@ -26,9 +26,11 @@ data class OperatorToolInfo(
 object OperatorTools {
     private val C = OperatorCapabilities
     private const val NO_OVERWRITE = "Never overwrites a workspace file: an existing target is refused."
-    private const val BULK = "CONSEQUENTIAL once more than BULK_FILE_LIMIT existing files are replaced, edited or removed by the agent " +
-        "in the task within BULK_WINDOW_MS (RecentFileChanges), counted across calls."
-    private const val KEEP_REPLACED = "A replaced file goes to the workspace trash first. $BULK"
+    private const val BULK = "CONSEQUENTIAL once more than BULK_FILE_LIMIT existing files are replaced, edited or removed within " +
+        "BULK_WINDOW_MS (RecentFileChanges), counted across calls per agent and task, per agent across its tasks and per root objective."
+    private const val KEEP_REPLACED = "A replaced file is kept in the workspace trash. $BULK"
+    private const val KEEP_EDITED = "The version before the edit is kept in the workspace trash, unless the same task wrote it itself within " +
+        "BULK_WINDOW_MS (OwnVersions). $BULK"
     private const val REPLACE_IN_FOLDER = "Replacing an existing file is CONSEQUENTIAL: shared folders have no trash."
 
     val all: List<OperatorToolInfo> = listOf(
@@ -37,7 +39,7 @@ object OperatorTools {
         info("workspace.search", C.WORKSPACE_READ, RiskLevel.SAFE, ToolCategory.WORKSPACE),
         info("workspace.write", C.WORKSPACE_WRITE, RiskLevel.MODIFYING, ToolCategory.WORKSPACE, rule = KEEP_REPLACED),
         info("workspace.append", C.WORKSPACE_WRITE, RiskLevel.MODIFYING, ToolCategory.WORKSPACE),
-        info("workspace.replace_text", C.WORKSPACE_WRITE, RiskLevel.MODIFYING, ToolCategory.WORKSPACE, rule = BULK),
+        info("workspace.replace_text", C.WORKSPACE_WRITE, RiskLevel.MODIFYING, ToolCategory.WORKSPACE, rule = KEEP_EDITED),
         info("workspace.make_folder", C.WORKSPACE_WRITE, RiskLevel.MODIFYING, ToolCategory.WORKSPACE),
         info("workspace.move", C.WORKSPACE_WRITE, RiskLevel.MODIFYING, ToolCategory.WORKSPACE, rule = KEEP_REPLACED),
         info("workspace.trash", C.WORKSPACE_WRITE, RiskLevel.MODIFYING, ToolCategory.WORKSPACE, rule = BULK),

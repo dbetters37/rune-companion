@@ -53,7 +53,7 @@ internal val PLAIN_WORDS: Map<String, String> = mapOf(
     "workspace.search" to "Finds workspace files by name or by the text in them.",
     "workspace.write" to "Creates a text file in the workspace, or replaces one. A replaced file goes to the workspace trash.",
     "workspace.append" to "Adds text at the end of a workspace file.",
-    "workspace.replace_text" to "Changes a piece of text in a workspace file.",
+    "workspace.replace_text" to "Changes a piece of text in a workspace file. What was there before the task's first change is kept in the workspace trash.",
     "workspace.make_folder" to "Creates a folder in the workspace.",
     "workspace.move" to "Moves or renames a workspace file or folder. A file it replaces goes to the workspace trash.",
     "workspace.trash" to "Moves workspace files to the workspace trash, from where they can be restored.",

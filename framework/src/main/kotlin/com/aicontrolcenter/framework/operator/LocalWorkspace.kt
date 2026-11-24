@@ -68,9 +68,17 @@ data class WorkspaceLimits(
  *
  * Trash layout, as [Workspace] describes: `.trash/<id>/<name>` plus `.trash/<id>.json` with the
  * [TrashItem]; ids are `<millis>-<random>` in lower-case letters, digits and "-". In-flight
- * writes are staged in `.trash/.staging`, which no trash operation lists or deletes. A file that
- * a write, move or import replaces goes to the trash first, so it stays restorable and keeps
- * counting against the size limit until the trash is emptied.
+ * writes are staged in `.trash/.staging`, which no trash operation lists.
+ *
+ * Replacing a file (a write, an edit, a move or an import over it) keeps the replaced version in
+ * the trash, so it stays restorable and keeps counting against the size limit until the trash is
+ * emptied. The file never leaves its place for that: its content is given a second name in a new
+ * trash holder (a hard link; a copy where the file system or Android refuses links, or the file
+ * already has other names), the trash record is written, and only then is the new file renamed
+ * over the old one in a single step. A reader therefore sees the old file or the new one, never
+ * none, and if the app is killed at any point the file is still there. What a kill can leave
+ * behind (a staged file, a holder without its record, a kept "version" that is still the live
+ * file itself) is cleared before the first change after a start, and by emptying the trash.
  *
  * Gateways that create workspace files themselves (media and folder copies, screenshots) do so
  * through [receive], under the same lock and limits; after a shell command, [changedOutside]
@@ -90,6 +98,25 @@ class LocalWorkspace(
     private val mutex = Mutex()
     private val random = SecureRandom()
 
+    /**
+     * False once a hard link was refused here: every later version is kept as a copy. Tests set
+     * it to false to take the path a phone takes when Android refuses links in app storage.
+     */
+    @Volatile internal var linksWork = true
+
+    @Volatile private var tidied = false
+
+    /**
+     * For tests only: called right before each file-system step of a change that stages or
+     * replaces a file, with the step's name, so a test can look at (or copy) the workspace as a
+     * kill at that moment would leave it, or make the step fail.
+     */
+    internal var beforeStep: ((String) -> Unit)? = null
+
+    private fun step(name: String) {
+        beforeStep?.invoke(name)
+    }
+
     override val changes: Flow<Long> = changeCounter.asStateFlow()
 
     private fun base(): Path = root.directory().toPath().toAbsolutePath().normalize()
@@ -105,7 +132,10 @@ class LocalWorkspace(
     private suspend fun <T> reading(block: () -> DocResult<T>): DocResult<T> = withContext(io) { guard(block) }
 
     private suspend fun <T> changing(block: () -> DocResult<T>): DocResult<T> = withContext(io) {
-        mutex.withLock { guard(block).also { if (it is DocResult.Ok) changed() } }
+        mutex.withLock {
+            tidyOnce()
+            guard(block).also { if (it is DocResult.Ok) changed() }
+        }
     }
 
     private inline fun <T> guard(block: () -> DocResult<T>): DocResult<T> = try {
@@ -187,7 +217,13 @@ class LocalWorkspace(
         DocResult.Ok(entryOf(path, file))
     }
 
-    override suspend fun replaceText(path: RelativePath, find: String, replacement: String, expectedCount: Int?): DocResult<Int> = changing {
+    override suspend fun replaceText(
+        path: RelativePath,
+        find: String,
+        replacement: String,
+        expectedCount: Int?,
+        ownVersionSha256: String?,
+    ): DocResult<Int> = changing {
         if (find.isEmpty()) return@changing DocResult.Failed("The text to find is empty.")
         val file = when (val r = writableTarget(path)) {
             is DocResult.Ok -> r.value
@@ -197,7 +233,8 @@ class LocalWorkspace(
         if (!Files.isRegularFile(file, NOFOLLOW)) return@changing DocResult.Failed("${OperatorText.q(path.value)} is a folder, not a file.")
         val size = Files.size(file)
         if (size > limits.maxTextEditBytes) return@changing DocResult.TooLarge(size, limits.maxTextEditBytes)
-        val text = OperatorText.decodeText(Files.readAllBytes(file), cutAtEnd = false)
+        val current = Files.readAllBytes(file)
+        val text = OperatorText.decodeText(current, cutAtEnd = false)
             ?: return@changing DocResult.Failed("${OperatorText.q(path.value)} is not UTF-8 text.")
         val count = occurrences(text, find)
         if (expectedCount != null && count != expectedCount) {
@@ -206,8 +243,11 @@ class LocalWorkspace(
         if (count == 0) return@changing DocResult.Ok(0)
         val updated = text.replace(find, replacement).toByteArray(Charsets.UTF_8)
         if (updated.size > limits.maxFileBytes) return@changing DocResult.TooLarge(updated.size.toLong(), limits.maxFileBytes)
-        quotaProblem(updated.size - size)?.let { return@changing it }
-        stageAndMove(file, replace = true, fill = { Files.write(it, updated) })
+        // The version being replaced is kept, unless it is exactly the one the caller says it wrote itself a short while ago.
+        val keep = ownVersionSha256 == null || sha256(current) != ownVersionSha256
+        // A kept version still counts, so then the whole new size is growth.
+        quotaProblem(if (keep) updated.size.toLong() else updated.size.toLong() - current.size)?.let { return@changing it }
+        stageAndMove(file, replace = true, fill = { Files.write(it, updated) }, keep = if (keep) { { keepInTrash(path, file) } } else null)
         DocResult.Ok(count)
     }
 
@@ -242,12 +282,13 @@ class LocalWorkspace(
             }
         }
         makeParents(to, includingSelf = false)?.let { return@changing it }
-        // The file moved over goes to the trash first, so the move can be undone.
-        val kept = if (replacing) moveToTrash(to, target) else null
+        // The file moved over is kept in the trash, so the move can be undone; it stays in its place until the moved file takes it.
+        val kept = if (replacing) keepInTrash(to, target) else null
         try {
-            moveAtomically(source, target, replace = false)
+            step("rename the moved file into place")
+            moveAtomically(source, target, replace = replacing)
         } catch (e: IOException) {
-            kept?.let { putBack(it, to, target) }
+            kept?.let(::discardKept)
             throw e
         }
         DocResult.Ok(entryOf(to, target))
@@ -301,10 +342,12 @@ class LocalWorkspace(
             if (existed) deleted++
         }
         if (ids == null) {
-            // Leftovers of an interrupted trash or restore, never the staging folder.
+            // Leftovers of an interrupted trash, restore or replace: holders and records without their other half,
+            // and whatever was staged (changes are serialised, so nothing is being staged right now).
             Files.newDirectoryStream(trash).use { stream ->
                 stream.filter { TRASH_ID.matches(it.fileName.toString().removeSuffix(".json")) }.forEach { deleteTree(it) }
             }
+            clearStaging()
         }
         DocResult.Ok(deleted)
     }
@@ -477,7 +520,7 @@ class LocalWorkspace(
         quotaProblem(sizeHint)?.let { return it }
         makeParents(path, includingSelf = false)?.let { return it }
         try {
-            stageAndMove(target, replace = false, fill, beforeMove = if (exists) { { moveToTrash(path, target) } } else null)
+            stageAndMove(target, replace = exists, fill, keep = if (exists) { { keepInTrash(path, target) } } else null)
         } catch (e: ImportTooLarge) {
             return DocResult.TooLarge(limits.maxFileBytes + 1, limits.maxFileBytes)
         } catch (e: ImportOverQuota) {
@@ -519,27 +562,138 @@ class LocalWorkspace(
     }
 
     /**
-     * Writes through a staging file in the trash folder, then renames it to [target]. [beforeMove]
-     * runs once the new content is complete (it moves the file being replaced to the trash); if
-     * the rename then fails, that file is put back.
+     * Writes through a staging file in the trash folder, then renames it to [target], over the
+     * file there when [replace]. [keep] runs once the new content is complete and keeps the
+     * version about to be replaced ([keepInTrash]); if the rename then fails, what it kept is
+     * removed again, since the file never left its place.
      */
-    private fun stageAndMove(target: Path, replace: Boolean, fill: (Path) -> Unit, beforeMove: (() -> TrashItem)? = null) {
+    private fun stageAndMove(target: Path, replace: Boolean, fill: (Path) -> Unit, keep: (() -> TrashItem)? = null, what: String = "the new file") {
         val staging = trashDir().resolve(STAGING)
         Files.createDirectories(staging)
         val temp = staging.resolve("w-" + java.lang.Long.toUnsignedString(random.nextLong(), 36))
         try {
+            step("write $what to a staging file")
             fill(temp)
-            val kept = beforeMove?.invoke()
+            val kept = keep?.invoke()
             try {
+                step("rename $what into place")
                 moveAtomically(temp, target, replace)
             } catch (e: IOException) {
-                kept?.let { item -> RelativePath.parse(item.originalPath).let { it as? RelativePath.Check.Valid }?.let { putBack(item, it.path, target) } }
+                kept?.let(::discardKept)
                 throw e
             }
         } finally {
             Files.deleteIfExists(temp)
         }
     }
+
+    /**
+     * Keeps the content of the file [current] (at [path]) as a new trash item while the file
+     * stays where it is: the content gets a second name in a new trash holder (a hard link), or
+     * is copied there where a link is not possible, and then the record is written. The caller
+     * renames the new file over [current] next; if it cannot, it calls [discardKept].
+     */
+    private fun keepInTrash(path: RelativePath, current: Path): TrashItem {
+        val size = Files.size(current)
+        Files.createDirectories(trashDir())
+        val id = newTrashId()
+        val holder = trashDir().resolve(id)
+        val item = TrashItem(id = id, originalPath = path.value, isFolder = false, sizeBytes = size, trashedAt = clock.now())
+        step("make the trash holder")
+        Files.createDirectory(holder)
+        try {
+            step("link or copy the current version into the holder")
+            linkOrCopy(current, holder.resolve(path.name))
+            writeRecord(item)
+        } catch (e: IOException) {
+            discardKept(item)
+            throw e
+        }
+        return item
+    }
+
+    /** Removes what [keepInTrash] made, when the file it was made for was not replaced after all. */
+    private fun discardKept(item: TrashItem) {
+        try {
+            Files.deleteIfExists(trashDir().resolve("${item.id}.json"))
+            deleteTree(trashDir().resolve(item.id))
+        } catch (_: IOException) {
+            // It stays in the trash: one copy too many, which emptying the trash removes.
+        }
+    }
+
+    private fun linkOrCopy(current: Path, kept: Path) {
+        if (linksWork && nameCount(current) == 1) {
+            try {
+                Files.createLink(kept, current)
+                return
+            } catch (e: UnsupportedOperationException) {
+                linksWork = false
+            } catch (e: SecurityException) {
+                linksWork = false
+            } catch (e: IOException) {
+                // Android's rules refuse hard links in app storage on many versions; from now on, copy.
+                linksWork = false
+                Files.deleteIfExists(kept)
+            }
+        }
+        Files.copy(current, kept, StandardCopyOption.COPY_ATTRIBUTES, NOFOLLOW)
+    }
+
+    /**
+     * How many names (hard links) [file] has, or null where that cannot be told. Only a file with
+     * exactly one name is kept by giving it a second one in the trash: that second name is a
+     * version of its own once the first is given to the new file. A file with other names (a hard
+     * link a shell command made) could still be changed through them, so it is copied instead.
+     */
+    private fun nameCount(file: Path): Int? = try {
+        (Files.getAttribute(file, "unix:nlink", NOFOLLOW) as? Number)?.toInt()
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun writeRecord(item: TrashItem) {
+        stageAndMove(
+            trashDir().resolve("${item.id}.json"), replace = false,
+            fill = { Files.write(it, JSON.encodeToString(TrashItem.serializer(), item).toByteArray()) }, what = "the trash record",
+        )
+    }
+
+    /** Once after a start, before the first change: clears what a change that was interrupted (the app was killed) left behind. */
+    private fun tidyOnce() {
+        if (tidied) return
+        tidied = true
+        try {
+            clearStaging()
+            val trash = trashDir()
+            if (!Files.isDirectory(trash, NOFOLLOW)) return
+            // A replace that stopped after the old version was linked into the trash and before the new file took its
+            // place: the "kept version" is the live file itself under a second name, not a version of its own. Only a
+            // kept file that still has a second name can be one, so the others are passed over without reading their record.
+            for (holder in Files.newDirectoryStream(trash).use { it.toList() }) {
+                val id = holder.fileName.toString()
+                if (!TRASH_ID.matches(id) || !Files.isDirectory(holder, NOFOLLOW)) continue
+                val kept = Files.newDirectoryStream(holder).use { it.firstOrNull() } ?: continue
+                if (!Files.isRegularFile(kept, NOFOLLOW) || (nameCount(kept) ?: 1) < 2) continue
+                val item = trashItem(id) ?: continue
+                val original = (RelativePath.parse(item.originalPath) as? RelativePath.Check.Valid)?.path ?: continue
+                val live = (check(original) as? DocResult.Ok)?.value?.file?.toPath() ?: continue
+                if (kept.fileName.toString() == original.name && Files.isRegularFile(live, NOFOLLOW) && Files.isSameFile(live, kept)) discardKept(item)
+            }
+        } catch (_: IOException) {
+            // Tidying is best effort; emptying the trash clears the same things.
+        } catch (_: RuntimeException) {
+        }
+    }
+
+    /** Deletes what is in the staging folder. Called with the mutex held, when nothing is being staged. */
+    private fun clearStaging() {
+        val staging = trashDir().resolve(STAGING)
+        if (!Files.isDirectory(staging, NOFOLLOW)) return
+        Files.newDirectoryStream(staging).use { stream -> stream.toList() }.forEach { deleteTree(it) }
+    }
+
+    private fun sha256(bytes: ByteArray): String = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
     /** Moves [source] (at [path]) into a new trash item with its record; nothing is left half done. */
     private fun moveToTrash(path: RelativePath, source: Path): TrashItem {
@@ -552,7 +706,7 @@ class LocalWorkspace(
         moveAtomically(source, holder.resolve(path.name), replace = false)
         val item = TrashItem(id = id, originalPath = path.value, isFolder = isFolder, sizeBytes = size, trashedAt = clock.now())
         try {
-            stageAndMove(trashDir().resolve("$id.json"), replace = false, fill = { Files.write(it, JSON.encodeToString(TrashItem.serializer(), item).toByteArray()) })
+            writeRecord(item)
         } catch (e: IOException) {
             // Without its record the item could not be restored: put it back.
             moveAtomically(holder.resolve(path.name), source, replace = false)
@@ -560,17 +714,6 @@ class LocalWorkspace(
             throw e
         }
         return item
-    }
-
-    /** Undoes [moveToTrash] of [item] when what was to replace it could not be put in place. */
-    private fun putBack(item: TrashItem, path: RelativePath, target: Path) {
-        try {
-            moveAtomically(trashDir().resolve(item.id).resolve(path.name), target, replace = false)
-            Files.deleteIfExists(trashDir().resolve("${item.id}.json"))
-            deleteTree(trashDir().resolve(item.id))
-        } catch (_: IOException) {
-            // It stays in the trash, restorable from there.
-        }
     }
 
     private fun moveAtomically(source: Path, target: Path, replace: Boolean) {

@@ -91,8 +91,10 @@ data class WorkspaceHit(val path: RelativePath, val line: Int? = null, val excer
  * Trash format: [trash] moves the item to `.trash/<id>/<name>` and writes `.trash/<id>.json`
  * holding its [TrashItem]; [restore] moves it back to [TrashItem.originalPath] (missing parent
  * folders recreated; [DocResult.AlreadyExists] if something is there now); [emptyTrash] deletes
- * both. A file that [write], [move] or [import] replaces is put in the trash the same way first,
- * so replacing a file can be undone like trashing it.
+ * both. A file that [write], [replaceText], [move] or [import] replaces is kept in the trash the
+ * same way, so replacing a file can be undone like trashing it. It never leaves its place while
+ * that happens: its content is linked (or copied) into the trash, and the new file is then
+ * renamed over it, so a reader sees the old file or the new one, never none.
  *
  * Every write into the workspace goes through this service, gateways' included ([receive]), so
  * the size limits, the change signal and the serialisation of changes hold for every caller.
@@ -120,9 +122,18 @@ interface Workspace {
 
     /**
      * Replaces every occurrence of [find] in a UTF-8 text file. With [expectedCount], changes
-     * nothing unless exactly that many occur. Returns how many were replaced.
+     * nothing unless exactly that many occur. Returns how many were replaced. The version from
+     * before the edit is kept in the trash, with one exception: when [ownVersionSha256] is given
+     * and is the SHA-256 (lower-case hex) of exactly the content being replaced, the caller says
+     * that version is one it wrote itself a short while ago, and it is not kept again.
      */
-    suspend fun replaceText(path: RelativePath, find: String, replacement: String, expectedCount: Int?): DocResult<Int>
+    suspend fun replaceText(
+        path: RelativePath,
+        find: String,
+        replacement: String,
+        expectedCount: Int?,
+        ownVersionSha256: String? = null,
+    ): DocResult<Int>
 
     /** Creates the folder and missing parents; an existing folder is returned as is. */
     suspend fun makeFolder(path: RelativePath): DocResult<DocumentEntry>
