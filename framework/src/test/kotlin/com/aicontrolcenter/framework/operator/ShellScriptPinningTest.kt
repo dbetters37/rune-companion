@@ -216,14 +216,14 @@ class ShellScriptPinningTest {
         val f = fixture()
         f.put("sub/tidy.sh", "echo the other one\n")
         f.put("go.sh", "cd sub\n")
-        f.put("path.sh", "PATH=sub:\$PATH\n")
+        f.put("path.sh", "PATH=/system/xbin:\$PATH\n")
         f.put("inner.sh", ". ./go.sh\n")
         val root = f.root.canonicalPath
         val refused = listOf(
-            ". ./go.sh; sh tidy.sh", ". ./go.sh; . ./tidy.sh", "PATH=sub:\$PATH; . ./tidy.sh", "cd sub && cat tidy.sh | sh", "cd sub && eval \"\$(cat tidy.sh)\"",
+            ". ./go.sh; sh tidy.sh", ". ./go.sh; . ./tidy.sh", "PATH=/system/xbin:\$PATH; . ./tidy.sh", "cd sub && cat tidy.sh | sh", "cd sub && eval \"\$(cat tidy.sh)\"",
             "cd sub && /proc/self/exe tidy.sh", "cd sub; sh \$PWD/tidy.sh", "cd sub; sh \$(pwd)/tidy.sh", "pushd sub; sh tidy.sh",
             // Also a script the reader did not think must run: after cd, "cat tidy.sh" reads another file than the one that would be shown.
-            "cd sub && cat tidy.sh", "cd sub && ./tidy.sh", "export PATH=sub; sh tidy.sh", "IFS=x; sh tidy.sh", ". ./path.sh; sh tidy.sh",
+            "cd sub && cat tidy.sh", "cd sub && ./tidy.sh", "export PATH=/vendor/bin; sh tidy.sh", "IFS=x; sh tidy.sh", ". ./path.sh; sh tidy.sh",
             // It is handed on: a script read in by a script that is read in, and a script started from where the folder is not certain.
             ". ./inner.sh; sh tidy.sh", "cd sub; sh $root/a.sh", "eval 'cd sub'; sh tidy.sh", "sh -c 'cd sub'; sh tidy.sh",
         )
@@ -232,6 +232,10 @@ class ShellScriptPinningTest {
             assertTrue("by a relative path" in reason && "use the \"directory\" argument instead of cd" in reason, "$command: $reason")
         }
         assertTrue("The script \"a.sh\", which the command runs, names the script \"tidy.sh\"" in f.rejected("scripts.run_shell", "command" to "cd sub; sh $root/a.sh"))
+        // PATH, HOME or ENV pointed into the workspace is refused outright, whatever the command names (the verifier's "PATH=sub:$PATH; . tidy.sh").
+        for (command in listOf("PATH=sub:\$PATH; . ./tidy.sh", "export PATH=sub; sh tidy.sh", "HOME=\$PWD sh -l -c true", "ENV=tidy.sh sh -i -c true")) {
+            assertTrue("to a place in the workspace" in f.rejected("scripts.run_shell", "command" to command), command)
+        }
         // The same through a subshell: what a group pipes into a shell is not read at all.
         assertTrue("pipes into a shell" in f.rejected("scripts.run_shell", "command" to "(cd sub; cat tidy.sh) | sh"))
         // A script named twice counts each time: run as a program first, then read in; run from a settled text first, then from an unsettled one.

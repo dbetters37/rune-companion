@@ -78,6 +78,9 @@ internal object ShellCommands {
     /** Variables that decide where a name is looked up, or how the words of a command are split. */
     private val LOOKUP_VARIABLES = listOf("PATH", "CDPATH", "ENV", "HOME", "IFS", "PWD", "OLDPWD")
 
+    /** Variables that decide which start-up files a shell reads, and where a program is looked up. */
+    private val START_UP_VARIABLES = setOf("HOME", "ENV", "PATH")
+
     /** The single-letter options of Android's shell (mksh) that take no value. `c`, `s` and `o` are read on their own. */
     private const val SHELL_FLAGS = "abCefhiklmnpruUvxX"
 
@@ -112,6 +115,9 @@ internal object ShellCommands {
     const val DOUBT_TEXT = "hands a shell text that is only put together when the command runs (sh -c, eval, trap), so what it runs cannot be read"
     const val DOUBT_HERE_EXPANDS = "feeds a shell a here-document whose text is changed before the shell reads it (quote the end word: <<'EOF')"
     const val DOUBT_ALIAS = "defines an alias, which changes what the words after it mean"
+    fun doubtStartUp(name: String) = "sets $name to a place in the workspace, or to a value that is only known when the command runs; what is started " +
+        "after that would be looked up there, or would read its start-up files from there, and could not be shown"
+
     const val DOUBT_FED_ARGUMENTS = "starts a shell through xargs without naming its script, so what it runs comes from what xargs reads"
 
     fun doubtProgram(raw: String) = "starts a program whose name is only put together when it runs (${OperatorText.q(raw.take(80))}); write the program's name plainly"
@@ -429,6 +435,7 @@ internal object ShellCommands {
             doubts += script.doubts
             val variables = Variables.read(script, parent)
             if (setsLookupVariable(script)) unsettledBy = unsettledBy ?: UNSETTLED_LOOKUP
+            startUpDoubts(script)
             val roles = java.util.IdentityHashMap<Word, Boolean>()
             // Here-documents that are certainly a shell's input: their text is commands, and it must reach the shell as written.
             val shellFed = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<ShellSyntax.Redirect, Boolean>())
@@ -533,6 +540,57 @@ internal object ShellCommands {
                 word.pieces.firstOrNull()?.let { p -> if (p.kind == Kind.LIT && !p.quoted) APPENDS.find(p.text)?.let { set += it.groupValues[1] } }
             }
             return LOOKUP_VARIABLES.any { it in set }
+        }
+
+        /**
+         * HOME, ENV and PATH decide which start-up files a shell reads and where a program's name
+         * is looked up. The runner sets them to places outside the workspace (G3); a text that
+         * sets one of them to a place in the workspace, or to a value that cannot be read here,
+         * takes that back, so it is a doubt. Setting them to a fixed place outside the workspace
+         * is fine, and so are `unset` and a bare `export`.
+         */
+        private fun startUpDoubts(script: ShellSyntax.Script) {
+            fun check(name: String, value: Word?) {
+                if (name in START_UP_VARIABLES && (value == null || !outside(name, value))) doubt(doubtStartUp(name))
+            }
+            for (simple in script.commands) {
+                val first = plainNames(simple).firstOrNull()
+                simple.assignments.forEach { (name, value) -> check(name, value) }
+                for (arg in simple.words.drop(1)) {
+                    if (first in DECLARATIONS || first == "env") arg.assignment()?.let { check(it.first, it.second) }
+                    // "read HOME", "getopts x HOME": a value from somewhere else.
+                    if (first == "read" || first == "getopts") arg.plain?.let { check(it, null) }
+                }
+            }
+            script.loops.forEach { check(it.name, null) }
+            for (word in allWords(script)) {
+                word.pieces.filter { it.kind == Kind.DYN }.forEach { p -> ASSIGNING_EXPANSION.findAll(p.text).forEach { check(it.groupValues[1], null) } }
+                word.pieces.firstOrNull()?.let { p -> if (p.kind == Kind.LIT && !p.quoted) APPENDS.find(p.text)?.let { check(it.groupValues[1], null) } }
+            }
+        }
+
+        /** True when [value], assigned to [name], is fixed text that names only places outside the workspace (or nothing). */
+        private fun outside(name: String, value: Word): Boolean {
+            val text = StringBuilder()
+            for (piece in value.pieces) {
+                when (piece.kind) {
+                    Kind.LIT -> text.append(piece.text)
+                    // The runner's own values: its PATH is a system folder, its HOME a folder outside the workspace.
+                    Kind.VAR -> when {
+                        piece.text == "PATH" && name == "PATH" -> text.append("/system/bin")
+                        piece.text == "HOME" -> text.append("/home-outside-the-workspace")
+                        else -> return false
+                    }
+                    else -> return false
+                }
+            }
+            if (text.isEmpty()) return name != "PATH"
+            // In PATH an empty part means the folder the shell is in.
+            val parts = if (name == "PATH") text.split(':') else listOf(text.toString())
+            return parts.all { part ->
+                part.startsWith("/") && !part.startsWith("/proc/") && part.split('/').none { it == ".." } &&
+                    places.roots.none { root -> part == root || part.startsWith("$root/") || root.startsWith("${part.trimEnd('/')}/") }
+            }
         }
 
         /**

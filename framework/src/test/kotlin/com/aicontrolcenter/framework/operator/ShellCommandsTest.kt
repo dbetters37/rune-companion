@@ -289,6 +289,23 @@ class ShellCommandsTest {
     }
 
     @Test
+    fun `HOME, ENV and PATH may not be pointed into the workspace or at something unknown`() {
+        // G3 from the other side: the runner keeps them outside the workspace, and a command that takes that back is not read as safe.
+        for (command in listOf(
+            "HOME=\$PWD sh -l -c true", "HOME=. sh -l", "export HOME=/data/ws/proj; sh -l -c ls", "HOME=/data/ws sh -i", "HOME=/real/ws/x sh -l", "HOME=/data sh -l",
+            "HOME=\$x sh -l", "HOME=\$(pwd) sh -l", "env HOME=sub sh -l -c true", "read HOME < name; sh -l", "for HOME in a b; do sh -l; done", "HOME+=/x",
+            "HOME=/proc/self/cwd sh -l", "HOME=/tmp/../data/ws sh -l", ": \${HOME:=sub}",
+            "ENV=run.sh sh -i -c true", "ENV=\$PWD/run.sh sh -i", "export ENV=./rc; sh -i", "typeset -x ENV=rc", "ENV=\$f sh -i",
+            "PATH=sub:\$PATH; tidy", "PATH=.:\$PATH", "PATH=\$PWD/bin:\$PATH tool", "export PATH=\$PATH:", "PATH=:/system/bin", "PATH=\$x", "PATH=/data/ws/proj/bin",
+            "env PATH=bin tool", "PATH+=:bin",
+        )) assertTrue(read(command).doubts.any { "to a place in the workspace, or to a value that is only known when the command runs" in it }, "$command: ${read(command).doubts}")
+        for (command in listOf(
+            "HOME=/tmp sh -l -c true", "HOME=\$HOME sh -l -c true", "HOME=~ ls", "ENV= sh -i -c true", "unset ENV HOME", "export HOME PATH", "PATH=\$PATH:/system/xbin ls",
+            "PATH=/system/bin:/vendor/bin; ls", "export PATH=/system/bin", "HOME=/sdcard/Download tool", "make HOME=sub", "echo HOME=\$PWD", "x=\$PWD", "CDPATH=sub",
+        )) assertEquals(emptyList(), read(command).doubts, command)
+    }
+
+    @Test
     fun `other names are returned for pinning, scripts by their ending among them`() {
         val names = read("wc -l notes.md \"my file.txt\" && cat lib.sh | sh; x=out/data.csv ./tool arg > log.txt").names
         fun flags(path: String) = names.filter { n -> n.targets.any { (it as? ShellCommands.Target.Entry)?.path?.value == path } }

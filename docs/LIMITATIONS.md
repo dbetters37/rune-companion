@@ -151,8 +151,9 @@ do it.
   file-name pattern it does not know; a shell fed from anything but a workspace file or fixed
   text; text for a shell (`sh -c`, `eval`) that is only put together when the command runs; a
   script named by a relative path in a command that also changes folder or sets `PATH`,
-  `CDPATH`, `ENV`, `HOME` or `IFS`; a here-document or another construct it does not read
-  exactly as Android's shell does. This refuses some harmless commands. What it cannot do is
+  `CDPATH`, `ENV`, `HOME` or `IFS`; a command that points `HOME`, `ENV` or `PATH` into the
+  workspace; a here-document or another construct it does not read exactly as Android's shell
+  does. This refuses some harmless commands. What it cannot do is
   find a script that is run in a way it does not know (a program that starts a shell itself, a
   wrapper that is not on its list): such a script is not shown, but by (2) it is the file that
   was in the workspace when you were asked.
