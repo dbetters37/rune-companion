@@ -294,6 +294,7 @@ class LocalWorkspace(
         replacement: String,
         expectedCount: Int?,
         ownVersionSha256: String?,
+        stillOwn: () -> Boolean,
     ): DocResult<Int> = changing {
         if (find.isEmpty()) return@changing DocResult.Failed("The text to find is empty.")
         val file = when (val r = writableTarget(path)) {
@@ -314,8 +315,9 @@ class LocalWorkspace(
         if (count == 0) return@changing DocResult.Ok(0)
         val updated = text.replace(find, replacement).toByteArray(Charsets.UTF_8)
         if (updated.size > limits.maxFileBytes) return@changing DocResult.TooLarge(updated.size.toLong(), limits.maxFileBytes)
-        // The version being replaced is kept, unless it is exactly the one the caller says it wrote itself a short while ago.
-        val keep = ownVersionSha256 == null || sha256(current) != ownVersionSha256
+        // The version being replaced is kept, unless it is exactly the one the caller says it wrote itself a short while ago,
+        // and says so still: this call may have waited for the change lock behind a shell command for a long time.
+        val keep = ownVersionSha256 == null || sha256(current) != ownVersionSha256 || !stillOwn()
         // A kept version still counts, so then the whole new size is growth, and so is its trash record.
         quotaProblem(if (keep) updated.size.toLong() + recordBytes(path) else updated.size.toLong() - current.size)?.let { return@changing it }
         stageAndMove(file, replace = true, fill = { Files.write(it, updated) }, keep = if (keep) { { keepInTrash(path, file) } } else null)

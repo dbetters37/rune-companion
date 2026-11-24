@@ -143,6 +143,12 @@ class JsHostError(message: String) : RuntimeException(message)
  * calls it, so such work is bounded by the array limit and the time limit only. If a run does not stop within a grace period
  * after its time limit, the caller gets [JsOutcome.Stopped] at once and the thread is left to
  * finish on its own; while [MAX_STUCK] such threads are alive, new runs are refused.
+ *
+ * A host function can wait: a change to the workspace waits for the change lock, which a shell
+ * command holds for as long as it runs. That wait counts as the script's time. When the run is
+ * over for its caller (the time is up, or the call was stopped), the script's thread is
+ * interrupted, so a host function that still waits gives up and does nothing afterwards, and a
+ * run that is over makes no further host calls.
  */
 class JsSandbox(private val limits: JsLimits = JsLimits()) {
     private val stuck = AtomicInteger(0)
@@ -171,10 +177,17 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
         try {
             thread.start()
             return withTimeoutOrNull(limits.timeoutMs + GRACE_MS) { done.await() }
-                ?: run.logOutcome { log, cut -> JsOutcome.Stopped("The script did not stop within its time limit and was abandoned.", log, cut) }
+                ?: run.logOutcome { log, cut -> JsOutcome.Stopped(if (run.inHostCall) WAITED_FOR_HOST else "The script did not stop within its time limit and was abandoned.", log, cut) }
         } finally {
             run.cancelled = true
-            if (!done.isCompleted && run.state.compareAndSet(RUNNING, ABANDONED)) stuck.incrementAndGet()
+            if (!done.isCompleted) {
+                if (run.state.compareAndSet(RUNNING, ABANDONED)) stuck.incrementAndGet()
+                // A host function may be waiting: for the workspace's change lock, as long as a shell command runs. The run is
+                // over for its caller (its time is up, or the call was stopped), so the wait is given up and what it was
+                // about to do is not done later, behind the caller's back. A thread in script or native code is not
+                // disturbed by this; it ends at its next check, and its next host call is refused ([ScriptRun.hostCall]).
+                thread.interrupt()
+            }
         }
     }
 
@@ -185,6 +198,9 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
         val state = AtomicInteger(RUNNING)
 
         @Volatile var cancelled = false
+
+        /** True while the script's thread is inside a host function, which may be waiting for the workspace. */
+        @Volatile var inHostCall = false
 
         /** How often this run had the heap collected to tell garbage from growth ([observe]). */
         private var collections = 0L
@@ -478,14 +494,27 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
             return value.toString()
         }
 
-        private fun <T> hostCall(block: () -> T): T = try {
-            block()
-        } catch (e: JsHostError) {
-            throw ScriptRuntime.constructError("Error", e.message ?: "Refused.")
-        } catch (e: RhinoException) {
-            throw e
-        } catch (e: Exception) {
-            throw ScriptRuntime.constructError("Error", "The workspace operation failed (${e::class.simpleName}).")
+        /**
+         * A host function's work. A run that is over for its caller (abandoned at its time limit, or stopped) does no
+         * host work any more: not a new call, and not one that was still waiting, which the caller's interrupt ends.
+         */
+        private fun <T> hostCall(block: () -> T): T {
+            if (cancelled) throw BudgetExceeded("The script was stopped.")
+            inHostCall = true
+            try {
+                return block()
+            } catch (e: JsHostError) {
+                throw ScriptRuntime.constructError("Error", e.message ?: "Refused.")
+            } catch (e: RhinoException) {
+                throw e
+            } catch (e: InterruptedException) {
+                throw BudgetExceeded("The script was stopped.")
+            } catch (e: Exception) {
+                if (cancelled) throw BudgetExceeded("The script was stopped.")
+                throw ScriptRuntime.constructError("Error", "The workspace operation failed (${e::class.simpleName}).")
+            } finally {
+                inHostCall = false
+            }
         }
 
         private fun function(scope: Scriptable, name: String, arity: Int, body: (Context, Scriptable, Array<Any?>) -> Any?) =
@@ -539,6 +568,10 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
         const val FINISHED = 1
         const val ABANDONED = 2
         const val GRACE_MS = 2_000L
+
+        /** What a run is told that was still inside a host function when its time was up. */
+        const val WAITED_FOR_HOST = "The script waited for the workspace longer than its time limit (a shell command may be running, and " +
+            "changes wait until it has ended). It was stopped, and what it was about to read or write was not done. Try again later."
         const val MAX_STUCK = 2
         const val MAX_FILES_WRITTEN = 20
 

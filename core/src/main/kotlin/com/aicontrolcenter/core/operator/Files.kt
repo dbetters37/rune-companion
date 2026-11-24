@@ -148,6 +148,12 @@ interface Workspace {
      * before the edit is kept in the trash, with one exception: when [ownVersionSha256] is given
      * and is the SHA-256 (lower-case hex) of exactly the content being replaced, the caller says
      * that version is one it wrote itself a short while ago, and it is not kept again.
+     *
+     * [stillOwn] is asked once the change lock is held, right before the file is replaced, and
+     * only when the content matches [ownVersionSha256]: false keeps the version after all. A call
+     * can wait for the lock as long as a shell command runs ([runCommand]), and what the caller
+     * knew when it called may have ended meanwhile (the version was handed to another app, or
+     * its minutes passed). It must answer at once and must not call this service.
      */
     suspend fun replaceText(
         path: RelativePath,
@@ -155,6 +161,7 @@ interface Workspace {
         replacement: String,
         expectedCount: Int?,
         ownVersionSha256: String? = null,
+        stillOwn: () -> Boolean = { true },
     ): DocResult<Int>
 
     /** Creates the folder and missing parents; an existing folder is returned as is. */

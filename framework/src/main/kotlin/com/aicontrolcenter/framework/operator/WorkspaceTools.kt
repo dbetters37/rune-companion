@@ -424,12 +424,16 @@ internal class WorkspaceReplaceText(private val d: OperatorToolDependencies) : O
                         val author = OwnVersions.author(ctx)
                         // Decided again now: the minutes may have passed while the owner was asked.
                         val own = before.sha256?.takeIf { d.ownVersions.isOwn(author, path, before, d.clock.now()) }
-                        when (val r = d.workspace.replaceText(path, find, replacement, expectedCount = count, ownVersionSha256 = own)) {
+                        // And once more when the workspace has the change lock: this call waits for it as long as a shell command
+                        // runs, and meanwhile workspace_export (which does not wait) may have handed this version to another app.
+                        var keptAfterAll = false
+                        val stillOwn = { d.ownVersions.isOwn(author, path, before, d.clock.now()).also { if (!it) keptAfterAll = true } }
+                        when (val r = d.workspace.replaceText(path, find, replacement, expectedCount = count, ownVersionSha256 = own, stillOwn = stillOwn)) {
                             is DocResult.Ok -> {
                                 remember(author, path, text.replace(find, replacement))
                                 ToolOutcome.success(
                                     "Replaced ${OperatorText.count(r.value, "occurrence")} in ${q(path.value)}. " +
-                                        if (own == null) "The version from before this edit is in the workspace trash (workspace_restore lists it)."
+                                        if (own == null || keptAfterAll) "The version from before this edit is in the workspace trash (workspace_restore lists it)."
                                         else "The version from before this edit was one ${ctx.agent.name} wrote itself minutes ago, so it was not kept again.",
                                 )
                             }
