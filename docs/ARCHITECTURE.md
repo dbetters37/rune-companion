@@ -186,33 +186,64 @@ QUEUED ─► RUNNING ─► COMPLETED
 
 ### D. Phone operator
 
-Tools are plug-ins: a `ToolSpec` (name, JSON-schema parameters, required capability, risk,
-whether it sends data off the device) plus an `execute` function. Families:
+Tools are plug-ins: a `ToolSpec` (id, JSON-schema parameters, required capability, declared
+risk, whether it sends data off the device) plus an `execute` function. A tool that needs to
+show you the exact action first returns a `PreparedAction`: a summary, the details, the risk
+assessed for this call, and a check that says whether the thing it described has changed.
 
-| Family | Mechanism | Needs |
-|---|---|---|
-| Project workspace | Files in app-private storage, path-sandboxed | Nothing |
-| Files and folders | Storage Access Framework folder grants; optional all-files access | You pick a folder, or toggle all-files access in Settings |
-| Documents and text | Read/create/edit text formats; export documents | As files |
-| Photos and media | MediaStore | Media permission (or selected photos) |
-| Installed apps | Launch, share, deep links | Nothing beyond package visibility |
-| Browser | Open URLs; an in-app WebView the agent can script | Internet |
-| App navigation | Accessibility service: read screen, tap, type, scroll, global actions | You enable the service in Android settings; per-app authorisation |
-| Scripts | Embedded JavaScript sandbox; shell in the app sandbox; Termux `RUN_COMMAND` | Termux installed and configured for the last one |
+| Family | Tools | Mechanism | Needs |
+|---|---|---|---|
+| Workspace | list, read, write, append, replace text, make folder, move, trash, restore, empty trash, search, export | Files in app-private storage, path-sandboxed, with a trash | Nothing |
+| Shared folders | list, read, write, make folder, rename, copy in and out, delete | Storage Access Framework tree grants, one per folder | You pick each folder |
+| Photos and videos | list, copy to workspace | MediaStore | Media permission, or selected photos on Android 14+ |
+| Apps and links | list, open, open link, share text, compose email and SMS, dial, install, uninstall | Intents; `PackageInstaller` sessions | "Install unknown apps" for installs |
+| Web | read page, open in browser | OkHttp GET with an address policy; Custom Tabs | Internet |
+| Screen | read, tap, type, scroll, back, home, wait for, screenshot | Accessibility service on apps you authorise | You enable the service in Android settings; per-app authorisation |
+| Scripts | run JavaScript, run shell, run in Termux | Rhino interpreter with everything Java shut out; `/system/bin/sh` in the workspace; Termux `RUN_COMMAND` | Termux installed and configured for the last one |
+| Permissions | request | Raises a request to you | Nothing |
 
-`PermissionBroker` decides every call:
+`PermissionBroker` implements the `ToolAuthorizer` port and decides every call, in this order:
 
-1. the tool must be enabled for the agent;
-2. master switches and local-only mode must allow it;
-3. the agent needs a grant for the tool's capability; without one a permission request is
-   raised and the task waits for you (approve once / for this task / always, or deny);
-4. if the action is consequential, an approval request with a preview of the exact action
-   is raised every time, regardless of grants;
-5. request, decision and result are logged.
+1. the agent is switched on and the tool is switched on for it;
+2. the master switches (phone operator; screen control for screen tools) and local-only mode
+   allow it;
+3. the agent holds a grant for the tool's capability. A grant names the agent, the capability,
+   a constraint (one folder or one app, where the capability has one) and a scope: once (bound
+   to the request that asked), this task, or always. Without one a `PERMISSION` request is
+   raised and the call waits for you;
+4. if the risk of this call (the higher of declared and assessed) is consequential, an
+   `APPROVAL` request with the preview is raised every time, whatever was granted. It can only
+   be approved or denied, never "always". After you answer, the tool checks that what it showed
+   you is still what it would do; if not, nothing runs;
+5. request, decision and result are logged with the request id.
 
-Grants can be revoked at any time. Agents can ask for a capability and explain why; they
-cannot grant themselves anything, and the accessibility service refuses to operate system
-settings, the permission controller and the package installer.
+Rules that hold around this:
+
+- **Only you decide.** Requests are answered through owner-only ports (`OwnerRequests`,
+  `OwnerGrants`, `OwnerFolders`, `OwnerOperatorApps`, `ScreenControl`) that only the UI holds. An
+  architecture test walks everything reachable from agent-facing code and fails if it can reach
+  one of them or any store that could change access. A request is decided at most once
+  (compare-and-set), and the grant is written in the same transaction.
+- **A request lives as long as the call that waits for it.** If the app, the chat or the task
+  stopped, the request is closed and cannot be answered. Withdrawing an app, removing a folder,
+  revoking a permission or pressing Stop closes the related requests.
+- **Waiting for you costs the agent no time.** Limits on the tool, the task and the objective
+  are paused while a request waits, and the pause survives a crash.
+- **Screen control.** Each authorised app has a policy: ask before every action (the default),
+  or ask only before buying, sending, deleting and similar, recognised from the words on the
+  control, its row and its window. A consequential action shows the window's text; a digest of
+  the window and the control is checked again before the action runs. A banner "Agent is
+  operating <app> · Stop" is shown the whole time. The service never operates this app, Android
+  settings, the permission controller, the package installer, system dialogs, the lock screen
+  or password fields, and is not declared an accessibility tool.
+- **Files.** Shared storage is reached only through folders you pick; the app does not ask for
+  all-files access. A replaced workspace file goes to the trash; replacing or deleting in a
+  shared folder, emptying the trash, and changing many files in a short time are consequential.
+- **Scripts.** The JavaScript sandbox has a budget of instructions, time and memory. A shell
+  command shows the scripts it would run and pins them, refuses background work, and runs in a
+  process group that is killed when it ends.
+- **Data leaving the phone.** Tools that can send data out are marked in the catalogue, refused
+  in local-only mode, and write an egress entry naming the agent, task and objective.
 
 ### E. Memory
 
@@ -276,9 +307,9 @@ agents, edges are their connections, and messages travel along them while tasks 
 |---|---|
 | Storage | Room database in app-private storage, encrypted with SQLCipher; the database key is random and wrapped by a hardware-backed keystore key. Cloud backup is disabled |
 | API keys | `SecretVault`: AES-256-GCM, non-exportable AndroidKeyStore key, per-secret IV, alias bound as associated data. Other code holds aliases only |
-| Agent permissions | Per-agent tool enablement plus per-capability grants with scope; revocable; all decisions logged |
-| Consequential actions | Always confirmed by you, with a preview |
-| Data leaving the device | `Locality` on every provider and model; egress recorded as `EgressInfo` on activity events; a local-only mode that blocks every off-device provider and tool |
+| Agent permissions | Per-agent tool enablement plus grants per capability, with a scope (once, this task, always) and, for folders and apps, a single target; revocable; every request, decision and result logged. Only owner-held ports can decide a request or change access, and an architecture test fails if agent-facing code can reach one |
+| Consequential actions | Confirmed by you every time, with a preview of the exact action; what was shown is checked again before it runs, and it does not run if it changed |
+| Data leaving the device | `Locality` on every provider and model; egress recorded as `EgressInfo` on activity events; a local-only mode that blocks every off-device provider and every tool that can send data out, including handing text or files to another app and acting on another app's screen |
 | Execution logs | Append-only `ActivityLog` with filters by type, agent, task, objective, severity and egress |
 | Crash and interruption | Task state and transcripts are persisted step by step; tasks found running at start-up are marked interrupted and resumed or held, as configured; an interrupted run counts as an attempt, so a step that keeps crashing is not retried forever; objectives run in a foreground service with a Pause control |
 | Untrusted content | Tool results, web pages, app screens and other agents' messages are passed to models as data, and cannot raise an agent's permissions |
@@ -293,6 +324,9 @@ agents, edges are their connections, and messages travel along them while tasks 
   journeys; screenshot tests for every screen.
 - A software-emulated Android device is used for smoke tests of what Robolectric cannot
   cover (keystore, database encryption, app start-up). It is slow, so this set is small.
+- Each phase ends with an adversarial review by independent reviewers, fixes, and a separate
+  verification that re-runs every reproduction; architecture tests keep owner-only ports out of
+  reach of agent-facing code.
 - Not testable in the build environment, and stated as such in STATUS.md: behaviour on your
   specific phone, real provider accounts, the accessibility service against real third-party
   apps, on-device model performance.

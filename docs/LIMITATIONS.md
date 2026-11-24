@@ -30,7 +30,7 @@ A normal app cannot do these. The app does not attempt them.
 | Complete purchases | No API | The agent can navigate to the purchase; the final confirmation is yours |
 | Run downloaded or generated native programs | Blocked for apps targeting Android 10+ on Android 10 and later. On Android 9 a program saved in the workspace can still be run by a shell command you approve | An embedded JavaScript sandbox, shell scripts with system tools inside the app sandbox, or Termux through its official `RUN_COMMAND` intent |
 | Read notifications, SMS, call log, contacts, calendar without permission | Each needs its own permission or special access | Could be added later as separate, individually granted capabilities |
-| Capture the screen without consent | Blocked | Screenshots through the enabled accessibility service (Android 11+) |
+| Capture the screen without consent | Blocked | Screenshots of an authorised app through the enabled accessibility service (Android 11+), saved to the workspace |
 | Unlock the phone or answer a biometric prompt | Blocked, and out of bounds | The run pauses while the phone is locked |
 | Toggle Wi-Fi, Bluetooth, mobile data, or change secure settings | Blocked | Opening the relevant settings panel for you |
 | Work with Advanced Protection on (Android 17) | Android disables accessibility services that are not assistive tools, and blocks sideloading | Everything except the accessibility operator keeps working; the app says so instead of sending you to Settings |
@@ -53,10 +53,10 @@ do it.
 | Semantic memory search | Nothing by default | Ships with an offline text-similarity embedder. A provider's embedding model can replace it for better recall, which sends memory text to that provider |
 | Director and multi-agent work | At least one usable model. Tool-calling models work best | Models without tool calling use a prompted protocol and are less reliable |
 | Files in the app's own workspace | Nothing | |
-| Files and folders in shared storage | You pick each folder once (Storage Access Framework), or turn on "All files access" in settings | `Android/data` and other apps' private folders stay out of reach either way |
+| Files and folders in shared storage | You pick each folder once with Android's folder picker, in Tools > Folders | The app does not ask for "All files access": a picked folder gives the same reach with narrower access. `Android/data` and other apps' private folders stay out of reach either way |
 | Photos and media | The media permission, or "selected photos" on Android 14+ | Allow it, or change the selection, from Tools > All tools > Photos and videos |
 | Opening apps, sharing to apps, opening links | Nothing | Web addresses and map links open at once. Any other link (payment, call, meeting or chat links) asks you every time and names the app that opens it. Local-only mode blocks links, sharing a text or a workspace file, and preparing an email, a text message or a call, because the app that receives them may send them on. Outside that mode each of these is in the activity log as data leaving this app: which agent, in which task, to which app, what kind and how much, never the content |
-| Operating other apps' screens | You enable the app's accessibility service in Android settings, and authorise each target app in the registry | See section 4 for the extra step on sideloaded apps |
+| Operating other apps' screens | You turn on Screen control in Settings, enable the app's accessibility service in Android settings, and authorise each target app in Tools > Screen | See section 4 for the extra step on sideloaded apps |
 | Scripts | Nothing for the JavaScript sandbox and in-sandbox shell. Termux, with `allow-external-apps=true` in its properties and the `RUN_COMMAND` permission granted (from Tools > All tools > Scripts), for full command-line tools | Shell and Termux commands can use the internet, so local-only mode blocks them, and each run is logged as possible data leaving the phone |
 | Being told that an agent waits for your answer, or is operating an app's screen | Notification permission (Android 13+). The app explains and asks when you turn the phone operator on, or at the first start with it already on | Without it, requests still wait in Approvals and in the chat or task that asked, and are refused if nobody answers in time. Approvals and Tools then show a warning with a button to Android's notification settings; requests that are waiting get their notification once you allow them |
 | Long runs while the screen is off | Notification permission (Android 13+). Exempting the app from battery optimisation helps on aggressive devices | Objectives run in a foreground service with a visible notification and a Pause action. Android only lets the app start it while the app is on screen |
@@ -107,8 +107,8 @@ do it.
   a tool result is refused, even if lightly reworded. This is a text comparison: it reduces
   the risk of a model following instructions planted in what it reads, but cannot rule it
   out. The protection that does not depend on the model is that consequential actions
-  (deleting, installing, paying, sending) always need your confirmation. No such tools exist
-  yet; they arrive with the phone operator.
+  (deleting, installing, paying, sending) always need your confirmation, whatever the model
+  was told and whatever it was allowed before.
 
 - **Replacing files.** In the workspace a file that is replaced (written over, edited, moved
   over or imported over) is kept in the workspace trash, so it can be restored; it keeps
@@ -207,5 +207,13 @@ do it.
   management killing background work.
 - Real provider accounts. Adapters are tested against recorded protocol shapes on a local
   mock server, not against live services.
-- The accessibility operator against real third-party apps.
+- The accessibility operator against real third-party apps. It was exercised against test
+  screens and Android's own apps on an emulator; how a given app labels its controls decides
+  how well an agent can use it.
+- Termux commands (Termux is not installed in the build environment), installing a real APK
+  through Android's confirmation, and photo access on a phone with real photos.
+- Whether Android lets the app keep a replaced workspace file as a second name for the same
+  data. If it does not, the app copies the file instead; both ways are tested, the phone's
+  choice is not.
+- The web page reader always connects directly, also on a network that expects a proxy.
 - On-device model speed and memory use.
