@@ -329,9 +329,6 @@ internal object ShellCommands {
     private class Variables(val values: Map<String, List<Word>>, val unknown: Set<String>, val allUnknown: Boolean) {
         fun of(name: String): List<Word>? = if (allUnknown || name in unknown) null else values[name]
 
-        /** True when the text assigns [name], or may. */
-        fun touches(name: String): Boolean = name in unknown || name in values
-
         companion object {
             val NONE = Variables(emptyMap(), emptySet(), false)
 
@@ -345,6 +342,8 @@ internal object ShellCommands {
                     val first = names.firstOrNull()
                     // A sourced or evaluated text can set anything, and so can changing how words are split.
                     if (names.any { it == "eval" || it in SOURCE }) allUnknown = true
+                    // A name reference ("typeset -n ref=f", mksh's nameref): assigning to one variable then changes another.
+                    if (first == "nameref" || (first in DECLARATIONS && simple.words.drop(1).any { isOption(it) && 'n' in it.plain.orEmpty() })) allUnknown = true
                     if (simple.words.isEmpty()) {
                         simple.assignments.forEach { (name, value) ->
                             if (name == "IFS") allUnknown = true
@@ -606,6 +605,11 @@ internal object ShellCommands {
             val before = if (simple.pipedInto) script.commands.getOrNull(index - 1) else null
             if (before == null) {
                 doubt(DOUBT_NO_INPUT)
+                return
+            }
+            // "( cat a; echo ls ) | sh": the command before the pipe is not all that is piped.
+            if (simple.pipedFromGroup) {
+                doubt(DOUBT_PIPE)
                 return
             }
             val program = before.words.firstOrNull()?.takeIf { it.bare }?.plain

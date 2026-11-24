@@ -221,7 +221,7 @@ class ShellScriptPinningTest {
         val root = f.root.canonicalPath
         val refused = listOf(
             ". ./go.sh; sh tidy.sh", ". ./go.sh; . ./tidy.sh", "PATH=sub:\$PATH; . ./tidy.sh", "cd sub && cat tidy.sh | sh", "cd sub && eval \"\$(cat tidy.sh)\"",
-            "(cd sub; cat tidy.sh) | sh", "cd sub && /proc/self/exe tidy.sh", "cd sub; sh \$PWD/tidy.sh", "cd sub; sh \$(pwd)/tidy.sh", "pushd sub; sh tidy.sh",
+            "cd sub && /proc/self/exe tidy.sh", "cd sub; sh \$PWD/tidy.sh", "cd sub; sh \$(pwd)/tidy.sh", "pushd sub; sh tidy.sh",
             // Also a script the reader did not think must run: after cd, "cat tidy.sh" reads another file than the one that would be shown.
             "cd sub && cat tidy.sh", "cd sub && ./tidy.sh", "export PATH=sub; sh tidy.sh", "IFS=x; sh tidy.sh", ". ./path.sh; sh tidy.sh",
             // It is handed on: a script read in by a script that is read in, and a script started from where the folder is not certain.
@@ -232,6 +232,21 @@ class ShellScriptPinningTest {
             assertTrue("by a relative path" in reason && "use the \"directory\" argument instead of cd" in reason, "$command: $reason")
         }
         assertTrue("The script \"a.sh\", which the command runs, names the script \"tidy.sh\"" in f.rejected("scripts.run_shell", "command" to "cd sub; sh $root/a.sh"))
+        // The same through a subshell: what a group pipes into a shell is not read at all.
+        assertTrue("pipes into a shell" in f.rejected("scripts.run_shell", "command" to "(cd sub; cat tidy.sh) | sh"))
+        // A script named twice counts each time: run as a program first, then read in; run from a settled text first, then from an unsettled one.
+        assertTrue("by a relative path" in f.rejected("scripts.run_shell", "command" to "sh go.sh; . ./go.sh; sh tidy.sh"))
+        f.put("from-sub.sh", "cd sub\nsh $root/a.sh\n")
+        assertTrue("The script \"a.sh\"" in f.rejected("scripts.run_shell", "command" to "sh a.sh; sh from-sub.sh"))
+        // Seen first as awk's program file, then run by a shell: its own scripts are looked for then.
+        f.put("both.sh", "sh /proc/self/cwd/tidy.sh\n")
+        assertTrue("outside the workspace" in f.rejected("scripts.run_shell", "command" to "awk -f both.sh name.txt; sh both.sh"))
+        // Scripts that read each other in, in a circle, are read once each.
+        f.put("ring1.sh", ". ./ring2.sh\n")
+        f.put("ring2.sh", ". ./ring1.sh\ncd sub\n")
+        assertTrue("by a relative path" in f.rejected("scripts.run_shell", "command" to ". ./ring1.sh"))
+        f.put("ring2.sh", ". ./ring1.sh\n")
+        f.assess("scripts.run_shell", "command" to ". ./ring1.sh")
         assertTrue(f.shell.runs.isEmpty())
 
         // Certain: a name with the workspace's full path, and names without a script after cd.

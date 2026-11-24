@@ -86,6 +86,11 @@ internal object ShellSyntax {
         val pipedInto: Boolean,
         /** Its output goes to the command after it (`|`). */
         var pipesOn: Boolean = false,
+        /**
+         * With [pipedInto]: what is piped in is the output of a group (`( … ) |`, `{ … } |`,
+         * `done |`), not of the one command before, so more than that command may have written it.
+         */
+        val pipedFromGroup: Boolean = false,
     )
 
     /** `for NAME in words`: the values the loop gives [name]. */
@@ -140,16 +145,20 @@ internal object ShellSyntax {
         var words = ArrayList<Word>()
         var redirects = ArrayList<Redirect>()
         var piped = false
+        var pipedFromGroup = false
         var cases = 0
         var patterns = false
 
         fun finish(pipesOn: Boolean) {
-            if (assignments.isNotEmpty() || words.isNotEmpty() || redirects.isNotEmpty()) {
-                commands += Simple(assignments, words, redirects, piped, pipesOn)
+            val emitted = assignments.isNotEmpty() || words.isNotEmpty() || redirects.isNotEmpty()
+            if (emitted) {
+                commands += Simple(assignments, words, redirects, piped, pipesOn, pipedFromGroup = piped && pipedFromGroup)
                 assignments = ArrayList()
                 words = ArrayList()
                 redirects = ArrayList()
             }
+            // A pipe with no simple command right before it carries on from a group: "( … ) |", "{ … } |", "done |".
+            pipedFromGroup = pipesOn && !emitted
             piped = pipesOn
         }
 
@@ -451,7 +460,8 @@ internal object ShellSyntax {
                     val end = closingBrace(i + 1)
                     val inner = s.substring(i + 2, minOf(s.length, end))
                     if (NAME.matches(inner)) add(Kind.VAR, inner, quoted) else {
-                        if ("$(" in inner || '`' in inner) doubts += DOUBT_HIDDEN_COMMAND
+                        // "${ command;}" and "${|command;}" run the command in mksh; so does any "$(…)" further in.
+                        if ("$(" in inner || '`' in inner || inner.firstOrNull().let { it == null || it in " \t\n|" }) doubts += DOUBT_HIDDEN_COMMAND
                         add(Kind.DYN, s.substring(i, minOf(s.length, end + 1)), quoted)
                     }
                     i = minOf(s.length, end + 1)

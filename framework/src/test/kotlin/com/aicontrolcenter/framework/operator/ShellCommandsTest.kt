@@ -99,7 +99,8 @@ class ShellCommandsTest {
             "f=run.sh; read f; sh \$f" to ShellCommands.RUN_TIME, "f=run.sh; f=\$(cat n); sh \$f" to ShellCommands.RUN_TIME, "f=run.sh; eval f=x; sh \$f" to ShellCommands.RUN_TIME,
             "f=run.sh; unset f; sh \$f" to ShellCommands.RUN_TIME, "f=run.sh; : \${f:=x.sh}; sh \$f" to ShellCommands.RUN_TIME, "f=run.sh; f+=x; sh \$f" to ShellCommands.RUN_TIME,
             "f=run.sh; IFS=n; sh \$f" to ShellCommands.RUN_TIME, "f=run.sh; . ./lib; sh \$f" to ShellCommands.RUN_TIME, "f='a b'; sh \$f" to ShellCommands.RUN_TIME,
-            "f=run.sh cat; sh \$f" to ShellCommands.RUN_TIME, "sh {a,b}.sh" to ShellCommands.RUN_TIME, "sh r*/../run.sh" to ShellCommands.RUN_TIME,
+            "f=run.sh cat; sh \$f" to ShellCommands.RUN_TIME, "f=run.sh; typeset -n r=f; r=other.sh; sh \$f" to ShellCommands.RUN_TIME,
+            "f=run.sh; nameref r=f; r=other.sh; sh \$f" to ShellCommands.RUN_TIME, "sh {a,b}.sh" to ShellCommands.RUN_TIME, "sh r*/../run.sh" to ShellCommands.RUN_TIME,
             "sh -c 'sh \$f'" to ShellCommands.RUN_TIME, "f=run.sh; sh -c 'sh \$f'" to ShellCommands.RUN_TIME,
             // A word that expands to nothing is no word, and the shell takes the next one (the verifier's "E=; sh $E FILE").
             "E=; sh \$E run.sh" to ShellCommands.RUN_TIME, "E=; sh \$E /proc/self/cwd/run.sh" to ShellCommands.RUN_TIME, "o=-x; sh \$o run.sh" to ShellCommands.RUN_TIME,
@@ -193,6 +194,9 @@ class ShellCommandsTest {
             "cat -v run.sh | sh" to ShellCommands.DOUBT_PIPE, "cat | sh" to ShellCommands.DOUBT_PIPE, "cat - run.sh | sh" to ShellCommands.DOUBT_PIPE,
             "echo -e 'sh\\tx' | sh" to ShellCommands.DOUBT_PIPE, "echo 'a\\nb' | sh" to ShellCommands.DOUBT_PIPE, "printf 'ls' | sh" to ShellCommands.DOUBT_PIPE,
             "base64 -d x | sh" to ShellCommands.DOUBT_PIPE, "sh <&3" to ShellCommands.DOUBT_OPEN_FILE,
+            // The output of a group is more than what its last command prints.
+            "(cat a; echo ls) | sh" to ShellCommands.DOUBT_PIPE, "{ cat a; echo ls; } | sh" to ShellCommands.DOUBT_PIPE,
+            "for f in a b; do cat \$f; done | sh" to ShellCommands.DOUBT_PIPE, "if true; then cat a; fi | sh" to ShellCommands.DOUBT_PIPE,
             "eval \"\$x\"" to ShellCommands.DOUBT_TEXT, "eval \$(cat run.sh; echo x)" to ShellCommands.DOUBT_TEXT, "eval \"\$(grep x run.sh)\"" to ShellCommands.DOUBT_TEXT,
             "sh -c \"\$1\"" to ShellCommands.DOUBT_TEXT, "sh -c \"ls \$dir\"" to ShellCommands.DOUBT_TEXT, "sh -c \"echo \$(date)\"" to ShellCommands.DOUBT_TEXT,
             "trap \"\$cleanup\" EXIT" to ShellCommands.DOUBT_TEXT, "sh <<< \"\$x\"" to ShellCommands.DOUBT_TEXT, "eval ls *.txt" to ShellCommands.DOUBT_TEXT,
@@ -238,6 +242,8 @@ class ShellCommandsTest {
             "x=\$(case \$y in a) echo 1;; esac)" to ShellSyntax.DOUBT_CASE,
             "echo \${x:-\$(sh /proc/self/cwd/hidden.sh)}" to ShellSyntax.DOUBT_HIDDEN_COMMAND, "echo \${x:-`sh hidden.sh`}" to ShellSyntax.DOUBT_HIDDEN_COMMAND,
             "echo \$(( \$(sh hidden.sh) + 1 ))" to ShellSyntax.DOUBT_HIDDEN_COMMAND,
+            // mksh runs the command in "${ command;}" and "${|command;}".
+            "echo \${ sh /proc/self/cwd/hidden.sh;}" to ShellSyntax.DOUBT_HIDDEN_COMMAND, "x=\${|sh hidden.sh;}" to ShellSyntax.DOUBT_HIDDEN_COMMAND,
             "sh <(cat /proc/self/cwd/run.sh)" to ShellSyntax.DOUBT_PROCESS_SUBSTITUTION, "tee >(sh)" to ShellSyntax.DOUBT_PROCESS_SUBSTITUTION,
             "echo 'never closed" to ShellSyntax.DOUBT_UNCLOSED, "echo \"never closed" to ShellSyntax.DOUBT_UNCLOSED, "echo \$(ls" to ShellSyntax.DOUBT_UNCLOSED,
             "echo \${x" to ShellSyntax.DOUBT_UNCLOSED, "echo `ls" to ShellSyntax.DOUBT_UNCLOSED,

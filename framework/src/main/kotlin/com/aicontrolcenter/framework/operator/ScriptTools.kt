@@ -252,11 +252,14 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
      * decides whether the relative names in it are certain. A text is unsettled when it changes
      * folder or the way names are looked up itself, when a script it reads into itself (`.`,
      * `source`) does, or when the text that runs it is: the shell it runs in starts where that
-     * one stands. A script that is run as a program of its own changes nothing for the text that
-     * runs it.
+     * one stands (from any of them, when several texts run it). A script that is run as a
+     * program of its own changes nothing for the text that runs it.
      */
-    private class Text(val file: RelativePath?, val parent: Text?, val level: Int) {
+    private class Text(val file: RelativePath?, val level: Int) {
         var changes: Boolean = false
+
+        /** The texts that run it; one script may be run from several. */
+        val parents = ArrayList<Text>()
         val readIn = ArrayList<Text>()
 
         /** A script it reads into itself could not be read here, so what that changes is unknown. */
@@ -265,9 +268,12 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
         /** The scripts it names by a relative path, as written. */
         val relativeScripts = ArrayList<String>()
 
-        private fun changesItsShell(): Boolean = changes || readInUnread || readIn.any { it.changesItsShell() }
+        /** Scripts may read each other in, in a circle: each text is looked at once ([seen]). */
+        private fun changesItsShell(seen: MutableSet<Text>): Boolean =
+            seen.add(this) && (changes || readInUnread || readIn.any { it.changesItsShell(seen) })
 
-        fun unsettled(): Boolean = changesItsShell() || parent?.unsettled() == true
+        fun unsettled(seen: MutableSet<Text> = java.util.Collections.newSetFromMap(java.util.IdentityHashMap())): Boolean =
+            seen.add(this) && (changesItsShell(java.util.Collections.newSetFromMap(java.util.IdentityHashMap())) || parents.any { it.unsettled(seen) })
     }
 
     /** A file by its content (larger files by size and time), a folder by what is in it (the first entries, bounded). */
@@ -317,7 +323,9 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
             return reading
         }
 
-        val top = Text(null, null, 0)
+        val top = Text(null, 0)
+        // The text of each script that was read, so that a script named a second time is tied to the text that names it too.
+        val nodes = HashMap<RelativePath, Text>()
         // What is still to be read: the names of a text, and the text they come from.
         val queue = ArrayDeque(listOf(reading(command, top, everyWord = true) to top))
         var scripts = 0
@@ -351,6 +359,24 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
                         val known = named[path]
                         if (known != null && (known.asScript || !name.asScript)) {
                             exists = exists || known.state.exists
+                            // Seen before. If a shell runs it from here too, this text is tied to it as well.
+                            if (name.asScript && name.shell && known.asScript) {
+                                val read = nodes[path]
+                                when {
+                                    read != null -> {
+                                        read.parents += node
+                                        if (name.sourced) node.readIn += read
+                                    }
+                                    // It was seen as something else (a program file of awk, say), so its own scripts were not looked for.
+                                    known.text != null && node.level <= MAX_FOLLOWED -> {
+                                        val child = Text(path, node.level + 1).also { it.parents += node }
+                                        nodes[path] = child
+                                        if (name.sourced) node.readIn += child
+                                        queue += reading(known.text, child, everyWord = false) to child
+                                    }
+                                    name.sourced -> node.readInUnread = true
+                                }
+                            }
                             continue
                         }
                         // Names that are only pinned may be left out past the limit; a script never is: then nothing runs.
@@ -379,7 +405,8 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
                         named[path] = Named(path, state, script, text, runBy, shown = node.level <= MAX_FOLLOWED)
                         // The scripts this one runs in turn.
                         if (script && name.shell && text != null && node.level <= MAX_FOLLOWED) {
-                            val child = Text(path, node, node.level + 1)
+                            val child = Text(path, node.level + 1).also { it.parents += node }
+                            nodes[path] = child
                             if (name.sourced) node.readIn += child
                             queue += reading(text, child, everyWord = false) to child
                         } else if (script && name.sourced) {
