@@ -6,6 +6,7 @@ import org.mozilla.javascript.Callable
 import org.mozilla.javascript.ClassShutter
 import org.mozilla.javascript.Context
 import org.mozilla.javascript.ContextFactory
+import org.mozilla.javascript.JSFunction
 import org.mozilla.javascript.LambdaFunction
 import org.mozilla.javascript.NativeArray
 import org.mozilla.javascript.NativeJSON
@@ -16,6 +17,9 @@ import org.mozilla.javascript.ScriptableObject
 import org.mozilla.javascript.ScriptRuntime
 import org.mozilla.javascript.SerializableCallable
 import org.mozilla.javascript.Undefined
+import org.mozilla.javascript.debug.DebugFrame
+import org.mozilla.javascript.debug.DebuggableScript
+import org.mozilla.javascript.debug.Debugger
 import org.mozilla.javascript.json.JsonParser
 import org.mozilla.javascript.typedarrays.NativeTypedArrayView
 import java.math.BigInteger
@@ -43,7 +47,10 @@ data class JsLimits(
     val maxArrayLength: Int = 1_000_000,
     /**
      * Heap growth, measured roughly, that stops a run. A run is also stopped when less than an eighth of the whole heap
-     * (or less than this number, if that is smaller) is left free.
+     * (or less than this number, if that is smaller) is left free. Telling growth from garbage takes a collection, and
+     * those are rationed ([collectionDue]): a run that kept little when it was last measured ([keptMuch]) and makes
+     * much garbage is measured for growth twice a second, and can be over this limit for that long; the check for a
+     * nearly full heap is made every time.
      */
     val maxHeapGrowthBytes: Long = 96L * 1024 * 1024,
     /** Java stack of the script thread. */
@@ -62,11 +69,33 @@ data class JsLimits(
      * being stopped.
      */
     internal fun overMemory(usedBytes: Long, baseBytes: Long, maxHeapBytes: Long): Boolean =
-        usedBytes - baseBytes > maxHeapGrowthBytes || maxHeapBytes - usedBytes < minOf(maxHeapGrowthBytes, maxHeapBytes / 8)
+        usedBytes - baseBytes > maxHeapGrowthBytes || heapNearlyFull(usedBytes, maxHeapBytes)
+
+    /** Whether less than the reserve is left of the whole heap ([overMemory]). */
+    internal fun heapNearlyFull(usedBytes: Long, maxHeapBytes: Long): Boolean = maxHeapBytes - usedBytes < minOf(maxHeapGrowthBytes, maxHeapBytes / 8)
+
+    /**
+     * Whether a run that had the heap collected [collectionsDone] times in [elapsedNanos] may have it collected once
+     * more, to tell garbage from growth: [FREE_COLLECTIONS] times at once, then twice a second. A collection takes tens of
+     * milliseconds, and a script that makes much garbage would otherwise spend most of its time in them.
+     */
+    internal fun collectionDue(collectionsDone: Long, elapsedNanos: Long): Boolean = collectionsDone < FREE_COLLECTIONS + elapsedNanos / COLLECTION_INTERVAL_NANOS
+
+    /**
+     * Whether a run that had grown by [keptBytes] when the heap was last collected for it kept much: more than half its
+     * limit. Such a run, over the limit again by a number that counts garbage and with no collection due, is taken to
+     * have grown, and is stopped; a run that kept little is taken to have made garbage, and goes on until a collection
+     * is due.
+     */
+    internal fun keptMuch(keptBytes: Long): Boolean = keptBytes > maxHeapGrowthBytes / 2
 
     companion object {
         /** How often, in interpreter instructions, the budget is checked. */
         const val OBSERVE_EVERY = 10_000
+
+        /** Collections a run may ask for at once, and the time that earns it one more ([collectionDue]). */
+        internal const val FREE_COLLECTIONS = 4L
+        internal const val COLLECTION_INTERVAL_NANOS = 500_000_000L
     }
 }
 
@@ -134,13 +163,20 @@ class JsHostError(message: String) : RuntimeException(message)
  *   budget, so the budget and the time limit reach those loops; a typed array longer than
  *   [JsLimits.maxArrayLength] is not sorted; and `JSON.stringify` formats a copy without
  *   prototypes, so nothing a script put on `Object.prototype` is asked while it formats;
+ * - every entry into a function of the script is charged to the instruction budget, whoever calls
+ *   it ([COUNT_ENTRIES]): a built-in that walks an iterator of the script's own (`new Set(o)`,
+ *   spread, `Promise.all(o)`) or calls its comparator, callback or getter loops within the
+ *   budget, the time limit and the memory check, also when that function has no loop and no
+ *   call of its own;
  * - input is JSON (`input`), output is the JSON of the last expression, and `console.log`
  *   is captured.
  *
  * Residual risk, documented for the owner: native code between two budget checks (one call of a
  * linear built-in on a large value, such as `join` on a million numbers) is not interruptible,
- * and a callback without a loop or a call of its own costs no instructions when a built-in
- * calls it, so such work is bounded by the array limit and the time limit only. If a run does not stop within a grace period
+ * so such work is bounded by the array limit only. And a loop in which a built-in calls only
+ * other built-ins enters no function of the script and is not counted at all: an iterator whose
+ * `next` is itself a built-in function (`Object`, say), walked by `new Set`, spread or
+ * `Promise.all`, runs until the memory is full, or for ever. If a run does not stop within a grace period
  * after its time limit, the caller gets [JsOutcome.Stopped] at once and the thread is left to
  * finish on its own; while [MAX_STUCK] such threads are alive, new runs are refused.
  *
@@ -205,6 +241,12 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
         /** How often this run had the heap collected to tell garbage from growth ([observe]). */
         private var collections = 0L
 
+        /** By how much the heap had grown since the run began when it was last collected for this run. */
+        private var keptAtLastCollection = 0L
+
+        /** What stopped this run, once the observer has stopped it ([observe]). */
+        private var over: BudgetExceeded? = null
+
         private val log = ArrayList<String>()
         private var logChars = 0
         private var logCut = false
@@ -256,17 +298,40 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
         }
 
         fun observe(instructionsSoFar: Long, startNanos: Long, heapBase: Long) {
+            // A run that was stopped stays stopped: the interpreter asks again while it unwinds, and gets the same answer
+            // without another measurement.
+            over?.let { throw it }
+            try {
+                check(instructionsSoFar, startNanos, heapBase)
+            } catch (e: BudgetExceeded) {
+                over = e
+                throw e
+            }
+        }
+
+        private fun check(instructionsSoFar: Long, startNanos: Long, heapBase: Long) {
             if (cancelled) throw BudgetExceeded("The script was stopped.")
             if (instructionsSoFar > limits.maxInstructions) throw BudgetExceeded("The script used more than ${limits.maxInstructions} instructions.")
             val elapsed = System.nanoTime() - startNanos
             if (elapsed > limits.timeoutMs * 1_000_000) throw BudgetExceeded("The script ran longer than ${limits.timeoutMs} ms.")
             if (tooMuchMemory(heapBase)) {
                 // The number counts garbage that is not collected yet, and a loop that allocates much (a long sort with a
-                // comparator) can show more of it than the limit. So before a script is stopped for memory the heap is
-                // collected and measured again: about ten times a second at most, beyond which the number is believed.
-                if (collections++ >= FREE_COLLECTIONS + elapsed / COLLECTION_INTERVAL_NANOS) throw BudgetExceeded("The script used too much memory.")
+                // comparator) shows more of it than the limit many times a second. So before a script is stopped for memory
+                // the heap is collected and measured again. Collections are rationed ([JsLimits.collectionDue]). When none
+                // is due, the last measure decides: a run that had kept much by then is stopped, as grown; one that had
+                // kept little goes on until a collection is due, unless the heap is nearly full, and then it is collected
+                // and measured at once, whatever the ration says.
+                if (limits.collectionDue(collections, elapsed)) {
+                    collections++
+                } else if (!nearlyFull()) {
+                    if (limits.keptMuch(keptAtLastCollection)) throw BudgetExceeded("The script used too much memory.")
+                    return
+                }
                 collect()
-                if (tooMuchMemory(heapBase)) throw BudgetExceeded("The script used too much memory.")
+                val runtime = Runtime.getRuntime()
+                val used = runtime.totalMemory() - runtime.freeMemory()
+                keptAtLastCollection = used - heapBase
+                if (limits.overMemory(used, heapBase, runtime.maxMemory())) throw BudgetExceeded("The script used too much memory.")
             }
         }
 
@@ -274,6 +339,12 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
         private fun tooMuchMemory(heapBase: Long): Boolean {
             val runtime = Runtime.getRuntime()
             return limits.overMemory(runtime.totalMemory() - runtime.freeMemory(), heapBase, runtime.maxMemory())
+        }
+
+        /** [JsLimits.heapNearlyFull] for the heap as it is now, garbage included. */
+        private fun nearlyFull(): Boolean {
+            val runtime = Runtime.getRuntime()
+            return limits.heapNearlyFull(runtime.totalMemory() - runtime.freeMemory(), runtime.maxMemory())
         }
 
         private fun console(cx: Context, scope: Scriptable): Scriptable {
@@ -377,10 +448,12 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
                 Undefined.instance
             }
             // A comparator for the built-in sort that counts every comparison: `compare` itself, or the default order (as text).
+            // A function of the script is counted where it is entered ([COUNT_ENTRIES]), so it is not charged here as well.
             put("countedCompare", 1) { _, _, args ->
                 val compare = args.getOrNull(0) as? Callable
+                val charged = if (compare is JSFunction) 0 else COMPARE_COST
                 LambdaFunction(scope, "compare", 2, SerializableCallable { c, s, _, pair ->
-                    charge(c, COMPARE_COST)
+                    charge(c, charged)
                     if (compare != null) compare.call(c, s, scope, pair)
                     else ScriptRuntime.toString(pair.getOrNull(0)).compareTo(ScriptRuntime.toString(pair.getOrNull(1)))
                 })
@@ -547,6 +620,7 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
             maximumInterpreterStackDepth = run.limits.maxStackDepth
             isGeneratingDebug = false
             setClassShutter(DENY_ALL)
+            setDebugger(COUNT_ENTRIES, null)
         }
 
         override fun hasFeature(cx: Context, featureIndex: Int): Boolean = when (featureIndex) {
@@ -581,10 +655,6 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
         const val MAX_STUCK = 2
         const val MAX_FILES_WRITTEN = 20
 
-        /** Collections a run may ask for at once, and the time that earns it one more ([ScriptRun.observe]). */
-        const val FREE_COLLECTIONS = 4L
-        const val COLLECTION_INTERVAL_NANOS = 100_000_000L
-
         /** What the native helpers charge the script's instruction budget: per step of a native iterator, */
         const val ITERATOR_STEP_COST = 2
 
@@ -604,6 +674,38 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
         const val MAX_PLAIN_DEPTH = 200
 
         val DENY_ALL = ClassShutter { false }
+
+        /** What every entry into a function of the script is charged ([COUNT_ENTRIES]). */
+        const val FUNCTION_ENTRY_COST = 1
+
+        /**
+         * Counts every entry into a function of the script, whoever calls it.
+         *
+         * Rhino's interpreter counts instructions where code jumps and where script code calls. A function with neither
+         * (an iterator's `next` that only returns `{ done: false, value: 1 }`, a comparator, a callback, a getter) cost
+         * nothing when a built-in called it, so a built-in loop over such a function (`new Set(o)`, `[...o]`,
+         * `Promise.all(o)`, a typed array's sort) ran out of reach of the budget, the time limit and the memory check;
+         * with an iterator that never ends, for ever.
+         *
+         * The interpreter asks the context's debugger for a frame whenever it sets up the frame of a function or script
+         * it is about to run (Rhino 1.9.2, `Interpreter.CallFrame`'s constructor: `cx.debugger.getFrame(cx, descriptor)`),
+         * whether script code called it or a built-in did; in the sandbox all script code is interpreted. This debugger
+         * charges the entry and answers null: no debug frame, so no line or exit events and nothing else that a debugger
+         * costs. The charge runs the observer when its threshold is reached, like any other instruction. Resuming a
+         * generator sets up no frame and is not charged; a generator needs a loop to go on for ever, and loops are counted.
+         *
+         * Not reached: a loop in which a built-in calls only other built-ins (an iterator whose `next` is itself a
+         * built-in function, such as `Object`). No function of the script is entered there, and Rhino offers no hook for
+         * calls between built-ins.
+         */
+        val COUNT_ENTRIES = object : Debugger {
+            override fun handleCompilationDone(cx: Context, fnOrScript: DebuggableScript, source: String) = Unit
+
+            override fun getFrame(cx: Context, fnOrScript: DebuggableScript): DebugFrame? {
+                ScriptRuntime.addInstructionCount(cx, FUNCTION_ENTRY_COST)
+                return null
+            }
+        }
 
         /**
          * Wraps built-ins that can do unbounded native work in one call. A function taking the native test for a real
@@ -695,6 +797,8 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
                 // getter that grows the array after the check would keep such a loop running. So every step of a native
                 // iterator is counted against the script's budget, and the loop meets the instruction budget and the time
                 // limit like a loop in script code. Arrays, typed arrays and arguments share one iterator prototype.
+                // (An iterator of the script's own needs no wrapper: entering its `next` is counted, like every entry into
+                // a function of the script.)
                 var counted = [];
                 [function () { return [][iteratorKey](); }, function () { return ""[iteratorKey](); },
                  function () { return new Set()[iteratorKey](); }, function () { return new Map()[iteratorKey](); },
@@ -815,12 +919,15 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
                   return out;
                 };
               });
+              // The iterator method every array has, as wrapped above.
+              var arrayIterator = iteratorKey === undefined ? undefined : Array.prototype[iteratorKey];
               replace(Array, "from", function (original) {
                 return function (source, mapFn, thisArg) {
                   var safe = source;
                   // A string or a real array is walked by the built-in through its iterator, whose steps are counted (above).
+                  // An array that was given an iterator of its own is walked here, like any other object that has one.
                   if (typeof source === "string") tooMany(source.length);
-                  else if (isRealArray(source)) tooMany(source.length);
+                  else if (isRealArray(source) && (iteratorKey === undefined || source[iteratorKey] === arrayIterator)) tooMany(source.length);
                   else if (isObject(source)) {
                     var method = iteratorKey === undefined ? undefined : source[iteratorKey];
                     if (method !== null && method !== undefined) {
