@@ -141,6 +141,45 @@ class WorkspaceVersionsTest {
     }
 
     @Test
+    fun `W3 - a version that was handed to another app by export is kept by the task's next edit`() = runTest {
+        val a = task("tsk_a")
+        val write = f.tool("workspace.write")
+        val export = f.tool("workspace.export")
+        val draft = json("path" to "letter.md", "content" to "first letter")
+        assertTrue(write.execute(draft, a, write.assess(draft, a)).ok)
+        // Its own version of a moment ago: an edit does not keep it again.
+        assertTrue(edit(a, "letter.md", "first", "second").second.ok)
+        assertTrue(trash().isEmpty(), trash().toString())
+
+        // The task shares the file: another app now has "second letter".
+        val share = json("path" to "letter.md")
+        val shared = export.execute(share, a, export.assess(share, a))
+        assertTrue(shared.ok, shared.content)
+        val (assessment, outcome) = edit(a, "letter.md", "second", "third")
+        assertTrue(outcome.ok, outcome.content)
+        assertTrue(WorkspaceReplaceText.KEPT_IN_TRASH in assessment.details, "the approval says that the shared version is kept: ${assessment.preview}")
+        assertTrue("is in the workspace trash" in outcome.content, outcome.content)
+        assertEquals(listOf("second letter"), trash().map(::kept), "what the other app received can be restored")
+
+        // The edit's own result is the task's again; a share that Android put off to a notification counts as handed over too.
+        assertTrue(edit(a, "letter.md", "third", "fourth").second.ok)
+        assertEquals(1, trash().size)
+        f.apps.inBackground = true
+        val deferred = export.execute(share, a, export.assess(share, a))
+        assertFalse(deferred.ok, deferred.content)
+        f.apps.inBackground = false
+        assertTrue(edit(a, "letter.md", "fourth", "fifth").second.ok)
+        assertEquals(setOf("second letter", "fourth letter"), trash().map(::kept).toSet())
+
+        // A share that did not happen (no such app) changes nothing: the task's own version is still not kept twice.
+        assertTrue(edit(a, "letter.md", "fifth", "sixth").second.ok)
+        val nowhere = json("path" to "letter.md", "app" to "com.example.absent")
+        assertFalse(export.execute(nowhere, a, export.assess(nowhere, a)).ok)
+        assertTrue(edit(a, "letter.md", "sixth", "seventh").second.ok)
+        assertEquals(2, trash().size, trash().map(::kept).toString())
+    }
+
+    @Test
     fun `the workspace keeps the replaced version unless it is exactly the one the caller names as its own`() = runTest {
         val p = RelativePath.of("t.md")
         fun sha(text: String) = WorkspaceStates.sha256(text.toByteArray())

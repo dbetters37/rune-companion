@@ -10,6 +10,10 @@ import com.aicontrolcenter.app.ui.chat.withRequests
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ConversationId
+import com.aicontrolcenter.core.FolderId
+import com.aicontrolcenter.core.GrantId
+import com.aicontrolcenter.core.TaskId
+import com.aicontrolcenter.core.ToolId
 import com.aicontrolcenter.core.agents.AgentAvailability
 import com.aicontrolcenter.core.agents.AgentStats
 import com.aicontrolcenter.core.chat.ConversationEntry
@@ -18,8 +22,11 @@ import com.aicontrolcenter.core.operator.GrantScope
 import com.aicontrolcenter.core.operator.OperatorCapabilities
 import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.OwnerRequestStatus
+import com.aicontrolcenter.core.operator.PermissionGrant
 import com.aicontrolcenter.core.registry.AgentEntry
 import com.aicontrolcenter.core.registry.RegistrySnapshot
+import com.aicontrolcenter.core.tools.Capability
+import com.aicontrolcenter.core.tools.CapabilityConstraint
 import com.aicontrolcenter.testkit.Samples
 import org.junit.Test
 import java.time.ZoneOffset
@@ -218,6 +225,37 @@ class ApprovalPresentationTest {
         assertNotNull(ui(refused, at = now + 9 * 60_000L - 1).askAgain)
         val deniedApproval = sampleApproval(operator).copy(status = OwnerRequestStatus.DENIED, decidedAt = now - 60_000L)
         assertNull(ui(deniedApproval).askAgain)
+    }
+
+    @Test
+    fun `U1 - a refusal says its agent is held only while no permission in force covers the same agent, permission and target`() {
+        val folder = CapabilityConstraint.Folder(FolderId("fld_documents"))
+        val refused = samplePermission(operator, agentName = "Operator").copy(
+            capability = OperatorCapabilities.FOLDERS_WRITE, constraint = folder, toolId = ToolId("folders.write"), targetLabel = "Documents", dataGoesTo = null,
+            status = OwnerRequestStatus.DENIED, decidedAt = now - 60_000L,
+        )
+        fun grant(
+            agent: AgentId = operator, capability: Capability = OperatorCapabilities.FOLDERS_WRITE, constraint: CapabilityConstraint = folder,
+            scope: GrantScope = GrantScope.ALWAYS, task: TaskId? = null, revokedAt: Long? = null,
+        ) = PermissionGrant(GrantId("grt_1"), agent, capability, constraint, scope, taskId = task, grantedAt = now - 30_000L, revokedAt = revokedAt)
+        fun shown(vararg grants: PermissionGrant) = requestUi(refused, snapshot, info::get, now, ZoneOffset.UTC, grants.toList()).askAgain
+        assertNotNull(shown(), "nothing granted: held, with the way to end it")
+
+        // Given directly in Tools > Folders (always), or for the task the refused call was in: its calls run.
+        assertNull(shown(grant()))
+        assertNull(shown(grant(scope = GrantScope.TASK, task = refused.taskId)))
+
+        // Not the same agent, target or permission, another task's permission, or one that was taken away again: still held.
+        assertNotNull(shown(grant(agent = director)))
+        assertNotNull(shown(grant(constraint = CapabilityConstraint.Folder(FolderId("fld_other")))))
+        assertNotNull(shown(grant(capability = OperatorCapabilities.FOLDERS_READ)))
+        assertNotNull(shown(grant(scope = GrantScope.TASK, task = TaskId("tsk_other"))))
+        assertNotNull(shown(grant(revokedAt = now - 10_000L)))
+        assertTrue(assertNotNull(shown(grant(revokedAt = now - 10_000L))).canLetAskAgain)
+
+        // What the owner did is still said once they let it ask again, whatever was given since.
+        val opened = requestUi(refused.copy(askAgainAt = now - 30_000L), snapshot, info::get, now, ZoneOffset.UTC, listOf(grant())).askAgain
+        assertEquals("You let Operator ask again (12:05).", opened?.text)
     }
 
     @Test

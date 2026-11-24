@@ -188,21 +188,23 @@ class LocalWorkspaceTest {
 
     @Test
     fun `an import counts once against the total, and a file it replaces is kept in the trash and still counts`() = runTest {
+        // Content fills the 5000 bytes up to the room kept free for trash records (W2): 5000 - 312 here.
+        assertEquals(312L, workspace.limits.trashRecordRoomBytes)
         repeat(5) { ok(workspace.write(p("f$it.bin"), ByteArray(900), false)) }
-        ok(workspace.import(p("in.bin"), ByteArrayInputStream(ByteArray(400)), 1_000, false))
+        ok(workspace.import(p("in.bin"), ByteArrayInputStream(ByteArray(150)), 1_000, false))
         val full = workspace.import(p("in2.bin"), ByteArrayInputStream(ByteArray(200)), 1_000, false)
         assertIs<DocResult.Failed>(full)
         assertFalse(File(rootDir, "in2.bin").exists())
         // The replaced file goes to the trash, so even a smaller replacement needs room for both.
-        assertIs<DocResult.Failed>(workspace.import(p("in.bin"), ByteArrayInputStream(ByteArray(300)), 1_000, true))
-        assertEquals(400L, File(rootDir, "in.bin").length())
+        assertIs<DocResult.Failed>(workspace.import(p("in.bin"), ByteArrayInputStream(ByteArray(100)), 1_000, true))
+        assertEquals(150L, File(rootDir, "in.bin").length())
         ok(workspace.trash(p("f0.bin")))
         ok(workspace.emptyTrash(null))
-        assertEquals(300L, ok(workspace.import(p("in.bin"), ByteArrayInputStream(ByteArray(300)), 1_000, true)).sizeBytes)
+        assertEquals(100L, ok(workspace.import(p("in.bin"), ByteArrayInputStream(ByteArray(100)), 1_000, true)).sizeBytes)
         assertTrue(File(rootDir, ".trash/.staging").list().orEmpty().isEmpty(), "no staged copy is left behind")
         val records = File(rootDir, ".trash").listFiles { it: File -> it.name.endsWith(".json") }.orEmpty().sumOf { it.length() }
-        assertEquals(4_300L, workspace.usedBytes() - records, "the replaced 400 bytes are in the trash")
-        assertEquals(listOf("in.bin" to 400L), ok(workspace.listTrash()).map { it.originalPath to it.sizeBytes })
+        assertEquals(3_850L, workspace.usedBytes() - records, "the replaced 150 bytes are in the trash")
+        assertEquals(listOf("in.bin" to 150L), ok(workspace.listTrash()).map { it.originalPath to it.sizeBytes })
     }
 
     @Test
@@ -245,10 +247,10 @@ class LocalWorkspaceTest {
         assertIs<DocResult.TooLarge>(tooBig)
         assertFalse(File(rootDir, "big.jpg").exists())
 
-        // The room left bounds what it may write; past it, the copy is removed and the workspace reported full.
+        // The room left bounds what it may write (less what is kept free for trash records, W2); past it, the copy is removed and the workspace reported full.
         repeat(4) { ok(workspace.write(p("f$it.bin"), ByteArray(1_000), false)) }
         val room = workspace.receive(p("more.jpg"), 50_000) { target, max ->
-            assertEquals(5_000L - 4_600L, max)
+            assertEquals(5_000L - 4_600L - workspace.limits.trashRecordRoomBytes, max)
             target.file.writeBytes(ByteArray(500))
             DocResult.Ok(500L)
         }

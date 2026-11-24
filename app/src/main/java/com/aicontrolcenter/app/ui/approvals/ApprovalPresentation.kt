@@ -9,11 +9,13 @@ import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.core.ConversationId
 import com.aicontrolcenter.core.RequestId
 import com.aicontrolcenter.core.TaskId
+import com.aicontrolcenter.core.operator.GrantQuery
 import com.aicontrolcenter.core.operator.GrantScope
 import com.aicontrolcenter.core.operator.OperatorCapabilities
 import com.aicontrolcenter.core.operator.OwnerRequest
 import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.OwnerRequestStatus
+import com.aicontrolcenter.core.operator.PermissionGrant
 import com.aicontrolcenter.core.operator.PreviewText
 import com.aicontrolcenter.core.registry.RegistrySnapshot
 import com.aicontrolcenter.core.tools.Capability
@@ -213,13 +215,18 @@ fun timingOf(request: OwnerRequest, now: Long, zone: ZoneId): String = when {
     else -> "Closed ${formatCompactTimestamp(request.decidedAt ?: request.expiresAt, now, zone)}"
 }
 
-/** Builds what the screens show for [request]. */
+/**
+ * Builds what the screens show for [request]. [grants] are the permissions in force
+ * (`OwnerGrants.observeAll`), for the screens that show a refused request: its line about the
+ * agent being held is only true while none of them covers what was refused ([askAgainOf]).
+ */
 fun requestUi(
     request: OwnerRequest,
     snapshot: RegistrySnapshot?,
     capabilityInfo: (Capability) -> CapabilityInfo?,
     now: Long,
     zone: ZoneId,
+    grants: List<PermissionGrant> = emptyList(),
 ): RequestUi {
     val profile = snapshot?.agentsById?.get(request.agentId)?.profile
     val agent = AgentFaceUi(request.agentId, shown(profile?.name ?: request.agentName ?: "Removed agent"), profile?.colorIndex ?: 0)
@@ -303,7 +310,7 @@ fun requestUi(
         hiddenWarning = hiddenCharacterWarning(marked),
         note = request.decisionNote?.let { inWords(PreviewText.exact(it)) },
         askedAgain = askedAgainText(request.askedAgain),
-        askAgain = askAgainOf(request, agent.name, now, zone),
+        askAgain = askAgainOf(request, agent.name, now, zone, covered = request.isCoveredBy(grants, now)),
         taskId = request.taskId,
         rootId = request.rootId,
         conversationId = request.conversationId,
@@ -328,17 +335,30 @@ fun askedAgainText(times: Int): String? = when {
 }
 
 /**
+ * Whether a permission in force among [grants] covers what [this] request asked for: the same
+ * agent, permission and target, always or for the request's task. The broker lets a covered call
+ * run without looking at an earlier refusal, so such a refusal holds nothing back.
+ */
+fun OwnerRequest.isCoveredBy(grants: List<PermissionGrant>, now: Long): Boolean {
+    val query = GrantQuery(agentId, capability, constraint, taskId, now)
+    return grants.any { it.covers(query) }
+}
+
+/**
  * For a permission the owner refused: that [agentName] cannot ask again until the cool-down ends,
  * with the way to end it now; or, once the owner did, that it may ask. Null for any other
- * request and once the cool-down is over by itself.
+ * request, once the cool-down is over by itself, and while the refusal holds nothing back because
+ * the owner has since given that permission directly ([covered]: a grant in force covers the
+ * same agent, permission and target, so its calls run and there is nothing to let it ask for).
  */
-fun askAgainOf(request: OwnerRequest, agentName: String, now: Long, zone: ZoneId): AskAgainUi? {
+fun askAgainOf(request: OwnerRequest, agentName: String, now: Long, zone: ZoneId, covered: Boolean = false): AskAgainUi? {
     if (request.kind != OwnerRequestKind.PERMISSION || request.status != OwnerRequestStatus.DENIED) return null
     val opened = request.askAgainAt
     val decided = request.decidedAt
     return when {
         // What happened, and no more: whether a later call was put to the owner depends on what was granted since.
         opened != null -> AskAgainUi("You let $agentName ask again (${formatCompactTimestamp(opened, now, zone)}).", canLetAskAgain = false)
+        covered -> null
         decided != null && request.holdsBackAt(now) -> AskAgainUi(
             "$agentName cannot ask you for this permission again until ${formatTimeOfDay(decided + OwnerRequest.REFUSAL_COOLDOWN_MS, zone)}: " +
                 "its calls that need it are refused without asking you.",

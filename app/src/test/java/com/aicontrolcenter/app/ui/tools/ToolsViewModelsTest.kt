@@ -488,8 +488,44 @@ class ToolsViewModelsTest {
     // --- Requests ---
 
     private fun TestScope.requests(app: TestApp) =
-        RequestsViewModel(app.graph.ownerRequests, app.graph.registryDirectory, app.graph.capabilities::info, app.clock, ZoneOffset.UTC, flowOf(Unit))
+        RequestsViewModel(app.graph.ownerRequests, app.graph.ownerGrants, app.graph.registryDirectory, app.graph.capabilities::info, app.clock, ZoneOffset.UTC, flowOf(Unit))
             .also { it.uiState.activeIn(backgroundScope) }
+
+    @Test
+    fun `U1 - once the owner gave the permission directly, the refused request's card no longer says its calls are refused, nor offers to let it ask again`() = runTest(mainRule.dispatcher) {
+        // The verifier's case: a folder permission refused, then given in Tools > Folders within the ten minutes.
+        val app = started()
+        val operator = app.id("Operator")
+        val folder = CapabilityConstraint.Folder(FolderId("fld_documents"))
+        val t0 = app.clock.current
+        app.raise(
+            samplePermission(operator, agentName = "Operator", id = "req_folder", createdAt = t0, minutes = 240)
+                .copy(capability = OperatorCapabilities.FOLDERS_WRITE, constraint = folder, toolId = ToolId("folders.write"), targetLabel = "Documents", dataGoesTo = null),
+        )
+        app.raise(samplePermission(operator, agentName = "Operator", id = "req_web", createdAt = t0, minutes = 240))
+        app.graph.ownerRequests.deny(RequestId("req_folder"))
+        app.graph.ownerRequests.deny(RequestId("req_web"))
+        val decided = app.ownerRequestStore.get(RequestId("req_folder"))!!.decidedAt!!
+        // The test clock jumps ahead on every read: every step below is set to a moment within the ten minutes.
+        app.clock.current = decided + 1_000
+        val vm = requests(app)
+        fun shown(id: String) = vm.uiState.value.requests.first { it.id.value == id }
+        val held = assertNotNull(shown("req_folder").askAgain, "refused and nothing given: its agent is held")
+        assertTrue(held.canLetAskAgain && "refused without asking you" in held.text, held.text)
+
+        // What Tools > Folders does when the owner switches the agent on for the folder.
+        app.clock.current = decided + 60_000
+        val given = app.graph.ownerGrants.grant(operator, OperatorCapabilities.FOLDERS_WRITE, folder)
+        val grant = assertNotNull((given as? com.aicontrolcenter.core.operator.OwnerResult.Done)?.value, given.toString())
+        assertNull(shown("req_folder").askAgain, "the agent's calls run now: the card says neither that they are refused nor offers \"Let it ask again\"")
+        assertEquals("Denied", shown("req_folder").status.text, "the refusal stays in the history as a refusal")
+        assertNotNull(shown("req_web").askAgain, "the other permission it was refused is still held")
+
+        // The owner takes the permission away again within the ten minutes: the refusal holds once more, and the card says so.
+        app.clock.current = decided + 120_000
+        assertTrue(app.graph.ownerGrants.revoke(grant.id))
+        assertTrue(assertNotNull(shown("req_folder").askAgain).canLetAskAgain)
+    }
 
     @Test
     fun `B2 - in the history a refused permission offers to let its agent ask again, and doing so ends the wait`() = runTest(mainRule.dispatcher) {

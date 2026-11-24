@@ -17,6 +17,8 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Rule
 import org.junit.Test
 import java.io.ByteArrayInputStream
+import java.io.File
+import java.nio.file.Files
 import java.time.ZoneOffset
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.assertEquals
@@ -208,6 +210,52 @@ class WorkspaceViewModelsTest {
         assertEquals("1 item deleted for good.", vm.uiState.value.message?.text)
         assertEquals(emptyList(), vm.uiState.value.items)
         assertEquals("Workspace trash emptied", log.all.last().title)
+        vm.emptyTrash()
+        assertEquals("The trash was already empty.", vm.uiState.value.message?.text)
+    }
+
+    @Test
+    fun `W1 - the trash can be emptied whenever anything is under its folder, and lists again what a kill left without its record`() = runTest(mainRule.dispatcher) {
+        // The verifier's state: a holder a kill left without its record (as an earlier version of the app could leave one)...
+        val root = Files.createTempDirectory("aicc-trash-ui").toFile()
+        File(root, ".trash/1700000000000-abc12345").mkdirs()
+        File(root, ".trash/1700000000000-abc12345/report.txt").writeBytes(ByteArray(40_000))
+        // ...and something no record can be written for: two things in one holder.
+        File(root, ".trash/1700000000000-two").mkdirs()
+        File(root, ".trash/1700000000000-two/a.txt").writeText("aaaa")
+        File(root, ".trash/1700000000000-two/b.txt").writeText("bb")
+        val ws = LocalWorkspace(FakeWorkspaceRoot(root), clock, io = EmptyCoroutineContext)
+        val vm = trash(ws)
+        val browser = folder(ws)
+
+        // Right after the start nothing is listed yet, but the screen knows that the trash is not empty.
+        assertTrue(vm.uiState.value.items.isEmpty())
+        assertEquals(40_006L, vm.uiState.value.leftoverBytes)
+        assertTrue(vm.uiState.value.canEmpty, "\"Empty the trash\" is offered")
+        assertTrue(browser.uiState.value.trashHasLeftovers && browser.uiState.value.trashCount == 0, "the trash button does not call it empty")
+
+        // The first change after the start, by a tool or the owner: what can be restored is listed again.
+        ws.put("after-restart.txt", "x")
+        val item = vm.uiState.value.items.single()
+        assertEquals("report.txt", item.name)
+        assertTrue(item.detail.startsWith("Found without its record, so its old place is not known · trashed"), item.detail)
+        assertEquals(6L, vm.uiState.value.leftoverBytes)
+        assertEquals(1, browser.uiState.value.trashCount)
+
+        vm.restore(item.id)
+        assertEquals("Restored to report.txt.", vm.uiState.value.message?.text)
+        assertEquals(40_000L, File(root, "report.txt").length())
+        assertTrue(vm.uiState.value.items.isEmpty())
+        assertTrue(vm.uiState.value.canEmpty, "nothing is listed, yet the trash is not empty: it can still be emptied")
+
+        vm.emptyTrash()
+        assertEquals("What was left in the trash was deleted for good.", vm.uiState.value.message?.text)
+        assertFalse(File(root, ".trash/1700000000000-two").exists())
+        assertNull(vm.uiState.value.leftoverBytes)
+        assertFalse(vm.uiState.value.canEmpty)
+        assertFalse(browser.uiState.value.trashHasLeftovers)
+        assertEquals("Workspace trash emptied", log.all.last().title)
+        assertEquals(40_001L, ws.usedBytes())
         vm.emptyTrash()
         assertEquals("The trash was already empty.", vm.uiState.value.message?.text)
     }

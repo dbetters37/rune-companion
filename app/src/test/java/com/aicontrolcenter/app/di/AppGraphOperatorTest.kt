@@ -79,7 +79,7 @@ class AppGraphOperatorTest {
 
         // Opened from its notification before start-up got to the recovery: it is closed, never offered.
         val vm = ApprovalViewModel(
-            RequestId("req_approval"), app.graph.ownerRequests, app.graph.registryDirectory, app.graph.capabilities::info, app.clock,
+            RequestId("req_approval"), app.graph.ownerRequests, app.graph.ownerGrants, app.graph.registryDirectory, app.graph.capabilities::info, app.clock,
             ZoneOffset.UTC, flowOf(Unit),
         )
         val state = vm.uiState.activeIn(backgroundScope)

@@ -45,7 +45,7 @@ class ApprovalViewModelsTest {
             .also { it.uiState.activeIn(backgroundScope) }
 
     private fun TestScope.approval(app: TestApp, id: String) =
-        ApprovalViewModel(RequestId(id), app.graph.ownerRequests, app.graph.registryDirectory, app.graph.capabilities::info, app.clock, ZoneOffset.UTC, flowOf(Unit))
+        ApprovalViewModel(RequestId(id), app.graph.ownerRequests, app.graph.ownerGrants, app.graph.registryDirectory, app.graph.capabilities::info, app.clock, ZoneOffset.UTC, flowOf(Unit))
             .also { it.uiState.activeIn(backgroundScope) }
 
     private suspend fun TestApp.started(): TestApp = apply { graph.start().join() }
@@ -303,6 +303,82 @@ class ApprovalViewModelsTest {
         // And a task the broker marked as waiting for the owner is paused, as before.
         app.tasks.update(task.id) { it.copy(status = TaskStatus.WAITING_FOR_OWNER) }
         assertTrue("paused while it waits for you" in assertNotNull(detail.uiState.value.task).timing)
+    }
+
+    @Test
+    fun `U2 - a task waiting for a task it delegated, which waits for the owner, shows its limit as paused`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope, com.aicontrolcenter.core.settings.FrameworkSettings(operatorEnabled = true, approvalTimeoutMinutes = 100_000)).started()
+        app.populateWithObjectives()
+        val at = app.clock.current
+        val task = assertNotNull(
+            app.tasks.update(SampleObjectives.COMPARE) { it.copy(status = TaskStatus.WAITING_FOR_AGENT, startedAt = at, deadlineAt = at + 15 * 60_000L, finishedAt = null) },
+        )
+        val agent = task.assignee!!
+        // The task it delegated: its own child, at work.
+        val delegated = task.copy(
+            id = com.aicontrolcenter.core.TaskId("tsk_delegated"), parentId = task.id, title = "Check the prices", status = TaskStatus.RUNNING,
+            delegationChain = listOf(agent), dependsOn = emptyList(), conversationId = null, result = null, reviews = emptyList(),
+        )
+        app.tasks.upsert(delegated)
+        val detail = TaskDetailViewModel(
+            task.id, app.graph.tasks, app.graph.messages, app.graph.registryDirectory, app.graph.agentChat, app.graph.toolRegistry,
+            app.graph.orchestrator, app.graph.activityMonitor, app.clock, ZoneOffset.UTC,
+            requests = app.graph.ownerRequests.pending, capabilityInfo = app.graph.capabilities::info,
+        ).also { it.uiState.activeIn(backgroundScope) }
+        fun timing() = assertNotNull(detail.uiState.value.task).timing
+        assertEquals("Waiting for a teammate", assertNotNull(detail.uiState.value.task).status.text)
+        assertTrue("times out at" in timing(), "the delegated task is at work, so the limit runs: ${timing()}")
+
+        // A call of the delegated task waits for the owner: the broker marks that task, and the request names it, not this one.
+        app.tasks.update(delegated.id) { it.copy(status = TaskStatus.WAITING_FOR_OWNER) }
+        app.raise(samplePermission(agent, id = "req_delegated", taskId = delegated.id, rootId = task.rootId, createdAt = app.clock.current, minutes = 100_000))
+        assertTrue("paused while it waits for you" in timing(), timing())
+        assertFalse("times out at" in timing(), timing())
+
+        // Two delegations down: the delegated task waits for one it delegated in turn, and that one waits for the owner.
+        app.graph.ownerRequests.deny(RequestId("req_delegated"))
+        val deeper = delegated.copy(id = com.aicontrolcenter.core.TaskId("tsk_deeper"), parentId = delegated.id, status = TaskStatus.WAITING_FOR_OWNER, delegationChain = listOf(agent, agent))
+        app.tasks.upsert(deeper)
+        app.tasks.update(delegated.id) { it.copy(status = TaskStatus.WAITING_FOR_AGENT) }
+        assertTrue("paused while it waits for you" in timing(), timing())
+
+        // The answer came and the delegated work goes on: the limit runs again.
+        app.tasks.update(deeper.id) { it.copy(status = TaskStatus.RUNNING) }
+        assertTrue("times out at" in timing(), timing())
+        // A waiting task that is not under the one this task waits for pauses nothing here.
+        app.tasks.update(deeper.id) { it.copy(status = TaskStatus.WAITING_FOR_OWNER, parentId = task.rootId) }
+        assertTrue("times out at" in timing(), timing())
+        // And a task that is itself at work runs against its limit, whatever waits below it.
+        app.tasks.update(deeper.id) { it.copy(parentId = delegated.id) }
+        assertTrue("paused while it waits for you" in timing(), timing())
+        app.tasks.update(task.id) { it.copy(status = TaskStatus.RUNNING) }
+        assertTrue("times out at" in timing(), timing())
+    }
+
+    @Test
+    fun `U1 - the refused request's own screen stops saying its calls are refused once the owner gave the permission directly`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope).started()
+        val operator = app.operatorId()
+        val folder = CapabilityConstraint.Folder(com.aicontrolcenter.core.FolderId("fld_documents"))
+        app.raise(
+            samplePermission(operator, agentName = "Operator", id = "req_folder", createdAt = app.clock.current, minutes = 240)
+                .copy(capability = OperatorCapabilities.FOLDERS_WRITE, constraint = folder, toolId = ToolId("folders.write"), targetLabel = "Documents", dataGoesTo = null),
+        )
+        val vm = approval(app, "req_folder")
+        val refusedAt = app.clock.current
+        vm.choose(RequestChoice.DENY)
+        app.clock.current = refusedAt + 60_000
+        vm.messageShown()
+        val held = assertNotNull(assertNotNull(vm.uiState.value.request).askAgain)
+        assertTrue(held.canLetAskAgain && "refused without asking you" in held.text, held.text)
+
+        // Tools > Folders: the owner switches the agent on for the folder.
+        app.clock.current = refusedAt + 120_000
+        val given = app.graph.ownerGrants.grant(operator, OperatorCapabilities.FOLDERS_WRITE, folder)
+        assertTrue(given is com.aicontrolcenter.core.operator.OwnerResult.Done, given.toString())
+        val shown = assertNotNull(vm.uiState.value.request)
+        assertNull(shown.askAgain, "its calls run now, so nothing says they are refused and there is nothing to let it ask for")
+        assertEquals("Denied", shown.status.text)
     }
 
     @Test

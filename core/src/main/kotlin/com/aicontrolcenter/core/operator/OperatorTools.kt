@@ -30,7 +30,7 @@ object OperatorTools {
         "BULK_WINDOW_MS (RecentFileChanges), counted across calls per agent and task, per agent across its tasks and per root objective."
     private const val KEEP_REPLACED = "A replaced file is kept in the workspace trash. $BULK"
     private const val KEEP_EDITED = "The version before the edit is kept in the workspace trash, unless the same task wrote it itself within " +
-        "BULK_WINDOW_MS (OwnVersions). $BULK"
+        "BULK_WINDOW_MS and has not exported it since (OwnVersions). $BULK"
     private const val REPLACE_IN_FOLDER = "Replacing an existing file is CONSEQUENTIAL: shared folders have no trash."
 
     val all: List<OperatorToolInfo> = listOf(
