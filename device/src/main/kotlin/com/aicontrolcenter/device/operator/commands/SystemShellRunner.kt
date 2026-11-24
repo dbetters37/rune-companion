@@ -6,7 +6,16 @@ import com.aicontrolcenter.core.operator.CommandOutcome
 import com.aicontrolcenter.core.operator.ShellRunner
 import com.aicontrolcenter.core.operator.WorkspaceFile
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -17,13 +26,15 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.nio.file.DirectoryIteratorException
+import java.nio.file.DirectoryNotEmptyException
 import java.nio.file.DirectoryStream
-import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.NoSuchFileException
 import java.nio.file.Path
-import java.nio.file.attribute.BasicFileAttributes
+import java.nio.file.attribute.PosixFileAttributes
+import java.nio.file.attribute.PosixFilePermission
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /**
@@ -34,11 +45,12 @@ import java.util.concurrent.TimeUnit
  *    cannot reach the shell as the same text (a NUL, half of a surrogate pair) is not run.
  *  - The environment is replaced, not inherited: only [ENV_PATH], `HOME` and `TMPDIR`
  *    ([tempDir]) are set, so nothing of this app's environment leaks. `HOME` is [homeDir], a
- *    folder of the app outside the workspace that is made empty before every command, and `ENV`
+ *    folder of the app outside the workspace that is empty before every command, and `ENV`
  *    is not set: a shell the command starts (`sh -l`, `sh -i`) finds no start-up file there that
- *    an agent could have written. A command cannot keep that folder from being emptied by
- *    taking its own rights to it away; if it still cannot be emptied, it is put aside and the
- *    next command gets a new one ([emptyFolder]).
+ *    an agent could have written. What an earlier command left in that folder is never deleted
+ *    before a command: the folder is put aside by a rename and a new one is made, which takes
+ *    the same short time whatever was left ([foldersFor]). What was put aside is deleted
+ *    afterwards, off the command's path and a few seconds at a time ([clearPutAside]).
  *  - Standard input is closed at once; nothing can be typed into the command.
  *  - stdout and stderr are each kept up to [CommandLimits.maxOutputChars] (decoded as UTF-8);
  *    the rest is read and dropped so the command never blocks on a full pipe.
@@ -63,28 +75,94 @@ internal class SystemShellRunner(
     private val shell: String = SHELL,
     private val setsid: String = SETSID,
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
-    /** How the home folder is emptied; tests make one of its steps fail. */
+    /** The file operations on the home folder; tests make one of them fail or count them. */
     private val folderOps: FolderOps = FolderOps(),
+    /** How long one pass of deleting what was put aside may take. */
+    private val tidyBudgetMs: Long = TIDY_BUDGET_MS,
 ) : ShellRunner {
     private val oneAtATime = Mutex()
 
     /**
+     * Where what was put aside is deleted: a scope of the runner's own, so that this work goes
+     * on after a command was answered and holds nothing of the caller's (the workspace's change
+     * lock least of all).
+     */
+    private val ownScope = CoroutineScope(SupervisorJob() + dispatcher)
+
+    /** The pass that deletes what was put aside. Read and set only under [oneAtATime]. */
+    private var tidying: Job? = null
+
+    /** What the latest sweep said: nothing a command started is running. Only then is anything deleted. Under [oneAtATime]. */
+    private var nothingRuns = false
+
+    /**
      * Stops what an earlier command left running: for the app's start, after it died under a
      * command. Returns how many processes were stopped. Waits for a command that is running.
-     * Home folders that were put aside because they could not be emptied are deleted here too,
-     * as far as that works now.
+     * Afterwards one pass of deleting home folders that were put aside starts in the background
+     * ([startTidying]); this call does not wait for it.
      */
     suspend fun stopLeftovers(): Int = withContext(dispatcher) {
         oneAtATime.withLock {
-            val stopped = (sweeper.sweep() as? Sweep.Done)?.stopped ?: 0
-            clearPutAside(homeDir(), folderOps)
-            stopped
+            try {
+                stopTidying()
+                (sweep() as? Sweep.Done)?.stopped ?: 0
+            } finally {
+                startTidying()
+            }
         }
     }
 
     override suspend fun run(command: String, workingDirectory: WorkspaceFile, limits: CommandLimits): CommandOutcome = withContext(dispatcher) {
-        oneAtATime.withLock { runOne(command, workingDirectory, limits) }
+        oneAtATime.withLock {
+            try {
+                // Nothing is deleted while a command runs: it could put a link where a folder is being emptied.
+                stopTidying()
+                runOne(command, workingDirectory, limits)
+            } finally {
+                startTidying()
+            }
+        }
     }
+
+    /** Waits for the pass that deletes what was put aside, when one runs. For tests: the app never waits for it. */
+    internal suspend fun awaitTidying() {
+        oneAtATime.withLock { tidying }?.join()
+    }
+
+    /**
+     * Ends the pass that deletes what was put aside, when one runs. It looks for this between
+     * two entries, so the wait is one file operation long, whatever is left to delete.
+     */
+    private suspend fun stopTidying() {
+        val pass = tidying ?: return
+        // Not left half-way when the caller is cancelled: a pass that still runs would overlap the next one.
+        withContext(NonCancellable) { pass.cancelAndJoin() }
+        tidying = null
+        currentCoroutineContext().ensureActive()
+    }
+
+    /**
+     * Starts one pass of deleting what was put aside ([clearPutAside]): after a command has
+     * ended and after the sweep at the app's start, never before a command. It runs in
+     * [ownScope], so the caller has its answer and has let go of whatever it holds; it ends by
+     * itself after [tidyBudgetMs], and the next command or sweep ends it earlier
+     * ([stopTidying]). What it leaves is continued by the next pass. Nothing is started while a
+     * process of an earlier command may still run.
+     */
+    private fun startTidying() {
+        if (!nothingRuns) return
+        tidying = ownScope.launch {
+            try {
+                val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(tidyBudgetMs)
+                clearPutAside(homeDir(), tempDir(), folderOps) { !isActive || System.nanoTime() - deadline >= 0 }
+            } catch (_: Throwable) {
+                // Whatever it was, an OutOfMemoryError included: the pass ends, and what is left stays for the next one.
+            }
+        }
+    }
+
+    /** One sweep; what it says about processes still running decides whether anything is deleted afterwards. */
+    private fun sweep(): Sweep = sweeper.sweep().also { nothingRuns = it is Sweep.Done && it.left == 0 }
 
     private suspend fun runOne(command: String, workingDirectory: WorkspaceFile, limits: CommandLimits): CommandOutcome {
         if (command.isBlank()) return CommandOutcome.Failed("There is no command.")
@@ -94,7 +172,7 @@ internal class SystemShellRunner(
             return CommandOutcome.Failed("The command is longer than $MAX_COMMAND_CHARS characters; put longer scripts in a workspace file and run that.")
         }
         // Before anything starts: the sweep must be possible here, and nothing of an earlier command may still run.
-        when (val before = sweeper.sweep()) {
+        when (val before = sweep()) {
             is Sweep.NotPossible -> return CommandOutcome.Unavailable("${before.reason} Shell commands are not run here.")
             is Sweep.Done -> if (before.left > 0) return CommandOutcome.Failed(STILL_RUNNING)
         }
@@ -106,16 +184,16 @@ internal class SystemShellRunner(
                 "This phone has no $setsid, so what a command starts could not be stopped when it ends; shell commands are not run here.",
             )
         }
-        val home = try {
-            emptyFolder(homeDir(), folderOps)
-        } catch (e: IOException) {
-            return CommandOutcome.Failed("No empty home folder could be made for the shell (${e.javaClass.simpleName}), so the command was not run.")
+        // Constant work, whatever an earlier command left: nothing is walked or deleted here.
+        val folders = when (val made = foldersFor(homeDir, tempDir, workspaceRootOf(workingDirectory), folderOps)) {
+            is ShellFolders.Refused -> return CommandOutcome.Failed(made.reason)
+            is ShellFolders.Ready -> made
         }
         // setsid sh -c WRAPPER sh COMMAND: the wrapper prints its pid (the new group's id), then becomes `sh -c COMMAND`.
         val builder = ProcessBuilder(setsid, shell, "-c", WRAPPER, shell, command).directory(directory)
         builder.environment().apply {
             clear()
-            putAll(environmentFor(home, tempDir()))
+            putAll(environmentFor(folders.home, folders.temp))
         }
         val started = System.nanoTime()
         val process = try {
@@ -139,7 +217,7 @@ internal class SystemShellRunner(
                 process.destroyForcibly()
                 process.waitFor(GRACE_MS, TimeUnit.MILLISECONDS)
             }
-            val swept = sweeper.sweep()
+            val swept = sweep()
             stoppedAll = true
             val leftRunning = swept !is Sweep.Done || swept.left > 0
             stdout.await()
@@ -155,7 +233,7 @@ internal class SystemShellRunner(
             if (!stoppedAll) {
                 killGroup(stderr.group())
                 if (process.isAlive) process.destroyForcibly()
-                sweeper.sweep()
+                sweep()
             }
         }
     }
@@ -286,158 +364,308 @@ internal class SystemShellRunner(
             return mapOf("PATH" to ENV_PATH, "HOME" to home.path, "TMPDIR" to tempDir.path)
         }
 
+        /** The workspace's top folder: [dir] without the names of its path inside the workspace. */
+        private fun workspaceRootOf(dir: WorkspaceFile): File = dir.path.segments.fold(dir.file) { folder, _ -> folder.parentFile ?: folder }
+
         /**
-         * An existing, empty folder for `HOME`, and its path: [folder] itself, emptied, whenever
-         * that is possible. An earlier command may have put anything there, links included:
-         * nothing is followed. A link is removed as a link, also when [folder] itself was
-         * replaced by one, so emptying it never reaches the workspace or the app's data.
+         * `HOME` and `TMPDIR` for one command: existing, empty folders outside the workspace, or
+         * the sentence that says why the command is not run. [home] names the usual place of
+         * `HOME`, in the app's cache folder; [temp] is treated in the same way when it lies
+         * beside it, and is only made when it lies elsewhere.
          *
-         * A command cannot switch the shell off for good by locking this folder (`chmod 000` on
-         * it or on a folder in it, with a file inside):
-         *  - Every real folder gets its owner's rights back BEFORE it is listed ([removeTree]).
-         *    A file-tree walk that does so in its "before this folder" step is too late: it has
-         *    opened the folder by then, or failed to.
-         *  - If it still cannot be emptied (a path too long to name, a file system that refuses),
-         *    [folder] is renamed aside as `<name>.stuck-<n>` in the same parent, which needs
-         *    rights on the parent only, and a new empty [folder] is made.
-         *  - If that fails too, a new folder `<name>.fresh-<random>` beside it is returned.
-         * What was put aside or made that way is deleted, as far as possible, before the next
-         * command and at the app's start ([clearPutAside]).
+         * An earlier command may have left anything there, and as much as it could write in its
+         * time. So nothing is walked and nothing is deleted here; the work is the same however
+         * much was left, and no link is followed:
+         *  - The cache folder itself: when a command put a link or a file in its place, that is
+         *    removed and the folder is made anew (asking [home] again lets Android make its
+         *    cache folder as it wants it). When it is a real folder without its owner's rights,
+         *    it gets them back.
+         *  - A real folder with its owner's rights and no entry is used as it is. Only the first
+         *    entry is looked for, and a folder that cannot be listed counts as not empty.
+         *  - Anything else (entries, a link, a file, a locked folder) is renamed aside as
+         *    `<name>.old-<random>` in the cache folder, which needs rights on that folder only,
+         *    and a new folder is made in its place.
+         *  - If that does not work, a new folder `<name>.fresh-<random>` beside it is used.
+         *  - The real paths of the folders must not lie inside the real path of
+         *    [workspaceRoot]; otherwise the command is refused. For the cache folder this is
+         *    looked at first, before anything in it is touched.
+         * What was put aside or made beside is deleted later, off the command's path
+         * ([clearPutAside]).
          *
-         * @throws IOException only when no empty folder can be had at all
+         * Never throws: every failure, an [Error] included, ends in a new folder or in
+         * [ShellFolders.Refused].
          */
-        internal fun emptyFolder(folder: File, ops: FolderOps = FolderOps()): File {
-            val path = folder.toPath().toAbsolutePath().normalize()
-            val parent = path.parent ?: throw IOException("the home folder has no parent")
-            val name = path.fileName.toString()
-            clearPutAside(folder, ops)
-            try {
-                removeTree(path, ops)
-                Files.createDirectories(parent)
-                // Fails if something appeared in its place meanwhile, rather than using that.
-                Files.createDirectory(path)
-                return path.toFile()
-            } catch (_: IOException) {
-                // The safety net below.
+        internal fun foldersFor(home: () -> File, temp: () -> File, workspaceRoot: File, ops: FolderOps = FolderOps()): ShellFolders = try {
+            val homePath = home().toPath().toAbsolutePath().normalize()
+            val tempPath = temp().toPath().toAbsolutePath().normalize()
+            val cache = homePath.parent ?: throw IOException("the home folder has no parent")
+            val workspace = workspaceRoot.toPath().toRealPath()
+            // The cache folder will be a real folder with this name, so its real path is its parent's and that name.
+            val cacheWillBe = (cache.parent ?: cache).toRealPath().resolve(cache.fileName ?: cache)
+            if (cacheWillBe.startsWith(workspace)) {
+                ShellFolders.Refused(HOME_IN_WORKSPACE)
+            } else {
+                realFolder(cache, ops) { home() }
+                val readyHome = emptyOrNew(homePath, cache, ops)
+                val readyTemp = when {
+                    tempPath == homePath -> readyHome
+                    tempPath.parent == cache -> emptyOrNew(tempPath, cache, ops)
+                    else -> Files.createDirectories(tempPath)
+                }
+                when {
+                    readyHome.toRealPath().startsWith(workspace) -> ShellFolders.Refused(HOME_IN_WORKSPACE)
+                    readyTemp.toRealPath().startsWith(workspace) -> ShellFolders.Refused(TEMP_IN_WORKSPACE)
+                    else -> ShellFolders.Ready(readyHome.toFile(), readyTemp.toFile())
+                }
             }
-            // The parent is this app's own cache folder; a command may have taken the rights to that away as well.
-            if (!Files.isReadable(parent) || !Files.isWritable(parent) || !Files.isExecutable(parent)) openForOwner(parent)
-            try {
-                putAside(path, parent, name, ops)
-                Files.createDirectory(path)
-                return path.toFile()
-            } catch (_: IOException) {
-                // The last way out below.
-            }
-            return Files.createTempDirectory(parent, "$name$FRESH").toFile()
+        } catch (_: NoCacheFolder) {
+            ShellFolders.Refused(NO_CACHE_FOLDER)
+        } catch (e: IOException) {
+            ShellFolders.Refused("No empty home folder could be made for the shell (${e.javaClass.simpleName}), so the command was not run.")
+        } catch (_: Throwable) {
+            ShellFolders.Refused(NO_FOLDERS)
         }
 
         /**
-         * Deletes, as far as that works, the home folders [emptyFolder] put aside or made beside
-         * [folder] for an earlier command. Nothing runs in them now: one command runs at a time.
+         * Makes sure [cache], the folder the home folder lies in, is a real folder this app can
+         * use. A link or a file in its place is removed, never followed, and the folder is made
+         * anew: first by [remake] (Android makes its cache folder with the group and rights it
+         * gives it), then here if it is still missing.
          */
-        internal fun clearPutAside(folder: File, ops: FolderOps = FolderOps()) {
-            val path = folder.toPath().toAbsolutePath().normalize()
-            val parent = path.parent ?: return
-            val name = path.fileName.toString()
-            val ours = DirectoryStream.Filter<Path> { it.fileName.toString().run { startsWith(name + STUCK) || startsWith(name + FRESH) } }
-            val putAside = try {
-                Files.newDirectoryStream(parent, ours).use { it.take(2 * MAX_STUCK) }
-            } catch (_: IOException) {
-                return
-            } catch (_: DirectoryIteratorException) {
+        private fun realFolder(cache: Path, ops: FolderOps, remake: () -> Unit) {
+            val found = attributesOf(cache)
+            if (found?.isDirectory == true) {
+                // A command may have taken the rights to the app's own cache folder away.
+                if (!found.permissions().containsAll(OWNER_ALL)) openForOwner(cache)
                 return
             }
-            for (other in putAside) {
+            try {
+                if (found != null) ops.delete(cache)
+                remake()
+                Files.createDirectories(cache)
+            } catch (e: IOException) {
+                throw NoCacheFolder(e)
+            }
+            if (attributesOf(cache)?.isDirectory != true) throw NoCacheFolder(null)
+        }
+
+        /** [path] itself when it is a real, empty folder this app has all rights to; otherwise it is put aside in [cache] and made anew, or a new folder beside it. */
+        private fun emptyOrNew(path: Path, cache: Path, ops: FolderOps): Path {
+            val name = path.fileName.toString()
+            val found = attributesOf(path)
+            if (found != null) {
+                if (found.isDirectory && found.permissions().containsAll(OWNER_ALL) && hasNoEntry(path, ops)) return path
                 try {
-                    removeTree(other, ops)
+                    ops.rename(path, cache.resolve("$name$OLD${UUID.randomUUID()}"))
                 } catch (_: IOException) {
-                    // It stays for the next try; Android may also clear the cache folder by itself.
+                    return Files.createTempDirectory(cache, "$name$FRESH")
                 }
+            }
+            return try {
+                Files.createDirectory(path)
+            } catch (_: IOException) {
+                Files.createTempDirectory(cache, "$name$FRESH")
             }
         }
 
-        /** Renames [path] to the first free `<name>.stuck-<n>` in [parent]; nothing happens when [path] is not there. */
-        private fun putAside(path: Path, parent: Path, name: String, ops: FolderOps) {
-            for (n in 0 until MAX_STUCK) {
-                try {
-                    ops.rename(path, parent.resolve("$name$STUCK$n"))
-                    return
-                } catch (_: FileAlreadyExistsException) {
-                    // That number is taken by one that could not be deleted yet.
-                } catch (_: NoSuchFileException) {
-                    return
-                }
-            }
-            throw IOException("too many home folders were put aside")
+        /** Looks for a first entry of [dir] and no further. A folder that cannot be listed, for whatever reason, counts as not empty. */
+        private fun hasNoEntry(dir: Path, ops: FolderOps): Boolean = try {
+            ops.entries(dir).use { !it.iterator().hasNext() }
+        } catch (_: Throwable) {
+            false
         }
 
         /**
-         * Removes [start] and everything in it, bottom-up, without following a link: a link is
-         * removed as a link. A real folder first gets its owner's read, write and search rights,
-         * and only then is it listed. There is no recursion and a folder is listed
-         * [FolderOps.BATCH] entries at a time, so neither a deep nor a very full tree that a
-         * command made can exhaust the stack or the memory.
+         * One pass of deleting what [foldersFor] put aside or made beside [home] (and beside
+         * [temp], when that lies in the same folder) for earlier commands. It is not on a
+         * command's path: the runner starts it after a command has ended and after the sweep at
+         * the app's start, in a scope of its own, and no command runs meanwhile.
+         *
+         *  - Memory does not grow with what is deleted ([removeTree]).
+         *  - Time: [stop] is asked between two entries; when it says so (the pass's time is up, or
+         *    the next command is waiting), the pass ends and the next one continues.
+         *  - A link is removed as a link. The cache folder itself is not gone through when a
+         *    command put a link in its place (the next command puts that right first), so nothing
+         *    but the folders put aside is touched.
+         *  - Whatever goes wrong, an [Error] such as OutOfMemoryError included, ends the pass
+         *    quietly. What cannot be deleted (a path too deep to be named, a name the platform
+         *    cannot pass on) stays in the cache folder until Android or the owner clears it.
          */
-        private fun removeTree(start: Path, ops: FolderOps) {
-            // A folder comes back after each batch of its entries, with one of them as the witness that the batch is gone.
-            val pending = ArrayDeque<Pair<Path, Path?>>()
-            pending.addLast(start to null)
-            while (pending.isNotEmpty()) {
-                val (path, witness) = pending.removeLast()
-                if (witness != null && Files.exists(witness, LinkOption.NOFOLLOW_LINKS)) {
-                    // Never go round again for what is still there: that would not end.
-                    throw IOException("an entry of the home folder was not removed")
-                }
-                val attributes = try {
-                    Files.readAttributes(path, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
-                } catch (_: NoSuchFileException) {
-                    continue
-                }
-                if (attributes.isDirectory) {
-                    openForOwner(path)
-                    val children = ops.list(path, FolderOps.BATCH)
-                    if (children.isNotEmpty()) {
-                        pending.addLast(path to children.first())
-                        children.forEach { pending.addLast(it to null) }
-                        continue
+        internal fun clearPutAside(home: File, temp: File = home, ops: FolderOps = FolderOps(), stop: () -> Boolean = { false }) {
+            try {
+                val homePath = home.toPath().toAbsolutePath().normalize()
+                val tempPath = temp.toPath().toAbsolutePath().normalize()
+                val cache = homePath.parent ?: return
+                if (attributesOf(cache)?.isDirectory != true) return
+                val names = if (tempPath.parent == cache) setOf(homePath.fileName.toString(), tempPath.fileName.toString()) else setOf(homePath.fileName.toString())
+                val ours = names.flatMap { listOf(it + OLD, it + FRESH) }
+                ops.entries(cache).use { listing ->
+                    for (entry in listing) {
+                        if (stop()) return
+                        val name = entry.fileName.toString()
+                        if (ours.none { name.startsWith(it) }) continue
+                        try {
+                            if (!removeTree(entry, ops, stop)) return
+                        } catch (_: IOException) {
+                            // It stays for a later pass; Android may also clear its cache folder by itself.
+                        }
                     }
                 }
-                ops.delete(path)
+            } catch (_: Throwable) {
+                // The pass ends here; what is left stays for the next one.
             }
         }
 
-        /**
-         * Gives the owner (this app) read, write and search rights on the folder [dir]; the other
-         * rights stay as they are. Whether it worked shows in what is done with the folder next.
-         */
-        private fun openForOwner(dir: Path) {
-            val file = dir.toFile()
-            file.setReadable(true, true)
-            file.setWritable(true, true)
-            file.setExecutable(true, true)
+        /** One folder on the way down whose listing is open. */
+        private class Level(val dir: Path, val listing: DirectoryStream<Path>) {
+            val entries: Iterator<Path> = listing.iterator()
+
+            /** Whether anything in it was removed or gone into since it was opened. */
+            var progress = false
         }
 
-        private const val STUCK = ".stuck-"
+        /**
+         * Removes [start] and everything in it without following a link: a link is removed as a
+         * link. Returns false when [stop] said so before the end; a later call removes the rest.
+         *
+         * Memory does not grow with the tree, however deep or full a command made it. What is no
+         * folder is deleted as the listing hands it out, and a folder is gone into at once, so
+         * no entry is ever kept waiting. At most [MAX_OPEN] listings are open at a time, those
+         * of the deepest folders on the way down, each with the one entry it handed out last. A
+         * folder further up is listed again when the walk comes back to it, and the way back is
+         * the path's own parent, so there is no list of folders either, and no recursion.
+         *
+         * A real folder gets its owner's rights back before it is listed, through its [Path]:
+         * that keeps the name's bytes, also when they are no valid text.
+         *
+         * @throws IOException when something cannot be removed; it stays, with what is around it
+         */
+        private fun removeTree(start: Path, ops: FolderOps, stop: () -> Boolean): Boolean {
+            val what = attributesOf(start) ?: return true
+            if (!what.isDirectory) {
+                ops.delete(start)
+                return true
+            }
+            val open = ArrayDeque<Level>()
+            try {
+                var current = start
+                while (true) {
+                    // Also on the way up and down, where no entry is handed out: a deep tree has a step per folder.
+                    if (stop()) return false
+                    val level = open.lastOrNull()?.takeIf { it.dir == current } ?: run {
+                        // The listing furthest up is closed first, so that no more than MAX_OPEN are open even for a moment.
+                        if (open.size >= MAX_OPEN) open.removeFirst().listing.close()
+                        openForOwner(current)
+                        Level(current, ops.entries(current)).also { open.addLast(it) }
+                    }
+                    var folder: Path? = null
+                    while (folder == null && level.entries.hasNext()) {
+                        if (stop()) return false
+                        val entry = level.entries.next()
+                        if (attributesOf(entry)?.isDirectory == true) folder = entry else deleteIfThere(entry, ops)
+                        level.progress = true
+                    }
+                    if (folder != null) {
+                        current = folder
+                        continue
+                    }
+                    open.removeLast().listing.close()
+                    try {
+                        deleteIfThere(current, ops)
+                    } catch (e: DirectoryNotEmptyException) {
+                        // A listing may leave an entry out while others are removed. Once more, but only after a round that removed something: never round and round.
+                        if (!level.progress) throw e
+                        continue
+                    }
+                    if (current == start) return true
+                    current = current.parent
+                }
+            } catch (e: DirectoryIteratorException) {
+                throw e.cause ?: IOException("a folder could not be read")
+            } finally {
+                for (level in open) {
+                    try {
+                        level.listing.close()
+                    } catch (_: IOException) {
+                        // Nothing more is read from it either way.
+                    }
+                }
+            }
+        }
+
+        private fun deleteIfThere(path: Path, ops: FolderOps) {
+            try {
+                ops.delete(path)
+            } catch (_: NoSuchFileException) {
+                // Gone already, which is all that was wanted.
+            }
+        }
+
+        /** What [path] itself is, a link not followed; null when nothing is there. */
+        private fun attributesOf(path: Path): PosixFileAttributes? = try {
+            Files.readAttributes(path, PosixFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+        } catch (_: NoSuchFileException) {
+            null
+        }
+
+        /**
+         * Gives the owner (this app) read, write and search rights on the real folder [dir]; the
+         * other rights stay as they are. Through the [Path], never through a [File] and its
+         * String: a name that is no valid text does not survive that, and the folder would stay
+         * locked. Whether it worked shows in what is done with the folder next.
+         */
+        private fun openForOwner(dir: Path) {
+            try {
+                val rights = Files.getPosixFilePermissions(dir, LinkOption.NOFOLLOW_LINKS)
+                if (!rights.containsAll(OWNER_ALL)) Files.setPosixFilePermissions(dir, rights + OWNER_ALL)
+            } catch (_: IOException) {
+                // The listing that follows fails, and the folder stays.
+            }
+        }
+
+        /** The cache folder is no folder and could not be made one. */
+        private class NoCacheFolder(cause: IOException?) : IOException(cause)
+
+        internal const val NO_CACHE_FOLDER: String =
+            "The app's cache folder, where the shell's home folder lies, is no longer a folder and could not be made anew, so the command was not run."
+
+        internal const val HOME_IN_WORKSPACE: String =
+            "The shell's home folder would lie inside the workspace, where a command could leave start-up files for the next one, so the command was not run."
+        internal const val TEMP_IN_WORKSPACE: String =
+            "The shell's folder for temporary files would lie inside the workspace, so the command was not run."
+        private const val NO_FOLDERS = "No empty home folder could be made for the shell, so the command was not run."
+
+        private val OWNER_ALL = setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE)
+        private const val OLD = ".old-"
         private const val FRESH = ".fresh-"
-        private const val MAX_STUCK = 100
+
+        /** How many folder listings [removeTree] keeps open at most. */
+        internal const val MAX_OPEN: Int = 16
+
+        /** One pass of deleting what was put aside takes this long at most; the next pass continues. */
+        const val TIDY_BUDGET_MS: Long = 3_000
     }
 }
 
+/** What [SystemShellRunner.foldersFor] made for one command. */
+internal sealed interface ShellFolders {
+    /** Both exist, are empty (when in the app's cache folder) and lie outside the workspace. */
+    data class Ready(val home: File, val temp: File) : ShellFolders
+
+    /** No such folders could be had; [reason] is the sentence for the command's answer. */
+    data class Refused(val reason: String) : ShellFolders
+}
+
 /**
- * The file operations emptying the shell's home folder is made of. The real ones are the
- * defaults. Tests replace one to make it fail or to see the order of the steps: the build
- * machine runs as root, which no permission bit ever refuses, so a locked folder cannot be made
- * there (ShellLeftoversDeviceTest shows the real thing on a device).
+ * The file operations the shell's home folder is prepared and cleared with. The real ones are
+ * the defaults. Tests replace one to make it fail, to count what is held, or to see the order of
+ * the steps: the build machine runs as root, which no permission bit ever refuses, so a locked
+ * folder cannot be made there (ShellLeftoversDeviceTest shows the real thing on a device).
  */
 internal open class FolderOps {
-    /** The first entries of the folder [dir], [limit] at most. */
+    /** The entries of the folder [dir], handed out one at a time. Whoever opens the listing closes it. */
     @Throws(IOException::class)
-    open fun list(dir: Path, limit: Int): List<Path> = try {
-        Files.newDirectoryStream(dir).use { it.take(limit) }
-    } catch (e: DirectoryIteratorException) {
-        throw e.cause ?: IOException("the folder could not be read")
-    }
+    open fun entries(dir: Path): DirectoryStream<Path> = Files.newDirectoryStream(dir)
 
     /** Removes one file, link or empty folder; a link is removed itself, never what it points to. */
     @Throws(IOException::class)
@@ -445,14 +673,9 @@ internal open class FolderOps {
         Files.delete(path)
     }
 
-    /** Renames [from] to [to] in the same folder; fails when [to] exists. */
+    /** Renames [from] to [to] in the same folder; fails when [to] exists. A link is renamed itself. */
     @Throws(IOException::class)
     open fun rename(from: Path, to: Path) {
         Files.move(from, to)
-    }
-
-    /** How many entries of one folder are held in memory at a time. */
-    companion object {
-        const val BATCH: Int = 2_000
     }
 }

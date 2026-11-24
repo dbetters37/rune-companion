@@ -19,6 +19,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
@@ -30,8 +31,9 @@ import kotlin.test.assertTrue
  * (a background job, a new session, job control, nohup, a double fork) leave no process behind
  * when they end, at the time limit, or when the call is cancelled; a shell the command starts
  * reads no start-up file from the workspace; and a command that takes its own rights to the
- * shell's home folder away (or to the cache folder it is in) does not keep the next one from
- * running.
+ * shell's home folder away (or to the cache folder it is in), or fills it, does not keep the next
+ * one from running or delay its start. What an earlier command left there is put aside before the
+ * next one and deleted afterwards, a few seconds at a time.
  *
  * This runs only as an instrumented test, where the process is an Android app with a user id of
  * its own. It looks at the device's real process table, which on Android shows an app only its
@@ -198,6 +200,8 @@ class ShellLeftoversDeviceTest {
         val out = assertIs<CommandOutcome.Finished>(runner.run("sh -l -c 'echo second'; ls -A \"\$HOME\"", dir, limits))
 
         assertEquals("second\n", out.stdout)
+        // What was put aside is deleted after the command.
+        assertEquals(emptyList(), putAsideAfterTidying())
         assertEquals("owner data", File(dir.file, "keep.txt").readText(), "the link in HOME was removed, not followed")
     }
 
@@ -208,7 +212,7 @@ class ShellLeftoversDeviceTest {
     fun aCommandCannotLockTheHomeFolder(): Unit = runBlocking {
         val dir = folder()
         val home = File(context.cacheDir, "shell-home")
-        // HOME is emptied before every command. A command can take its own rights to it away, with something inside.
+        // HOME is empty before every command. A command can take its own rights to it away, with something inside.
         val locks = listOf(
             "a folder in HOME without any rights, with a file in it" to
                 "mkdir \"\$HOME/a\"; echo x > \"\$HOME/a/f\"; chmod 000 \"\$HOME/a\"",
@@ -227,14 +231,14 @@ class ShellLeftoversDeviceTest {
             val out = assertIs<CommandOutcome.Finished>(next, "$name: the next command must run, but: $next").stdout
             assertEquals("writable\nhome=${home.path}\n", out, "$name: HOME is empty, can be written to and is in its usual place")
         }
-        assertEquals(emptyList(), putAside(), "the folder's rights were given back and it was emptied; nothing had to be put aside")
+        assertEquals(emptyList(), putAsideAfterTidying(), "what was put aside was deleted afterwards, its rights given back first")
     }
 
     @Test
     fun aLockedCacheFolderDoesNotStopTheNextCommand(): Unit = runBlocking {
         val dir = folder()
         val home = File(context.cacheDir, "shell-home")
-        // HOME is removed and made anew in the app's cache folder; a command can take the rights to that folder away too.
+        // HOME is put aside and made anew in the app's cache folder; a command can take the rights to that folder away too.
         for (mode in listOf("500", "000")) {
             assertIs<CommandOutcome.Finished>(runner.run("echo x > \"\$HOME/f\"; chmod $mode \"\$HOME/..\"", dir, limits), "chmod $mode")
 
@@ -242,13 +246,53 @@ class ShellLeftoversDeviceTest {
 
             val out = assertIs<CommandOutcome.Finished>(next, "cache folder $mode: the next command must run, but: $next").stdout
             assertEquals("writable\nhome=${home.path}\n", out, "cache folder $mode")
-            // Whatever was put aside on the way is gone once another command has run.
-            assertIs<CommandOutcome.Finished>(runner.run("true", dir, limits))
-            assertEquals(emptyList(), putAside(), "cache folder $mode")
+            // Whatever was put aside on the way is deleted after the command.
+            assertEquals(emptyList(), putAsideAfterTidying(), "cache folder $mode")
         }
         assertTrue(context.cacheDir.canRead() && context.cacheDir.canWrite(), "the app has its cache folder back")
     }
 
-    /** Home folders that were put aside because they could not be emptied, or made beside the usual one. */
-    private fun putAside(): List<String> = context.cacheDir.list().orEmpty().filter { it.startsWith("shell-home.") }
+    @Test
+    fun aFullAndLockedHomeDoesNotDelayTheNextCommand(): Unit = runBlocking {
+        val dir = folder()
+        val home = File(context.cacheDir, "shell-home")
+        // About 20 s on a software emulator, which makes some 75 files a second; the command is given the time.
+        val fill = "i=0; while [ \$i -lt 1500 ]; do : > \"\$HOME/f\$i\"; i=\$((i+1)); done; " +
+            "mkdir \"\$HOME/locked\"; echo x > \"\$HOME/locked/f\"; chmod 000 \"\$HOME/locked\"; ls \"\$HOME\" | wc -l"
+        val filled = runner.run(fill, dir, CommandLimits(timeoutMs = 300_000, maxOutputChars = 4_000))
+        assertEquals("1501", assertIs<CommandOutcome.Finished>(filled, "$filled").stdout.trim(), "the command left 1,500 files and a locked folder")
+
+        val asked = System.nanoTime()
+        val next = runner.run(lookAtHome, dir, limits)
+        val took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - asked)
+
+        val out = assertIs<CommandOutcome.Finished>(next, "the next command must run, but: $next")
+        assertEquals("writable\nhome=${home.path}\n", out.stdout, "HOME is empty, can be written to and is in its usual place")
+        // How long it waited before the shell started: the whole call less the time the shell ran. Before, what was
+        // left was deleted first, at some 65 entries a second on this emulator: more than 20 s for this.
+        val beforeStart = took - out.durationMs
+        assertTrue(beforeStart < 10_000, "the next command started only after $beforeStart ms (the whole call took $took ms)")
+        println("aFullAndLockedHomeDoesNotDelayTheNextCommand: the next command started after $beforeStart ms; the call took $took ms")
+
+        // Deleted afterwards, a few seconds at a time.
+        assertEquals(emptyList(), putAsideAfterTidying(passes = 60), "what was put aside is deleted by the passes after the command")
+    }
+
+    /** Folders that were put aside before a command, or made beside the usual ones: home folders and folders for temporary files. */
+    private fun putAside(): List<String> = context.cacheDir.list().orEmpty().filter { it.startsWith("shell-home.") || it.startsWith("shell.") }
+
+    /**
+     * What is still put aside once the passes that delete it have had their turn. A pass runs a few
+     * seconds after a command or a sweep; when it ends with something left, a sweep (as at the app's
+     * start) starts the next one.
+     */
+    private suspend fun putAsideAfterTidying(passes: Int = 10): List<String> {
+        repeat(passes) {
+            runner.awaitTidying()
+            if (putAside().isEmpty()) return emptyList()
+            runner.stopLeftovers()
+        }
+        runner.awaitTidying()
+        return putAside()
+    }
 }
