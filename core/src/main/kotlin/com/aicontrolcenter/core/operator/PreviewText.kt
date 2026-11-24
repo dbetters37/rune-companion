@@ -1,5 +1,7 @@
 package com.aicontrolcenter.core.operator
 
+import java.text.Normalizer
+
 /**
  * Makes model-supplied text exact on an approval screen: nothing in it can hide, reorder or
  * push away the rest. Tools pass every model-chosen value (a command, URL, file name, message
@@ -106,11 +108,13 @@ object PreviewText {
 
     /**
      * [text] as a value between double quotes, made [exact], with every double quote inside it
-     * written as [QUOTE] and characters that look like one as "⟨U+XXXX⟩" (typographic and
-     * full-width quotes, double primes and the like, [QUOTE_LOOKALIKES]): the only plain `"`
-     * left is the one that ends the value, so nothing in it can pretend the value ended earlier.
-     * Two or more apostrophes or single quotes in a row draw like a double quote, so each of them
-     * is written as "⟨U+XXXX⟩" too; one alone ("don't", "it’s") is left as it is.
+     * written as [QUOTE] and every character that looks like a quote mark as "⟨U+XXXX⟩"
+     * ([looksLikeQuote]: typographic quotes and apostrophes, primes, accents and modifier
+     * letters that stand alone, full-width forms and the like): the only plain `"` left is the
+     * one that ends the value, so nothing in it can pretend the value ended earlier. Two or more
+     * apostrophes, backticks or primes in a row draw like a double quote, so each of them is
+     * written as "⟨U+XXXX⟩" too; one plain apostrophe or backtick alone ("don't", "`x`") is left
+     * as it is.
      */
     fun quoted(text: String): String {
         val cps = exact(text).codePoints().toArray()
@@ -123,15 +127,15 @@ object PreviewText {
                     out.append(QUOTE)
                     i++
                 }
-                cp in QUOTE_LOOKALIKES -> {
-                    mark(out, cp)
-                    i++
-                }
                 cp in SINGLE_QUOTES -> {
                     var run = 1
                     while (i + run < cps.size && cps[i + run] in SINGLE_QUOTES) run++
-                    if (run == 1) out.appendCodePoint(cp) else for (k in 0 until run) mark(out, cps[i + k])
+                    if (run == 1 && !looksLikeQuote(cp)) out.appendCodePoint(cp) else for (k in 0 until run) mark(out, cps[i + k])
                     i += run
+                }
+                looksLikeQuote(cp) -> {
+                    mark(out, cp)
+                    i++
                 }
                 else -> {
                     out.appendCodePoint(cp)
@@ -140,6 +144,28 @@ object PreviewText {
             }
         }
         return out.append('"').toString()
+    }
+
+    /**
+     * Whether [codePoint], inside a quoted value, could pass for a quote mark or for half of one,
+     * by itself: every opening or closing quote of any script (Unicode categories Pi and Pf: “ ”
+     * ‘ ’ « »), the spacing modifier letters (U+02B0..U+02FF: ʹ ʺ ʼ ˈ ˊ ˝ and the rest), every
+     * accent or modifier that stands alone (category Sk: ¨ ´ ῾ ＾, but not `^`, the backtick or
+     * the emoji skin tones), every character that is a quote, an apostrophe, a backtick or an
+     * acute accent in a compatibility form (full-width ＂ ＇ ｀, the Greek oxia and varia), and
+     * the characters of [QUOTE_LOOKALIKES]. The plain `"`, `'` and backtick are not answered
+     * here: [quoted] has its own rules for them. Letters and marks of other scripts are left
+     * alone (the Japanese long-vowel mark, Greek and Hebrew letters).
+     */
+    fun looksLikeQuote(codePoint: Int): Boolean {
+        if (codePoint < 0x80) return false
+        if (codePoint in QUOTE_LOOKALIKES || codePoint in 0x02B0..0x02FF) return true
+        when (Character.getType(codePoint)) {
+            Character.INITIAL_QUOTE_PUNCTUATION.toInt(), Character.FINAL_QUOTE_PUNCTUATION.toInt() -> return true
+            Character.MODIFIER_SYMBOL.toInt() -> if (codePoint !in 0x1F3FB..0x1F3FF) return true
+        }
+        val text = String(Character.toChars(codePoint))
+        return NORMAL_FORMS.any { form -> !Normalizer.isNormalized(text, form) && Normalizer.normalize(text, form).any { it in QUOTE_CHARS } }
     }
 
     /**
@@ -166,19 +192,31 @@ object PreviewText {
             codePoint == 0x2028 || codePoint == 0x2029)
 
     /**
-     * Characters that look like a plain double quote; [quoted] marks them: the typographic quotes
-     * (“ ” „ ‟), the full-width quote, double primes, the double acute accent, the heavy
-     * ornamental quotes and the East Asian double prime quotes.
+     * Characters that look like a plain double quote, or like half of one, and are named one by
+     * one; [quoted] marks each of them wherever it stands: the typographic quotes (“ ” „ ‟), the
+     * full-width quote and backtick, double, triple and quadruple primes, the diaeresis and the
+     * double acute accent, the heavy ornamental quotes, the East Asian double prime quotes and
+     * the ditto mark, the Hebrew geresh and gershayim, the Greek numeral sign, oxia and varia,
+     * and the modifier primes and saltillos.
      */
     private val QUOTE_LOOKALIKES: Set<Int> = setOf(
         0xFF02, 0x2033, 0x02BA, 0x05F4, 0x3003, 0x02EE, 0x201F, 0x2036,
         0x201C, 0x201D, 0x201E, 0x02DD, 0x275D, 0x275E, 0x301D, 0x301E, 0x301F, 0x2E42, 0x02F5, 0x02F6,
+        0x00A8, 0x2034, 0x2037, 0x2057, 0x05F3, 0xA78B, 0xA78C, 0x275B, 0x275C, 0xFF40, 0x1FEF, 0x1FFD, 0x0374, 0x02B9,
     )
 
-    /** The apostrophe and the characters that look like it; two in a row look like a double quote ([quoted]). */
+    /**
+     * The apostrophe and the characters that look like it; two in a row look like a double quote
+     * ([quoted]). Those that [looksLikeQuote] answers for are marked when they stand alone too.
+     */
     private val SINGLE_QUOTES: Set<Int> = setOf(
         0x0027, 0x2018, 0x2019, 0x201A, 0x201B, 0x0060, 0x00B4, 0x2032, 0x2035, 0x02B9, 0x02BB, 0x02BC, 0x02BD, 0xFF07,
     )
+
+    /** What a quote look-alike turns into when its compatibility form is written out: `"`, `'`, the backtick and the acute accent. */
+    private const val QUOTE_CHARS = "\"'`\u00B4"
+
+    private val NORMAL_FORMS = listOf(Normalizer.Form.NFKC, Normalizer.Form.NFKD)
 
     private fun isControl(codePoint: Int): Boolean = Character.isISOControl(codePoint)
 

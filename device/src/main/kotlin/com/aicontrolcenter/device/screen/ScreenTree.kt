@@ -133,24 +133,33 @@ internal class ScreenReader(
      * A list that re-bound the row to another item keeps the button's own text ("Delete") and
      * changes the row's: the element this returns then has another [ScreenElement.context] or
      * [ScreenElement.label], which [ScreenElement.sameControlAs] tells apart.
+     *
+     * With [withLabel] false nothing under the control is asked from the app, and the element
+     * returned has no label: for a caller that compares the [ScreenElement.context] only (a
+     * scroll, whose label is the content it moves; the later steps of typing).
+     *
+     * A view that Android's node cache shows as not on screen (scrolled out above or below) is
+     * neither asked from the app again nor counted against the node limit, as a read does not
+     * read it either: a long page costs what is visible of it.
      */
-    fun reread(entry: ScreenEntry, packageName: String, windowTitle: String?, checkCancelled: () -> Unit = {}): ScreenElement? {
+    fun reread(entry: ScreenEntry, packageName: String, windowTitle: String?, withLabel: Boolean = true, checkCancelled: () -> Unit = {}): ScreenElement? {
         val old = entry.mirror
         // The ancestors the context was read from, nearest first, up to the one that decided it.
         val chain = contextChain(old)
-        val fresh = Fresh(old.path, checkCancelled)
+        val fresh = Fresh(old.path, withLabel, checkCancelled)
         val top = chain.lastOrNull() ?: old
         val topMirror = fresh.mirror(top.node, null, top.path) ?: return null
         fresh.descend(topMirror, 0, row = chain.isNotEmpty() && topMirror.collectionItem)
         val target = fresh.target ?: return null
         if (fresh.failed) return null
         // The same shape as when it was read: what was a row is a row, what was a list is a list.
-        val now = generateSequence(target.parent) { it.parent }.toList()
-        if (now.size != chain.size) return null
-        for ((was, isNow) in chain.zip(now)) {
+        val above = generateSequence(target.parent) { it.parent }.toList()
+        if (above.size != chain.size) return null
+        for ((was, isNow) in chain.zip(above)) {
             if (was.collectionItem != isNow.collectionItem || (was.collection || was.scrollable) != (isNow.collection || isNow.scrollable)) return null
         }
-        return element(target, packageName, windowTitle?.let(::clean))
+        val now = element(target, packageName, windowTitle?.let(::clean))
+        return if (withLabel) now else now.copy(label = null)
     }
 
     /** The ancestors [contextOf] looks at for [m], nearest first: up to the first list, row or ancestor with words, at most [MAX_CONTEXT_LEVELS]. */
@@ -412,18 +421,23 @@ internal class ScreenReader(
     /**
      * A second, small walk for [reread]: every node is refreshed before it is read. It follows
      * the child indexes of [targetPath] down from the top it is given; under a list row it also
-     * reads what [textsWithin] reads, and under the target what [labelOf] reads.
+     * reads what [textsWithin] reads, and under the target what [labelOf] reads ([withLabel]).
      */
-    private inner class Fresh(private val targetPath: String, private val checkCancelled: () -> Unit) {
+    private inner class Fresh(private val targetPath: String, private val withLabel: Boolean, private val checkCancelled: () -> Unit) {
         var target: Mirror? = null
 
         /** More nodes than a whole read takes: the screen is not what it was. */
         var failed = false
         private var visited = 0
 
-        /** [node] asked again from the app, hung under [parent]; null when it is gone or hidden now. */
+        /**
+         * [node] asked again from the app, hung under [parent]; null when it is gone or hidden now. A node the cache
+         * shows as not on screen is left out without asking and without counting: a read leaves it out the same way,
+         * and a page scrolled far down has thousands of them above what is visible.
+         */
         fun mirror(node: AccessibilityNodeInfo, parent: Mirror?, path: String): Mirror? {
             if (failed) return null
+            if (!node.isVisibleToUser) return null
             if (++visited > maxNodes) {
                 failed = true
                 return null
@@ -437,6 +451,7 @@ internal class ScreenReader(
         fun descend(m: Mirror, level: Int, row: Boolean) {
             if (m.path == targetPath) {
                 target = m
+                if (!withLabel) return
                 // A label keeps MAX_LABEL characters, after the control's own text and description (each with its separator) are taken out of it.
                 labelRoom = MAX_LABEL + (m.text?.length ?: 0) + (m.description?.length ?: 0) + 4 * LABEL_SEPARATOR.length
                 labelParts(m)

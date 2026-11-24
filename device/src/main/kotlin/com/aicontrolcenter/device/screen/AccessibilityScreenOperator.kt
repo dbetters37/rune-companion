@@ -251,13 +251,13 @@ internal class AccessibilityScreenOperator(
                 entry = focused(open, entry, element, imeEnter) ?: return@call ScreenResult.NotSupported(NO_KEYBOARD_ACTION)
             }
             val arguments = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) }
-            // After this call's own focus the row around the field was just checked, and the keyboard coming up may move it.
-            val typed = act(open, entry, "The app did not accept the text.", if (focusedFirst) Recheck.NODE else Recheck.ROW) {
+            // After this call's own focus the field may say other things about itself (its label), but its row must still be the one that was read.
+            val typed = act(open, entry, "The app did not accept the text.", if (focusedFirst) Recheck.CONTEXT else Recheck.ROW) {
                 it.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
             }
             if (typed !is ScreenResult.Ok || !submit) return@call typed
-            // Stop or a window change between the two steps leaves the text unsent. The field now holds the new text.
-            act(open, entry, "The text was entered, but the field's keyboard action did not run.", Recheck.NODE_BUT_TEXT) { it.performAction(imeEnter!!) }
+            // Stop, a window change or a row re-bound between the two steps leaves the text unsent. The field now holds the new text.
+            act(open, entry, "The text was entered, but the field's keyboard action did not run.", Recheck.CONTEXT_BUT_TEXT) { it.performAction(imeEnter!!) }
         }
 
     override suspend fun scroll(agentName: String, packageName: String, direction: ScrollDirection, element: ScreenElement?): ScreenResult<Unit> =
@@ -275,7 +275,8 @@ internal class AccessibilityScreenOperator(
             }
             val action = scrollAction(target.node, direction)
                 ?: return@call ScreenResult.NotSupported("That element cannot scroll ${direction.name.lowercase()}.")
-            act(open, target, "It did not scroll; it may already be at the end.") { it.performAction(action) }
+            // What a scrolling area's label is made of is the content that scrolling moves: its row and ancestors decide, not its label.
+            act(open, target, "It did not scroll; it may already be at the end.", Recheck.CONTEXT) { it.performAction(action) }
         }
 
     override suspend fun globalAction(agentName: String, fromPackage: String, action: GlobalAction): ScreenResult<Unit> =
@@ -490,26 +491,33 @@ internal class AccessibilityScreenOperator(
     /** [entry] as numbered in a new snapshot of [tree], so a model can refer to it later. */
     private fun numbered(tree: ScreenTree, entry: ScreenEntry): ScreenElement = checkNotNull(snapshots.record(tree).elementOf(entry))
 
-    /** How much of a control is asked again from the app right before a node action. */
+    /** How much of a control is asked again from the app right before a node action, and compared with what was read. */
     private enum class Recheck {
-        /** The node, everything its label is made of, and the row or ancestors its context came from: the first step of a call. */
+        /** The node, everything its label is made of, and the row or ancestors its context came from: a tap, and the first step of typing. */
         ROW,
 
-        /** The node alone: a later step of the same call, moments after [ROW] passed. */
-        NODE,
+        /**
+         * The node and the row or ancestors its context came from, not its label: a scroll (the label of a scrolling area is
+         * the content that scrolling moves), and typing right after this call focused the field (a focused field may
+         * report other things about itself).
+         */
+        CONTEXT,
 
-        /** The node alone and not its text: the step after this call typed into it. */
-        NODE_BUT_TEXT,
+        /** As [CONTEXT], and not the node's text either: the keyboard action after this call typed into the field. */
+        CONTEXT_BUT_TEXT,
     }
 
     /**
      * Re-checks what could have changed since the tree was read (Stop, the window in front, the
-     * node itself), then runs [action] on the node. The node is refreshed from the app, and must
-     * still be the control that was matched: a list that re-bound the view to another item in the
-     * meantime ([ScreenReader.sameIdentity]) is [ScreenResult.Stale]. With [Recheck.ROW] the row
-     * around it is asked again too ([ScreenReader.reread]) and the control must be
-     * [ScreenElement.sameControlAs] the one matched, context and label included: a row re-bound
-     * to another item whose button still says "Delete" is [ScreenResult.Stale] as well.
+     * node itself and the row around it), then runs [action] on the node. The node is refreshed
+     * from the app, and must still be the control that was matched: a list that re-bound the view
+     * to another item in the meantime ([ScreenReader.sameIdentity]) is [ScreenResult.Stale]. The
+     * row around it is asked again too ([ScreenReader.reread]), before every step: with
+     * [Recheck.ROW] the control must be [ScreenElement.sameControlAs] the one matched, context
+     * and label included, so a row re-bound to another item whose button still says "Delete" is
+     * [ScreenResult.Stale] as well; with the other two its context must be the one that was read,
+     * so a field whose row was re-bound to another chat between the steps of one type call is not
+     * typed into, and what was typed is not sent.
      */
     private suspend fun act(
         open: Passed,
@@ -524,15 +532,14 @@ internal class AccessibilityScreenOperator(
         val node = entry.node
         if (!node.refresh()) return ScreenResult.Stale
         if (ScreenReader.isWithheld(node)) return ScreenResult.Sensitive
-        if (!ScreenReader.sameIdentity(node, entry.element, compareText = recheck != Recheck.NODE_BUT_TEXT)) return ScreenResult.Stale
-        if (recheck == Recheck.ROW) {
-            // With the window's title as it is now: an app can show another page in the same window.
-            val title = front(open.host)?.takeIf { it.id == open.front.id }?.title
-            val now = reader.reread(entry, open.packageName, title) { job.ensureActive() }
-            // Asking took a moment: Stop and the window are looked at once more, right before the action.
-            stillInFront(open)?.let { return it }
-            if (now == null || !now.sameControlAs(entry.element)) return ScreenResult.Stale
-        }
+        if (!ScreenReader.sameIdentity(node, entry.element, compareText = recheck != Recheck.CONTEXT_BUT_TEXT)) return ScreenResult.Stale
+        // With the window's title as it is now: an app can show another page in the same window.
+        val title = front(open.host)?.takeIf { it.id == open.front.id }?.title
+        val now = reader.reread(entry, open.packageName, title, withLabel = recheck == Recheck.ROW) { job.ensureActive() }
+        // Asking took a moment: Stop and the window are looked at once more, right before the action.
+        stillInFront(open)?.let { return it }
+        val same = now != null && if (recheck == Recheck.ROW) now.sameControlAs(entry.element) else now.context == entry.element.context
+        if (!same) return ScreenResult.Stale
         return if (action(node)) ScreenResult.Ok(Unit) else ScreenResult.Failed(failure)
     }
 
