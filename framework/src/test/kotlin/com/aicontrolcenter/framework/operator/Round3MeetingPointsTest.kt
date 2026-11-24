@@ -190,8 +190,11 @@ class Round3MeetingPointsTest {
     @Test
     fun `a script whose write waits behind a shell command past its own time limit is stopped, writes nothing later and leaves no thread`() = runBlocking<Unit> {
         val f = OperatorFixture()
+        // The first script of a JVM loads the interpreter, which can take longer than a short time limit; that is not measured here.
+        f.ok("scripts.run_js", "code" to "1 + 1")
         val running = startCommand(f)
-        val writes = arrayOf<Pair<String, Any?>>("code" to "workspace.write('from-js.txt', 'x'); 'written'", "workspace" to "write", "timeout_ms" to 300)
+        val code = "workspace.write('from-js.txt', 'x'); 'written'"
+        val writes = arrayOf<Pair<String, Any?>>("code" to code, "workspace" to "write", "timeout_ms" to 1_000)
 
         // Twice: two scripts left waiting would be as many as the sandbox lets hang before it refuses new ones.
         repeat(2) {
@@ -210,7 +213,7 @@ class Round3MeetingPointsTest {
         delay(600)
         assertFalse(f.file("from-js.txt").exists(), "a stopped script wrote after its call had ended")
         // A script asked for now writes as usual.
-        assertTrue(f.ok("scripts.run_js", *writes).content.contains("written"))
+        assertTrue(f.ok("scripts.run_js", "code" to code, "workspace" to "write", "timeout_ms" to 10_000).content.contains("written"))
         assertEquals("x", f.file("from-js.txt").readText())
     }
 
