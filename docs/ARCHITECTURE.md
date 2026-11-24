@@ -256,7 +256,10 @@ Rules that hold around this:
   script that runs. For every other command, and inside a script, finding, showing and pinning
   scripts is help on a best-effort basis: what the reader finds is shown as its reading
   ("Seems to run …"), and it often, not always, refuses a command it cannot read well before
-  you are asked. A command asked for while another one runs is refused without asking you.
+  you are asked. A command asked for while another one runs is refused without asking you. So
+  is a command the shell would not get as the text you are shown (half of a two-part character,
+  a NUL): one rule (`ExactText`) is asked by the tool before you are asked and by the runner as
+  its last check, and previews show such a character by its code.
 - **Data leaving the phone.** Tools that can send data out are marked in the catalogue, refused
   in local-only mode, and write an egress entry naming the agent, task and objective.
 
