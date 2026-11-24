@@ -218,10 +218,11 @@ interface Workspace {
      * in the middle of it: what it had staged is removed, and a file that is in the trash
      * without its record gets one again, so it is listed ([TrashItem.recovered]) and not taken
      * for a leftover. It counts as a change when it changed something. The app calls this when
-     * it starts, before any agent acts, and the owner's trash screen calls it before its first
-     * look; every change does it first as well. It is never called while a tool's call is only
-     * being assessed, which must have no side effects. A change under way is waited for; while a
-     * shell command runs nothing is done, and the next call or the next change does it.
+     * it starts (an agent's look or change that comes while it runs waits for it), and the
+     * owner's trash screen calls it before its first look; every change does it first as well.
+     * It is never called while a tool's call is only being assessed, which must have no side
+     * effects. A change under way is waited for; while a shell command runs nothing is done, and
+     * the next call or the next change does it.
      */
     suspend fun tidyTrash() {}
 

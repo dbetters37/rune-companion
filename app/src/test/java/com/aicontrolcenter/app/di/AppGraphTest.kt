@@ -74,11 +74,15 @@ class AppGraphTest {
         app.graph.start().join()
 
         assertEquals(false, recordAtSweep, "the shell sweep comes first")
-        assertTrue(java.io.File(root, ".trash/$LOST_ID.json").exists(), "the holder got its record back at start")
+        // The tidy is file work in a coroutine of its own: waited for here on this thread, with a limit.
+        val record = java.io.File(root, ".trash/$LOST_ID.json")
+        repeat(1_000) { if (!record.exists()) Thread.sleep(10) }
+        assertTrue(record.exists(), "the holder got its record back at start")
+        // A look waits for the tidy, which holds the change lock, and is answered after it.
+        assertNull(app.graph.workspace.trashLeftovers())
         assertTrue(java.io.File(root, ".trash/.staging").list().orEmpty().isEmpty(), "what was staged is gone")
         val listed = (app.graph.workspace.listTrash() as com.aicontrolcenter.core.operator.DocResult.Ok).value
         assertEquals(listOf(LOST_ID to true), listed.map { it.id to it.recovered }, "an agent's first look finds it listed, and its look changes nothing")
-        assertNull(app.graph.workspace.trashLeftovers())
         assertTrue(app.activityLog.all.none { it.title == "Could not put the workspace trash right" })
     }
 

@@ -1,5 +1,7 @@
 package com.aicontrolcenter.app.ui.workspace
 
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.aicontrolcenter.core.activity.ActivityRecorder
 import com.aicontrolcenter.core.operator.DocResult
 import com.aicontrolcenter.core.operator.RelativePath
@@ -13,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExecutorCoroutineDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -52,12 +55,15 @@ class WorkspaceTrashLooksTest {
         val clock: FakeClock,
         val scope: CoroutineScope,
     ) {
+        /** Every screen made here; their work is ended before the stand-in main thread goes away. */
+        val screens = java.util.concurrent.CopyOnWriteArrayList<ViewModel>()
+
         suspend fun folderScreen(): WorkspaceViewModel = withContext(main) {
-            WorkspaceViewModel(ws, "", activity, clock, ZoneOffset.UTC).also { vm -> collectors.launch { vm.uiState.collect { } } }
+            WorkspaceViewModel(ws, "", activity, clock, ZoneOffset.UTC).also { vm -> screens += vm; collectors.launch { vm.uiState.collect { } } }
         }
 
         suspend fun trashScreen(): WorkspaceTrashViewModel = withContext(main) {
-            WorkspaceTrashViewModel(ws, activity, clock, ZoneOffset.UTC).also { vm -> collectors.launch { vm.uiState.collect { } } }
+            WorkspaceTrashViewModel(ws, activity, clock, ZoneOffset.UTC).also { vm -> screens += vm; collectors.launch { vm.uiState.collect { } } }
         }
 
         /** Waits, with a limit, until [condition] holds for what the screen shows; returns whether it came to hold. */
@@ -80,12 +86,16 @@ class WorkspaceTrashLooksTest {
                 build(root)
                 val ws = LocalWorkspace(FakeWorkspaceRoot(root), clock)
                 val collectors = CoroutineScope(main)
+                val world = World(ws, main, collectors, ActivityRecorder(InMemoryActivityLog(), SequentialIdGenerator(), clock), clock, this)
                 try {
-                    withTimeout(120_000) {
-                        body(World(ws, main, collectors, ActivityRecorder(InMemoryActivityLog(), SequentialIdGenerator(), clock), clock, this))
-                    }
+                    withTimeout(120_000) { body(world) }
                 } finally {
-                    collectors.coroutineContext[Job]?.cancel()
+                    // Everything that runs on the stand-in main thread ends while it is still the main thread: what would
+                    // run there later would find no main dispatcher and fail in another test.
+                    withTimeout(30_000) {
+                        collectors.coroutineContext[Job]!!.cancelAndJoin()
+                        world.screens.forEach { it.viewModelScope.coroutineContext[Job]!!.cancelAndJoin() }
+                    }
                 }
             }
         } finally {
