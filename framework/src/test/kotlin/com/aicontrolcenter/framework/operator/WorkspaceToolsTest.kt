@@ -80,9 +80,11 @@ class WorkspaceToolsTest {
             tool, json("path" to "new.md", "content" to "mine"), f.context,
             change = { f.put("new.md", "someone else's") }, nothingDone = { f.file("new.md").readText() == "someone else's" },
         )
+        // Another length than the text it replaces: this change is made behind the workspace's back, and two texts of
+        // one length written within one tick of the file system's clock are the same size and time to the check.
         val refusal = PreparedActionChecks.assertRefusesAfterChange(
             tool, json("path" to "new.md", "content" to "mine", "overwrite" to true), f.context,
-            change = { f.put("new.md", "changed again!") }, nothingDone = { f.file("new.md").readText() == "changed again!" },
+            change = { f.put("new.md", "changed once more") }, nothingDone = { f.file("new.md").readText() == "changed once more" },
         )
         assertTrue("Nothing was done" in refusal.content && "\"new.md\" changed" in refusal.content, refusal.content)
         PreparedActionChecks.assertRunsWhenUnchanged(tool, json("path" to "new.md", "content" to "mine", "overwrite" to true), f.context)

@@ -200,7 +200,8 @@ do it.
   `HOME`, `ENV` or `PATH` into the workspace; `alias` with an argument; a here-document or
   another construct it does not read exactly as Android's shell does. It also refuses, without
   asking you, a command that holds a character which cannot be handed to the shell exactly
-  (half of a character pair, a NUL), and a command an agent asks for while another shell
+  (half of a two-part character, or a NUL; the part of the app that starts the shell refuses
+  the same once more, as its last check), and a command an agent asks for while another shell
   command still runs, since by (2) that one could not run anyway. These refusals are help, not
   a promise: they refuse some harmless commands and do not catch every doubtful one.
 
@@ -237,8 +238,12 @@ do it.
   memory Android gives the app (and less than 96 MB) is left, whichever comes first. Telling
   what a script keeps from what it has thrown away costs time, so after the first few times it
   is done twice a second at most: a script that throws much away and had kept little when
-  last measured can be over the 96 MB for up to half a second before it is stopped. The check
-  for nearly full memory is made every time.
+  last measured can be over the 96 MB for up to half a second before it is stopped. The other
+  way round, a script that had kept more than half of the 96 MB when last measured is stopped
+  when the count passes 96 MB again before the next measuring is due, although part of that
+  may already be thrown away: a script that holds very large values and goes on working with
+  them can be stopped for memory below the limit. The check for nearly full memory is made
+  every time.
 - **Approval previews** show quote marks inside a quoted value as ⟨"⟩, count long runs of one
   character and piles of combining marks, and mark every invisible or format character, so a
   value cannot pretend to end early or hide what follows. The preview is always drawn left to

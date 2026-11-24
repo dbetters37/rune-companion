@@ -100,11 +100,8 @@ class JsRound3Test {
     @Test
     fun `every step of a native iterator is counted against the script's budget`() {
         val small = JsSandbox(JsLimits(timeoutMs = 20_000, maxInstructions = 600_000))
-        // The arrays are made by one built-in call each; walking their 400,000 elements is what uses the budget up.
+        // The values are made by one built-in call each; walking their 400,000 elements is what uses the budget up.
         for (code in listOf(
-            "var a = new Array(400000).fill(1); new Set(a).size",
-            "var a = new Array(400000).fill(1); Array.from(a).length",
-            "var a = new Array(400000).fill(1); [...a].length",
             "var s = 'x'.repeat(400000); [...s].length",
             "var t = new Uint8Array(400000); new Set(t).size",
             "var m = new Set(new Array(1000).fill(0).map(Math.random)); var n = 0; for (var i = 0; i < 400; i++) n += [...m].length; n",
@@ -112,9 +109,23 @@ class JsRound3Test {
             val outcome = run(code, small)
             assertTrue(outcome is JsOutcome.Stopped && "instructions" in outcome.reason, "$code: $outcome")
         }
+        // An array made by `new Array(n).fill(1)` costs Rhino about 130 bytes an element: with 400,000 elements it alone is
+        // more than half the memory limit, and a script that keeps that much and throws much away (every step of these
+        // walks leaves an object behind) may be stopped for memory instead, depending on when the heap was last collected
+        // (round 4: the whole suite running in parallel saw that). This test is about the instruction budget, so its arrays
+        // stay far below that: 100,000 elements, and a budget in the same proportion.
+        val smaller = JsSandbox(JsLimits(timeoutMs = 20_000, maxInstructions = 150_000))
+        for (code in listOf(
+            "var a = new Array(100000).fill(1); new Set(a).size",
+            "var a = new Array(100000).fill(1); Array.from(a).length",
+            "var a = new Array(100000).fill(1); [...a].length",
+        )) {
+            val outcome = run(code, smaller)
+            assertTrue(outcome is JsOutcome.Stopped && "instructions" in outcome.reason, "$code: $outcome")
+        }
         // The same walks fit an ordinary budget.
         val usual = JsSandbox(JsLimits(timeoutMs = 20_000))
-        assertEquals("1200001", result("var a = new Array(400000).fill(1); new Set(a).size + Array.from(a).length + [...a].length + a.length", usual))
+        assertEquals("300001", result("var a = new Array(100000).fill(1); new Set(a).size + Array.from(a).length + [...a].length + a.length", usual))
     }
 
     // ---- J1: concat, done by the sandbox ----
