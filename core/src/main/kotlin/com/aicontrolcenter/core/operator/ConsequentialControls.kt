@@ -1,49 +1,109 @@
 package com.aicontrolcenter.core.operator
 
+import java.text.Normalizer
 import java.util.Locale
 
 /**
  * The single source of the operator's risk vocabulary: which on-screen controls make an action
  * consequential, which apps are never operated, and the bulk-file threshold. Used by the tools in
- * `:framework` (assessment) and by the accessibility service in `:device` (refusal), which do not
- * depend on each other. Multilingual matching is not attempted; false positives only cost the
- * owner one extra confirmation.
+ * `:framework` (assessment). Multilingual matching is not attempted; false positives only cost
+ * the owner one extra confirmation.
+ *
+ * A word list cannot be complete, so it is not the owner's only protection: every authorised app
+ * asks before every screen action by default ([ScreenActionPolicy.ASK_EVERY_ACTION]); this
+ * classification decides only for apps the owner switched to
+ * [ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY].
  */
 object ConsequentialControls {
     /** Overwriting or deleting more than this many files in one call is consequential. */
     const val BULK_FILE_LIMIT: Int = 20
 
-    /** Word stems that mark a control as consequential when found in its text, description or view id. */
+    /**
+     * Word stems that mark a control as consequential when found in its text, description,
+     * merged label or view id. They also match inside a word ("Autopay", "Resend").
+     */
     val WORDS: List<String> = listOf(
         "buy", "pay", "purchase", "order", "checkout", "subscribe", "send", "post", "share", "publish",
         "reply", "call", "transfer", "install", "uninstall", "delete", "remove", "confirm", "accept", "sign",
     )
 
+    /**
+     * More stems for buying, sending, deleting, consenting and starting things. They match whole
+     * words and their forms only ("Booking", "Cleared"), not inside other words, so "Display",
+     * "Facebook" and "Nuclear" do not ask.
+     */
+    val WHOLE_WORDS: List<String> = listOf(
+        "sell", "bid", "withdraw", "swap", "request", "book", "reserve", "donate", "tip", "upgrade", "trial", "submit",
+        "forward", "comment", "report", "block", "invite", "decline", "join", "upload", "allow", "approve", "agree",
+        "authorize", "authorise", "grant", "trash", "bin", "empty", "clear", "discard", "erase", "wipe", "reset",
+        "archive", "run", "play", "live",
+    )
+
+    /**
+     * Words of a control that answers yes to whatever its window asks ("Delete 248 photos?" · OK).
+     * Such a control is consequential when its window or row mentions a consequential word or a
+     * price ([consequentialReason]).
+     */
+    val POSITIVE_WORDS: Set<String> = setOf("ok", "okay", "yes", "continue", "done", "proceed", "confirm", "allow", "accept", "agree")
+
+    /** Words that name a field for a one-time or security code: typing one can confirm a payment or a sign-in by itself. */
+    val CODE_FIELD_WORDS: Set<String> = setOf("code", "codes", "otp", "passcode", "verify", "verification", "cvv", "cvc", "tan")
+
     /** Forms the suffix rules below do not produce. */
     private val IRREGULAR: Map<String, String> = mapOf(
         "paid" to "pay", "bought" to "buy", "sent" to "send", "subscription" to "subscribe",
-        "subscriptions" to "subscribe", "signature" to "sign", "signatures" to "sign",
+        "subscriptions" to "subscribe", "signature" to "sign", "signatures" to "sign", "sold" to "sell",
+        "withdrawal" to "withdraw", "withdrawals" to "withdraw", "withdrawn" to "withdraw", "withdrew" to "withdraw",
+        "submission" to "submit", "ran" to "run", "authorization" to "authorize", "authorisation" to "authorise",
     )
 
     private val SUFFIXES = listOf(
         "s", "es", "d", "ed", "er", "ers", "ing", "ings", "ment", "ments", "ion", "ions", "ation", "ations", "ance", "able",
     )
 
-    /** For stems ending in "e": "remove" → "removing", "removal"; "delete" → "deletion". */
-    private val E_DROP_SUFFIXES = listOf("ing", "ion", "ions", "al", "able", "er", "ers")
+    /** For stems ending in "e": "remove" → "removing", "removal"; "delete" → "deletion"; "reserve" → "reservation". */
+    private val E_DROP_SUFFIXES = listOf("ing", "ion", "ions", "ation", "ations", "al", "able", "er", "ers")
+
+    /** ISO 4217 codes (and a few crypto tickers) that make a number a price: "249.00 EUR". */
+    private val CURRENCY_CODES = listOf(
+        "usd", "eur", "gbp", "jpy", "cny", "rmb", "inr", "rub", "chf", "cad", "aud", "nzd", "sek", "nok", "dkk", "pln", "czk",
+        "huf", "brl", "mxn", "zar", "krw", "sgd", "hkd", "aed", "sar", "ils", "thb", "idr", "myr", "php", "vnd", "ngn",
+        "kes", "egp", "uah", "ron", "btc", "eth", "usdt", "usdc", "rs",
+    )
+
+    private val PRICE: Regex = run {
+        val codes = CURRENCY_CODES.joinToString("|")
+        Regex("""\p{Sc}\s?\d[\d.,']*|\d[\d.,' ]*\s?\p{Sc}|\b(?:$codes)\.?\s?\d[\d.,']*|\d[\d.,' ]*\s?(?:$codes)\b""", RegexOption.IGNORE_CASE)
+    }
 
     /**
-     * The stem from [WORDS] that [text] contains, or null. Matching is case-insensitive and per
-     * word: text is split at anything that is not a letter and at camelCase humps, so "Buy now",
-     * "btn_buy" and "buyNow" match "buy", and "Payment" matches "pay". A word also matches when
-     * it starts or ends with a form of a stem, which covers prefixes and compounds:
-     * "Repayment", "Unsubscribe", "Autopay", "Resend", "paynow". Two adjacent words also match as
-     * one ("Check out" → "checkout"). Accepted false positives: "Signal", "Design", "Recall",
-     * "Postpone", "Payload".
+     * [text] made comparable with the English stems: compatibility forms unified (NFKC: full-width
+     * and mathematical letters become plain ones), invisible characters removed, letters that look
+     * like Latin ones (Cyrillic "Ѕ", "е", Greek "Ρ") turned into them, and accents dropped. So
+     * "Ρay", "Ѕеnd", "B\u200Buy" and "Ｂｕｙ" read as "Pay", "Send" and "Buy".
+     */
+    fun fold(text: String): String {
+        val compatible = Normalizer.normalize(text, Normalizer.Form.NFKC)
+        val out = StringBuilder(compatible.length)
+        compatible.codePoints().forEach { cp ->
+            if (PreviewText.isHidden(cp)) return@forEach
+            out.appendCodePoint(CONFUSABLES[cp] ?: cp)
+        }
+        return COMBINING.replace(Normalizer.normalize(out, Normalizer.Form.NFD), "")
+    }
+
+    /**
+     * The stem from [WORDS] or [WHOLE_WORDS] that [text] contains, or null. Matching is
+     * case-insensitive and per word, on [fold]ed text: text is split at anything that is not a
+     * letter and at camelCase humps, so "Buy now", "btn_buy" and "buyNow" match "buy", and
+     * "Payment" matches "pay". A word also matches when it starts or ends with a form of a stem
+     * of [WORDS], which covers prefixes and compounds: "Repayment", "Unsubscribe", "Autopay",
+     * "Resend", "paynow". Two adjacent words also match as one ("Check out" → "checkout").
+     * Accepted false positives: "Signal", "Design", "Recall", "Postpone", "Payload".
      */
     fun matchedWord(text: String?): String? {
         if (text.isNullOrBlank()) return null
-        val words = words(text)
+        val words = words(fold(text))
         for (word in words) stemIn(word)?.let { return it }
         for (i in 0 until words.size - 1) stemOf(words[i] + words[i + 1])?.let { return it }
         return null
@@ -58,18 +118,65 @@ object ConsequentialControls {
         matchedWord(element.text) ?: matchedWord(element.description) ?: matchedWord(element.label)
             ?: matchedWord(element.resourceId?.substringAfter(":id/"))
 
+    /** The first price in [text] ("$4.99", "€9.99/month", "249.00 EUR"), or null. */
+    fun priceIn(text: String?): String? {
+        if (text.isNullOrBlank()) return null
+        return PRICE.find(fold(text))?.value?.trim()
+    }
+
+    /** [priceIn] over a control's text, description and merged label. */
+    fun priceIn(element: ScreenElement): String? = priceIn(element.text) ?: priceIn(element.description) ?: priceIn(element.label)
+
     /** True when nothing on the control says what it does: no text, description or label. */
     fun isUnlabelled(element: ScreenElement): Boolean =
         element.text.isNullOrBlank() && element.description.isNullOrBlank() && element.label.isNullOrBlank()
 
+    /** True when the control's own words include a yes-word such as OK, Yes, Continue or Done ([POSITIVE_WORDS]). */
+    fun isPositive(element: ScreenElement): Boolean =
+        listOf(element.text, element.description, element.label).any { t -> t != null && words(fold(t)).any { it in POSITIVE_WORDS } }
+
     /**
-     * Why acting on [element] is consequential, or null when it is not: a matched word, or a
-     * clickable control with no label, whose effect cannot be shown to the owner.
+     * Why acting on [element] in [window] is consequential, or null when it is not:
+     * - a consequential word on the control ([matchedWord]);
+     * - a price on the control ([priceIn]);
+     * - a clickable control with no label, whose effect cannot be shown to the owner;
+     * - a yes-control ([isPositive]: OK, Yes, Continue, Done, Proceed…) whose row or window title,
+     *   or any text of its window that is not a control itself, mentions a consequential word or
+     *   a price: the "OK" of "Delete 248 photos?", the "Continue" under "Total: 249.00 EUR".
+     *
+     * [window] is the window the control is in, read just before; without it only the control's
+     * own row ([ScreenElement.context]) is looked at for a yes-control.
      */
-    fun consequentialReason(element: ScreenElement): String? {
+    fun consequentialReason(element: ScreenElement, window: ScreenSnapshot? = null): String? {
         matchedWord(element)?.let { return "the control is labelled with \"$it\"" }
+        priceIn(element)?.let { return "the control shows a price (\"${PreviewText.exact(it)}\")" }
         if (element.clickable && isUnlabelled(element)) return "the control has no label, so what it does cannot be shown"
+        if (isPositive(element)) {
+            val around = buildList {
+                add(element.context)
+                add(window?.windowTitle)
+                window?.elements?.filter { !it.clickable && !it.editable && it.packageName == element.packageName }?.forEach {
+                    add(it.text)
+                    add(it.description)
+                }
+            }.filterNotNull()
+            around.firstNotNullOfOrNull { matchedWord(it) }?.let { return "it answers a screen that mentions \"$it\"" }
+            around.firstNotNullOfOrNull { priceIn(it) }?.let { return "it answers a screen that shows a price (\"${PreviewText.exact(it)}\")" }
+        }
         return null
+    }
+
+    /**
+     * Why typing into [field] is consequential by itself, or null: the field's description, label
+     * or view id holds a consequential word, or the field takes a one-time or security code
+     * ([CODE_FIELD_WORDS]), which many apps submit as soon as it is complete. Its hint is read only
+     * for the code (a "Send a message" hint does not send), and what it holds now is not read.
+     */
+    fun typingReason(field: ScreenElement): String? {
+        val id = field.resourceId?.substringAfter(":id/")
+        (matchedWord(field.description) ?: matchedWord(field.label) ?: matchedWord(id))?.let { return "the field is labelled with \"$it\"" }
+        val code = listOfNotNull(field.hint, field.description, field.label, id).flatMap { words(fold(it)) }.firstOrNull { it in CODE_FIELD_WORDS }
+        return code?.let { "the field asks for a code (\"$it\"), and entering one can confirm something by itself" }
     }
 
     /**
@@ -124,16 +231,18 @@ object ConsequentialControls {
         packageName in PROTECTED_PACKAGES || packageName in extra || packageName == ownPackage ||
             packageName.startsWith(OWN_PACKAGE_PREFIX) || packageName + "." == OWN_PACKAGE_PREFIX
 
-    private fun stemOf(word: String): String? {
-        IRREGULAR[word]?.let { return it }
-        return WORDS.firstOrNull { stem -> isFormOf(word, stem) }
+    /** The stem [word] is a form of: from [WORDS], or, when [wholeWords], from [WHOLE_WORDS] too. */
+    private fun stemOf(word: String, wholeWords: Boolean = true): String? {
+        IRREGULAR[word]?.let { stem -> if (wholeWords || stem in WORDS) return stem }
+        WORDS.firstOrNull { stem -> isFormOf(word, stem) }?.let { return it }
+        return if (wholeWords) WHOLE_WORDS.firstOrNull { stem -> isFormOf(word, stem) } else null
     }
 
-    /** [stemOf] the whole word, else of a start or end of it (at least three letters, leaving at least one). */
+    /** [stemOf] the whole word, else ([WORDS] only) of a start or end of it (at least three letters, leaving at least one). */
     private fun stemIn(word: String): String? {
         stemOf(word)?.let { return it }
-        for (cut in 3 until word.length) stemOf(word.substring(0, cut))?.let { return it }
-        for (cut in 1..word.length - 3) stemOf(word.substring(cut))?.let { return it }
+        for (cut in 3 until word.length) stemOf(word.substring(0, cut), wholeWords = false)?.let { return it }
+        for (cut in 1..word.length - 3) stemOf(word.substring(cut), wholeWords = false)?.let { return it }
         return null
     }
 
@@ -149,6 +258,28 @@ object ConsequentialControls {
             if (listOf("ies", "ied").any { word == stem.dropLast(1) + it }) return true
         }
         return false
+    }
+
+    private val COMBINING = Regex("\\p{M}+")
+
+    /**
+     * Letters of other scripts that look like Latin ones, mapped to them. Not Unicode's full
+     * confusables table: the Cyrillic, Greek and Latin look-alikes that can spell the English
+     * stems, which is what matters here.
+     */
+    private val CONFUSABLES: Map<Int, Int> = buildMap {
+        fun map(from: String, to: String) {
+            require(from.codePointCount(0, from.length) == to.length)
+            var i = 0
+            from.codePoints().forEach { cp -> put(cp, to[i++].code) }
+        }
+        // Cyrillic.
+        map("АВЕЅІЈКМНОРСТХУԁаеоірсхуѕјһԛԝԜ", "ABESIJKMHOPCTXYdaeoipcxysjhqwW")
+        map("ӏƖЁёЇїҮүԌԍ", "lIEeIiYyGg")
+        // Greek.
+        map("ΑΒΕΖΗΙΚΜΝΟΡΤΥΧαιονρτυχκϲϳ", "ABEZHIKMNOPTYXaiovptuxkcj")
+        // Latin and IPA look-alikes.
+        map("ıȷɑɡɩʏᴀʙᴄᴅᴇɢʜɪᴊᴋʟᴍɴᴏᴘʀꜱᴛᴜᴠᴡʏᴢ", "ijagiyABCDEGHIJKLMNOPRSTUVWYZ")
     }
 
     /** Lower-case runs of letters, split at camelCase humps. */

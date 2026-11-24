@@ -119,9 +119,14 @@ interface OwnerOperatorApps {
     /**
      * Authorises an installed app for screen operation, recording its signing certificate so a
      * different app installed later under the same name is not trusted. Refused for protected
-     * packages ([ProtectedPackages]) and invalid package names.
+     * packages ([ProtectedPackages]) and invalid package names. A newly authorised app asks
+     * before every action ([ScreenActionPolicy.ASK_EVERY_ACTION]); authorising the same app
+     * again keeps the policy the owner chose, and a different certificate resets it.
      */
     suspend fun authorise(packageName: String, label: String, signingCertSha256: String?): OwnerResult<OperatorApp>
+
+    /** Sets how often the app's screen actions ask the owner. Null when the app is not authorised. */
+    suspend fun setPolicy(packageName: String, policy: ScreenActionPolicy): OperatorApp?
 
     /** Revokes every grant constrained to the app, then withdraws it. Returns false if it was not authorised. */
     suspend fun withdraw(packageName: String): Boolean

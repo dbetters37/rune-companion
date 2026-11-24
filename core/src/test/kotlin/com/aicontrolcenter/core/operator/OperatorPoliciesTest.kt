@@ -115,7 +115,11 @@ class OperatorPoliciesTest {
             setOf("workspace.empty_trash", "folders.delete", "apps.install", "apps.uninstall", "scripts.run_shell", "termux.run"),
             all.filter { it.risk == RiskLevel.CONSEQUENTIAL }.map { it.id.value }.toSet(),
         )
-        assertEquals(setOf("web.read_page", "browser.open", "apps.open_link"), all.filter { it.sendsDataOffDevice }.map { it.id.value }.toSet())
+        // Acting on another app's screen may send data off the phone through that app, so local-only mode blocks it too.
+        assertEquals(
+            setOf("web.read_page", "browser.open", "apps.open_link", "screen.tap", "screen.type", "screen.scroll", "screen.back", "screen.home"),
+            all.filter { it.sendsDataOffDevice }.map { it.id.value }.toSet(),
+        )
         assertEquals(Capabilities.BASIC_INFO, OperatorTools.info(ToolId("permissions.request"))?.capability)
         assertTrue(all.filter { "copy_to_workspace" in it.id.value || it.id.value == "screen.screenshot" }.all { it.rule?.contains("Never overwrites") == true })
         assertEquals(RiskLevel.CONSEQUENTIAL, OperatorTools.riskOf(OperatorCapabilities.APPS_MANAGE))
@@ -181,10 +185,34 @@ class OperatorPoliciesTest {
                 "Control: Button \"Send\"",
                 "Where: Reply to Sam",
                 "Field \"Message\" contains: \"See you at 5⟨U+202E⟩\"",
+                "On screen now (1 text):",
+                "  Button: \"Send\"",
+                "  (1 password or sensitive field is never shown.)",
             ),
             details,
         )
         assertEquals(3, ScreenPreview.details("Mail", send, snapshot, consequential = false).size)
+    }
+
+    /** Review 5, P3: the payee, the price and every other text of the window are shown and pinned, not only the fields. */
+    @Test
+    fun `a consequential preview lists the whole window, bounded, and its digest changes with any text`() {
+        fun text(n: Int, t: String) = ScreenElement(0, n, "com.example.pay", "TextView", text = t, bounds = ScreenBounds(0, n, 1, n + 1))
+        val send = ScreenElement(0, 3, "com.example.pay", "Button", text = "Send money", bounds = ScreenBounds(0, 0, 1, 1), clickable = true)
+        val window = ScreenSnapshot(0, "com.example.pay", "Transfer", listOf(text(1, "To: Alice Smith"), text(2, "20.00 EUR\u202E"), send), 0, false, 1)
+        val lines = ScreenPreview.windowLines(window)
+        assertEquals(listOf("On screen now (3 texts):", "  TextView: \"To: Alice Smith\"", "  TextView: \"20.00 EUR⟨U+202E⟩\"", "  Button: \"Send money\""), lines)
+        val digest = ScreenPreview.digest(window)
+        assertEquals(digest, ScreenPreview.digest(window.copy(capturedAt = 99, elements = window.elements.map { it.copy(bounds = ScreenBounds(5, 5, 6, 6), focused = true) })))
+        assertTrue(digest != ScreenPreview.digest(window.copy(elements = listOf(text(1, "To: Mallory"), text(2, "20.00 EUR\u202E"), send))))
+        assertTrue(digest != ScreenPreview.digest(window.copy(windowTitle = "Transfer abroad")))
+        assertTrue(digest != ScreenPreview.digest(window.copy(elements = window.elements + text(4, "Fee 3.00 EUR"))))
+        // A long window is listed up to the limit, and the rest is counted, never silently dropped.
+        val long = window.copy(elements = (1..ScreenPreview.MAX_WINDOW_LINES + 7).map { text(it, "Line $it") }, truncated = true)
+        val longLines = ScreenPreview.windowLines(long)
+        assertEquals(ScreenPreview.MAX_WINDOW_LINES + 3, longLines.size)
+        assertTrue("  …and 7 more texts not listed here." in longLines, longLines.takeLast(2).toString())
+        assertTrue(longLines.last().contains("more than could be read"))
         assertEquals("unlabelled ImageButton", ScreenPreview.nameOf(send.copy(role = "ImageButton", text = null, context = null)))
     }
 

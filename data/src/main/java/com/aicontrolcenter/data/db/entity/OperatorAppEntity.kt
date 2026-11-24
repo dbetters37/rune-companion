@@ -14,6 +14,8 @@ internal data class OperatorAppEntity(
     val label: String,
     @ColumnInfo(name = "authorised_at") val authorisedAt: Long,
     @ColumnInfo(name = "signing_cert_sha256") val signingCertSha256: String?,
+    /** `ScreenActionPolicy` by name; an unknown name reads as asking before every action. */
+    @ColumnInfo(name = "action_policy") val actionPolicy: String,
 ) {
     companion object {
         const val TABLE = "operator_apps"

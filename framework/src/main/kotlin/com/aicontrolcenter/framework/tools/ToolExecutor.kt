@@ -169,9 +169,10 @@ class ToolExecutor(
         if (decision is Authorization.Denied) return ToolCallEnd.DENIED to ToolOutcome.failure(decision.reason)
         if (decision is Authorization.AllowedByOwner) {
             onAnswered(decision.requestIds)
-            // The owner took time to answer: what the call was checked against may have changed meanwhile.
+            // The owner took time to answer, inside this app: what the call was checked against may have changed meanwhile,
+            // and a screen action waits for its app to be in front again before it looks.
             val changed = try {
-                assessment.prepared?.changedSince()
+                assessment.prepared?.changedSinceOwnerAnswered()
             } catch (e: Exception) {
                 rethrowIfCancelled(e)
                 "it could not be checked again (${describe(e)})"

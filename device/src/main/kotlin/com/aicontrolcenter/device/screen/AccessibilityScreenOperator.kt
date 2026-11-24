@@ -102,12 +102,22 @@ internal class AccessibilityScreenOperator(
 
     override val stopped: StateFlow<Boolean> = stopSwitch.stopped
 
+    /** Whether the lock screen was showing when the banner was last applied; the banner never shows over it. */
+    private val lockedWhenApplied = AtomicBoolean(false)
+
     init {
         stopSwitch.onStop(::onOwnerStop)
         scope.launch {
             link.host.collect {
                 if (started.get()) refreshState()
                 applyIndicator()
+            }
+        }
+        scope.launch {
+            // The lock screen coming or going changes the windows: hide the banner over it, show it again after.
+            link.changes.collect {
+                val operating = synchronized(sessionLock) { sessions.isNotEmpty() }
+                if (operating && device.keyguardLocked() != lockedWhenApplied.get()) applyIndicator()
             }
         }
     }
@@ -140,6 +150,10 @@ internal class AccessibilityScreenOperator(
         call(agentName, packageName) { open ->
             ScreenResult.Ok(snapshots.record(readTree(open), maxElements).snapshot)
         }
+
+    /** No session starts (no agent is named) and nothing is kept: the read an assessment shows the owner. */
+    override suspend fun inspect(packageName: String, maxElements: Int): ScreenResult<ScreenSnapshot> =
+        call(null, packageName) { open -> ScreenResult.Ok(snapshots.unrecorded(readTree(open), maxElements)) }
 
     override suspend fun find(packageName: String, target: ScreenTarget): ScreenResult<ScreenElement> = call(null, packageName) { open ->
         val tree = readTree(open)
@@ -193,26 +207,37 @@ internal class AccessibilityScreenOperator(
 
     override suspend fun type(agentName: String, element: ScreenElement, text: String, submit: Boolean): ScreenResult<Unit> =
         call(agentName, element.packageName) { open ->
-            val entry = when (val found = refind(readTree(open), element)) {
+            var entry = when (val found = refind(readTree(open), element)) {
                 is Refound.Refused -> return@call found.result
                 is Refound.Found -> found.entry
             }
-            val node = entry.node
             if (!entry.element.editable) return@call ScreenResult.NotSupported("That element does not take text.")
             if (!entry.element.enabled) return@call ScreenResult.NotSupported("That field is switched off (disabled) right now.")
-            if (!node.offers(AccessibilityNodeInfo.ACTION_SET_TEXT)) {
+            if (!entry.node.offers(AccessibilityNodeInfo.ACTION_SET_TEXT)) {
                 return@call ScreenResult.NotSupported("That field does not accept text from the operator.")
             }
             val imeEnter = imeEnterAction()
             if (submit && (sdkInt < Build.VERSION_CODES.R || imeEnter == null)) {
                 return@call ScreenResult.NotSupported("Pressing the keyboard's action key needs Android 11 or later.")
             }
-            if (submit && !node.offers(imeEnter!!)) return@call ScreenResult.NotSupported("That field has no keyboard action to press.")
+            if (submit && !entry.node.offers(imeEnter!!)) {
+                // Android's text fields offer their keyboard action only while focused: focus the field, then look again.
+                if (entry.element.focused || !entry.node.offers(AccessibilityNodeInfo.ACTION_FOCUS)) {
+                    return@call ScreenResult.NotSupported(NO_KEYBOARD_ACTION)
+                }
+                val focused = act(open, entry, "The field could not be focused.") { it.performAction(AccessibilityNodeInfo.ACTION_FOCUS) }
+                if (focused !is ScreenResult.Ok) return@call focused
+                entry = when (val found = refind(readTree(open), element)) {
+                    is Refound.Refused -> return@call found.result
+                    is Refound.Found -> found.entry
+                }
+                if (!entry.node.offers(imeEnter)) return@call ScreenResult.NotSupported(NO_KEYBOARD_ACTION)
+            }
             val arguments = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) }
             val typed = act(open, entry, "The app did not accept the text.") { it.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments) }
             if (typed !is ScreenResult.Ok || !submit) return@call typed
-            // Stop or a window change between the two steps leaves the text unsent.
-            act(open, entry, "The text was entered, but the field's keyboard action did not run.") { it.performAction(imeEnter!!) }
+            // Stop or a window change between the two steps leaves the text unsent. The field now holds the new text.
+            act(open, entry, "The text was entered, but the field's keyboard action did not run.", textChanged = true) { it.performAction(imeEnter!!) }
         }
 
     override suspend fun scroll(agentName: String, packageName: String, direction: ScrollDirection, element: ScreenElement?): ScreenResult<Unit> =
@@ -446,14 +471,24 @@ internal class AccessibilityScreenOperator(
 
     /**
      * Re-checks what could have changed since the tree was read (Stop, the window in front, the
-     * node itself), then runs [action] on the node.
+     * node itself), then runs [action] on the node. The node is refreshed from the app, and must
+     * still be the control that was matched: a list that re-bound the view to another item in the
+     * meantime ([ScreenReader.sameIdentity]) is [ScreenResult.Stale]. [textChanged]: this action
+     * follows typing into the node, so its text is the new one.
      */
-    private suspend fun act(open: Passed, entry: ScreenEntry, failure: String, action: (AccessibilityNodeInfo) -> Boolean): ScreenResult<Unit> {
+    private suspend fun act(
+        open: Passed,
+        entry: ScreenEntry,
+        failure: String,
+        textChanged: Boolean = false,
+        action: (AccessibilityNodeInfo) -> Boolean,
+    ): ScreenResult<Unit> {
         currentCoroutineContext().ensureActive()
         stillInFront(open)?.let { return it }
         val node = entry.node
         if (!node.refresh()) return ScreenResult.Stale
         if (ScreenReader.isWithheld(node)) return ScreenResult.Sensitive
+        if (!ScreenReader.sameIdentity(node, entry.element, compareText = !textChanged)) return ScreenResult.Stale
         return if (action(node)) ScreenResult.Ok(Unit) else ScreenResult.Failed(failure)
     }
 
@@ -575,16 +610,22 @@ internal class AccessibilityScreenOperator(
         applyIndicator()
     }
 
-    /** Shows the banner for the sessions as they are when it runs (so updates can never arrive out of order). */
+    /**
+     * Shows the banner for the sessions as they are when it runs (so updates can never arrive out
+     * of order). Never over the lock screen: the overlay would be drawn above it and name the
+     * agent and the app to whoever holds the locked phone, while every call is refused anyway.
+     */
     private fun applyIndicator() {
         scope.launch(main) {
             val host = link.host.value ?: return@launch
+            val locked = device.keyguardLocked()
+            lockedWhenApplied.set(locked)
             val text = synchronized(sessionLock) {
                 sessions.entries.joinToString("\n") { (agent, session) ->
                     "${PreviewText.exact(agent)} is operating ${PreviewText.exact(session.appLabel)}"
                 }
             }
-            if (text.isEmpty()) host.indicator.hide() else host.indicator.show(text) { stopSwitch.stop() }
+            if (text.isEmpty() || locked) host.indicator.hide() else host.indicator.show(text) { stopSwitch.stop() }
         }
     }
 
@@ -601,6 +642,9 @@ internal class AccessibilityScreenOperator(
 
         /** `AccessibilityService.ERROR_TAKE_SCREENSHOT_SECURE_WINDOW` (API 34). */
         private const val ERROR_SECURE_WINDOW = 6
+
+        private const val NO_KEYBOARD_ACTION =
+            "That field offers no keyboard action to press, even when focused. Tap it first and type again, or tap the app's own send button."
 
         private const val COVERED =
             "Another window covers part of the app (the notification shade, a pop-up or another app), so a screenshot of the app alone is not possible right now."

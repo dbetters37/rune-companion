@@ -121,6 +121,14 @@ do it.
 - **Limits stop work, not cost already spent.** Caps on tasks, messages, model calls and time
   bound how much an objective can do. A cloud provider bills for the calls made before a limit
   was reached.
+- **Recognising a consequential control on another app's screen is a word list.** Every
+  authorised app therefore asks before every tap, typing, scroll, Back and Home by default, with
+  the window's text in the approval. For an app you set to ask only before buying, sending,
+  deleting and similar, the app recognises those from English words on the control, its row and
+  its window, prices, code fields and the keyboard's send key; a control worded some other way
+  (another language, an icon with a misleading label) can run without asking. Screen actions are
+  blocked in local-only mode, because the operated app may send data off the phone. Back is
+  allowed only when the home screen app is authorised too, since it can leave the app.
 
 ## 7. Not verifiable in the build environment
 

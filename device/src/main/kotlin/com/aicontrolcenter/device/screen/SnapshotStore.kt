@@ -44,6 +44,24 @@ internal class SnapshotStore(private val clock: Clock, private val keep: Int = K
 
     fun get(id: Long): ScreenSnapshot? = synchronized(lock) { kept[id] }
 
+    /**
+     * [tree]'s visible elements as a snapshot that is neither numbered for later reference nor
+     * kept (id 0): what an assessment shows the owner and compares again before acting.
+     */
+    fun unrecorded(tree: ScreenTree, maxElements: Int): ScreenSnapshot {
+        val visible = tree.visible
+        val shown = visible.take(maxElements.coerceAtLeast(1))
+        return ScreenSnapshot(
+            id = 0,
+            packageName = tree.packageName,
+            windowTitle = tree.windowTitle,
+            elements = shown.mapIndexed { i, entry -> entry.element.copy(snapshotId = 0, number = i + 1) },
+            withheld = tree.withheld,
+            truncated = tree.truncated || visible.size > shown.size,
+            capturedAt = clock.now(),
+        )
+    }
+
     /** A recorded snapshot and the numbered element of each entry it shows. */
     class Recorded(val snapshot: ScreenSnapshot, private val numbered: Map<ScreenEntry, ScreenElement>) {
         /** [entry] as numbered in [snapshot]; null if the snapshot left it out. */

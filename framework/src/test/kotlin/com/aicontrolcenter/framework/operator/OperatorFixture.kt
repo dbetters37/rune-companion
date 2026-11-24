@@ -5,7 +5,9 @@ import com.aicontrolcenter.core.operator.OperatorApp
 import com.aicontrolcenter.core.operator.OperatorTools
 import com.aicontrolcenter.core.operator.ProtectedPackages
 import com.aicontrolcenter.core.operator.RelativePath
+import com.aicontrolcenter.core.operator.ScreenActionPolicy
 import com.aicontrolcenter.core.operator.SharedFolder
+import com.aicontrolcenter.core.settings.FrameworkSettings
 import com.aicontrolcenter.core.tools.ActionAssessment
 import com.aicontrolcenter.core.tools.Tool
 import com.aicontrolcenter.core.tools.ToolContext
@@ -55,9 +57,13 @@ internal class OperatorFixture(
 
     @Volatile var extraProtected: Set<String> = emptySet()
 
+    /** The owner's settings as the screen tools read them: phone operation and screen control on. */
+    @Volatile var settings: FrameworkSettings = FrameworkSettings(operatorEnabled = true, accessibilityOperatorEnabled = true)
+
     val dependencies = OperatorToolDependencies(
         workspace = workspace, sharedFolders = sharedFolders, folders = folderRepository.asDirectory(), media = media, apps = apps,
-        web = web, screen = screen, authorisedApps = operatorApps.asAuthorisedApps(), protectedPackages = { ProtectedPackages(OWN, extraProtected) },
+        web = web, screen = screen, authorisedApps = operatorApps.asAuthorisedApps(), settings = { settings },
+        protectedPackages = { ProtectedPackages(OWN, extraProtected) },
         shell = shell, termux = termux, clock = clock, ownPackage = OWN, limits = limits,
     )
     val tools: Map<String, Tool> = OperatorToolset.create(dependencies).associateBy { it.spec.id.value }
@@ -105,9 +111,18 @@ internal class OperatorFixture(
         return folder
     }
 
-    /** Authorises [packageName] for screen operation in both the repository the tools read and the fake gateway. */
-    suspend fun authorise(packageName: String, label: String = packageName.substringAfterLast('.').replaceFirstChar { it.uppercase() }) {
-        operatorApps.upsert(OperatorApp(packageName, label, clock.now()))
+    /**
+     * Authorises [packageName] for screen operation in both the repository the tools read and the
+     * fake gateway. Most tests here check the classification, so the default [policy] is the one
+     * that applies it; an app the owner authorises asks before every action
+     * ([ScreenActionPolicy.ASK_EVERY_ACTION]), which tests of that default pass explicitly.
+     */
+    suspend fun authorise(
+        packageName: String,
+        label: String = packageName.substringAfterLast('.').replaceFirstChar { it.uppercase() },
+        policy: ScreenActionPolicy = ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY,
+    ) {
+        operatorApps.upsert(OperatorApp(packageName, label, clock.now(), policy = policy))
         screen.authorised += packageName
     }
 

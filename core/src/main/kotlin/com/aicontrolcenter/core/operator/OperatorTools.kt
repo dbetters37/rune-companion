@@ -73,11 +73,28 @@ object OperatorTools {
         info("screen.read", C.SCREEN_READ, RiskLevel.SAFE, ToolCategory.ACCESSIBILITY),
         info("screen.wait_for", C.SCREEN_READ, RiskLevel.SAFE, ToolCategory.ACCESSIBILITY),
         info("screen.screenshot", C.SCREEN_READ, RiskLevel.MODIFYING, ToolCategory.ACCESSIBILITY, rule = NO_OVERWRITE),
-        info("screen.tap", C.SCREEN_OPERATE, RiskLevel.MODIFYING, ToolCategory.ACCESSIBILITY, rule = "CONSEQUENTIAL when ConsequentialControls.consequentialReason is not null."),
-        info("screen.type", C.SCREEN_OPERATE, RiskLevel.MODIFYING, ToolCategory.ACCESSIBILITY, rule = "CONSEQUENTIAL with submit, or on a consequential field."),
-        info("screen.scroll", C.SCREEN_OPERATE, RiskLevel.MODIFYING, ToolCategory.ACCESSIBILITY),
-        info("screen.back", C.SCREEN_OPERATE, RiskLevel.MODIFYING, ToolCategory.ACCESSIBILITY),
-        info("screen.home", C.SCREEN_OPERATE, RiskLevel.MODIFYING, ToolCategory.ACCESSIBILITY, rule = "Sets ActionAssessment.leadsTo to the launcher."),
+        // Acting on another app's screen may send data off the phone through that app (a browser's
+        // address bar, a chat), so local-only mode blocks these five; reading and screenshots stay.
+        info(
+            "screen.tap", C.SCREEN_OPERATE, RiskLevel.MODIFYING, ToolCategory.ACCESSIBILITY, sendsDataOffDevice = true,
+            rule = "CONSEQUENTIAL for an app that asks every time (ScreenActionPolicy), else when ConsequentialControls.consequentialReason is not null.",
+        ),
+        info(
+            "screen.type", C.SCREEN_OPERATE, RiskLevel.MODIFYING, ToolCategory.ACCESSIBILITY, sendsDataOffDevice = true,
+            rule = "CONSEQUENTIAL for an app that asks every time, with submit, or on a field ConsequentialControls.typingReason names.",
+        ),
+        info(
+            "screen.scroll", C.SCREEN_OPERATE, RiskLevel.MODIFYING, ToolCategory.ACCESSIBILITY, sendsDataOffDevice = true,
+            rule = "CONSEQUENTIAL for an app that asks every time, or on a target ConsequentialControls.consequentialReason names.",
+        ),
+        info(
+            "screen.back", C.SCREEN_OPERATE, RiskLevel.MODIFYING, ToolCategory.ACCESSIBILITY, sendsDataOffDevice = true,
+            rule = "Sets ActionAssessment.leadsTo to the launcher (Back may leave the app). CONSEQUENTIAL for an app that asks every time.",
+        ),
+        info(
+            "screen.home", C.SCREEN_OPERATE, RiskLevel.MODIFYING, ToolCategory.ACCESSIBILITY, sendsDataOffDevice = true,
+            rule = "Sets ActionAssessment.leadsTo to the launcher. CONSEQUENTIAL for an app that asks every time.",
+        ),
         info("scripts.run_js", C.SCRIPTS_JS, RiskLevel.MODIFYING, ToolCategory.SCRIPTS, rule = "Host functions reach the workspace only, through Workspace."),
         info("scripts.run_shell", C.SCRIPTS_SHELL, RiskLevel.CONSEQUENTIAL, ToolCategory.SCRIPTS),
         info("termux.run", C.SCRIPTS_TERMUX, RiskLevel.CONSEQUENTIAL, ToolCategory.SCRIPTS),

@@ -14,6 +14,7 @@ import com.aicontrolcenter.core.operator.OperatorCapabilities
 import com.aicontrolcenter.core.operator.OwnerGrants
 import com.aicontrolcenter.core.operator.OwnerOperatorApps
 import com.aicontrolcenter.core.operator.OwnerResult
+import com.aicontrolcenter.core.operator.ScreenActionPolicy
 import com.aicontrolcenter.core.operator.ScreenControl
 import com.aicontrolcenter.core.operator.ScreenServiceState
 import com.aicontrolcenter.core.registry.AiAppRegistry
@@ -59,7 +60,27 @@ data class OperatorAppUi(
     /** Agents can use it: its certificate was recorded. A row without one is not trusted by the operator. */
     val inEffect: Boolean,
     val agents: List<AgentAccessUi>,
+    /** How often its screen actions ask the owner. */
+    val policy: ScreenActionPolicy = ScreenActionPolicy.ASK_EVERY_ACTION,
 )
+
+/** The two ways an authorised app's screen actions can ask the owner, in the owner's words. */
+object ScreenPolicyText {
+    fun title(policy: ScreenActionPolicy): String = when (policy) {
+        ScreenActionPolicy.ASK_EVERY_ACTION -> "Ask before every action"
+        ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY -> "Ask only before buying, sending, deleting and similar"
+    }
+
+    fun description(policy: ScreenActionPolicy, app: String): String = when (policy) {
+        ScreenActionPolicy.ASK_EVERY_ACTION ->
+            "Every tap, typing, scroll, Back and Home in $app waits for your approval, and you see what $app shows at that " +
+                "moment. The safest choice, and the one every app starts with."
+        ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY ->
+            "Other actions in $app run without asking. What asks is recognised by words on the control or its screen " +
+                "(Buy, Send, Delete, OK under \"Delete 3 photos?\"…), a price, a code field or the keyboard's send key, in " +
+                "English. A control worded some other way can be missed, so choose this only where a missed one does little harm."
+    }
+}
 
 /** An installed app offered in the picker. */
 @Immutable
@@ -153,6 +174,7 @@ class ScreenControlViewModel(
                     fingerprint = app.signingCertSha256?.let { "Signing certificate fingerprint: ${fingerprint(it)}" },
                     inEffect = app.signingCertSha256 != null,
                     agents = agentAccessOf(agents, all, CapabilityConstraint.App(app.packageName), KIND, { familiesOf(it, familyOfTool) }, now),
+                    policy = app.policy,
                 )
             },
             picker = local.picker?.let { picker ->
@@ -240,6 +262,16 @@ class ScreenControlViewModel(
         }
     }
 
+    /** Sets how often [packageName]'s screen actions ask the owner. */
+    fun setPolicy(packageName: String, policy: ScreenActionPolicy) = run {
+        val app = apps.setPolicy(packageName, policy) ?: return@run "That app is not authorised any more."
+        when (policy) {
+            ScreenActionPolicy.ASK_EVERY_ACTION -> "Every action in ${app.label} asks you first now."
+            ScreenActionPolicy.ASK_CONSEQUENTIAL_ONLY ->
+                "Only actions recognised as buying, sending, deleting and similar ask you first in ${app.label} now."
+        }
+    }
+
     /** Removes every permission for the app, then takes it off the list. */
     fun withdraw(packageName: String) = run {
         if (!apps.withdraw(packageName)) return@run "That app was not authorised."
@@ -265,7 +297,7 @@ class ScreenControlViewModel(
         applyAccess(grants, agentId, CapabilityConstraint.App(packageName), KIND, level) ?: when (level) {
             AccessLevel.NONE -> "No access any more. Its permissions for this app were removed."
             AccessLevel.READ -> "May now see this app's screen."
-            AccessLevel.CHANGE -> "May now see and use this app's screen. Buying, sending, deleting and similar still ask you every time."
+            AccessLevel.CHANGE -> "May now see and use this app's screen. Its actions still ask you as set for this app."
         }
     }
 

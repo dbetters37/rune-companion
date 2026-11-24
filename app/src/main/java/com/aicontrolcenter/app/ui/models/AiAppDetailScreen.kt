@@ -174,7 +174,8 @@ fun AiAppDetailScreen(state: AiAppDetailUiState, actions: AiAppDetailActions) {
                     "service. That means reading everything the app shows, including your conversations in it, and tapping " +
                     "and typing in it as if they were you, one action at a time, with a Stop banner showing.\n\n" +
                     "What still applies: each agent also needs your permission for this app (Tools › Screen), both " +
-                    "operator switches in Settings must be on, and buying, sending, deleting and similar always ask you first. " +
+                    "operator switches in Settings must be on, and every action asks you first unless you set the app to ask " +
+                    "less in Tools › Screen control. " +
                     "Password fields and views the app marks as sensitive are never read.\n\n" +
                     "The app is checked now, so a look-alike installed later under the same name is not trusted. " +
                     "You can remove it here or in Tools › Screen at any time.",

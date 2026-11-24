@@ -25,7 +25,9 @@ import kotlinx.coroutines.launch
  * The ongoing "<agent> is operating <app>" notification, shown for as long as an agent drives
  * an app's screen, next to the device's own on-screen banner. Its one action is Stop, which
  * stops screen operation at once through the device's Stop receiver (it can only stop; Resume
- * is in the app). Tapping the notification opens the app.
+ * is in the app). Tapping the notification opens the app. On the lock screen it says only that an
+ * agent is operating an app. A notification left by a process that died mid-session is removed
+ * when the app process starts again.
  */
 internal object ScreenSessionNotifications {
     const val CHANNEL_ID = "screen_control"
@@ -48,10 +50,25 @@ internal object ScreenSessionNotifications {
         else -> "${sessions.size} agents are operating apps"
     }
 
+    /** On the lock screen: that screen control is in use, without naming the agent or the app. */
+    const val PUBLIC_TITLE = "An agent is operating an app"
+
     fun build(context: Context, sessions: List<ScreenSession>, stop: PendingIntent): Notification {
         val text = "Stop ends it at once. Agents cannot use the screen again until you resume screen control in the app."
         val lines = sessions.joinToString("\n") { "${visible(it.agentName)} is operating ${visible(it.appLabel)}" }
+        val public = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_touch)
+            .setContentTitle(PUBLIC_TITLE)
+            .setContentText("Unlock to see which. Stop ends it at once.")
+            .setOngoing(true)
+            .setSilent(true)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .addAction(R.drawable.ic_stat_stop, "Stop", stop)
+            .build()
         return NotificationCompat.Builder(context, CHANNEL_ID)
+            // Who operates which app is not shown over the lock screen.
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(public)
             .setSmallIcon(R.drawable.ic_stat_touch)
             .setContentTitle(title(sessions))
             .setContentText(text)
