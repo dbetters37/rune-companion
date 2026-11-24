@@ -39,9 +39,9 @@ import java.nio.file.LinkOption
  *    `-` or `+`; that word is the script, and the words after it are the script's arguments,
  *    whatever they look like. By rule 3 the second word is that first word.
  *  - mksh opens the script by the name as it is written, from the folder it runs in. It does
- *    not search `PATH` for it (mksh `main.c` opens `argv[i]` with `shf_open` and gives up with
- *    exit code 127 when that fails). A shell that does search `PATH` (bash) only does so when
- *    there is no such file in the folder, and rule 4 says there is one.
+ *    not search `PATH` for it (its `main.c` opens that argument as a file and gives up with
+ *    exit code 127 when that fails). A shell that does search `PATH` (bash, and POSIX allows
+ *    it) only does so when there is no such file in the folder, and rule 4 says there is one.
  *  - A shell started with a script is neither a login shell nor interactive, so it reads no
  *    profile, and `$ENV` only counts for interactive shells (and is not set). A `#!` line in the
  *    script is a comment to it.
@@ -49,10 +49,12 @@ import java.nio.file.LinkOption
  *    workspace through this app ([Workspace.runCommand]), and the file's content is compared
  *    once more before running, so the text that was shown is the text that is read.
  *
- * What was run on a real mksh (R59, Android 14 emulator, second verification): `sh - tidy.sh`
- * and `sh -xo errexit FILE` read the file from the folder the shell ran in, with a `.profile` in
- * `HOME` left unread, and `sh -l` read it. The plain `sh file` itself rests on the points above
- * and on dash and bash on the build machine, where the tests run a real shell.
+ * What was seen on a real mksh (R59, the Android 14 emulator, in the second verification's
+ * runs): after `cd sub`, `sh tidy.sh` read `sub/tidy.sh`, the file in the folder the shell
+ * stood in; `sh - tidy.sh` read `tidy.sh`; neither read the `.profile` that lay in `HOME`,
+ * and `sh -l` did. The rest stands on the points above, taken from mksh's manual and source,
+ * and on dash and bash on the build machine, where the tests run a real shell behind the tool
+ * (ShellRound4Test). It was not run on a phone in this round.
  *
  * What the script does when it runs, the scripts it starts in turn included, is not covered:
  * those are read like any other shell text and shown as a reading.

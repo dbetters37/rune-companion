@@ -166,10 +166,11 @@ do it.
   not every possible one, and the "Command:" line you approve always shows it.
   (5) For a command of the plain form `sh file`, the approval shows that file as the script the
   command runs ("Script …, all of it"), and it is the file the shell reads, by (2) with exactly
-  the text you were shown. The plain form is narrow on purpose: the word `sh`, then a file in
-  the workspace named by a plain relative path, then arguments, with single blanks between
-  them and nothing else: no quotes, `$`, `=`, `~`, `;`, `&`, `|`, `<`, `>`, `*`, braces, `..`,
-  line breaks or options of the shell, and the file is not a link.
+  the text you were shown (of a long file the first part is shown, and the approval says so).
+  What that script starts in turn is not covered. The plain form is narrow on purpose: the
+  word `sh`, then a file in the workspace named by a plain relative path, then arguments, with
+  single blanks between them and nothing else: no quotes, `$`, `=`, `~`, `;`, `&`, `|`, `<`,
+  `>`, `*`, braces, `..`, line breaks or options of the shell, and the file is not a link.
 
   For every other command, and for the scripts a script starts in turn, the app cannot know
   which files will run, and the approval says so: "This is not a plain "sh file" command, so
