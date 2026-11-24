@@ -143,6 +143,13 @@ class ShellScriptPinningTest {
             assertTrue("othing was run" in reason, "$command: $reason")
         }
         assertTrue(f.shell.runs.isEmpty())
+        // Also when the missing file was named before in a way that may be missing (an argument of cat), by the command or by a script it runs.
+        f.put("runs-gone.sh", "sh gone.sh\n")
+        for (command in listOf("cat gone.sh; sh runs-gone.sh", "sh runs-gone.sh; cat gone.sh", "ls keep; sh runs-keep.sh")) {
+            f.put("runs-keep.sh", "sh keep\n")
+            val reason = f.rejected("scripts.run_shell", "command" to command)
+            assertTrue("there is no such file in the workspace" in reason || "it is a folder" in reason, "$command: $reason")
+        }
         // Plain names still pass, also for the program files of awk and sed, and so does cd when the script is named by its full path.
         for (command in listOf("awk -f prog name.txt", "cd keep && sh ${f.root.canonicalPath}/tidy.sh", "sh -c 'echo hi'", "sh -s < tidy.sh", "cut -f 2 name.txt", "rm -f gone.txt", "ls *.txt")) {
             f.assess("scripts.run_shell", "command" to command)

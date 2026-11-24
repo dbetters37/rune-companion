@@ -355,6 +355,9 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
                     for (path in paths) {
                         val known = named[path]
                         if (known != null && (known.asScript || !name.asScript)) {
+                            // Seen before, perhaps only as a name that was allowed to be missing: the script a shell runs is not.
+                            if (name.must && !known.state.exists) throw ToolCallRejected(refusal(name.raw, "there is no such file in the workspace", runBy))
+                            if (name.must && known.state.isFolder) throw ToolCallRejected(refusal(name.raw, "it is a folder", runBy))
                             exists = exists || known.state.exists
                             // Seen before. If a shell runs it from here too, this text is tied to it as well.
                             if (name.asScript && name.shell && known.asScript) {
