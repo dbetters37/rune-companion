@@ -51,6 +51,18 @@ class PhoneOperatorLayerTest {
     }
 
     @Test
+    fun `off a phone the shell runs nothing and the start-up sweep stops nothing`() = kotlinx.coroutines.runBlocking {
+        // Robolectric is not Android's runtime: the layer's sweeper must be the one that does nothing, and with it no command runs.
+        val folder = (WorkspaceFile.resolve(layer.workspaceRoot.directory(), RelativePath.ROOT) as DocResult.Ok).value
+
+        val out = layer.shellRunner.run("echo hi > ran.txt", folder, com.aicontrolcenter.core.operator.CommandLimits())
+
+        assertIs<com.aicontrolcenter.core.operator.CommandOutcome.Unavailable>(out, "got $out")
+        assertTrue(!File(folder.file, "ran.txt").exists())
+        assertEquals(0, layer.stopShellLeftovers())
+    }
+
+    @Test
     fun `settings screens for what the owner must turn on`() {
         val own = Uri.fromParts("package", app.packageName, null)
 

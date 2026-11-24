@@ -9,6 +9,7 @@ android {
     defaultConfig {
         minSdk = 28
         consumerProguardFiles("consumer-rules.pro")
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     compileOptions {
@@ -47,4 +48,12 @@ dependencies {
     testImplementation(libs.androidx.test.ext.junit)
     testImplementation(libs.robolectric)
     testImplementation(libs.turbine)
+
+    // On a device: the shell runner against real processes (ShellLeftoversDeviceTest). :testkit is absent, as in :data:
+    // its method names with spaces cannot be dexed for devices below API 30.
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.kotlin.test)
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation("androidx.test:runner:1.7.0")
 }
