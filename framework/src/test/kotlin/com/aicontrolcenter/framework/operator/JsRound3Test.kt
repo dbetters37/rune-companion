@@ -219,9 +219,16 @@ class JsRound3Test {
     @Test
     fun `a long sort ends at the time limit`() {
         // A million random numbers in the default order: several seconds of native work before, with no script code in between.
-        ends("var a = new Array(1000000).fill(0).map(Math.random); a.sort(); 'done'")
-        ends("var a = new Array(1000000).fill(0).map(Math.random); a.toSorted(Math.atan2); 'done'")
-        assertEquals("2", result("1 + 1"))
+        // Round 4: the numbers are made by Array.from, whose steps are counted, under a limit that leaves time to make them.
+        // Made by `new Array(1000000).fill(0).map(Math.random)` (about a second of built-in work that no limit reaches, and
+        // a quarter of a gigabyte) under the 400 ms limit, a busy machine spent the limit and its two seconds of grace on
+        // the making alone, and the run was abandoned before any sorting began: the test failed whenever the whole suite
+        // ran in parallel, with or without that round's changes.
+        val roomy = JsSandbox(JsLimits(timeoutMs = 3_000))
+        val numbers = "var a = Array.from({ length: 1000000 }, Math.random);"
+        ends("$numbers a.sort(); 'done'", roomy)
+        ends("$numbers a.toSorted(Math.atan2); 'done'", roomy)
+        assertEquals("2", result("1 + 1", roomy))
     }
 
     @Test
