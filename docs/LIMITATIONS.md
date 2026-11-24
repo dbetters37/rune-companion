@@ -122,13 +122,16 @@ do it.
   named). A look at the trash waits for a change that is under way (what is in the trash folder
   then is that change's own work). While a shell command runs, nothing is called a leftover;
   the screens and tools show the listed items only, and leftovers are shown again once it has
-  ended. Emptying deletes what the trash screen showed when you confirmed: an item that came
-  into the trash after that (for example while emptying waited for a shell command) is kept,
-  and you are told so. The workspace's 2 GB count everything in it, also the trash's
-  notes (100 to 200 bytes per item, more for a very long path), and the last 4 KB are kept free
-  for those notes, so a full workspace can still move files to the trash. While the trash is
-  empty one item can always be moved there, even after a shell command filled the workspace
-  completely; the workspace is then over its limit by that note until you empty the trash.
+  ended. Emptying deletes the items the trash screen showed when you confirmed: an item that
+  came into the trash after that (for example while emptying waited for a shell command) is
+  kept, and you are told so. Leftovers cannot be told apart, so when the screen showed
+  leftovers, all that lie there when the trash is emptied are deleted, also ones that came
+  after you confirmed; when it showed none, none are. The workspace's 2 GB count everything in
+  it, also the trash's notes (100 to 200 bytes per item, more for a very long path), and the
+  last 4 KB are kept free for those notes, so a full workspace can still move files to the
+  trash. While the trash is empty one item can always be moved there, even after a shell
+  command filled the workspace completely; the workspace is then over its limit by that note
+  until you empty the trash.
 - **Replacing files.** In the workspace a file that is replaced (written over, edited, moved
   over or imported over) is kept in the workspace trash, so it can be restored; it keeps
   counting against the workspace's 2 GB until the trash is emptied. The file never leaves its
