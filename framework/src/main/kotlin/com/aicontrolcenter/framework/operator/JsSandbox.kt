@@ -265,7 +265,7 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
                 // comparator) can show more of it than the limit. So before a script is stopped for memory the heap is
                 // collected and measured again: about ten times a second at most, beyond which the number is believed.
                 if (collections++ >= FREE_COLLECTIONS + elapsed / COLLECTION_INTERVAL_NANOS) throw BudgetExceeded("The script used too much memory.")
-                System.gc()
+                collect()
                 if (tooMuchMemory(heapBase)) throw BudgetExceeded("The script used too much memory.")
             }
         }
@@ -535,7 +535,7 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
          * runs on the script's own thread, before its time starts.
          */
         private val heapBase = Runtime.getRuntime().let { runtime ->
-            System.gc()
+            collect()
             runtime.totalMemory() - runtime.freeMemory()
         }
         private val start = System.nanoTime()
@@ -568,6 +568,12 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
         const val FINISHED = 1
         const val ABANDONED = 2
         const val GRACE_MS = 2_000L
+
+        /**
+         * Collects the heap now. Through [Runtime], not `System.gc()`: Android's `System.gc()` only notes the wish and
+         * collects at the next `runFinalization`, so there it would measure the same garbage again.
+         */
+        fun collect() = Runtime.getRuntime().gc()
 
         /** What a run is told that was still inside a host function when its time was up. */
         const val WAITED_FOR_HOST = "The script waited for the workspace longer than its time limit (a shell command may be running, and " +

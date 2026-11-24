@@ -169,16 +169,22 @@ class LocalWorkspace(
 
     override fun changeCount(): Long = changeCounter.value
 
+    @Volatile private var commandRuns = false
+
+    override fun commandRunning(): Boolean = commandRuns
+
     override suspend fun <T> runCommand(unchangedSince: Long, command: suspend () -> T): CommandTurn<T> = withContext(io) {
         check(!holdsChangeLock()) { "a shell command cannot start another one while it holds the change lock" }
         mutex.withLock {
             // Under the lock: every change that was made has raised the counter, and none can be made from here on.
             if (changeCounter.value != unchangedSince) return@withLock CommandTurn.Changed
+            commandRuns = true
             changed()
             val result = try {
                 withContext(HoldsChangeLock(this@LocalWorkspace)) { command() }
             } finally {
                 // It has ended, however it ended: whatever it changed counts as a change, and the screens look again.
+                commandRuns = false
                 changed()
             }
             val used = try {

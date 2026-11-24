@@ -64,10 +64,10 @@ class WorkspaceWhileCommandRunsTest {
         folder.trash(RelativePath.of("old.txt"))
         trash.emptyTrash()
         runCurrent()
-        // Both wait: nothing was done yet, nothing failed, and the screens still show what is there.
+        // Both wait: nothing was done yet, nothing failed, the screens still show what is there, and each says why it waits.
         assertTrue(folder.uiState.value.isBusy && trash.uiState.value.isBusy)
-        assertNull(folder.uiState.value.message)
-        assertNull(trash.uiState.value.message)
+        assertEquals("A shell command is running. This is done as soon as it has ended.", folder.uiState.value.message?.text)
+        assertEquals(WAITS_FOR_COMMAND, trash.uiState.value.message?.text)
         assertEquals(listOf("notes.md", "old.txt"), folder.uiState.value.entries.map { it.name })
         assertTrue(trash.uiState.value.items.isEmpty())
 
@@ -78,8 +78,15 @@ class WorkspaceWhileCommandRunsTest {
         assertEquals(listOf("notes.md"), folder.uiState.value.entries.map { it.name })
         assertTrue("moved to the trash" in folder.uiState.value.message!!.text, folder.uiState.value.message!!.text)
         // The two went through one after the other, in the order the owner asked for them.
+        assertEquals("1 item deleted for good.", trash.uiState.value.message?.text)
         assertTrue(trash.uiState.value.items.isEmpty())
         assertTrue((ws.listTrash() as DocResult.Ok).value.isEmpty())
+
+        // With no command running, a change is made at once and nothing is said about waiting.
+        assertFalse(ws.commandRunning())
+        folder.makeFolder("Later")
+        runCurrent()
+        assertEquals("Folder “Later” created.", folder.uiState.value.message?.text)
     }
 
     @Test
@@ -89,15 +96,27 @@ class WorkspaceWhileCommandRunsTest {
 
         val hanging = backgroundScope.launch { ws.runCommand(ws.changeCount()) { awaitCancellation() } }
         runCurrent()
+        assertTrue(ws.commandRunning())
+        // Sharing changes nothing in the workspace: it does not wait, and does not say that it does.
+        folder.share(RelativePath.of("notes.md"))
+        runCurrent()
+        assertEquals("notes.md", folder.uiState.value.share?.title)
+        assertFalse(folder.uiState.value.isBusy)
+        assertNull(folder.uiState.value.message)
+        folder.shareHandled()
+
         folder.makeFolder("Later")
         runCurrent()
         assertTrue(folder.uiState.value.isBusy)
+        assertEquals(WAITS_FOR_COMMAND, folder.uiState.value.message?.text)
         assertEquals(listOf("notes.md"), folder.uiState.value.entries.map { it.name })
 
         // Stop: the call that ran the command is cancelled.
         hanging.cancelAndJoin()
         runCurrent()
+        assertFalse(ws.commandRunning())
         assertFalse(folder.uiState.value.isBusy)
+        assertEquals("Folder “Later” created.", folder.uiState.value.message?.text)
         assertEquals(listOf("Later", "notes.md"), folder.uiState.value.entries.map { it.name })
     }
 }

@@ -325,6 +325,19 @@ class Round3MeetingPointsTest {
         assertTrue(f.shell.runs.isEmpty())
     }
 
+    // ---- The length a provider accepts for a tool description (found by the shell set) and the descriptions the other sets made longer ----
+
+    @Test
+    fun `every operator tool's description fits what providers accept`() {
+        val f = OperatorFixture()
+        val long = f.tools.values.map { it.spec.id.value to it.spec.description.length }.filter { it.second > 1024 }
+        assertTrue(long.isEmpty(), "some providers refuse a tool description longer than 1024 characters: $long")
+        // The ones round 3 made longer, by name, so that a rename does not empty this check.
+        for (id in listOf("scripts.run_shell", "scripts.run_js", "workspace.replace_text", "workspace.empty_trash", "workspace.restore")) {
+            assertTrue(f.tool(id).spec.description.length in 1..1024, id)
+        }
+    }
+
     private companion object {
         const val EMPTY_ID = "1700000000001-bbbbbbbb"
         const val LOST_ID = "1700000000000-abc12345"

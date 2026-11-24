@@ -175,7 +175,7 @@ class WorkspaceViewModel(
     }
 
     /** Asks for the share sheet for [entry]: the app the owner picks gets read access to that one file. */
-    fun share(entry: RelativePath) = run {
+    fun share(entry: RelativePath) = run(changes = false) {
         when (val result = workspace.resolve(entry)) {
             is DocResult.Ok -> {
                 val file = result.value.file
@@ -230,10 +230,14 @@ class WorkspaceViewModel(
         )
     }
 
-    /** Runs one change at a time; a non-null outcome is shown as a message. */
-    private fun run(action: suspend () -> String?) {
+    /**
+     * Runs one change at a time; a non-null outcome is shown as a message. A change ([changes]) asked for while a shell
+     * command runs waits until that has ended, which can take a minute: the owner is told so at once.
+     */
+    private fun run(changes: Boolean = true, action: suspend () -> String?) {
         if (local.value.isBusy) return
-        local.update { it.copy(isBusy = true) }
+        val waits = changes && workspace.commandRunning()
+        local.update { it.copy(isBusy = true, message = if (waits) UserMessage(WAITS_FOR_COMMAND, ++messageCounter) else it.message) }
         viewModelScope.launch {
             val text = try {
                 action()
@@ -277,6 +281,9 @@ class WorkspaceViewModel(
 }
 
 /** What went wrong, for the owner. */
+/** Said when the owner asks for a change in the Workspace screens while a shell command they approved is running. */
+internal const val WAITS_FOR_COMMAND = "A shell command is running. This is done as soon as it has ended."
+
 internal fun problemOf(result: DocResult<*>): String = when (result) {
     is DocResult.Ok -> "Done."
     is DocResult.NotFound -> "“${result.path.substringAfterLast('/')}” is no longer there."
@@ -376,7 +383,7 @@ class WorkspaceFileViewModel(
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), WorkspaceFileUiState(path = path, name = path.name))
 
-    fun share() = act {
+    fun share() = act(changes = false) {
         when (val result = workspace.resolve(path)) {
             is DocResult.Ok -> if (result.value.file.isFile) {
                 local.update { it.copy(share = ShareRequest(result.value.file, mimeTypeOf(path.name), path.name)) }
@@ -403,9 +410,11 @@ class WorkspaceFileViewModel(
 
     fun messageShown() = local.update { it.copy(message = null) }
 
-    private fun act(action: suspend () -> String?) {
+    /** As the folder's: a change asked for while a shell command runs waits for it, and the owner is told so at once. */
+    private fun act(changes: Boolean = true, action: suspend () -> String?) {
         if (local.value.isBusy) return
-        local.update { it.copy(isBusy = true) }
+        val waits = changes && workspace.commandRunning()
+        local.update { it.copy(isBusy = true, message = if (waits) UserMessage(WAITS_FOR_COMMAND, ++messageCounter) else it.message) }
         viewModelScope.launch {
             val text = try {
                 action()
@@ -559,9 +568,11 @@ class WorkspaceTrashViewModel(
         )
     }
 
+    /** Restoring and emptying are changes: asked for while a shell command runs, they wait for it, and the owner is told so at once. */
     private fun run(action: suspend () -> String) {
         if (local.value.isBusy) return
-        local.update { it.copy(isBusy = true) }
+        val waits = workspace.commandRunning()
+        local.update { it.copy(isBusy = true, message = if (waits) UserMessage(WAITS_FOR_COMMAND, ++messageCounter) else it.message) }
         viewModelScope.launch {
             val text = try {
                 action()

@@ -149,9 +149,9 @@ do it.
   the agent has to ask again. The same holds when the app puts the trash right after it was
   stopped in the middle of a change (see "The workspace trash"). And while a command runs
   (about a minute at most), what you do in the Workspace screens waits for it to end: the
-  buttons are switched off meanwhile, and the screen does not say what it waits for. A script
-  (JavaScript) that writes to the workspace waits too, and is stopped without having written
-  if its own time limit passes first. Sharing a file does not wait.
+  screen says that a shell command is running, and its buttons are switched off meanwhile. A
+  script (JavaScript) that writes to the workspace waits too, and is stopped without having
+  written if its own time limit passes first. Sharing a file does not wait.
   (3) Everything the command starts is stopped when it ends, at its time limit or when it is
   stopped: its process group is killed, and then every process left that runs under this app's
   user id and is not the app itself, also work sent to the background with `&`, `nohup`,

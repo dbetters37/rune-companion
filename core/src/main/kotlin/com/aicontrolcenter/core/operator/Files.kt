@@ -249,6 +249,12 @@ interface Workspace {
      */
     suspend fun <T> runCommand(unchangedSince: Long, command: suspend () -> T): CommandTurn<T>
 
+    /**
+     * True while a shell command runs inside [runCommand], so a change asked for now waits until
+     * it has ended. Only for telling the owner why a screen waits; nothing is decided on it.
+     */
+    fun commandRunning(): Boolean = false
+
     /** Constants. */
     companion object {
         /** The trash's folder name at the workspace root. */
