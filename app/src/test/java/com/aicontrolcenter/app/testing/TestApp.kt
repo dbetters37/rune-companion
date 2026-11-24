@@ -125,6 +125,9 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
 
     /** How often the start-up sweep ran. */
     val shellSweeps = java.util.concurrent.atomic.AtomicInteger()
+
+    /** Called during the start-up sweep, so a test can see what the steps after it have not done yet. */
+    @Volatile var duringShellSweep: (() -> Unit)? = null
     val termux = FakeTermuxRunner()
     val protectedPackages = ProtectedPackages(ownPackage = OWN_PACKAGE)
 
@@ -171,6 +174,7 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
             shell = shell,
             stopShellLeftovers = {
                 shellSweeps.incrementAndGet()
+                duringShellSweep?.invoke()
                 shellLeftovers.also { shellLeftovers = 0 }
             },
             termux = termux,

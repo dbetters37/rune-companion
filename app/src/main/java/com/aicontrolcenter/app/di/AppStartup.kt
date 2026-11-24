@@ -33,7 +33,8 @@ import kotlinx.coroutines.launch
  * the others, because a broken package scan must never prevent the owner from seeing agents.
  *
  * The first step stops what a shell command left running if the app died under it (a command's
- * processes are otherwise stopped when it ends).
+ * processes are otherwise stopped when it ends). Right after it, the workspace trash is put right
+ * (in a coroutine of its own) if the app was stopped in the middle of a change to it.
  *
  * Memory upkeep ([MemoryService.maintain]: deleting expired short-term memories and computing
  * missing search vectors) runs once after the start-up steps, again whenever local-only mode is
@@ -63,6 +64,11 @@ class AppStartup(
     private val closeOverdueRequests: (suspend () -> Unit)? = null,
     /** Stops what a shell command left running when the app died under it; returns how many processes. Null where there is no shell. */
     private val stopShellLeftovers: (suspend () -> Int)? = null,
+    /**
+     * Puts the workspace trash right after the app was stopped in the middle of a change
+     * ([com.aicontrolcenter.core.operator.Workspace.tidyTrash]). Null where there is no workspace.
+     */
+    private val tidyWorkspaceTrash: (suspend () -> Unit)? = null,
 ) {
     private var initialJob: Job? = null
     private var foregroundRefresh: Job? = null
@@ -96,6 +102,11 @@ class AppStartup(
                     )
                 }
             }
+            // Next, as the app starts and before agents are set up: what a change left in the workspace trash when the app was stopped in the middle
+            // of it is put right, so that no tool's call has to (a call that is only being assessed changes nothing). In a
+            // coroutine of its own, as file work: the steps below need none of it, and an agent's look or change that comes
+            // while it runs waits for it (it holds the workspace's change lock).
+            tidyWorkspaceTrash?.let { tidy -> scope.launch { step("Could not put the workspace trash right") { tidy() } } }
             // Then, so the simulator is there for the starter team and for "Try with the simulator".
             step("Could not register the built-in simulator") { providerManager.ensureBuiltIns() }
             step("Could not create the starter team") { agentManager.ensureDefaults() }

@@ -5,6 +5,7 @@ import com.aicontrolcenter.core.operator.DocResult
 import com.aicontrolcenter.core.operator.ExactText
 import com.aicontrolcenter.core.operator.PreviewText
 import com.aicontrolcenter.core.operator.TrashItem
+import com.aicontrolcenter.core.operator.Workspace
 import com.aicontrolcenter.core.tools.ActionAssessment
 import com.aicontrolcenter.core.tools.ToolOutcome
 import com.aicontrolcenter.framework.operator.OperatorFixture.Companion.json
@@ -29,7 +30,9 @@ import kotlin.test.assertTrue
  *  - READER's refusal of a command asked for while another one runs (R5) with STATE's rules for
  *    the trash while the change lock is held (W2: nothing is called a leftover; W3: the tidy
  *    after a start waits) and with the change counter (W1): the tidy on a first look is a change
- *    like any other, so a command that waits for its answer is not run after it.
+ *    like any other, so a command that waits for its answer is not run after it. Since
+ *    corrective pass 4b (F3) that first look is the owner's ([Workspace.tidyTrash]); an agent's
+ *    look tidies nothing.
  *  - READER's approval wording (R1: "Script …, all of it" for the plain form only, "Seems to run"
  *    and the "cannot be sure" line for everything else) with JS's further quote look-alikes
  *    (J2) inside those lines.
@@ -83,16 +86,23 @@ class Round4MeetingPointsTest {
     // ---- R5 with W1, W2 and W3 ----
 
     @Test
-    fun `the first look at the trash after a start counts as a change - a command that waits for its answer is not run`() = runBlocking<Unit> {
+    fun `the owner's first look at the trash after a start counts as a change - a command that waits for its answer is not run`() = runBlocking<Unit> {
         val f = OperatorFixture()
         leaveLeftovers(f)
         val tool = f.tool("scripts.run_shell")
         val args = json("command" to "ls -la .trash")
 
-        // The owner is asked; before the answer, the trash is looked at for the first time since the start (W3): the
-        // tidy lists the lost content again and clears what was staged. That changed files the command could read.
+        // The owner is asked; before the answer, agents look at the trash. That changes nothing (4b, F3: an assessment
+        // has no side effects, and an agent's look does not tidy).
         val asked = tool.assess(args, f.context)
         val count = f.workspace.changeCount()
+        f.ok("workspace.restore")
+        f.assess("workspace.empty_trash")
+        assertTrue(f.trash().isEmpty())
+        assertEquals(count, f.workspace.changeCount())
+        // Then the owner opens the trash screen, the first look since the start that tidies (W3): the tidy lists the
+        // lost content again and clears what was staged. That changed files the command could read.
+        f.workspace.tidyTrash()
         assertEquals(listOf(LOST_ID), f.trash().map { it.id })
         assertFalse(f.file(".trash/.staging/half-written").exists())
         assertEquals(count + 1, f.workspace.changeCount(), "the tidy on a first look is counted when it has ended (W1)")
@@ -102,6 +112,7 @@ class Round4MeetingPointsTest {
 
         // Asked anew, as the refusal says, it runs: a second look tidies nothing and counts for nothing.
         val again = tool.assess(args, f.context)
+        f.workspace.tidyTrash()
         assertEquals(listOf(LOST_ID), f.trash().map { it.id })
         assertNull(f.workspace.trashLeftovers())
         assertEquals(count + 1, f.workspace.changeCount())
@@ -142,6 +153,7 @@ class Round4MeetingPointsTest {
             assertTrue(withTimeout(5_000) { f.trash() }.isEmpty())
             assertNull(withTimeout(5_000) { f.workspace.trashLeftovers() })
             assertEquals("The workspace trash lists no items.", withTimeout(5_000) { f.ok("workspace.restore") }.content)
+            withTimeout(5_000) { f.workspace.tidyTrash() }
             assertTrue(f.file(".trash/.staging/half-written").exists())
             assertFalse(f.file(".trash/$LOST_ID.json").exists())
             // And the refusal stays the same however often it is asked meanwhile: no look made the command "not running".
@@ -152,12 +164,13 @@ class Round4MeetingPointsTest {
         assertTrue(withTimeout(20_000) { running.command.await() }.ok)
         assertFalse(f.workspace.commandRunning())
 
-        // The second agent asks again, as it was told. Before the owner answers, the trash is looked at for the first
-        // time since the start (a screen refreshes when the command has ended): now the tidy runs, and it is a change.
+        // The second agent asks again, as it was told. Before the owner answers, the owner's trash screen looks for the
+        // first time since the start (it refreshes when the command has ended): now the tidy runs, and it is a change.
         val tool = f.tool("scripts.run_shell")
         val second = json("command" to "echo second")
         val asked = tool.assess(second, f.context)
         val count = f.workspace.changeCount()
+        f.workspace.tidyTrash()
         assertEquals(listOf(LOST_ID), f.trash().map { it.id })
         assertNull(f.workspace.trashLeftovers(), "what could be listed again is no leftover")
         assertFalse(f.file(".trash/.staging/half-written").exists())

@@ -77,10 +77,11 @@ class WorkspaceWhileCommandRunsTest {
         assertFalse(folder.uiState.value.isBusy || trash.uiState.value.isBusy)
         assertEquals(listOf("notes.md"), folder.uiState.value.entries.map { it.name })
         assertTrue("moved to the trash" in folder.uiState.value.message!!.text, folder.uiState.value.message!!.text)
-        // The two went through one after the other, in the order the owner asked for them.
-        assertEquals("1 item deleted for good.", trash.uiState.value.message?.text)
-        assertTrue(trash.uiState.value.items.isEmpty())
-        assertTrue((ws.listTrash() as DocResult.Ok).value.isEmpty())
+        // The two went through one after the other, in the order the owner asked for them. Emptying deletes what the
+        // trash screen showed when it was asked for, which was nothing: the file moved there meanwhile is kept (4b, F5).
+        assertEquals("Nothing was deleted. 1 item that arrived meanwhile was kept.", trash.uiState.value.message?.text)
+        assertEquals(listOf("old.txt"), trash.uiState.value.items.map { it.name })
+        assertEquals(1, (ws.listTrash() as DocResult.Ok).value.size)
 
         // With no command running, a change is made at once and nothing is said about waiting.
         assertFalse(ws.commandRunning())

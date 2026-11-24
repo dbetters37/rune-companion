@@ -494,7 +494,11 @@ class WorkspaceAtomicReplaceTest {
         File(root, ".trash/stray.bin").writeText("stray")
         File(root, ".trash/.staging/w-killed").writeText("staged!")
         val reopened = workspace(root, links = true)
-        // Round 4 (W3): the first look tidies before it counts, so the staged file of the killed write is not among the leftovers.
+        // A look tidies nothing (4b, F3): before the tidy, the staged file of the killed write is among the leftovers.
+        assertEquals(4L + 2 + 5 + 7, reopened.trashLeftovers())
+        assertTrue(File(root, ".trash/.staging/w-killed").exists())
+        // The app tidies when it starts (and the owner's trash screen before its first look), so it is not among them then.
+        reopened.tidyTrash()
         assertEquals(4L + 2 + 5, reopened.trashLeftovers())
         assertFalse(File(root, ".trash/.staging/w-killed").exists())
         ok(reopened.makeFolder(RelativePath.of("after-restart")))

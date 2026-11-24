@@ -4,6 +4,7 @@ import com.aicontrolcenter.app.testing.MainDispatcherRule
 import com.aicontrolcenter.app.testing.TestApp
 import com.aicontrolcenter.app.testing.activeIn
 import com.aicontrolcenter.core.activity.ActivityRecorder
+import com.aicontrolcenter.core.operator.CommandTurn
 import com.aicontrolcenter.core.operator.DocResult
 import com.aicontrolcenter.core.operator.RelativePath
 import com.aicontrolcenter.framework.operator.LocalWorkspace
@@ -12,7 +13,11 @@ import com.aicontrolcenter.testkit.FakeClock
 import com.aicontrolcenter.testkit.FakeWorkspaceRoot
 import com.aicontrolcenter.testkit.InMemoryActivityLog
 import com.aicontrolcenter.testkit.SequentialIdGenerator
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Rule
 import org.junit.Test
@@ -31,6 +36,7 @@ import kotlin.test.assertTrue
  * The workspace file manager's view models over the real workspace service (the one the tools
  * use), on a temporary folder, with file work on the test's own thread.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class WorkspaceViewModelsTest {
     @get:Rule val mainRule = MainDispatcherRule()
 
@@ -338,5 +344,77 @@ class WorkspaceViewModelsTest {
         assertEquals("What was left in the trash was deleted for good.", vm.uiState.value.message?.text)
         assertFalse(File(root, ".trash/1700000000000-two").exists())
         assertTrue(log.all.last().detail.startsWith("Leftovers of an interrupted change ("), log.all.last().detail)
+    }
+
+    @Test
+    fun `F2 - something without a size under the trash folder is shown and can be emptied, and no size is named`() = runTest(mainRule.dispatcher) {
+        // The verifier's state: an approved shell command left an empty file under the trash folder and filled the workspace past its limit.
+        val root = Files.createTempDirectory("aicc-trash-ui").toFile()
+        File(root, "report.txt").writeText("r".repeat(20_000))
+        File(root, "notes.txt").writeText("n".repeat(20_000))
+        File(root, ".trash").mkdirs()
+        File(root, ".trash/x").writeText("")
+        File(root, "filled-by-the-command.bin").writeText("z".repeat(70_000))
+        val ws = LocalWorkspace(FakeWorkspaceRoot(root), clock, WorkspaceLimits(maxFileBytes = 50_000, maxTotalBytes = 100_000), io = EmptyCoroutineContext)
+        val browser = folder(ws)
+        val vm = trash(ws)
+
+        browser.trash(RelativePath.of("notes.txt"))
+        assertTrue("Empty the trash first." in browser.uiState.value.message!!.text, browser.uiState.value.message!!.text)
+        assertTrue(File(root, "notes.txt").exists())
+
+        // Told to empty the trash first, the owner finds that offered: the size rule and the screens use one test.
+        assertTrue(browser.uiState.value.trashHasLeftovers, "the folder screen's trash button does not say \"empty\"")
+        val state = vm.uiState.value
+        assertTrue(state.items.isEmpty())
+        assertEquals(0L, state.leftoverBytes, "it is there, without a size")
+        assertTrue(state.canEmpty, "\"Empty the trash\" is offered")
+        assertEquals("The leftovers of an interrupted change are deleted for good. This cannot be undone.", state.emptyingDeletes)
+
+        vm.emptyTrash()
+        assertEquals("What was left in the trash was deleted for good.", vm.uiState.value.message?.text)
+        assertEquals("Leftovers of an interrupted change deleted for good, at your request.", log.all.last().detail)
+        assertFalse(File(root, ".trash/x").exists())
+        assertNull(vm.uiState.value.leftoverBytes)
+        assertFalse(vm.uiState.value.canEmpty || browser.uiState.value.trashHasLeftovers)
+
+        // While the trash is empty one item can always be moved there, as the app now shows it.
+        browser.trash(RelativePath.of("notes.txt"))
+        assertEquals("“notes.txt” moved to the trash. You can restore it from there.", browser.uiState.value.message?.text)
+    }
+
+    @Test
+    fun `F5 - emptying the trash deletes what the owner was shown - an item that arrived meanwhile is kept, and the message says so`() = runTest(mainRule.dispatcher) {
+        val ws = workspace()
+        ws.put("old.txt", "old")
+        ws.put("contract.txt", "the owner's signed contract")
+        assertTrue(ws.trash(RelativePath.of("old.txt")) is DocResult.Ok)
+        val vm = trash(ws)
+        // A shell command the owner approved is running, and an agent's move to the trash (which needs no approval,
+        // because it can be undone) waits for it.
+        val release = CompletableDeferred<Unit>()
+        val command = backgroundScope.async { ws.runCommand(ws.changeCount()) { release.await() } }
+        runCurrent()
+        val agent = backgroundScope.async { ws.trash(RelativePath.of("contract.txt")) }
+        runCurrent()
+
+        // The owner opens the trash, reads the confirmation and confirms.
+        assertEquals(listOf("old.txt"), vm.uiState.value.items.map { it.name })
+        assertEquals("1 item is deleted for good. This cannot be undone.", vm.uiState.value.emptyingDeletes)
+        vm.emptyTrash()
+        runCurrent()
+        assertEquals(WAITS_FOR_COMMAND, vm.uiState.value.message?.text)
+
+        release.complete(Unit)
+        runCurrent()
+        assertTrue(command.await() is CommandTurn.Ran)
+        assertTrue(agent.await() is DocResult.Ok)
+
+        // Only what was confirmed is gone. The file the owner never saw in the trash can still be restored.
+        assertEquals("1 item deleted for good. 1 item that arrived meanwhile was kept.", vm.uiState.value.message?.text)
+        assertEquals(listOf("contract.txt"), vm.uiState.value.items.map { it.name })
+        assertEquals("1 item deleted for good, at your request.", log.all.last().detail)
+        vm.restore(vm.uiState.value.items.single().id)
+        assertEquals("the owner's signed contract", (ws.read(RelativePath.of("contract.txt"), 0, 100) as DocResult.Ok).value.bytes.decodeToString())
     }
 }
