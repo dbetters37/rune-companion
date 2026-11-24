@@ -238,7 +238,7 @@ class WorkspaceViewModelsTest {
         ws.put("after-restart.txt", "x")
         val item = vm.uiState.value.items.single()
         assertEquals("report.txt", item.name)
-        assertTrue(item.detail.startsWith("Found without its record, so its old place is not known · trashed"), item.detail)
+        assertTrue(item.detail.startsWith("Old place not known, so it is restored to the top of the workspace · trashed"), item.detail)
         assertEquals(6L, vm.uiState.value.leftoverBytes)
         assertEquals(1, browser.uiState.value.trashCount)
 

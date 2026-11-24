@@ -550,8 +550,8 @@ class WorkspaceTrashViewModel(
             id = item.id,
             name = item.originalPath.substringAfterLast('/'),
             detail = listOfNotNull(
-                // An item the workspace found in the trash without its record: restoring puts it at the top of the workspace.
-                if (item.recovered) "Found without its record, so its old place is not known" else "From " + if (from.isEmpty()) "the workspace" else from,
+                // An item the workspace found in the trash without its record: where it was is not known.
+                if (item.recovered) "Old place not known, so it is restored to the top of the workspace" else "From " + if (from.isEmpty()) "the workspace" else from,
                 "trashed ${formatCompactTimestamp(item.trashedAt, now, zone)}",
                 item.sizeBytes?.let(::formatBytes),
             ).joinToString(" · "),

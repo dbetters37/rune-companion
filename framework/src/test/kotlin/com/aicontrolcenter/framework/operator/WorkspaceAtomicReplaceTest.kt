@@ -4,6 +4,7 @@ import com.aicontrolcenter.core.operator.DocResult
 import com.aicontrolcenter.core.operator.RelativePath
 import com.aicontrolcenter.testkit.FakeClock
 import com.aicontrolcenter.testkit.FakeWorkspaceRoot
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import java.io.ByteArrayInputStream
@@ -128,11 +129,20 @@ class WorkspaceAtomicReplaceTest {
                 ws.beforeStep = null
                 killed += "nothing: it finished" to snapshot(root)
                 assertTrue(killed.size >= 5, "$way: the steps were seen: ${killed.map { it.first }}")
+                if (!links) {
+                    // A copy arrives in its holder whole: it is made next to the staged files and moved in as one step.
+                    val beforeMove = killed.firstOrNull { it.first == "move the copy into the holder" }?.second
+                    assertTrue(beforeMove != null, "$way: the copy is moved into the holder in a step of its own: ${killed.map { it.first }}")
+                    val holders = File(beforeMove, ".trash").listFiles().orEmpty().filter { it.isDirectory && it.name != ".staging" }
+                    assertTrue(holders.size == 1 && holders.single().list().orEmpty().isEmpty(), "$way: the holder is still empty while the copy is made")
+                    assertEquals(version(0), File(beforeMove, ".trash/.staging").listFiles().orEmpty().single { it.name.startsWith("k-") }.readText(), way)
+                }
 
                 for ((step, dir) in killed) {
                     val where = "$way, links=$links, killed before \"$step\""
                     val file = File(dir, live.value)
                     assertTrue(file.isFile, "$where: the file is gone")
+                    assertNoContentWithoutRecord(dir, where)
                     val content = file.readText()
                     assertTrue(content == version(0) || content == version(1), "$where: the file holds neither version")
 
@@ -248,6 +258,15 @@ class WorkspaceAtomicReplaceTest {
     /** What is directly under the trash folder, apart from the staging folder. */
     private fun trashEntries(dir: File): Set<String> = File(dir, ".trash").list().orEmpty().toSet() - ".staging"
 
+    /**
+     * The order the trash keeps: the record is in place before anything goes into its holder. Looked at in [dir] as a kill
+     * left it, before the workspace tidied anything: no holder has content without its record.
+     */
+    private fun assertNoContentWithoutRecord(dir: File, where: String) {
+        val holders = File(dir, ".trash").listFiles().orEmpty().filter { it.isDirectory && it.name != ".staging" && it.list().orEmpty().isNotEmpty() }
+        for (holder in holders) assertTrue(File(dir, ".trash/${holder.name}.json").isFile, "$where: the holder ${holder.name} has content (${holder.list()?.toList()}) but no record")
+    }
+
     @Test
     fun `W1 - killed at any step of an explicit trash, the item is in its place or in the trash with its record, never neither`() = runBlocking<Unit> {
         for (folder in listOf(false, true)) {
@@ -268,6 +287,7 @@ class WorkspaceAtomicReplaceTest {
 
             for ((step, dir) in killed) {
                 val where = "trash of a ${if (folder) "folder" else "file"}, killed before \"$step\""
+                assertNoContentWithoutRecord(dir, where)
                 val reopened = workspace(dir, links = true)
                 fun inPlace() = if (folder) File(dir, "doc/old/a.txt").isFile && File(dir, "doc/old/sub/b.txt").isFile else File(dir, live.value).isFile
                 suspend fun listed() = ok(reopened.listTrash()).filter { it.originalPath == path.value }
@@ -433,6 +453,18 @@ class WorkspaceAtomicReplaceTest {
         assertEquals(40_000L, File(root, "report.txt").length(), "the file itself is untouched")
         ok(ws.write(RelativePath.of("second.bin"), ByteArray(40_000), overwrite = false))
 
+        // A second name that is not in the workspace is no reason to drop the trash's name: that file is listed again.
+        val elsewhere = newRoot()
+        val outside = Files.createTempDirectory("aicc-outside").toFile()
+        File(elsewhere, ".trash/1700000000000-abc12345").mkdirs()
+        File(elsewhere, ".trash/1700000000000-abc12345/report.txt").writeText("only in the trash, as far as the workspace goes")
+        Files.createLink(File(outside, "report.txt").toPath(), File(elsewhere, ".trash/1700000000000-abc12345/report.txt").toPath())
+        val other = LocalWorkspace(FakeWorkspaceRoot(elsewhere), clock, limits)
+        ok(other.makeFolder(RelativePath.of("after-restart")))
+        assertEquals(listOf("report.txt"), ok(other.listTrash()).map { it.originalPath })
+        ok(other.restore("1700000000000-abc12345"))
+        assertEquals("only in the trash, as far as the workspace goes", File(elsewhere, "report.txt").readText())
+
         // Where links are refused (a phone) the holder is a copy of its own: that is content, so it is listed, not deleted.
         val copied = newRoot()
         File(copied, "report.txt").writeBytes(ByteArray(40_000) { 'a'.code.toByte() })
@@ -476,6 +508,33 @@ class WorkspaceAtomicReplaceTest {
         assertEquals(emptySet(), trashEntries(root))
         assertNull(reopened.trashLeftovers())
         assertEquals("kept", File(root, "kept.txt").readText())
+
+        // A ".staging" that is not a folder (only a shell command could make one) blocks every write; emptying the trash clears it too.
+        File(root, ".trash/.staging").deleteRecursively()
+        File(root, ".trash/.staging").writeText("not a folder")
+        assertIs<DocResult.Failed>(reopened.write(RelativePath.of("blocked.txt"), "x".toByteArray(), overwrite = false))
+        assertEquals(12L, reopened.trashLeftovers())
+        assertEquals(0, ok(reopened.emptyTrash(null)))
+        ok(reopened.write(RelativePath.of("works.txt"), "x".toByteArray(), overwrite = false))
+    }
+
+    @Test
+    fun `W1 - what the tidy after a start changed is announced as a change, also when the change it ran before fails`() = runBlocking<Unit> {
+        val root = newRoot()
+        File(root, ".trash/1700000000000-abc12345").mkdirs()
+        File(root, ".trash/1700000000000-abc12345/report.txt").writeText("x")
+        val ws = workspace(root, links = true)
+        val before = ws.changes.first()
+        // The first change after the start fails (nothing is at that path), yet the trash now lists the holder again.
+        assertIs<DocResult.NotFound>(ws.trash(RelativePath.of("missing.txt")))
+        assertEquals(1, ok(ws.listTrash()).size)
+        assertTrue(ws.changes.first() > before, "the screens are told that the trash changed")
+
+        // With nothing to tidy, a change that fails announces nothing.
+        val clean = workspace(newRoot(), links = true)
+        val quiet = clean.changes.first()
+        assertIs<DocResult.NotFound>(clean.trash(RelativePath.of("missing.txt")))
+        assertEquals(quiet, clean.changes.first())
     }
 
     /** A copy of [root] that keeps hard links as hard links: the directory as it would be found after a kill. */

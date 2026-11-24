@@ -42,7 +42,7 @@ import kotlin.coroutines.CoroutineContext
 data class WorkspaceLimits(
     /** Largest single file written, appended to or imported. */
     val maxFileBytes: Long = 50L * 1024 * 1024,
-    /** All files together, the trash included. */
+    /** All files together, the trash and its records included. */
     val maxTotalBytes: Long = 2L * 1024 * 1024 * 1024,
     /** Largest file [Workspace.replaceText] edits (it is read into memory). */
     val maxTextEditBytes: Long = 4L * 1024 * 1024,
@@ -101,7 +101,8 @@ data class WorkspaceLimits(
  * checks that it fits; a change that adds content also leaves [WorkspaceLimits.trashRecordRoomBytes]
  * free. So no change through this class ends over the limit. The one exception keeps the way
  * out open: with nothing in the trash, one item can always be trashed, also when a shell command
- * filled the workspace past the room kept for records.
+ * filled the workspace past the room kept for records. (A record given back after a start,
+ * [recordAgain], is written in any case; that needs a kill and a workspace full to the last bytes.)
  *
  * Gateways that create workspace files themselves (media and folder copies, screenshots) do so
  * through [receive], under the same lock and limits; after a shell command, [changedOutside]
@@ -372,7 +373,7 @@ class LocalWorkspace(
             // not list again, anything a shell command put there, and whatever was staged (changes are serialised, so
             // nothing is being staged right now). The owner asked for the whole trash to go.
             Files.newDirectoryStream(trash).use { stream -> stream.toList() }
-                .filter { it.fileName.toString() != STAGING }.forEach { deleteTree(it) }
+                .filter { it.fileName.toString() != STAGING || !Files.isDirectory(it, NOFOLLOW) }.forEach { deleteTree(it) }
             clearStaging()
         }
         DocResult.Ok(deleted)
@@ -764,28 +765,34 @@ class LocalWorkspace(
     /**
      * Once after a start, before the first change: puts right what a change that was interrupted
      * (the app was killed) left behind. Staged files go, and every trash id is looked at
-     * ([tidyItem]). Content is never deleted here.
+     * ([tidyItem]). Content is never deleted here. What it changes is a change like any other:
+     * it is announced, whether or not the change it runs before succeeds.
      */
     private fun tidyOnce() {
         if (tidied) return
         tidied = true
+        var tidiedSomething = false
         try {
-            clearStaging()
+            tidiedSomething = clearStaging()
             val trash = trashDir()
             if (!Files.isDirectory(trash, NOFOLLOW)) return
             val ids = Files.newDirectoryStream(trash).use { stream -> stream.map { it.fileName.toString().removeSuffix(".json") } }
                 .filter { TRASH_ID.matches(it) }.toSortedSet()
             for (id in ids) {
                 try {
-                    tidyItem(id)
+                    if (tidyItem(id)) tidiedSomething = true
                 } catch (_: IOException) {
-                    // Best effort, item by item; what stays is cleared by emptying the trash.
+                    // Best effort, item by item; what stays is cleared by emptying the trash. It may have changed something first.
+                    tidiedSomething = true
                 } catch (_: RuntimeException) {
+                    tidiedSomething = true
                 }
             }
         } catch (_: IOException) {
             // Tidying is best effort; emptying the trash clears the same things.
         } catch (_: RuntimeException) {
+        } finally {
+            if (tidiedSomething) changed()
         }
     }
 
@@ -798,23 +805,26 @@ class LocalWorkspace(
      *   (a replace that stopped before the new file took its place): dropped, it is no version
      *   of its own. Only a kept file that still has a second name can be one.
      * - Content without a usable record: [recordAgain].
+     *
+     * Returns whether anything was changed.
      */
-    private fun tidyItem(id: String) {
+    private fun tidyItem(id: String): Boolean {
         val holder = trashDir().resolve(id)
         val record = trashDir().resolve("$id.json")
-        if (Files.exists(holder, NOFOLLOW) && !Files.isDirectory(holder, NOFOLLOW)) return
+        if (Files.exists(holder, NOFOLLOW) && !Files.isDirectory(holder, NOFOLLOW)) return false
         val content = if (Files.isDirectory(holder, NOFOLLOW)) Files.newDirectoryStream(holder).use { it.toList() } else emptyList()
         if (content.isEmpty()) {
-            if (Files.isRegularFile(record, NOFOLLOW)) Files.deleteIfExists(record)
-            Files.deleteIfExists(holder)
-            return
+            val hadRecord = Files.isRegularFile(record, NOFOLLOW) && Files.deleteIfExists(record)
+            return Files.deleteIfExists(holder) || hadRecord
         }
         val item = trashItem(id) ?: return recordAgain(id, holder, record, content)
-        val kept = content.singleOrNull() ?: return
-        if (!Files.isRegularFile(kept, NOFOLLOW) || (nameCount(kept) ?: 1) < 2) return
-        val original = (RelativePath.parse(item.originalPath) as? RelativePath.Check.Valid)?.path ?: return
-        val live = (check(original) as? DocResult.Ok)?.value?.file?.toPath() ?: return
-        if (kept.fileName.toString() == original.name && Files.isRegularFile(live, NOFOLLOW) && Files.isSameFile(live, kept)) discardKept(item)
+        val kept = content.singleOrNull() ?: return false
+        if (!Files.isRegularFile(kept, NOFOLLOW) || (nameCount(kept) ?: 1) < 2) return false
+        val original = (RelativePath.parse(item.originalPath) as? RelativePath.Check.Valid)?.path ?: return false
+        val live = (check(original) as? DocResult.Ok)?.value?.file?.toPath() ?: return false
+        if (kept.fileName.toString() != original.name || !Files.isRegularFile(live, NOFOLLOW) || !Files.isSameFile(live, kept)) return false
+        discardKept(item)
+        return true
     }
 
     /**
@@ -822,38 +832,64 @@ class LocalWorkspace(
      * version of the app was killed in (it wrote the record last), or a record that was damaged.
      * The content is kept and gets a record again, so the trash lists it and it can be restored.
      * Where it was is not known any more, so the record names the top of the workspace and says
-     * so ([TrashItem.recovered]). The exception: a file that has a second name elsewhere is no
-     * content of its own (an interrupted replace linked the live file here); only that name is
-     * removed. What cannot be given a record (several entries, a link, a name the sandbox
-     * refuses, no room for the record) stays as it is, for the owner to clear with the trash.
+     * so ([TrashItem.recovered]). The record is written whatever room is left: a file that can
+     * be restored matters more than the size limit kept to the last 150 bytes. The exception: a
+     * file that is only a second name of a file in the workspace is no content of its own (an
+     * interrupted replace linked the live file here); only that name is removed, the file stays.
+     * What cannot be given a record (several entries, a link, a name the sandbox refuses) stays
+     * as it is, for the owner to clear with the trash. Returns whether anything was changed.
      */
-    private fun recordAgain(id: String, holder: Path, record: Path, content: List<Path>) {
-        val entry = content.singleOrNull() ?: return
+    private fun recordAgain(id: String, holder: Path, record: Path, content: List<Path>): Boolean {
+        val entry = content.singleOrNull() ?: return false
         val name = entry.fileName.toString()
-        val path = childPath(RelativePath.ROOT, name)?.takeIf { name != Workspace.TRASH_FOLDER } ?: return
+        val path = childPath(RelativePath.ROOT, name)?.takeIf { name != Workspace.TRASH_FOLDER } ?: return false
         val attrs = Files.readAttributes(entry, BasicFileAttributes::class.java, NOFOLLOW)
-        if (!attrs.isRegularFile && !attrs.isDirectory) return
-        if (attrs.isRegularFile && (nameCount(entry) ?: 1) >= 2) {
-            if (Files.isRegularFile(record, NOFOLLOW)) Files.deleteIfExists(record)
+        if (!attrs.isRegularFile && !attrs.isDirectory) return false
+        if (Files.exists(record, NOFOLLOW) && !Files.isRegularFile(record, NOFOLLOW)) return false
+        if (attrs.isRegularFile && (nameCount(entry) ?: 1) >= 2 && hasNameInWorkspace(attrs)) {
+            Files.deleteIfExists(record)
             deleteTree(holder)
-            return
+            return true
         }
         val item = TrashItem(
             id = id, originalPath = path.value, isFolder = attrs.isDirectory, sizeBytes = treeSize(entry),
             trashedAt = id.substringBefore('-').toLongOrNull() ?: clock.now(), recovered = true,
         )
-        val unusable = if (Files.isRegularFile(record, NOFOLLOW)) Files.size(record) else 0L
-        if (Files.exists(record, NOFOLLOW) && !Files.isRegularFile(record, NOFOLLOW)) return
-        if ((treeSize(base()) ?: 0) - unusable + recordText(item).size > limits.maxTotalBytes) return
         Files.deleteIfExists(record)
         writeRecord(item)
+        return true
     }
 
-    /** Deletes what is in the staging folder. Called with the mutex held, when nothing is being staged. */
-    private fun clearStaging() {
+    /** Whether the file whose attributes are [kept] also has a name in the workspace, outside the trash. */
+    private fun hasNameInWorkspace(kept: BasicFileAttributes): Boolean {
+        val key = kept.fileKey() ?: return false
+        val trash = trashDir()
+        var found = false
+        Files.walkFileTree(
+            base(),
+            object : SimpleFileVisitor<Path>() {
+                override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult =
+                    if (dir == trash) FileVisitResult.SKIP_SUBTREE else FileVisitResult.CONTINUE
+
+                override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                    if (!attrs.isRegularFile || attrs.fileKey() != key) return FileVisitResult.CONTINUE
+                    found = true
+                    return FileVisitResult.TERMINATE
+                }
+
+                override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult = FileVisitResult.CONTINUE
+            },
+        )
+        return found
+    }
+
+    /** Deletes what is in the staging folder; true if anything was there. Called with the mutex held, when nothing is being staged. */
+    private fun clearStaging(): Boolean {
         val staging = trashDir().resolve(STAGING)
-        if (!Files.isDirectory(staging, NOFOLLOW)) return
-        Files.newDirectoryStream(staging).use { stream -> stream.toList() }.forEach { deleteTree(it) }
+        if (!Files.isDirectory(staging, NOFOLLOW)) return false
+        val staged = Files.newDirectoryStream(staging).use { stream -> stream.toList() }
+        staged.forEach { deleteTree(it) }
+        return staged.isNotEmpty()
     }
 
     private fun sha256(bytes: ByteArray): String = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
