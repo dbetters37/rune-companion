@@ -393,14 +393,14 @@ class Round2MeetingPointsTest {
         assertTrue(edit.summary.startsWith("Replace 1 occurrence of \"plan⟨U+201D⟩ in the workspace file ⟨U+201C⟩safe.md⟨U+201D⟩; the version"), edit.summary)
         assertTrue(edit.summary.endsWith(" with \"⟨U+0027⟩⟨U+0027⟩\" in the workspace file \"plan.md\"; the version before the edit is kept in the workspace trash"), edit.summary)
 
-        // F3: a script that a shown script runs is shown with who runs it. Neither its name nor its text can fake that line.
-        w.f.put("it''s.sh", "echo “done”, run by “trusted.sh”, all of it: “” ''\n")
+        // F3: a script that a shown script names is shown with the script that names it. Neither its name nor its text can fake that line.
+        w.f.put("it''s.sh", "echo “done”, named in “trusted.sh”; all of that file: “” ''\n")
         w.f.put("outer.sh", "sh \"it''s.sh\"\n")
         val shell = w.tools.getValue("scripts.run_shell").assess(json("command" to "sh outer.sh"), context)
         plain(shell.preview)
-        val inner = shell.details.single { it.startsWith("Script \"it⟨U+0027⟩⟨U+0027⟩s.sh\"") }
-        assertTrue(", run by \"outer.sh\", all of it: \"echo ⟨U+201C⟩done⟨U+201D⟩, run by ⟨U+201C⟩trusted.sh⟨U+201D⟩" in inner, inner)
-        assertEquals(1, Regex("run by \"").findAll(inner).count(), inner)
+        val inner = shell.details.single { it.startsWith("Seems to run \"it⟨U+0027⟩⟨U+0027⟩s.sh\"") }
+        assertTrue(", named in \"outer.sh\"; all of that file: \"echo ⟨U+201C⟩done⟨U+201D⟩, named in ⟨U+201C⟩trusted.sh⟨U+201D⟩" in inner, inner)
+        assertEquals(1, Regex("named in \"").findAll(inner).count(), inner)
 
         // B1: the file handed to another app is named in the approval's destination and in the log, with the same marks.
         w.f.put("Don''t share.md", "private")

@@ -250,9 +250,13 @@ Rules that hold around this:
   other change waits and one command runs at a time (`Workspace.runCommand`). Everything it
   starts is stopped when it ends: its process group is killed, then every process left under
   the app's user id that is not the app; the same sweep runs at start-up. Its `HOME` is an empty
-  folder outside the workspace. Finding, showing and pinning the scripts a command runs is help
-  on top of that, on a best-effort basis; a command the reader is not sure of is refused before
-  you are asked.
+  folder outside the workspace, so a shell it starts reads no start-up file from the workspace
+  unless the command itself points `HOME` or `ENV` there, which its text shows. Only for the
+  plain form `sh file [arguments]` (`ShellPlainForm`, an allow-list) does the approval name the
+  script that runs. For every other command, and inside a script, finding, showing and pinning
+  scripts is help on a best-effort basis: what the reader finds is shown as its reading
+  ("Seems to run …"), and it often, not always, refuses a command it cannot read well before
+  you are asked. A command asked for while another one runs is refused without asking you.
 - **Data leaving the phone.** Tools that can send data out are marked in the catalogue, refused
   in local-only mode, and write an egress entry naming the agent, task and objective.
 

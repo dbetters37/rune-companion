@@ -109,7 +109,9 @@ object OperatorTools {
             "scripts.run_shell", C.SCRIPTS_SHELL, RiskLevel.CONSEQUENTIAL, ToolCategory.SCRIPTS, sendsDataOffDevice = true,
             rule = "The command can use the network, so it is blocked in local-only mode. It runs only if nothing changed the workspace " +
                 "since it was assessed, and holds the workspace's change lock while it runs. Everything it starts is stopped when it ends. " +
-                "The scripts found in it are shown and pinned; a command the reader is not sure of is refused.",
+                "Only for the plain form \"sh file [arguments]\" is a file shown as the script that runs; the scripts found in any other " +
+                "command, and inside a script, are shown as a best reading. What is found is pinned, and many commands that cannot be " +
+                "read well are refused. A command asked for while another one runs is refused without a request to the owner.",
         ),
         info(
             "termux.run", C.SCRIPTS_TERMUX, RiskLevel.CONSEQUENTIAL, ToolCategory.SCRIPTS, sendsDataOffDevice = true,

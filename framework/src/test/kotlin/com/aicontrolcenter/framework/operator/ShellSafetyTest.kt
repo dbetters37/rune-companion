@@ -60,7 +60,7 @@ class ShellSafetyTest {
         f.put("keep/a.txt", "a")
         val named = f.assess("scripts.run_shell", "command" to "wc -l notes.md && rm -rf keep && cat later.sh")
         assertTrue(named.details.any { "\"notes.md\"" in it && "\"keep\"" in it }, named.preview)
-        assertTrue(named.details.any { "\"later.sh\" does not exist now" in it }, named.preview)
+        assertTrue("Seems to run \"later.sh\", which does not exist now." in named.details, named.preview)
         assertNull(named.prepared!!.changedSince())
         f.put("keep/b.txt", "new")
         assertTrue("keep" in named.prepared!!.changedSince()!!)

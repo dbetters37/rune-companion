@@ -23,6 +23,12 @@ import kotlin.test.assertTrue
  * owner's folder.
  */
 class ShellScriptPinningTest {
+    /**
+     * A line of the approval that shows the script [path]: as the script the command runs (only for the plain form "sh file",
+     * R1 of round 4) or as the reader's reading ("Seems to run"), for every other spelling and for scripts named inside scripts.
+     */
+    private fun showsScript(line: String, path: String) = line.startsWith("Script \"$path\"") || line.startsWith("Seems to run \"$path\"")
+
     /** A workspace with tidy.sh (harmless), a folder to lose, a script that runs tidy.sh, and a link to it. */
     private fun fixture(): OperatorFixture {
         val f = OperatorFixture()
@@ -66,7 +72,7 @@ class ShellScriptPinningTest {
             val args = json("command" to command)
             val tool = f.tool("scripts.run_shell")
             val assessment = tool.assess(args, f.context)
-            assertTrue(assessment.details.any { it.startsWith("Script \"tidy.sh\"") && "echo tidying" in it }, "$command: the script is not shown\n${assessment.preview}")
+            assertTrue(assessment.details.any { showsScript(it, "tidy.sh") && "echo tidying" in it }, "$command: the script is not shown\n${assessment.preview}")
             assertNull(assessment.prepared!!.changedSince(), command)
 
             // After the owner approved, the script is rewritten.
@@ -155,7 +161,7 @@ class ShellScriptPinningTest {
             f.assess("scripts.run_shell", "command" to command)
         }
         val awk = f.assess("scripts.run_shell", "command" to "awk -f prog name.txt")
-        assertTrue(awk.details.any { it.startsWith("Script \"prog\"") && "print" in it }, awk.preview)
+        assertTrue(awk.details.any { it.startsWith("Seems to run \"prog\"") && "print" in it }, awk.preview)
     }
 
     @Test
@@ -194,10 +200,12 @@ class ShellScriptPinningTest {
         f.put("four.sh", "echo four; sh tidy.sh\n")
         val a = f.assess("scripts.run_shell", "command" to "sh one.sh")
         for (shown in listOf("one.sh" to ". ./two.sh", "two.sh" to "three", "three.sh" to "echo three")) {
-            assertTrue(a.details.any { it.startsWith("Script \"${shown.first}\"") && shown.second in it }, "${shown.first}\n${a.preview}")
+            assertTrue(a.details.any { showsScript(it, shown.first) && shown.second in it }, "${shown.first}\n${a.preview}")
         }
-        assertTrue(a.details.any { it.startsWith("Script \"two.sh\"") && "run by \"one.sh\"" in it }, a.preview)
-        assertTrue(a.details.any { it.startsWith("Script \"four.sh\"") && "is not shown here" in it && "run by \"three.sh\"" in it }, a.preview)
+        // Only the script the plain command itself runs is shown as that; what it names in turn is a reading.
+        assertEquals(listOf("one.sh"), a.details.filter { it.startsWith("Script ") }.map { it.substringAfter('"').substringBefore('"') }, a.preview)
+        assertTrue(a.details.any { it.startsWith("Seems to run \"two.sh\"") && "named in \"one.sh\"" in it }, a.preview)
+        assertTrue(a.details.any { it.startsWith("Seems to run \"four.sh\"") && "is not shown here" in it && "named in \"three.sh\"" in it }, a.preview)
         assertFalse(a.details.any { "echo four" in it }, a.preview)
         assertNull(a.prepared!!.changedSince())
         f.put("four.sh", "rm -rf keep\n")
@@ -262,14 +270,14 @@ class ShellScriptPinningTest {
 
         // Certain: a name with the workspace's full path, and names without a script after cd.
         val full = f.assess("scripts.run_shell", "command" to "cd sub && sh $root/tidy.sh")
-        assertTrue(full.details.any { it.startsWith("Script \"tidy.sh\"") && "echo tidying" in it }, full.preview)
+        assertTrue(full.details.any { it.startsWith("Seems to run \"tidy.sh\"") && "echo tidying" in it }, full.preview)
         f.assess("scripts.run_shell", "command" to "cd sub && cat note.txt && ls")
 
         // A script that changes folder for itself, run as a program of its own, changes nothing for the command line:
         // "sh tidy.sh" after it still means the file that is shown, and that is the one that runs.
         f.put("build.sh", "cd sub\necho building in \$(basename \$PWD)\n")
         val (assessment, outcome) = f.run("scripts.run_shell", "command" to "sh build.sh; sh tidy.sh")
-        assertTrue(assessment.details.any { it.startsWith("Script \"build.sh\"") } && assessment.details.any { it.startsWith("Script \"tidy.sh\"") && "echo tidying" in it }, assessment.preview)
+        assertTrue(assessment.details.any { it.startsWith("Seems to run \"build.sh\"") } && assessment.details.any { it.startsWith("Seems to run \"tidy.sh\"") && "echo tidying" in it }, assessment.preview)
         assertTrue(outcome.ok && "building in sub" in outcome.content && "tidying" in outcome.content && "the other one" !in outcome.content, outcome.content)
     }
 
@@ -285,7 +293,7 @@ class ShellScriptPinningTest {
         for (command in listOf("sh escape.sh", ". ./quoted.sh", "sh nested.sh", "sh jobs.sh", "sh < inner.sh")) {
             val a = f.assess("scripts.run_shell", "command" to command)
             assertTrue(a.details.any { "Everything the command starts is stopped when it ends" in it }, a.preview)
-            assertTrue(a.details.any { it.startsWith("Script ") }, "$command: its script is still shown\n${a.preview}")
+            assertTrue(a.details.any { it.startsWith("Script ") || it.startsWith("Seems to run ") }, "$command: its script is still shown\n${a.preview}")
         }
     }
 
@@ -295,11 +303,11 @@ class ShellScriptPinningTest {
         // Hundreds of words before the script: the limit on names that are only pinned must not reach the script.
         val padding = (1..400).joinToString(" ") { "w$it" }
         val padded = f.assess("scripts.run_shell", "command" to "echo $padding; sh tidy.sh")
-        assertTrue(padded.details.any { it.startsWith("Script \"tidy.sh\"") && "echo tidying" in it }, padded.preview.take(400))
+        assertTrue(padded.details.any { it.startsWith("Seems to run \"tidy.sh\"") && "echo tidying" in it }, padded.preview.take(400))
         // Hundreds of existing files named first, then a script that runs another one.
         repeat(320) { f.put("data/f$it.txt", "x") }
         val many = f.assess("scripts.run_shell", "command" to "wc -l ${(0 until 320).joinToString(" ") { "data/f$it.txt" }}; sh a.sh")
-        assertTrue(many.details.any { it.startsWith("Script \"tidy.sh\"") && "run by \"a.sh\"" in it }, many.preview.takeLast(600))
+        assertTrue(many.details.any { it.startsWith("Seems to run \"tidy.sh\"") && "named in \"a.sh\"" in it }, many.preview.takeLast(600))
         f.put("tidy.sh", "rm -rf keep\n")
         assertNotNull(padded.prepared!!.changedSince())
         assertNotNull(many.prepared!!.changedSince())
@@ -319,7 +327,7 @@ class ShellScriptPinningTest {
         val a = f.assess("scripts.run_shell", "command" to "wc -l sub/note.txt && ls keep && grep -c x \"sub/note.txt\" out=keep")
         val listed = a.details.single { it.startsWith("Workspace files and folders it names") }
         assertTrue("\"sub/note.txt\"" in listed && "\"keep\"" in listed, listed)
-        assertEquals(0, a.details.count { it.startsWith("Script") }, a.preview)
+        assertEquals(0, a.details.count { it.startsWith("Script") || it.startsWith("Seems to run") }, a.preview)
         f.put("keep/new.txt", "x")
         assertTrue("keep" in a.prepared!!.changedSince()!!)
     }

@@ -13,8 +13,9 @@ import kotlin.test.assertTrue
 /**
  * G4, from the second verification's probe: for every spelling the verifier found, either the
  * command is refused before the owner is asked, or the scripts that really run are the ones the
- * approval shows. Never the third thing: a script that runs unshown, or the text of one script
- * shown while another one runs.
+ * approval shows. Since round 4 the approval shows them as the reader's reading ("Seems to run")
+ * unless the command has the plain form "sh file" (ShellPlainFormTest, ShellRound4Test); this
+ * list stays as the check that the reading is right for the spellings found so far.
  *
  * A real shell runs behind the tool's port (dash, and bash with extglob for the pattern lists
  * Android's mksh always understands), with HOME outside the workspace as the app's runner sets
@@ -71,7 +72,7 @@ class ShellShownIsWhatRunsTest {
         }
         val outcome = tool.execute(args, f.context, assessment)
         val ran = Regex("RAN<([^>]+)>").findAll(outcome.content).map { it.groupValues[1] }.toList().distinct()
-        val shown = (shBaits + awkBaits).filter { bait -> assessment.details.any { it.startsWith("Script ") && "RAN<$bait>" in it.replace("⟨\"⟩", "\"") } }
+        val shown = (shBaits + awkBaits).filter { bait -> assessment.details.any { (it.startsWith("Script ") || it.startsWith("Seems to run ")) && "RAN<$bait>" in it.replace("⟨\"⟩", "\"") } }
         Result(null, ran, shown)
     }
 
