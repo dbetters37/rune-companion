@@ -32,6 +32,9 @@ import kotlinx.coroutines.launch
  * Every step is independent: a failure in one is written to the activity log and does not stop
  * the others, because a broken package scan must never prevent the owner from seeing agents.
  *
+ * The first step stops what a shell command left running if the app died under it (a command's
+ * processes are otherwise stopped when it ends).
+ *
  * Memory upkeep ([MemoryService.maintain]: deleting expired short-term memories and computing
  * missing search vectors) runs once after the start-up steps, again whenever local-only mode is
  * switched off (an off-device embedder may then fill in what it was refused), and every
@@ -58,6 +61,8 @@ class AppStartup(
     private val orchestrator: Orchestrator? = null,
     /** Closes pending requests past their expiry; null where there are none (tests of start-up alone). */
     private val closeOverdueRequests: (suspend () -> Unit)? = null,
+    /** Stops what a shell command left running when the app died under it; returns how many processes. Null where there is no shell. */
+    private val stopShellLeftovers: (suspend () -> Int)? = null,
 ) {
     private var initialJob: Job? = null
     private var foregroundRefresh: Job? = null
@@ -77,7 +82,21 @@ class AppStartup(
     fun start(): Job {
         initialJob?.let { return it }
         val job = scope.launch {
-            // First, so the simulator is there for the starter team and for "Try with the simulator".
+            // Before anything else: if the app died while a shell command ran, what that command started may still be
+            // running. Nothing new has started yet, so everything found now is such a leftover.
+            step("Could not stop what an earlier shell command left running") {
+                val stopped = stopShellLeftovers?.invoke() ?: 0
+                if (stopped > 0) {
+                    activityRecorder.record(
+                        type = ActivityType.SYSTEM,
+                        title = "Stopped what a shell command had left running",
+                        detail = "The app had stopped while a shell command ran. " +
+                            (if (stopped == 1) "1 process it left running was" else "$stopped processes it left running were") + " stopped when the app started.",
+                        severity = Severity.WARNING,
+                    )
+                }
+            }
+            // Then, so the simulator is there for the starter team and for "Try with the simulator".
             step("Could not register the built-in simulator") { providerManager.ensureBuiltIns() }
             step("Could not create the starter team") { agentManager.ensureDefaults() }
             // After the team: the starter space is shared with the starter agents.

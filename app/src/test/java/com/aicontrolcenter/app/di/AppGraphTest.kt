@@ -40,6 +40,26 @@ class AppGraphTest {
     }
 
     @Test
+    fun `starting stops what a shell command left running, once, and says so only when there was something`() = runTest(mainRule.dispatcher) {
+        // G2: the app died under a shell command, and two of its processes were still there.
+        val app = TestApp(backgroundScope)
+        app.shellLeftovers = 2
+
+        app.graph.start().join()
+        app.graph.start().join()
+
+        assertEquals(1, app.shellSweeps.get(), "once per start of the process")
+        val said = app.activityLog.all.single { it.title == "Stopped what a shell command had left running" }
+        assertTrue("2 processes" in said.detail, said.detail)
+        assertEquals(6, app.agents.getAll().size, "the other steps ran")
+
+        val clean = TestApp(backgroundScope)
+        clean.graph.start().join()
+        assertEquals(1, clean.shellSweeps.get())
+        assertTrue(clean.activityLog.all.none { "left running" in it.title })
+    }
+
+    @Test
     fun `registered apps are re-checked at start, on a package change and on return to the foreground`() = runTest(mainRule.dispatcher) {
         val app = TestApp(backgroundScope)
         app.installSampleApps()

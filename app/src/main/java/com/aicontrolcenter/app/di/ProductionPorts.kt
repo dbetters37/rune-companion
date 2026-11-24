@@ -78,6 +78,7 @@ fun createProductionPorts(context: Context): Ports {
             screenOperator = screen.operator,
             screenControl = screen.control,
             shell = phone.shellRunner,
+            stopShellLeftovers = { phone.stopShellLeftovers() },
             termux = phone.termuxRunner,
             protectedPackages = protectedPackages,
             ownPackage = appContext.packageName,

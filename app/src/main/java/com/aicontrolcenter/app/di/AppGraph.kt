@@ -496,6 +496,7 @@ class AppGraph(
         clock = ports.clock,
         orchestrator = orchestrator,
         closeOverdueRequests = ::closeOverdueRequests,
+        stopShellLeftovers = ports.operator.stopShellLeftovers,
     )
 
     private val foreground = MutableStateFlow(false)
