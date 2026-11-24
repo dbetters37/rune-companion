@@ -109,6 +109,20 @@ class JsRound4Test {
         assertEquals("2", result("1 + 1", sandbox))
     }
 
+    @Test(timeout = 120_000)
+    fun `a stop inside a built-in loop is reported as that stop, also when the iterator has a return of its own`() {
+        // A built-in that is stopped in the middle of a walk closes the iterator on its way out, which calls the script's
+        // `return`: one more entry into a function of the script, in a run that is already over.
+        val closing = "var n = 0, closed = 0, o = {}; o[Symbol.iterator] = function () { return { " +
+            "next: function () { return { done: ++n > 200000, value: 1 }; }, 'return': function () { closed++; return {}; } }; };"
+        for (walk in listOf("new Set(o).size", "[...o].length", "Promise.all(o); 'done'", "Uint8Array.from(o).length")) {
+            repeat(2) { stoppedByBudget("$closing $walk", counting) }
+        }
+        // A walk that ends by itself gives what it gave before.
+        assertEquals("[3,0]", result("$closing n = 199997; [[...o].length, new Set(o).size]", JsSandbox(JsLimits(timeoutMs = 20_000))))
+        assertEquals("2", result("1 + 1", counting))
+    }
+
     // ---- Every entry, whoever calls ----
 
     @Test(timeout = 120_000)

@@ -187,18 +187,38 @@ do it.
 - **Termux commands** keep running in Termux after the time limit; this app only stops
   waiting for them.
 - **The JavaScript sandbox** checks every array built-in that would walk a huge array in one
-  step, and refuses it. A construct it does not know of could still keep a script thread busy
-  past its time limit; while two such threads run, new scripts are refused. The memory limit is
-  measured roughly, on the whole app: a script is stopped when the app's memory grew by more
-  than 96 MB since it began, or when less than an eighth of the memory Android gives the app
-  (and less than 96 MB) is left, whichever comes first.
+  step, and refuses it. It counts a script's own code and every call of one of the script's
+  functions, whoever calls it: a built-in that loops over the script's own iterator,
+  comparator or callback (`new Set(o)`, `[...o]`, `Promise.all(o)`, a sort) meets the limits
+  on instructions, time and memory like any other loop. Two things stay out of its reach. One
+  call of a built-in on a large value (a search in a long text, a power of a huge number)
+  cannot be interrupted and can keep a script thread busy past its time limit. And a loop in
+  which built-in functions call only each other is not counted at all: an iterator whose
+  `next` is itself a built-in function (`Object`, say), walked by `new Set`, `[...o]` or
+  `Promise.all`, runs for ever, or until the app's memory is full, which can make Android
+  close the app. Nobody writes that by accident, but an agent can write it on purpose. In both
+  cases the script is reported as stopped at its time limit while its thread goes on; while two
+  such threads run, new scripts are refused, and an endless one ends only when the app is
+  restarted. The memory limit is measured roughly, on the whole app: a script is stopped when
+  the app's memory grew by more than 96 MB since it began, or when less than an eighth of the
+  memory Android gives the app (and less than 96 MB) is left, whichever comes first. Telling
+  what a script keeps from what it has thrown away costs time, so after the first few times it
+  is done twice a second at most: a script that throws much away and had kept little when
+  last measured can be over the 96 MB for up to half a second before it is stopped. The check
+  for nearly full memory is made every time.
 - **Approval previews** show quote marks inside a quoted value as ⟨"⟩, count long runs of one
   character and piles of combining marks, and mark every invisible or format character, so a
   value cannot pretend to end early or hide what follows. The preview is always drawn left to
   right. Typographic quotes and other look-alikes of a quote mark, and two apostrophes in a
-  row, are shown by their code, such as ⟨U+201D⟩. That includes the curly apostrophe of
-  ordinary writing ("it⟨U+2019⟩s") and accents that stand alone; a plain apostrophe, letters
-  with accents and text in other scripts are left as they are.
+  row (also with an accent mark between them), are shown by their code, such as ⟨U+201D⟩.
+  That includes the curly apostrophe of ordinary writing ("it⟨U+2019⟩s"), accents that stand
+  alone, an accent mark placed on punctuation, and a Japanese half-width sound mark that
+  follows no letter; a plain apostrophe, letters with accents and text in other scripts are
+  left as they are. Half of a two-part character whose other half is missing, which cannot
+  be passed on as it is, is shown by its code as well (⟨U+D800⟩). The marking of look-alikes
+  is help for your eye, and no list of look-alikes is ever complete. What you can rely on is
+  the line that shows the value itself, such as "Command:" for a shell command: it is the
+  exact text, and every character of it is either drawn as it is or named by its code.
 - **Approvals of screen actions** list at most 150 texts of the window, each up to 300
   characters, and say whether a control is checked, selected or disabled. What does not fit is
   counted and still checked: if anything in the window changes before the action runs, it is

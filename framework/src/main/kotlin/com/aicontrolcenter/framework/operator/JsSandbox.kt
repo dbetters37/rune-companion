@@ -173,7 +173,7 @@ class JsHostError(message: String) : RuntimeException(message)
  *
  * Residual risk, documented for the owner: native code between two budget checks (one call of a
  * linear built-in on a large value, such as `join` on a million numbers) is not interruptible,
- * so such work is bounded by the array limit only. And a loop in which a built-in calls only
+ * so such work is bounded only by the limits on the sizes of arrays and strings. And a loop in which a built-in calls only
  * other built-ins enters no function of the script and is not counted at all: an iterator whose
  * `next` is itself a built-in function (`Object`, say), walked by `new Set`, spread or
  * `Promise.all`, runs until the memory is full, or for ever. If a run does not stop within a grace period
@@ -244,8 +244,8 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
         /** By how much the heap had grown since the run began when it was last collected for this run. */
         private var keptAtLastCollection = 0L
 
-        /** What stopped this run, once the observer has stopped it ([observe]). */
-        private var over: BudgetExceeded? = null
+        /** Why this run was stopped, once the observer has stopped it ([observe]). */
+        private var stoppedBecause: String? = null
 
         private val log = ArrayList<String>()
         private var logChars = 0
@@ -299,12 +299,14 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
 
         fun observe(instructionsSoFar: Long, startNanos: Long, heapBase: Long) {
             // A run that was stopped stays stopped: the interpreter asks again while it unwinds, and gets the same answer
-            // without another measurement.
-            over?.let { throw it }
+            // without another measurement. The answer is a new exception each time: a built-in that closes an iterator
+            // on the way out adds what the closing threw to what it is passing on, and Java refuses to add an exception
+            // to itself.
+            stoppedBecause?.let { throw BudgetExceeded(it) }
             try {
                 check(instructionsSoFar, startNanos, heapBase)
             } catch (e: BudgetExceeded) {
-                over = e
+                stoppedBecause = e.message
                 throw e
             }
         }
@@ -699,9 +701,7 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
          * calls between built-ins.
          */
         val COUNT_ENTRIES = object : Debugger {
-            override fun handleCompilationDone(cx: Context, fnOrScript: DebuggableScript, source: String) = Unit
-
-            override fun getFrame(cx: Context, fnOrScript: DebuggableScript): DebugFrame? {
+            override fun getFrame(cx: Context, fnOrScript: DebuggableScript?): DebugFrame? {
                 ScriptRuntime.addInstructionCount(cx, FUNCTION_ENTRY_COST)
                 return null
             }
