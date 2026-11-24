@@ -79,8 +79,7 @@ class Round3MeetingPointsTest {
         assertNull(first.prepared!!.changedSince())
         assertTrue(tool.execute(args, f.context, first).ok)
         assertTrue(f.file(".trash/.staging/half-written").exists(), "a command tidies nothing")
-        assertTrue(f.trash().isEmpty())
-        assertNotNull(f.workspace.trashLeftovers(), "looking does not tidy either")
+        // (Round 4, W3: a first look at the trash would tidy now; that is WorkspaceRound4Test. Here the first change does.)
 
         // Asked for, and then the first change after the start is made. The change itself is refused (there is no such
         // file), but the tidy before it put the trash right, and that changed files in the workspace: announced once.
@@ -108,12 +107,13 @@ class Round3MeetingPointsTest {
     }
 
     @Test
-    fun `a first change that succeeds is announced once together with the tidy it began with`() = runBlocking<Unit> {
+    fun `a first change that succeeds is announced when it has ended, after the tidy it began with was announced`() = runBlocking<Unit> {
         val f = OperatorFixture()
         leaveLeftovers(f)
         val count = f.workspace.changeCount()
         f.ok("workspace.write", "path" to "notes.md", "content" to "x")
-        assertEquals(count + 1, f.workspace.changeCount())
+        // Round 4 (W1): the tidy's announcement comes before the file is written, so it cannot stand for the write as well.
+        assertEquals(count + 2, f.workspace.changeCount())
         assertEquals(listOf(LOST_ID), f.trash().map { it.id })
     }
 
@@ -131,9 +131,11 @@ class Round3MeetingPointsTest {
         assertTrue(f.file(".trash/.staging/half-written").exists())
         assertTrue(f.file(".trash/$EMPTY_ID.json").exists())
         assertFalse(f.file(".trash/$LOST_ID.json").exists())
-        // Looking is not held back, and says what is true meanwhile: nothing listed, leftovers there.
+        // Looking is not held back, tidies nothing under the command's feet and claims nothing meanwhile (round 4, W2):
+        // nothing is listed, and nothing is called a leftover while the command may still be working there.
         assertTrue(withTimeout(5_000) { f.trash() }.isEmpty())
-        assertNotNull(withTimeout(5_000) { f.workspace.trashLeftovers() })
+        assertNull(withTimeout(5_000) { f.workspace.trashLeftovers() })
+        assertTrue(f.file(".trash/.staging/half-written").exists(), "the look did not tidy while the command runs")
 
         running.release.countDown()
         assertTrue(running.command.await().ok)

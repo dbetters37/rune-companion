@@ -344,9 +344,11 @@ class LocalWorkspaceTest {
         ok(workspace.write(p("b.txt"), "b".toByteArray(), false))
         ok(workspace.makeFolder(p("Z")))
         ok(workspace.write(p("a.txt"), "a".toByteArray(), false))
-        assertEquals(before + 3, workspace.changes.first())
+        // A folder that is made counts when it is made, and the change it was made in counts again when it has ended (round 4, W1).
+        assertEquals(before + 4, workspace.changes.first())
+        assertEquals(workspace.changeCount(), workspace.changes.first(), "the listeners are given the counter once the change has ended")
         assertIs<DocResult.AlreadyExists>(workspace.write(p("a.txt"), "x".toByteArray(), false))
-        assertEquals(before + 3, workspace.changes.first(), "a refused change announces nothing")
+        assertEquals(before + 4, workspace.changes.first(), "a refused change announces nothing")
         assertEquals(listOf("Z", "a.txt", "b.txt"), ok(workspace.list(RelativePath.ROOT)).map { it.name })
         assertEquals("text/plain", ok(workspace.stat(p("a.txt"))).mimeType)
         assertNull(ok(workspace.stat(p("Z"))).sizeBytes)

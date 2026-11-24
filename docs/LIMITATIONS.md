@@ -114,10 +114,14 @@ do it.
   first writes the trash's own note about the item and then moves the file. So if the app is
   stopped in the middle, the file is in its place or in the trash, never lost in between. A
   file that an earlier version of the app left in the trash without that note is listed again
-  after the next change to the workspace; where it was is no longer known, so restoring puts it
+  the first time the trash is looked at after a start, or with the first change to the
+  workspace, whichever comes first; where it was is no longer known, so restoring puts it
   at the top of the workspace. Anything else in the trash that cannot be listed is shown as
   leftovers. Only you can delete those, with "Empty the trash", which is offered whenever the
-  trash holds anything at all. The workspace's 2 GB count everything in it, also the trash's
+  trash lists an item or holds leftovers of any size. While a change or a shell command is
+  under way, nothing is called a leftover (what is in the trash folder then may be that
+  change's own work); the screens and tools show the listed items only, and leftovers are
+  shown again once it has ended. The workspace's 2 GB count everything in it, also the trash's
   notes (100 to 200 bytes per item, more for a very long path), and the last 4 KB are kept free
   for those notes, so a full workspace can still move files to the trash. While the trash is
   empty one item can always be moved there, even after a shell command filled the workspace
@@ -184,6 +188,13 @@ do it.
   did not start as part of the app, so it would also stop a helper Android itself runs under
   that user id at that moment; Android repeats such work. Where a phone does not show the app
   its own processes, shell commands are not available.
+
+  The `HOME` folder of (4) lies in the app's cache and is emptied before every command. A
+  command cannot keep it from being emptied by taking its own rights to it away (`chmod`): the
+  app gives itself the rights back first. If the folder still cannot be emptied, it is put
+  aside and the next command gets a new empty one; what was put aside is deleted before a
+  later command or when the app starts. A command is refused for this reason only if no empty
+  folder can be made in the app's cache at all.
 - **Termux commands** keep running in Termux after the time limit; this app only stops
   waiting for them.
 - **The JavaScript sandbox** checks every array built-in that would walk a huge array in one

@@ -626,12 +626,14 @@ internal class WorkspaceRestore(private val d: OperatorToolDependencies) : Opera
         val id = Args(arguments).string("id")?.trim()
         val items = (d.workspace.listTrash() as? DocResult.Ok)?.value.orEmpty()
         val leftovers = d.workspace.trashLeftovers()
+        // While a shell command runs the workspace claims no leftovers; then the trash is not called empty either.
+        val commandRuns = d.workspace.commandRunning()
         if (id.isNullOrEmpty()) {
             // Listing the trash is a read; nothing is restored.
-            return assessment("List the workspace trash", prepared { ToolOutcome.success(TrashText.list(items, leftovers)) }, risk = RiskLevel.MODIFYING)
+            return assessment("List the workspace trash", prepared { ToolOutcome.success(TrashText.list(items, leftovers, commandRuns)) }, risk = RiskLevel.MODIFYING)
         }
         val item = items.firstOrNull { it.id == id }
-            ?: return assessment("Restore trash item ${q(id)}", failing("There is no item ${q(id)} in the trash. ${TrashText.list(items, leftovers)}"))
+            ?: return assessment("Restore trash item ${q(id)}", failing("There is no item ${q(id)} in the trash. ${TrashText.list(items, leftovers, commandRuns)}"))
         val original = RelativePath.parse(item.originalPath) as? RelativePath.Check.Valid
             ?: return assessment("Restore trash item ${q(id)}", failing("The trash record of ${q(id)} is damaged."))
         val target = WorkspaceStates.of(d.workspace, original.path)
@@ -664,10 +666,12 @@ internal object TrashText {
 
     /**
      * The trash in words. [leftoverBytes]: what is under the trash folder without being an item
-     * ([Workspace.trashLeftovers]); with any of it the trash is never called empty.
+     * ([Workspace.trashLeftovers]); with any of it the trash is never called empty. Nor is it
+     * while a shell command runs ([commandRuns]): leftovers are not counted then, so only what
+     * is listed is said.
      */
-    fun list(items: List<TrashItem>, leftoverBytes: Long? = null): String = when {
-        items.isEmpty() && leftoverBytes == null -> "The workspace trash is empty."
+    fun list(items: List<TrashItem>, leftoverBytes: Long? = null, commandRuns: Boolean = false): String = when {
+        items.isEmpty() && leftoverBytes == null -> if (commandRuns) "The workspace trash lists no items." else "The workspace trash is empty."
         items.isEmpty() -> "The workspace trash lists no items. ${leftovers(leftoverBytes!!, also = false)}"
         else -> "The workspace trash holds ${OperatorText.count(items.size, "item")}:\n" + items.joinToString("\n") { line(it) } +
             (leftoverBytes?.let { "\n" + leftovers(it, also = true) } ?: "")
@@ -701,7 +705,10 @@ internal class WorkspaceEmptyTrash(private val d: OperatorToolDependencies) : Op
             // Not empty while leftovers of an interrupted change are in it; those are the owner's to clear, on their own screen.
             chosen.isEmpty() -> assessment(
                 summary,
-                failing(d.workspace.trashLeftovers()?.let { "The trash lists no items to delete. ${TrashText.leftovers(it, also = false)}" } ?: "The trash is empty; nothing to delete."),
+                failing(
+                    d.workspace.trashLeftovers()?.let { "The trash lists no items to delete. ${TrashText.leftovers(it, also = false)}" }
+                        ?: if (d.workspace.commandRunning()) "The trash lists no items to delete." else "The trash is empty; nothing to delete.",
+                ),
                 details,
             )
             else -> {

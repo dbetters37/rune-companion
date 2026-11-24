@@ -468,7 +468,8 @@ data class WorkspaceTrashUiState(
     /**
      * Bytes under the trash folder that are no listed item: what a change that was interrupted
      * (the app was stopped in the middle) left behind and that cannot be restored. Null when
-     * there is nothing of the kind.
+     * there is nothing of the kind, and while a change or a shell command is under way: what is
+     * there then may be that change's own work, so the screen shows the listed items only.
      */
     val leftoverBytes: Long? = null,
     val isBusy: Boolean = false,
@@ -531,7 +532,8 @@ class WorkspaceTrashViewModel(
 
     /** Deletes everything in the trash for good, leftovers of interrupted changes included. The screen asks the owner first. */
     fun emptyTrash() = run {
-        val leftovers = workspace.trashLeftovers()
+        // While another change is under way the workspace claims no leftovers; what the owner was shown, and confirmed, still goes.
+        val leftovers = workspace.trashLeftovers() ?: uiState.value.leftoverBytes
         when (val result = workspace.emptyTrash(null)) {
             is DocResult.Ok -> {
                 val deleted = when {
