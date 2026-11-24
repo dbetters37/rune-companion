@@ -71,9 +71,10 @@ class BrokerFixture(val test: TestScope, private val queue: (OwnerRequestQueue) 
     val tasks = InMemoryTaskRepository()
     val screenStopped = MutableStateFlow(false)
     val protectedPackages = ProtectedPackages(OWN_PACKAGE)
-    val facts = OperatorFacts(agents, settings, capabilities, folders, apps, screenStopped) { protectedPackages }
-    val broker = PermissionBroker(facts, queue(requests), grants, tasks, activity, ids, clock)
-    val owner = DefaultOwnerRequests(requests, activity, ids, clock)
+    val facts = OperatorFacts(agents, settings, capabilities, folders.asDirectory(), apps.asAuthorisedApps(), screenStopped) { protectedPackages }
+    val waiters = RequestWaiters()
+    val broker = PermissionBroker(facts, queue(requests), grants, waiters, tasks, activity, ids, clock)
+    val owner = DefaultOwnerRequests(requests, waiters, facts, activity, ids, clock)
 
     val folder = SharedFolder(FolderId("fld_reports"), "content://tree/reports", "Reports", 10)
     val app = OperatorApp("com.example.notes", "Notes", 20, "ab".repeat(32))

@@ -1,6 +1,7 @@
 package com.aicontrolcenter.data.repository
 
 import androidx.room.withTransaction
+import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ConversationId
 import com.aicontrolcenter.core.GrantId
 import com.aicontrolcenter.core.RequestId
@@ -10,6 +11,8 @@ import com.aicontrolcenter.core.operator.OwnerDecision
 import com.aicontrolcenter.core.operator.OwnerRequest
 import com.aicontrolcenter.core.operator.OwnerRequestRepository
 import com.aicontrolcenter.core.operator.OwnerRequestStatus
+import com.aicontrolcenter.core.tools.Capability
+import com.aicontrolcenter.core.tools.CapabilityConstraint
 import com.aicontrolcenter.data.db.AiccDatabase
 import com.aicontrolcenter.data.db.dao.OwnerRequestDao
 import com.aicontrolcenter.data.db.entity.OwnerRequestEntity
@@ -146,6 +149,17 @@ class RoomOwnerRequestRepository internal constructor(
 
     override suspend fun cancelAsksForTask(taskId: TaskId, at: Long, note: String?): List<OwnerRequest> =
         closeEach(OwnerRequestStatus.CANCELLED, at, note) { dao.pendingAsksOf(taskId.value) }
+
+    override suspend fun lastRefusal(agentId: AgentId, capability: Capability, constraint: CapabilityConstraint, since: Long): OwnerRequest? =
+        withContext(dispatcher) {
+            dao.lastRefusal(agentId.value, capability.id, constraint.stored, since)?.readableOrNull(OwnerRequestEntity::toDomain)
+        }
+
+    override suspend fun countAskedAgain(id: RequestId): OwnerRequest? = withContext(dispatcher) {
+        database.withTransaction {
+            if (dao.countAskedAgain(id.value) == 1) dao.get(id.value) else null
+        }?.readableOrNull(OwnerRequestEntity::toDomain)
+    }
 
     /**
      * Closes each request [candidates] lists (oldest first) with its own conditional update, in

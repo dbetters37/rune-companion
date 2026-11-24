@@ -517,6 +517,42 @@ abstract class OwnerRequestRepositoryContract {
     }
 
     @Test
+    fun `the newest refusal of the same agent, permission and target is found, and asking again is counted on it`() = runTest {
+        val repo = createRepository()
+        val old = s.request("req_old", at = 10)
+        val newer = s.request("req_new", at = 20)
+        val approved = s.request("req_ok", at = 30)
+        val approval = s.request("req_appr", OwnerRequestKind.APPROVAL, at = 40)
+        val otherFolder = s.request("req_fld", at = 50).copy(constraint = s.otherFolder)
+        val otherAgent = s.request("req_agt", at = 60).copy(agentId = s.otherAgent)
+        val open = s.request("req_open", at = 70)
+        listOf(old, newer, approved, approval, otherFolder, otherAgent, open).forEach { repo.create(it) }
+        repo.decide(old.id, OwnerDecision.Deny(), 1_000, GrantId("grt_x1"))
+        repo.decide(newer.id, OwnerDecision.Deny("No"), 2_000, GrantId("grt_x2"))
+        repo.decide(approved.id, OwnerDecision.Grant(GrantScope.ONCE), 3_000, GrantId("grt_x3"))
+        repo.decide(approval.id, OwnerDecision.Deny(), 4_000, GrantId("grt_x4"))
+        repo.decide(otherFolder.id, OwnerDecision.Deny(), 4_000, GrantId("grt_x5"))
+        repo.decide(otherAgent.id, OwnerDecision.Deny(), 4_000, GrantId("grt_x6"))
+        val capability = OperatorCapabilities.FOLDERS_WRITE
+
+        assertEquals(newer.id, repo.lastRefusal(s.agent, capability, s.folder, since = 0)?.id, "the newest refusal, not an approval, an approval request or another target")
+        assertEquals(newer.id, repo.lastRefusal(s.agent, capability, s.folder, since = 2_000)?.id, "decided at the bound counts")
+        assertNull(repo.lastRefusal(s.agent, capability, s.folder, since = 2_001), "older refusals are past the cool-down")
+        assertNull(repo.lastRefusal(s.agent, OperatorCapabilities.FOLDERS_READ, s.folder, since = 0))
+        assertEquals(otherFolder.id, repo.lastRefusal(s.agent, capability, s.otherFolder, since = 0)?.id)
+
+        assertEquals(1, repo.countAskedAgain(newer.id)?.askedAgain)
+        assertEquals(2, repo.countAskedAgain(newer.id)?.askedAgain)
+        assertEquals(2, repo.get(newer.id)?.askedAgain)
+        assertEquals(2, repo.lastRefusal(s.agent, capability, s.folder, since = 0)?.askedAgain)
+        assertNull(repo.countAskedAgain(approved.id), "only a refused request counts")
+        assertNull(repo.countAskedAgain(open.id))
+        assertNull(repo.countAskedAgain(RequestId("req_missing")))
+        assertEquals(0, repo.get(approved.id)?.askedAgain)
+        assertEquals(OwnerRequestStatus.PENDING, repo.get(open.id)?.status)
+    }
+
+    @Test
     fun `open observers see later changes`() = runTest {
         val repo = createRepository()
         val pending = collectIn(backgroundScope, repo.observePending())

@@ -22,6 +22,9 @@ import com.aicontrolcenter.core.operator.OwnerRequest
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 
 /**
@@ -75,12 +78,15 @@ internal object ApprovalNotifications {
             .build()
     }
 
-    fun post(context: Context, id: RequestId, notification: Notification) {
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
-        try {
+    /** Returns whether Android took it: false while the owner has not allowed notifications. */
+    fun post(context: Context, id: RequestId, notification: Notification): Boolean {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return false
+        return try {
             NotificationManagerCompat.from(context).notify(id.value, NOTIFICATION_ID, notification)
+            true
         } catch (_: SecurityException) {
             // Revoked between the check and the call; the request still waits in the app.
+            false
         }
     }
 
@@ -102,23 +108,33 @@ internal object ApprovalNotifications {
  * Keeps one notification per open request: posted when a request starts waiting, removed when
  * it is answered, expires or is withdrawn. [pending] is `OwnerRequests.pending`, which emits
  * on every change to the stored requests (the start-up sweep closes those past their expiry).
+ * A request whose notification Android did not take (notifications were off) is posted when
+ * [enabled] says they are allowed again, so a permission given later still shows every request
+ * that waits.
  */
 class ApprovalNotifier(
     private val context: Context,
     private val pending: Flow<List<OwnerRequest>>,
     private val clock: Clock,
     private val scope: CoroutineScope,
+    /** Whether notifications can be shown now (`NotificationAccess.enabled`). */
+    private val enabled: Flow<Boolean> = flowOf(true),
+    private val post: (RequestId, OwnerRequest, Long) -> Boolean = { id, request, now ->
+        ApprovalNotifications.post(context, id, ApprovalNotifications.build(context, request, now))
+    },
+    private val cancel: (RequestId) -> Unit = { ApprovalNotifications.cancel(context, it) },
 ) {
     fun start(): Job = scope.launch {
         ApprovalNotifications.ensureChannel(context)
         var shown = emptySet<RequestId>()
-        pending.collect { requests ->
+        combine(pending, enabled.distinctUntilChanged()) { requests, allowed -> requests to allowed }.collect { (requests, allowed) ->
             val now = clock.now()
             val open = requests.filter { it.isOpenAt(now) }
-            val (post, cancel) = changes(shown, open)
-            cancel.forEach { ApprovalNotifications.cancel(context, it) }
-            post.forEach { ApprovalNotifications.post(context, it.id, ApprovalNotifications.build(context, it, now)) }
-            shown = open.mapTo(HashSet()) { it.id }
+            val (toPost, toCancel) = changes(shown, open)
+            toCancel.forEach(cancel)
+            // Only what Android took counts as shown; the rest is posted again once notifications are allowed.
+            val posted = if (allowed) toPost.filter { post(it.id, it, now) }.mapTo(HashSet()) { it.id } else emptySet()
+            shown = open.mapNotNullTo(HashSet()) { request -> request.id.takeIf { it in shown || it in posted } }
         }
     }
 

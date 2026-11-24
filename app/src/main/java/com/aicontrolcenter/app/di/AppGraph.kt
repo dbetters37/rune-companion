@@ -8,8 +8,6 @@ import com.aicontrolcenter.core.RequestId
 import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.activity.ActivityLog
 import com.aicontrolcenter.core.activity.ActivityRecorder
-import com.aicontrolcenter.core.activity.ActivityType
-import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.agents.AgentActivityMonitor
 import com.aicontrolcenter.core.agents.AgentManager
 import com.aicontrolcenter.core.chat.AgentChat
@@ -24,7 +22,6 @@ import com.aicontrolcenter.core.operator.OperatorCapabilities
 import com.aicontrolcenter.core.operator.OwnerFolders
 import com.aicontrolcenter.core.operator.OwnerGrants
 import com.aicontrolcenter.core.operator.OwnerOperatorApps
-import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.OwnerRequestQueue
 import com.aicontrolcenter.core.operator.OwnerRequests
 import com.aicontrolcenter.core.operator.ProtectedPackages
@@ -65,8 +62,7 @@ import com.aicontrolcenter.framework.operator.OperatorToolDependencies
 import com.aicontrolcenter.framework.operator.OperatorToolset
 import com.aicontrolcenter.framework.operator.PermissionBroker
 import com.aicontrolcenter.framework.operator.PermissionRequestTool
-import com.aicontrolcenter.framework.operator.asAuthorisedApps
-import com.aicontrolcenter.framework.operator.asDirectory
+import com.aicontrolcenter.framework.operator.RequestWaiters
 import com.aicontrolcenter.framework.orchestration.DefaultOrchestrator
 import com.aicontrolcenter.framework.orchestration.TeamTools
 import com.aicontrolcenter.framework.registry.DefaultAiAppRegistry
@@ -80,17 +76,22 @@ import com.aicontrolcenter.memory.DefaultMemoryService
 import com.aicontrolcenter.memory.HashingEmbedder
 import com.aicontrolcenter.memory.MemoryConfig
 import com.aicontrolcenter.app.BuildConfig
+import com.aicontrolcenter.app.operator.AuthorisedAppsView
 import com.aicontrolcenter.app.operator.EgressLog
+import com.aicontrolcenter.app.operator.FolderDirectoryView
 import com.aicontrolcenter.app.operator.GrantLookupView
 import com.aicontrolcenter.app.operator.RequestQueueView
 import com.aicontrolcenter.app.operator.ScreenSessions
+import com.aicontrolcenter.app.operator.SharedFolderFilesView
 import com.aicontrolcenter.app.operator.SystemScreens
 import com.aicontrolcenter.app.work.InMemoryNotificationAccess
 import com.aicontrolcenter.app.work.NotificationAccess
 import com.aicontrolcenter.providers.HttpProviderAdapters
 import com.aicontrolcenter.providers.anthropic.AnthropicAdapterFactory
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -232,7 +233,7 @@ class AppGraph(
      * The screen operator as agents and the broker get it, which also says who is operating which
      * app right now (for the "is operating" notification). It cannot stop or resume anything.
      */
-    val screenSessions = ScreenSessions(ports.operator.screenOperator, ports.operator.operatorApps.asAuthorisedApps(), appScope)
+    val screenSessions = ScreenSessions(ports.operator.screenOperator, AuthorisedAppsView(ports.operator.operatorApps), appScope)
 
     /** Owner-only: the Stop and Resume of screen operation. */
     val screenControl: ScreenControl = ports.operator.screenControl
@@ -242,6 +243,17 @@ class AppGraph(
 
     /** Find, use up and narrow grants, never give one. */
     private val grantLookup: GrantLookup = GrantLookupView(ports.operator.permissions)
+
+    /**
+     * Which questions to the owner a live call of this process (or an agent's ask raised in it)
+     * still waits for. A question nothing waits for can never be answered: the owner's port
+     * closes it instead, and start-up withdraws exactly those.
+     */
+    internal val requestWaiters = RequestWaiters()
+
+    /** The owner's folders and authorised apps, read only, for the permission checks and the tools. */
+    private val folderDirectory = FolderDirectoryView(ports.operator.sharedFolders)
+    private val authorisedApps = AuthorisedAppsView(ports.operator.operatorApps)
 
     /** Reads web pages for `web.read_page`; every request that leaves the phone is logged as it is sent. */
     private val webReader: WebReader = ports.operator.webReader(EgressLog(activityRecorder, appScope)::sent)
@@ -259,8 +271,8 @@ class AppGraph(
         agents = ports.agents,
         settings = ports.settings,
         capabilities = capabilities,
-        folders = ports.operator.sharedFolders,
-        apps = ports.operator.operatorApps,
+        folders = folderDirectory,
+        apps = authorisedApps,
         screenStopped = screenSessions.stopped,
         protectedPackages = protectedPackages,
     )
@@ -274,6 +286,7 @@ class AppGraph(
         facts = operatorFacts,
         requests = requestQueue,
         grants = grantLookup,
+        waiters = requestWaiters,
         tasks = ports.tasks,
         activity = activityRecorder,
         ids = ports.idGenerator,
@@ -281,7 +294,8 @@ class AppGraph(
     )
 
     /** How an agent asks the owner for a permission itself (`permissions.request`). It never waits and can grant nothing. */
-    private val capabilityRequester = DefaultCapabilityRequester(operatorFacts, requestQueue, grantLookup, activityRecorder, ports.idGenerator, ports.clock)
+    private val capabilityRequester =
+        DefaultCapabilityRequester(operatorFacts, requestQueue, grantLookup, requestWaiters, activityRecorder, ports.idGenerator, ports.clock)
 
     /** Every tool agents can be given. The team tools are added below, once the orchestrator exists. */
     val toolRegistry: ToolRegistry = DefaultToolRegistry().also { registry ->
@@ -291,13 +305,13 @@ class AppGraph(
         OperatorToolset.create(
             OperatorToolDependencies(
                 workspace = workspace,
-                sharedFolders = ports.operator.folderAccess,
-                folders = ports.operator.sharedFolders.asDirectory(),
+                sharedFolders = SharedFolderFilesView(ports.operator.folderAccess),
+                folders = folderDirectory,
                 media = ports.operator.media,
                 apps = ports.operator.appActions,
                 web = webReader,
                 screen = screenSessions,
-                authorisedApps = ports.operator.operatorApps.asAuthorisedApps(),
+                authorisedApps = authorisedApps,
                 protectedPackages = protectedPackages,
                 shell = ports.operator.shell,
                 termux = ports.operator.termux,
@@ -321,8 +335,12 @@ class AppGraph(
 
     // --- what only the owner's screens may use ---
 
-    /** Pending and past questions to the owner, and the only way to answer them. */
-    val ownerRequests: OwnerRequests = DefaultOwnerRequests(ports.operator.ownerRequests, activityRecorder, ports.idGenerator, ports.clock)
+    /**
+     * Pending and past questions to the owner, and the only way to answer them. It takes an answer
+     * only while a call still waits for it and what it is about is still there.
+     */
+    val ownerRequests: OwnerRequests =
+        DefaultOwnerRequests(ports.operator.ownerRequests, requestWaiters, operatorFacts, activityRecorder, ports.idGenerator, ports.clock)
 
     /** What each agent has been granted; giving and revoking grants. */
     val ownerGrants: OwnerGrants = DefaultOwnerGrants(
@@ -332,19 +350,22 @@ class AppGraph(
         folders = ports.operator.sharedFolders,
         apps = ports.operator.operatorApps,
         protectedPackages = protectedPackages,
+        // A direct grant lets calls waiting for it go on; a revocation withdraws the questions that relied on it.
+        requests = ports.operator.ownerRequests,
+        waiters = requestWaiters,
         activity = activityRecorder,
         ids = ports.idGenerator,
         clock = ports.clock,
     )
 
-    /** The folders the owner shares with agents. */
+    /** The folders the owner shares with agents. Removing one withdraws the questions about it. */
     val ownerFolders: OwnerFolders = DefaultOwnerFolders(
-        ports.operator.folderAccess, ports.operator.sharedFolders, ports.operator.permissions, activityRecorder, ports.idGenerator, ports.clock,
+        ports.operator.folderAccess, ports.operator.sharedFolders, ports.operator.permissions, requestQueue, activityRecorder, ports.idGenerator, ports.clock,
     )
 
-    /** The apps the owner authorised for screen operation. */
+    /** The apps the owner authorised for screen operation. Withdrawing one withdraws the questions about it. */
     val ownerOperatorApps: OwnerOperatorApps =
-        DefaultOwnerOperatorApps(ports.operator.operatorApps, ports.operator.permissions, protectedPackages, activityRecorder, ports.clock)
+        DefaultOwnerOperatorApps(ports.operator.operatorApps, ports.operator.permissions, protectedPackages, requestQueue, activityRecorder, ports.clock)
 
     /** Android's settings screens and the share sheet, for the owner's Tools and Workspace screens. */
     val systemScreens: SystemScreens = ports.operator.systemScreens
@@ -380,6 +401,12 @@ class AppGraph(
 
     // --- the Director and its team ---
 
+    /**
+     * Start-up, task-end, expiry and Stop upkeep of the questions to the owner. It can close
+     * questions, never answer one.
+     */
+    private val operatorHooks = OperatorTaskHooks(requestQueue, grantLookup, requestWaiters, activityRecorder, ports.clock)
+
     /** Objectives and their tasks; screens observe them, only the orchestrator changes them. */
     val tasks: TaskRepository = ports.tasks
 
@@ -409,7 +436,7 @@ class AppGraph(
         // The Director may save what an objective taught the team, when the owner allows it.
         memory = memoryService,
         // A task's permissions end with it, and questions left open when the app stopped are withdrawn at start-up.
-        operatorHooks = OperatorTaskHooks(requestQueue, grantLookup, activityRecorder, ports.clock),
+        operatorHooks = operatorHooks,
     ).also {
         // Once, before any agent runs: asking a teammate and delegating are tools like any other.
         TeamTools.registerAll(toolRegistry, capabilities, it)
@@ -519,17 +546,26 @@ class AppGraph(
      * waiter, so this sweep is what ends it. [AppStartup] runs it after start-up and every minute.
      */
     private suspend fun closeOverdueRequests() {
-        val closed = requestQueue.closeOverdue(ports.clock.now(), EXPIRED_NOTE)
-        for (request in closed) {
-            activityRecorder.record(
-                type = if (request.kind == OwnerRequestKind.APPROVAL) ActivityType.APPROVAL else ActivityType.PERMISSION,
-                title = "No answer in time: ${request.toolTitle ?: "permission asked by ${request.agentName ?: "an agent"}"}",
-                detail = request.summary,
-                severity = Severity.WARNING,
-                agentId = request.agentId,
-                taskId = request.taskId,
-                rootTaskId = request.rootId,
-            )
+        operatorHooks.closeOverdue()
+    }
+
+    init {
+        // The owner's Stop (here, on the banner or in the notification) withdraws the questions to see or use a screen:
+        // every screen call is refused until the owner resumes. Only a change to stopped counts, not the value read at start-up.
+        appScope.launch {
+            var before: Boolean? = null
+            screenSessions.stopped.collect { stopped ->
+                if (stopped && before == false) {
+                    try {
+                        operatorHooks.screenStopped()
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        // The broker refuses those calls after any answer; the questions then close with their calls.
+                    }
+                }
+                before = stopped
+            }
         }
     }
 
@@ -549,8 +585,4 @@ class AppGraph(
         startup.onAppBackgrounded()
     }
 
-    private companion object {
-        /** Why a request no one answered was closed. */
-        const val EXPIRED_NOTE = "No answer in time."
-    }
 }

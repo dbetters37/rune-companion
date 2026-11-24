@@ -7,10 +7,12 @@ import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.ToolId
 import com.aicontrolcenter.core.agents.AgentProfile
 import com.aicontrolcenter.core.llm.LlmClient
+import com.aicontrolcenter.core.operator.OperatorApp
 import com.aicontrolcenter.core.operator.OperatorCapabilities
 import com.aicontrolcenter.core.operator.OwnerRequest
 import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.PreviewText
+import com.aicontrolcenter.core.operator.SharedFolder
 import com.aicontrolcenter.core.tools.CapabilityConstraint
 import com.aicontrolcenter.core.tools.RiskLevel
 import com.aicontrolcenter.core.FolderId
@@ -30,8 +32,23 @@ suspend fun TestApp.operatorOn(client: LlmClient): AgentProfile {
     return agents.get(operator.id)!!
 }
 
-/** Stores [request] as the broker would raise it. */
-suspend fun TestApp.raise(request: OwnerRequest): OwnerRequest {
+/**
+ * Stores [request] as the broker would raise it, with a live call waiting for it ([waiting]), or,
+ * with [waiting] false, as an earlier run of the app left it: pending, with nothing waiting. The
+ * broker raises requests only about a folder that exists or an app the owner authorised, so the
+ * request's folder or app is added first when it is missing.
+ */
+suspend fun TestApp.raise(request: OwnerRequest, waiting: Boolean = true): OwnerRequest {
+    when (val target = request.constraint) {
+        is CapabilityConstraint.Folder -> if (sharedFolders.get(target.folderId) == null) {
+            sharedFolders.upsert(SharedFolder(target.folderId, "content://test/tree/${target.folderId.value}", request.targetLabel ?: "Documents", request.createdAt))
+        }
+        is CapabilityConstraint.App -> if (operatorApps.get(target.packageName) == null) {
+            operatorApps.upsert(OperatorApp(target.packageName, request.targetLabel ?: target.packageName, request.createdAt))
+        }
+        CapabilityConstraint.None -> Unit
+    }
+    if (waiting) graph.requestWaiters.register(request.id)
     ownerRequestStore.create(request)
     return request
 }

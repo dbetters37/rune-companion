@@ -9,6 +9,7 @@ import com.aicontrolcenter.core.RequestId
 import com.aicontrolcenter.core.operator.DecideResult
 import com.aicontrolcenter.core.operator.GrantScope
 import com.aicontrolcenter.core.operator.OwnerRequest
+import com.aicontrolcenter.core.operator.OwnerRequestStatus
 import com.aicontrolcenter.core.operator.OwnerRequests
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.tools.Capability
@@ -22,6 +23,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -41,6 +43,8 @@ data class ApprovalsUiState(
     val isLoading: Boolean = true,
     /** Requests waiting for an answer, oldest first. */
     val requests: List<RequestUi> = emptyList(),
+    /** Notifications are off: the owner is not told when a request starts waiting. */
+    val notificationsOff: Boolean = false,
 )
 
 /**
@@ -56,10 +60,16 @@ class ApprovalsViewModel(
     private val clock: Clock,
     private val zone: ZoneId = ZoneId.systemDefault(),
     ticker: Flow<Unit> = everyHalfMinute(),
+    /** Whether notifications can be shown (`NotificationAccess.enabled`). */
+    notificationsEnabled: Flow<Boolean> = flowOf(true),
 ) : ViewModel() {
-    val uiState: StateFlow<ApprovalsUiState> = combine(requests.pending, directory.observe(), ticker) { pending, snapshot, _ ->
+    val uiState: StateFlow<ApprovalsUiState> = combine(requests.pending, directory.observe(), ticker, notificationsEnabled) { pending, snapshot, _, notify ->
         val now = clock.now()
-        ApprovalsUiState(isLoading = false, requests = pending.filter { it.isOpenAt(now) }.map { requestUi(it, snapshot, capabilityInfo, now, zone) })
+        ApprovalsUiState(
+            isLoading = false,
+            requests = pending.filter { it.isOpenAt(now) }.map { requestUi(it, snapshot, capabilityInfo, now, zone) },
+            notificationsOff = !notify,
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ApprovalsUiState())
 }
 
@@ -78,7 +88,9 @@ data class ApprovalUiState(
 /**
  * One question to the owner: who asks, for what exactly, where data would go, and the answers
  * on offer. Only the owner's taps here answer it ([OwnerRequests]); an answer that comes too
- * late or after another one is reported as such, and nothing changes.
+ * late or after another one is reported as such, and nothing changes. A question nothing waits
+ * for any more (its call stopped with an earlier run of the app) is closed as soon as it is
+ * shown ([OwnerRequests.closeIfAbandoned]) and reads "No longer waiting", never with answers.
  *
  * @param ticker moves the time left; tests pass a single tick.
  */
@@ -97,9 +109,12 @@ class ApprovalViewModel(
     private val local = MutableStateFlow(Local())
     private var messageCounter = 0L
 
-    /** The request as it is now: from the pending list while it waits (every change to it re-emits), from the store once closed. */
+    /**
+     * The request as it is now: from the pending list while a call waits for it (every change to
+     * it re-emits), else from the store, closed first if nothing waits for it any more.
+     */
     private val request: Flow<OwnerRequest?> = requests.pending
-        .map { pending -> pending.firstOrNull { it.id == requestId } ?: requests.get(requestId) }
+        .map { pending -> pending.firstOrNull { it.id == requestId } ?: requests.closeIfAbandoned(requestId) }
         .distinctUntilChanged()
 
     val uiState: StateFlow<ApprovalUiState> = combine(request, directory.observe(), local, ticker) { request, snapshot, local, _ ->
@@ -143,14 +158,20 @@ class ApprovalViewModel(
     fun messageShown() = local.update { it.copy(message = null) }
 
     private fun describe(result: DecideResult, choice: RequestChoice): String = when (result) {
+        // The call is checked again before it runs (the app, the folder, Stop, the screen in front), so say what was given, not what will run.
         is DecideResult.Decided -> when (choice) {
-            RequestChoice.ALLOW_ONCE -> "Allowed just this once. The agent goes on."
-            RequestChoice.ALLOW_FOR_TASK -> "Allowed until the task ends. The agent goes on."
-            RequestChoice.ALLOW_ALWAYS -> "Always allowed, until you remove it in Tools › Allowed. The agent goes on."
-            RequestChoice.APPROVE -> "Approved. The action runs once, exactly as shown."
+            RequestChoice.ALLOW_ONCE -> "Allowed just this once. The action is checked again before it runs."
+            RequestChoice.ALLOW_FOR_TASK -> "Allowed until the task ends. Each action is still checked before it runs."
+            RequestChoice.ALLOW_ALWAYS -> "Always allowed, until you remove it in Tools › Allowed. Each action is still checked before it runs."
+            RequestChoice.APPROVE -> "Approved. It runs once, exactly as shown, unless something changed meanwhile; then the agent is told it was not run."
             RequestChoice.DENY -> "Denied. The agent is told, with your note if you wrote one."
         }
-        is DecideResult.AlreadyClosed -> "This request was already closed (${result.request.statusAt(clock.now()).text.lowercase()}). Nothing changed."
+        is DecideResult.AlreadyClosed ->
+            if (result.request.status == OwnerRequestStatus.CANCELLED) {
+                "Your answer was not used. " + (result.request.decisionNote ?: "Nothing waits for it any more.")
+            } else {
+                "This request was already closed (${result.request.statusAt(clock.now()).text.lowercase()}). Nothing changed."
+            }
         is DecideResult.Expired -> "Too late: the request expired, so the agent was refused. Nothing was allowed."
         is DecideResult.NotAccepted -> result.problem
         DecideResult.NotFound -> "This request no longer exists. Nothing changed."

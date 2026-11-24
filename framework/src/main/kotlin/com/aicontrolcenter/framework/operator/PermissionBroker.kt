@@ -49,11 +49,14 @@ import kotlinx.serialization.json.put
  *       refusal here comes before any request, so nothing the broker would refuse is put to
  *       the owner.
  *  4.   The call passes when its capability is granted by default or a stored grant covers it
- *       ([GrantLookup.findMatching]: agent, capability, constraint, task). Otherwise a PERMISSION
- *       request is raised and the call waits. Approved for one call (ONCE), the call uses up
- *       exactly the grant of its own request ([GrantLookup.consumeOnceFor]); for the task or
- *       always, that grant must be in force. Refused, expired or cancelled: denied, with the
- *       owner's note passed on as quoted text.
+ *       ([GrantLookup.findMatching]: agent, capability, constraint, task). Otherwise, unless the
+ *       owner refused this agent the same permission and target within
+ *       [OwnerRequest.REFUSAL_COOLDOWN_MS] (then the call is refused at once, the refusal counts
+ *       the repeat, and the owner is not asked again), a PERMISSION request is raised and the
+ *       call waits. Approved for one call (ONCE), the call uses up exactly the grant of its own
+ *       request ([GrantLookup.consumeOnceFor]); for the task or always, that grant must be in
+ *       force. Refused, expired or cancelled: denied, with the owner's note passed on as quoted
+ *       text.
  *  5.   A CONSEQUENTIAL call (the higher of the tool's declared and the call's assessed risk)
  *       raises an APPROVAL request with the call's exact summary, details and destination,
  *       every time, whatever was granted, and waits. It is answered yes or no only.
@@ -66,6 +69,9 @@ import kotlinx.serialization.json.put
  *  - Only the owner's UI decides a request ([com.aicontrolcenter.core.operator.OwnerRequests]);
  *    the broker holds [OwnerRequestQueue] and [GrantLookup], which raise, watch, close and use
  *    up the ONCE grant of its own request, and can approve or grant nothing.
+ *  - The request is registered in [RequestWaiters] before it is stored and removed once it is
+ *    closed, so the owner's port knows a live call waits for it; a request without one (left by
+ *    an earlier run of the app) can never be answered.
  *  - The wait runs inside [WaitClock.pausedWhile], so it does not count against the time limits
  *    of the run, the task or the objective around the call. It ends at the request's expiry
  *    (`approvalTimeoutMinutes`, read when it is raised): the request is closed as EXPIRED, unless
@@ -73,7 +79,9 @@ import kotlinx.serialization.json.put
  *  - While it waits, the call's task shows WAITING_FOR_OWNER (changed only from RUNNING, never
  *    on an objective) and the run is told ([OwnerWaits]). Afterwards the task is RUNNING again
  *    and its stored deadline, and that of every delegating task waiting for it, is moved later
- *    by the time waited, so what is stored agrees with the paused limits.
+ *    by the time waited, so what is stored agrees with the paused limits. An objective's own
+ *    deadline (the Director's calls while planning) is left to the orchestrator, whose running
+ *    limit pauses and stores it as the wait goes on, also if the app is killed during the wait.
  *  - When the waiting coroutine is cancelled (the task paused or cancelled, the chat stopped),
  *    the request is closed as CANCELLED; either way an unused ONCE grant of the request is
  *    released ([GrantLookup.releaseOnceFor]).
@@ -84,6 +92,8 @@ class PermissionBroker(
     private val facts: OperatorFacts,
     private val requests: OwnerRequestQueue,
     private val grants: GrantLookup,
+    /** Where the broker says which of its requests a live call waits for. */
+    private val waiters: RequestWaiters,
     /** Where a waiting task's status and deadline are kept; null where calls have no tasks. */
     private val tasks: TaskRepository?,
     private val activity: ActivityRecorder,
@@ -102,6 +112,7 @@ class PermissionBroker(
             if (covered(call)) {
                 reliesOnGrant = true
             } else {
+                refusedRecently(call, info)?.let { return Authorization.Denied(it) }
                 when (val asked = ask(call, OwnerRequestKind.PERMISSION, info)) {
                     is Asked.Refused -> return Authorization.Denied(asked.reason)
                     is Asked.Allowed -> {
@@ -147,6 +158,27 @@ class PermissionBroker(
         grants.findMatching(GrantQuery(call.context.agent.id, call.tool.capability, call.assessment.constraint, call.context.taskId, clock.now())).isNotEmpty()
 
     /**
+     * Why [call] is refused without asking the owner: the owner refused this agent the same
+     * permission and target less than [OwnerRequest.REFUSAL_COOLDOWN_MS] ago. The refusal counts
+     * the repeat ([OwnerRequestQueue.countAskedAgain]) and it is logged. Null to go on and ask.
+     */
+    private suspend fun refusedRecently(call: Call, info: CapabilityInfo): String? {
+        val now = clock.now()
+        val agent = call.context.agent
+        val refusal = requests.lastRefusal(agent.id, call.tool.capability, call.assessment.constraint, now - OwnerRequest.REFUSAL_COOLDOWN_MS) ?: return null
+        val counted = safely { requests.countAskedAgain(refusal.id) } ?: refusal
+        val reason = refusalCooldownReason(facts.agent(agent.id)?.name ?: agent.name, info.title, refusal, now) + " \"${call.tool.title}\" was not run."
+        safely {
+            activity.record(
+                ActivityType.PERMISSION, "Not asked again: ${call.tool.title}", reason.take(MAX_LOGGED), severity = Severity.WARNING,
+                agentId = agent.id, taskId = call.context.taskId, rootTaskId = call.context.rootTaskId,
+                data = requestData(counted) { put("askedAgain", counted.askedAgain) },
+            )
+        }
+        return reason
+    }
+
+    /**
      * Raises a [kind] request for [call], waits for its answer outside every time limit, and
      * uses it. Always leaves the request closed, an unused ONCE grant of it released, and the
      * task as it was before the wait (deadline moved by the wait), even when cancelled.
@@ -154,7 +186,14 @@ class PermissionBroker(
     private suspend fun ask(call: Call, kind: OwnerRequestKind, info: CapabilityInfo): Asked {
         val request = newRequest(call, kind, info)
         val waits = OwnerWaits.current()
-        requests.create(request)
+        // Registered first, so the owner never sees this request pending without a live waiter.
+        waiters.register(request.id)
+        try {
+            requests.create(request)
+        } catch (e: Exception) {
+            waiters.unregister(request.id)
+            throw e
+        }
         val startedAt = clock.now()
         var waitingTask: WaitingTask? = null
         var ended: OwnerRequest? = null
@@ -172,6 +211,7 @@ class PermissionBroker(
                 val final = ended ?: safely { requests.close(request.id, OwnerRequestStatus.CANCELLED, at, CANCELLED_NOTE) }
                     ?: safely { requests.get(request.id) } ?: request
                 safely { grants.releaseOnceFor(request.id, at) }
+                waiters.unregister(request.id)
                 waitingTask?.let { safely { resume(it, (at - startedAt).coerceAtLeast(0), at) } }
                 logOutcome(final, outcome)
                 waits?.let { safely { it.answered(final) } }
@@ -279,7 +319,8 @@ class PermissionBroker(
         val task = store.update(waiting.id) { task ->
             var next = task
             if (waiting.flipped && task.status == TaskStatus.WAITING_FOR_OWNER) next = next.copy(status = TaskStatus.RUNNING, statusDetail = waiting.detailBefore)
-            if (!task.status.isFinished && waitedMs > 0) next = next.copy(deadlineAt = task.deadlineAt?.plus(waitedMs))
+            // An objective's deadline is the orchestrator's: its running limit keeps it ([ObjectiveDriver]).
+            if (!task.status.isFinished && waitedMs > 0 && task.kind != TaskKind.OBJECTIVE) next = next.copy(deadlineAt = task.deadlineAt?.plus(waitedMs))
             if (next == task) task else next.copy(updatedAt = at)
         } ?: return
         if (waitedMs <= 0 || task.kind != TaskKind.WORK) return
@@ -376,4 +417,19 @@ class PermissionBroker(
         private const val MAX_LOGGED = 600
         private const val MAX_DELEGATION_WALK = 16
     }
+}
+
+/**
+ * What the model is told when it asks again, too soon, for a permission the owner refused: when
+ * it was refused, how long until it may be asked again, and what to do meanwhile. Shared by the
+ * broker and the capability requester.
+ */
+internal fun refusalCooldownReason(agentName: String, permission: String, refusal: OwnerRequest, now: Long): String {
+    val decided = refusal.decidedAt ?: now
+    val ago = ((now - decided) / 60_000L).coerceAtLeast(0)
+    val left = ((decided + OwnerRequest.REFUSAL_COOLDOWN_MS - now + 59_999L) / 60_000L).coerceAtLeast(1)
+    val whenRefused = if (ago < 1) "less than a minute ago" else "$ago minute${if (ago == 1L) "" else "s"} ago"
+    return "The owner refused $agentName the permission \"$permission\" $whenRefused, so the owner is not asked again for " +
+        "$left more minute${if (left == 1L) "" else "s"}. Carry on without it, or say in your answer what you need it for; the owner " +
+        "can still allow it in the app."
 }

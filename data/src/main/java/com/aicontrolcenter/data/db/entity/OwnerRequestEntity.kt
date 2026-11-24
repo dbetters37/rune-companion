@@ -15,6 +15,8 @@ import androidx.room.PrimaryKey
  * - [detailsJson] and [delegationChainJson] are JSON arrays whose order is kept.
  * - The texts (summary, details, the agent's reason, the owner's note, the names captured when
  *   the request was raised) are stored exactly as written.
+ * - [askedAgain] counts, on a refused request, the asks of the same agent for the same
+ *   permission that were refused during the cool-down without a new row.
  *
  * Indexes, one per listing, each in that listing's order: pending `(status, created_at, id)`,
  * a chat `(conversation_id, created_at, id)`, an objective `(root_id, created_at, id)`, the
@@ -55,6 +57,7 @@ internal data class OwnerRequestEntity(
     @ColumnInfo(name = "tool_title") val toolTitle: String?,
     @ColumnInfo(name = "target_label") val targetLabel: String?,
     @ColumnInfo(name = "delegation_chain_json") val delegationChainJson: String,
+    @ColumnInfo(name = "asked_again", defaultValue = "0") val askedAgain: Int = 0,
 ) {
     companion object {
         const val TABLE = "owner_requests"

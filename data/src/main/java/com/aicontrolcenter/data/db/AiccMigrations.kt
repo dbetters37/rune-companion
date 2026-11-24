@@ -50,7 +50,7 @@ internal object Migration4To5 : Migration(4, 5) {
             "`summary` TEXT NOT NULL, `details_json` TEXT NOT NULL, `data_goes_to` TEXT, `reason` TEXT, `task_id` TEXT, `root_id` TEXT, " +
             "`conversation_id` TEXT, `created_at` INTEGER NOT NULL, `expires_at` INTEGER NOT NULL, `decided_at` INTEGER, " +
             "`decision_scope` TEXT, `decision_note` TEXT, `agent_name` TEXT, `tool_title` TEXT, `target_label` TEXT, " +
-            "`delegation_chain_json` TEXT NOT NULL, PRIMARY KEY(`id`))",
+            "`delegation_chain_json` TEXT NOT NULL, `asked_again` INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(`id`))",
         "CREATE INDEX IF NOT EXISTS `index_owner_requests_status_created_at_id` ON `owner_requests` (`status`, `created_at`, `id`)",
         "CREATE INDEX IF NOT EXISTS `index_owner_requests_conversation_id_created_at_id` ON `owner_requests` " +
             "(`conversation_id`, `created_at`, `id`)",

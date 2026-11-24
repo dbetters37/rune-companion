@@ -9,6 +9,7 @@ import com.aicontrolcenter.core.activity.ActivityLog
 import com.aicontrolcenter.core.chat.ConversationRepository
 import com.aicontrolcenter.core.device.DeviceInspector
 import com.aicontrolcenter.core.activity.EgressInfo
+import com.aicontrolcenter.core.activity.EgressOrigin
 import com.aicontrolcenter.core.memory.MemoryRepository
 import com.aicontrolcenter.core.operator.AppActions
 import com.aicontrolcenter.core.operator.MediaLibrary
@@ -110,9 +111,10 @@ class OperatorPorts(
     val appActions: AppActions,
     /**
      * Builds the one web page reader of the process. [onRequestSent][webReader] is told of every
-     * request that leaves the phone, also when the read then fails; the graph logs each one.
+     * request that leaves the phone, also when the read then fails, with the origin (agent and
+     * task) of the read; the graph logs each one.
      */
-    val webReader: (onRequestSent: (EgressInfo) -> Unit) -> WebReader,
+    val webReader: (onRequestSent: (EgressInfo, EgressOrigin?) -> Unit) -> WebReader,
     /** Reads and drives authorised apps' screens. Agent-facing: it cannot stop or resume itself. */
     val screenOperator: ScreenOperator,
     /** The owner's Stop and Resume. Owner-only. */

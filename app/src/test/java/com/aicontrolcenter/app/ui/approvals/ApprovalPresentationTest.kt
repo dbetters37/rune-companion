@@ -16,6 +16,7 @@ import com.aicontrolcenter.core.chat.ConversationEntry
 import com.aicontrolcenter.core.llm.ChatMessage
 import com.aicontrolcenter.core.operator.GrantScope
 import com.aicontrolcenter.core.operator.OperatorCapabilities
+import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.OwnerRequestStatus
 import com.aicontrolcenter.core.registry.AgentEntry
 import com.aicontrolcenter.core.registry.RegistrySnapshot
@@ -24,6 +25,7 @@ import org.junit.Test
 import java.time.ZoneOffset
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** How requests to the owner read: exact text with visible marks, the answers offered, time and status. */
@@ -176,8 +178,14 @@ class ApprovalPresentationTest {
         val always = once.copy(decisionScope = GrantScope.ALWAYS)
         assertEquals("Always allowed", ui(always).status.text)
         val cancelled = request.copy(status = OwnerRequestStatus.CANCELLED, decidedAt = now, decisionNote = "stopped")
-        assertEquals("Cancelled", ui(cancelled).status.text)
+        assertEquals("No longer waiting", ui(cancelled).status.text)
         assertEquals(StatusTone.DISABLED, ui(cancelled).status.tone)
+        assertNull(ui(cancelled).askedAgain)
+        // R4: asks refused during the cool-down after a refusal are counted on it, in words.
+        val refused = request.copy(kind = OwnerRequestKind.PERMISSION, status = OwnerRequestStatus.DENIED, decidedAt = now, askedAgain = 3)
+        assertEquals("Asked again 3 times within 10 minutes of your refusal. Not put to you: each was refused at once.", ui(refused).askedAgain)
+        assertEquals("Asked again once within 10 minutes of your refusal. Not put to you: each was refused at once.", askedAgainText(1))
+        assertNull(askedAgainText(0))
     }
 
     @Test

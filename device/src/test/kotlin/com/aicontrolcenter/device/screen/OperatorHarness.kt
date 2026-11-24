@@ -134,9 +134,9 @@ internal class OperatorHarness(
     val control = SwitchScreenControl(switch)
     private val dispatcher = StandardTestDispatcher(scope.testScheduler)
     val operator = AccessibilityScreenOperator(
-        apps = apps,
-        protectedPackages = ProtectedPackages(OWN, resolved = setOf(OEM_SETTINGS)),
-        stopSwitch = switch,
+        apps = AuthorisedAppLookup.of(apps),
+        protectedPackages = ProtectedPackages(OWN, resolved = setOf(OEM_SETTINGS)).let { fixed -> { fixed } },
+        stopSwitch = StopSignal(switch),
         link = link,
         availability = availability,
         device = facts,

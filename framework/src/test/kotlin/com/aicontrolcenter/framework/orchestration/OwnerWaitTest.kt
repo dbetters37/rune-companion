@@ -37,6 +37,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.testTimeSource
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -178,7 +179,11 @@ class OwnerWaitTest {
         val interrupted = team.work(objective.id).single()
         assertEquals(TaskStatus.INTERRUPTED, interrupted.status)
         assertEquals(1, interrupted.attempt, "the stopped run counts as an attempt, as for a task waiting for an agent")
-        assertTrue(team.world.events(ActivityType.PERMISSION).any { it.title == "Requests withdrawn at start-up" })
+        // Logged on its own, with its request id, so its trail in the activity log can be closed (INT-8).
+        val logged = team.world.events(ActivityType.PERMISSION).single { it.title.startsWith("Request withdrawn at start-up") }
+        assertEquals(open.id.value, logged.data?.get("requestId")?.jsonPrimitive?.content)
+        assertEquals(work.id, logged.taskId)
+        assertEquals(team.researcher.id, logged.agentId)
 
         after.resume(objective.id)
         team.settle()

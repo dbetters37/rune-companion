@@ -7,3 +7,11 @@ plugins {
     alias(libs.plugins.ksp) apply false
     alias(libs.plugins.roborazzi) apply false
 }
+
+// A test that hangs must not hold the build, and tools/gw's machine-wide lock, for ever: every test
+// task gives up after this long (a full run of the slowest module takes about a minute).
+subprojects {
+    tasks.withType<Test>().configureEach {
+        timeout.set(java.time.Duration.ofMinutes(20))
+    }
+}

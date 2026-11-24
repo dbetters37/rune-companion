@@ -194,7 +194,7 @@ private fun StopCard(stopped: Boolean, isBusy: Boolean, actions: ScreenControlAc
             } else {
                 Text("Stop", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
                 Text(
-                    "While an agent operates an app, a banner with Stop shows over it, and a notification too. Stop here works the same: " +
+                    "While an agent operates an app, a banner with Stop shows over it, and a notification too while notifications are allowed. Stop here works the same: " +
                         "every screen action ends at once and nothing more happens until you resume.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

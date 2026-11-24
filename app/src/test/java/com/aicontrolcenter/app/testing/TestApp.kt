@@ -8,6 +8,7 @@ import com.aicontrolcenter.app.di.AppGraph
 import com.aicontrolcenter.app.di.OperatorPorts
 import com.aicontrolcenter.app.di.Ports
 import com.aicontrolcenter.core.activity.EgressInfo
+import com.aicontrolcenter.core.activity.EgressOrigin
 import com.aicontrolcenter.core.operator.ProtectedPackages
 import com.aicontrolcenter.core.operator.WebReadLimits
 import com.aicontrolcenter.core.operator.WebReadResult
@@ -157,7 +158,8 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
             appActions = appActions,
             webReader = { onRequestSent -> ReportingWebReader(web, onRequestSent) },
             screenOperator = screen,
-            screenControl = screen,
+            // A separate object, as the device's: nothing agent-facing holding the screen can stop or resume.
+            screenControl = screen.asControl(),
             shell = shell,
             termux = termux,
             // Captures the set, not this test app (which holds the owner's services).
@@ -244,13 +246,16 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
  * [FakeWebReader] that reports each host a page read reached to [onRequestSent], as the real
  * reader reports every request it sends.
  */
-class ReportingWebReader(private val pages: FakeWebReader, private val onRequestSent: (EgressInfo) -> Unit) : WebReader {
-    override suspend fun read(url: String, limits: WebReadLimits): WebReadResult =
-        pages.read(url, limits).also { result ->
+class ReportingWebReader(private val pages: FakeWebReader, private val onRequestSent: (EgressInfo, EgressOrigin?) -> Unit) : WebReader {
+    override suspend fun read(url: String, limits: WebReadLimits): WebReadResult {
+        // As the real reader does: the origin is read in the caller's coroutine and handed back with every report.
+        val origin = EgressOrigin.current()
+        return pages.read(url, limits).also { result ->
             (result as? WebReadResult.Page)?.hostsContacted?.forEach { host ->
-                onRequestSent(EgressInfo(host, Locality.CLOUD, purpose = "web page request (the page address and standard headers)"))
+                onRequestSent(EgressInfo(host, Locality.CLOUD, purpose = "web page request (the page address and standard headers)"), origin)
             }
         }
+    }
 }
 
 /**

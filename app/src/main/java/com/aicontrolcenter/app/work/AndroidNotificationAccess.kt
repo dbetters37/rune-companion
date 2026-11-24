@@ -25,14 +25,22 @@ class AndroidNotificationAccess(context: Context) : NotificationAccess {
     override val permission: String? =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Manifest.permission.POST_NOTIFICATIONS else null
 
-    override fun shouldAsk(): Boolean {
+    override fun shouldAsk(): Boolean = shouldAsk(KEY_ASKED)
+
+    override fun markAsked() = markAsked(KEY_ASKED)
+
+    override fun shouldAskForOperator(): Boolean = shouldAsk(KEY_ASKED_OPERATOR)
+
+    override fun markAskedForOperator() = markAsked(KEY_ASKED_OPERATOR)
+
+    private fun shouldAsk(key: String): Boolean {
         val needed = permission ?: return false
         val granted = ContextCompat.checkSelfPermission(appContext, needed) == PackageManager.PERMISSION_GRANTED
-        return !granted && !preferences.getBoolean(KEY_ASKED, false)
+        return !granted && !preferences.getBoolean(key, false)
     }
 
-    override fun markAsked() {
-        preferences.edit().putBoolean(KEY_ASKED, true).apply()
+    private fun markAsked(key: String) {
+        preferences.edit().putBoolean(key, true).apply()
         refresh()
     }
 
@@ -45,5 +53,8 @@ class AndroidNotificationAccess(context: Context) : NotificationAccess {
     private companion object {
         const val PREFERENCES = "notifications"
         const val KEY_ASKED = "asked_for_objectives"
+
+        /** Asked separately: an earlier "no" for objectives' progress is no answer about approvals. */
+        const val KEY_ASKED_OPERATOR = "asked_for_operator"
     }
 }

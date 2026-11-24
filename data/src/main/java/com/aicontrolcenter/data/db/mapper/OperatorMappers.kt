@@ -82,6 +82,7 @@ internal fun OwnerRequest.toEntity(): OwnerRequestEntity = OwnerRequestEntity(
     toolTitle = toolTitle,
     targetLabel = targetLabel,
     delegationChainJson = encodeColumn(ColumnSerializers.agentIdList, delegationChain),
+    askedAgain = askedAgain,
 )
 
 /** @throws com.aicontrolcenter.data.StoredDataException naming the column, if the row cannot be read. */
@@ -120,6 +121,7 @@ internal fun OwnerRequestEntity.toDomain(): OwnerRequest {
             toolTitle = toolTitle,
             targetLabel = targetLabel,
             delegationChain = delegationChain,
+            askedAgain = askedAgain,
         )
     }
 }

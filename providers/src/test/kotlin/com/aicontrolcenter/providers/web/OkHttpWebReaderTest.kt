@@ -1,11 +1,15 @@
 package com.aicontrolcenter.providers.web
 
+import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.activity.EgressInfo
+import com.aicontrolcenter.core.activity.EgressOrigin
 import com.aicontrolcenter.core.operator.WebReadLimits
 import com.aicontrolcenter.core.operator.WebReadResult
 import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.providers.MockServerTest
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import mockwebserver3.MockResponse
 import okhttp3.Dns
 import okhttp3.OkHttpClient
@@ -50,6 +54,7 @@ class OkHttpWebReaderTest : MockServerTest() {
     }
 
     private val sent = CopyOnWriteArrayList<EgressInfo>()
+    private val origins = CopyOnWriteArrayList<EgressOrigin?>()
     private val sockets = ServerPlaysEveryHost()
 
     private fun resolve(host: String, vararg addresses: InetAddress) {
@@ -57,7 +62,10 @@ class OkHttpWebReaderTest : MockServerTest() {
     }
 
     private fun reader(socketFactory: SocketFactory = sockets, own: Set<InetAddress> = emptySet(), client: OkHttpClient.Builder = OkHttpClient.Builder()) =
-        OkHttpWebReader(client.dns(dns).socketFactory(socketFactory).build(), { own }, { sent += it })
+        OkHttpWebReader(client.dns(dns).socketFactory(socketFactory).build(), { own }) { egress, origin ->
+            sent += egress
+            origins += origin
+        }
 
     private fun read(url: String, limits: WebReadLimits = WebReadLimits(), reader: OkHttpWebReader = reader()) = runBlocking { reader.read(url, limits) }
 
@@ -281,6 +289,26 @@ class OkHttpWebReaderTest : MockServerTest() {
         assertEquals(WebReadResult.Refused("Addresses with a user name or password are not read."), read(url("news.example")))
         assertEquals(WebReadResult.Refused("Addresses with a user name or password are not read."), read("http://me:pw@news.example:${server.port}/"))
         assertEquals(2, server.requestCount)
+    }
+
+    @Test
+    fun `every request reported names the origin the read was called with, so the log can name the agent and the task`() {
+        resolve("news.example", public1)
+        resolve("cdn.example", public2)
+        server.enqueue(redirect(url("cdn.example", "/a")))
+        server.enqueue(page("final", "text/plain"))
+        val origin = EgressOrigin(AgentId("agt_researcher"), TaskId("tsk_compare"), TaskId("tsk_root"))
+
+        val result = runBlocking { withContext(origin) { reader().read(url("news.example"), WebReadLimits()) } }
+
+        assertIs<WebReadResult.Page>(result)
+        assertEquals(listOf("news.example", "cdn.example"), sent.map { it.destinationHost })
+        assertEquals(listOf(origin, origin), origins.toList(), "each request, the redirect's too, is reported with the caller's origin")
+
+        // Outside a tool call there is no origin to report.
+        server.enqueue(page("plain", "text/plain"))
+        read(url("news.example"))
+        assertNull(origins.last())
     }
 
     @Test

@@ -21,9 +21,10 @@ import java.io.File
  *
  * This is the only place in the app that names the `:data` and `:device` modules, so swapping
  * a storage or platform implementation never touches a screen or a view model. It is called
- * once per process, lazily, with the application context. Nothing here blocks on storage: the
- * encrypted database, the settings file and the keystore are opened on first use, off the main
- * thread. The one exception is the protected-app list, below.
+ * once per process, lazily, with the application context, often from the main thread. Nothing
+ * here blocks: the encrypted database, the settings file and the keystore are opened on first
+ * use, off the main thread, and the protected-app list and the screen operator's first look at
+ * Android's settings are read in the background.
  *
  * The launcher is passed unwrapped; [AppGraph] adds the activity-log wrapper.
  */
@@ -31,16 +32,17 @@ fun createProductionPorts(context: Context): Ports {
     val appContext = context.applicationContext
     val data = DataLayer(appContext)
     val device = DeviceLayer(appContext)
-    // Resolved once per process (about a dozen PackageManager queries) and shared by everyone:
-    // the screen operator keeps this very set, and the broker, the tools, app hand-overs and the
-    // owner's screens read the same one, so they can never disagree about an app.
-    val protectedPackages = ProtectedPackagesResolver.resolve(appContext)
+    // Resolved once per process (about a dozen PackageManager queries and an autofill query) on its
+    // own thread, and shared by everyone: the screen operator, the broker, the tools, app hand-overs
+    // and the owner's screens read the same set, so they can never disagree about an app. A reader
+    // that comes before it is done waits for the full set instead of checking against less.
+    val protectedPackages = ProtectedPackagesResolver.startResolving(appContext)
     // Exactly one per process: it shares the one accessibility service and the persisted Stop.
     val screen = ScreenOperatorLayer(appContext, data.operatorApps, protectedPackages)
     val phone = PhoneOperatorLayer(
         appContext,
         data.sharedFolders,
-        protectedPackages = { protectedPackages },
+        protectedPackages = protectedPackages,
         // A bound accessibility service lets the app start activities from the background.
         accessibilityServiceBound = { screen.operator.state.value == ScreenServiceState.READY },
     )
@@ -75,9 +77,10 @@ fun createProductionPorts(context: Context): Ports {
             screenControl = screen.control,
             shell = phone.shellRunner,
             termux = phone.termuxRunner,
-            protectedPackages = { protectedPackages },
+            protectedPackages = protectedPackages,
             ownPackage = appContext.packageName,
-            refreshScreenState = { screen.refreshState() },
+            // Called from the main thread (the app coming to the front, the Screen control screen): read off it.
+            refreshScreenState = { screen.refreshStateInBackground() },
             systemScreens = AndroidSystemScreens(appContext),
         ),
         packageChanges = device.packageChanges.map { },

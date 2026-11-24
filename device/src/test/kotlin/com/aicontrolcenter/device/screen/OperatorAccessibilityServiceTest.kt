@@ -79,7 +79,7 @@ class OperatorAccessibilityServiceTest {
         apps.upsert(OperatorApp(NOTES, "Notes", 1, CERT))
         val facts = FakeDeviceFacts().apply { certificates[NOTES] = CERT }
         val operator = AccessibilityScreenOperator(
-            apps, ProtectedPackages("com.aicontrolcenter.app"), StopSwitch(InMemoryStopStore(), scope), ServiceLink.process,
+            AuthorisedAppLookup.of(apps), { ProtectedPackages("com.aicontrolcenter.app") }, StopSignal(StopSwitch(InMemoryStopStore(), scope)), ServiceLink.process,
             FakeAvailability(), facts, FakeClock(), scope, io = Dispatchers.Unconfined, main = Dispatchers.Main,
         )
         val notes = TestWindow(NOTES, title = "Inbox") { button("Send") }

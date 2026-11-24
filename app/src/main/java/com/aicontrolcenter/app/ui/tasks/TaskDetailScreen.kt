@@ -60,6 +60,7 @@ fun TaskDetailRoute(
         TaskDetailViewModel(
             taskId, graph.tasks, graph.messages, graph.registryDirectory, graph.agentChat, graph.toolRegistry, graph.orchestrator,
             graph.activityMonitor, graph.clock, requests = graph.ownerRequests.pending, capabilityInfo = graph.capabilities::info,
+            awaitStartup = graph::awaitStartup,
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()

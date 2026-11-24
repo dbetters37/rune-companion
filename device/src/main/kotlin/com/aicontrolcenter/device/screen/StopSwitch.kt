@@ -15,19 +15,20 @@ import com.aicontrolcenter.core.operator.ScreenControl
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
 /** Where the owner's Stop is kept across restarts. */
@@ -68,6 +69,11 @@ internal class DataStoreStopStore(private val store: DataStore<Preferences>) : S
  * the call in progress is cancelled before it returns), is written to [store] right after, and is
  * read back at start-up. Until that read finishes, and whenever it fails, operating counts as
  * stopped; an owner action before the read finishes wins over the stored value.
+ *
+ * Writes run one at a time in [scope], each storing the value current when it runs, so the last
+ * one written is the current one. [awaitWrites] waits for every write started so far. A write is
+ * cancelled with [scope] (the process scope is never cancelled; a test closing a switch is), so
+ * closing a switch never waits on a write that can no longer finish.
  */
 internal class StopSwitch(private val store: StopStore, internal val scope: CoroutineScope) {
     private val lock = Any()
@@ -129,29 +135,36 @@ internal class StopSwitch(private val store: StopStore, internal val scope: Coro
         return persist()
     }
 
-    @Volatile
-    private var lastWrite: Job? = null
+    /** Writes started and not finished yet. */
+    private val inFlight: MutableSet<Job> = ConcurrentHashMap.newKeySet()
 
-    /** Returns once every write started so far has finished. */
+    /** Returns once every write started so far has finished (or was cancelled with [scope]). */
     suspend fun awaitWrites() {
-        lastWrite?.join()
+        while (true) {
+            val writing = inFlight.toList()
+            if (writing.isEmpty()) return
+            writing.joinAll()
+        }
     }
 
     /** Writes the latest value; writes run one at a time, so the last one written is the current one. */
-    private fun persist(): Job =
-        scope.launch {
-            withContext(NonCancellable) {
-                writes.withLock {
-                    try {
-                        store.write(flow.value)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Log.w(TAG, "The screen operator's Stop could not be saved; it holds until the app restarts.", e)
-                    }
+    private fun persist(): Job {
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            writes.withLock {
+                try {
+                    store.write(flow.value)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "The screen operator's Stop could not be saved; it holds until the app restarts.", e)
                 }
             }
-        }.also { lastWrite = it }
+        }
+        inFlight += job
+        job.invokeOnCompletion { inFlight -= job }
+        job.start()
+        return job
+    }
 
     /** The process-wide switch. */
     companion object {
@@ -176,6 +189,25 @@ internal class StopSwitch(private val store: StopStore, internal val scope: Coro
             old.scope.coroutineContext[Job]?.cancelAndJoin()
         }
     }
+}
+
+/**
+ * What the agent-facing screen operator may do with the owner's Stop: read it, be told of it,
+ * wait for the stored value, and press Stop when the owner taps it on the operator's banner.
+ * Never Resume, which is the owner's [ScreenControl] alone ([SwitchScreenControl]): the operator
+ * holds this view, not the [StopSwitch].
+ */
+internal class StopSignal(private val switch: StopSwitch) {
+    val stopped: StateFlow<Boolean> get() = switch.stopped
+
+    /** Runs [listener] on every Stop, on the caller's thread, before Stop returns. */
+    fun onStop(listener: () -> Unit) = switch.onStop(listener)
+
+    /** Returns once the stored value has been read (or could not be). */
+    suspend fun awaitLoaded() = switch.awaitLoaded()
+
+    /** The owner tapped Stop on the banner. */
+    fun stop() = switch.stop()
 }
 
 /** The owner's [ScreenControl] over a [StopSwitch]. Owner-only: handed to the Screen control UI, never to tools. */

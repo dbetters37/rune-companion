@@ -38,7 +38,8 @@ class AiControlCenterApp : Application() {
             installedGraph ?: AppGraph(createProductionPorts(this), appScope, notifications = AndroidNotificationAccess(this)).also {
                 installedGraph = it
                 ObjectiveWorkController(this, it, appScope).start()
-                ApprovalNotifier(this, it.ownerRequests.pending, it.clock, appScope).start()
+                // Re-posts the requests still waiting once the owner allows notifications.
+                ApprovalNotifier(this, it.ownerRequests.pending, it.clock, appScope, it.notifications.enabled).start()
                 val context = this
                 ScreenSessionNotifier(this, it.screenSessions.sessions, { ScreenOperatorLayer.stopPendingIntent(context) }, appScope).start()
             }

@@ -16,6 +16,9 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.shadow.api.Shadow
 import org.robolectric.shadows.ShadowAutofillManager
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
@@ -78,6 +81,40 @@ class ScreenPlatformTest {
         assertTrue(protected.isProtected(device.ownPackage), "this app is always protected")
         assertTrue(protected.isProtected("com.android.settings"), "the static floor stays")
         assertFalse(protected.isProtected("com.example.notes"))
+    }
+
+    @Test
+    fun `protected packages are resolved on their own thread, and every reader gets the full set`() {
+        val caller = Thread.currentThread()
+        val release = CountDownLatch(1)
+        var resolvedOn: Thread? = null
+        val full = com.aicontrolcenter.core.operator.ProtectedPackages("com.aicontrolcenter.app", resolved = setOf("com.oem.settings"))
+        val resolving = ResolvingProtectedPackages {
+            resolvedOn = Thread.currentThread()
+            release.await()
+            full
+        }
+        assertFalse(resolving.isResolved, "the queries run in the background, not in the constructor (A7)")
+        val reader = Executors.newSingleThreadExecutor()
+        try {
+            val read = reader.submit<Boolean> { resolving().isProtected("com.oem.settings") }
+            Thread.sleep(50)
+            assertFalse(read.isDone, "a reader waits for the full set rather than checking against the floor")
+            release.countDown()
+            assertTrue(read.get(5, TimeUnit.SECONDS))
+            assertTrue(resolving.isResolved)
+            assertTrue(resolvedOn != null && resolvedOn != caller, "resolved on its own thread")
+            assertTrue(resolving() === full)
+        } finally {
+            reader.shutdownNow()
+        }
+
+        // Should the background resolution fail, a reader resolves again rather than answering with less.
+        var attempts = 0
+        val flaky = ResolvingProtectedPackages {
+            if (attempts++ == 0) throw IllegalStateException("PackageManager died") else full
+        }
+        assertTrue(flaky() === full)
     }
 
     @Test

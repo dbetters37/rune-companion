@@ -42,6 +42,9 @@ import com.aicontrolcenter.framework.operator.DefaultOwnerRequests
 import com.aicontrolcenter.framework.operator.OperatorFacts
 import com.aicontrolcenter.framework.operator.OperatorTaskHooks
 import com.aicontrolcenter.framework.operator.PermissionBroker
+import com.aicontrolcenter.framework.operator.RequestWaiters
+import com.aicontrolcenter.framework.operator.asAuthorisedApps
+import com.aicontrolcenter.framework.operator.asDirectory
 import com.aicontrolcenter.framework.registry.DefaultAiAppRegistry
 import com.aicontrolcenter.framework.registry.DefaultRegistryDirectory
 import com.aicontrolcenter.framework.tools.BuiltInTools
@@ -145,13 +148,15 @@ class TestWorld(
     val operatorApps = InMemoryOperatorAppRepository()
     val screenStopped = MutableStateFlow(false)
     val protectedPackages = ProtectedPackages(OWN_PACKAGE)
-    val facts = OperatorFacts(agents, settings, capabilities, folders, operatorApps, screenStopped) { protectedPackages }
-    val broker = PermissionBroker(facts, requests, grants, tasks, activity, ids, clock)
-    val requester = DefaultCapabilityRequester(facts, requests, grants, activity, ids, clock)
-    val operatorHooks = OperatorTaskHooks(requests, grants, activity, clock)
+    val facts = OperatorFacts(agents, settings, capabilities, folders.asDirectory(), operatorApps.asAuthorisedApps(), screenStopped) { protectedPackages }
+    /** Which requests a live call (or an ask of this "process") waits for; shared by the broker, the requester, the hooks and the owner. */
+    val waiters = RequestWaiters()
+    val broker = PermissionBroker(facts, requests, grants, waiters, tasks, activity, ids, clock)
+    val requester = DefaultCapabilityRequester(facts, requests, grants, waiters, activity, ids, clock)
+    val operatorHooks = OperatorTaskHooks(requests, grants, waiters, activity, clock)
 
     /** How the owner answers requests in these tests: the owner-only port, as the approval screen uses it. */
-    val ownerRequests = DefaultOwnerRequests(requests, activity, ids, clock)
+    val ownerRequests = DefaultOwnerRequests(requests, waiters, facts, activity, ids, clock)
 
     val executor = ToolExecutor(toolRegistry, broker, activity, clock, toolLimits, time)
     val monitor = DefaultAgentActivityMonitor(clock)

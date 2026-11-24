@@ -14,6 +14,7 @@ import com.aicontrolcenter.core.folderId
 import com.aicontrolcenter.core.grantId
 import com.aicontrolcenter.core.operator.DecideResult
 import com.aicontrolcenter.core.operator.FolderAccess
+import com.aicontrolcenter.core.operator.GrantQuery
 import com.aicontrolcenter.core.operator.GrantScope
 import com.aicontrolcenter.core.operator.GrantStore
 import com.aicontrolcenter.core.operator.OperatorApp
@@ -24,7 +25,9 @@ import com.aicontrolcenter.core.operator.OwnerGrants
 import com.aicontrolcenter.core.operator.OwnerOperatorApps
 import com.aicontrolcenter.core.operator.OwnerRequest
 import com.aicontrolcenter.core.operator.OwnerRequestKind
+import com.aicontrolcenter.core.operator.OwnerRequestQueue
 import com.aicontrolcenter.core.operator.OwnerRequestRepository
+import com.aicontrolcenter.core.operator.OwnerRequestStatus
 import com.aicontrolcenter.core.operator.OwnerRequests
 import com.aicontrolcenter.core.operator.OwnerResult
 import com.aicontrolcenter.core.operator.PermissionGrant
@@ -38,8 +41,8 @@ import com.aicontrolcenter.core.tools.CapabilityConstraint
 import com.aicontrolcenter.framework.llm.rethrowIfCancelled
 import com.aicontrolcenter.framework.tools.CapabilityRegistry
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonObject
@@ -57,16 +60,35 @@ import kotlinx.serialization.json.put
  * answering is one atomic [OwnerRequestRepository.decide], which writes a granted request's
  * grant in the same transaction, and is logged. The owner's note is trimmed, blank dropped and
  * cut at [MAX_NOTE] characters; it reaches the agent as quoted data.
+ *
+ * An answer is only taken for a request someone still waits for and whose target is still there:
+ *  - a PENDING request no live call waits for ([RequestWaiters]: its waiter stopped with an
+ *    earlier run of the app, or went away without closing it) is closed as CANCELLED instead,
+ *    by [closeIfAbandoned] (which the Approval screen calls when it opens) or by any answer, and
+ *    is left out of [pending];
+ *  - a yes for a folder that was removed, an app no longer authorised (or protected), or the
+ *    screen after the owner pressed Stop closes the request as CANCELLED instead, with the same
+ *    checks as [DefaultOwnerGrants.grant], so an answer never gives back access just withdrawn.
+ * Both are reported as [DecideResult.AlreadyClosed] with the closed request.
+ *
+ * A yes for the task or always also settles the other pending permission requests it covers
+ * ([CoveredRequests]): their waiting calls go on.
  */
 class DefaultOwnerRequests(
     private val repository: OwnerRequestRepository,
+    private val waiters: RequestWaiters,
+    /** The folders, authorised apps, protected apps and Stop, read now; read-only. */
+    private val facts: OperatorFacts,
     private val activity: ActivityRecorder,
     private val ids: IdGenerator,
     private val clock: Clock,
 ) : OwnerRequests {
-    /** Re-read when the stored list changes; a request that passes its expiry without changing is closed by its waiter at that moment. */
+    private val withdrawals = RequestWithdrawals(repository, activity, clock)
+    private val covered = CoveredRequests(repository, waiters, withdrawals, ids, clock)
+
+    /** Re-read when the stored list or the live waiters change; a request that passes its expiry without changing is closed by its waiter at that moment. */
     override val pending: Flow<List<OwnerRequest>> =
-        repository.observePending().map { all -> clock.now().let { now -> all.filter { !it.isExpiredAt(now) } } }
+        combine(repository.observePending(), waiters.waiting) { all, live -> clock.now().let { now -> all.filter { !it.isExpiredAt(now) && it.id in live } } }
 
     override fun observeRecent(limit: Int): Flow<List<OwnerRequest>> = repository.observeRecent(limit)
 
@@ -74,14 +96,29 @@ class DefaultOwnerRequests(
 
     override suspend fun get(id: RequestId): OwnerRequest? = repository.get(id)
 
+    override suspend fun closeIfAbandoned(id: RequestId): OwnerRequest? {
+        val request = repository.get(id) ?: return null
+        if (!request.status.isPending || waiters.isWaiting(id)) return request
+        return closeInstead(request, NOT_WAITING_NOTE)
+    }
+
     override suspend fun grant(id: RequestId, scope: GrantScope, note: String?): DecideResult = decide(id, OwnerDecision.Grant(scope, clean(note)))
 
     override suspend fun approve(id: RequestId, note: String?): DecideResult = decide(id, OwnerDecision.Approve(clean(note)))
 
     override suspend fun deny(id: RequestId, note: String?): DecideResult = decide(id, OwnerDecision.Deny(clean(note)))
 
-    private suspend fun decide(id: RequestId, decision: OwnerDecision): DecideResult {
-        val result = repository.decide(id, decision, clock.now(), ids.grantId())
+    private suspend fun decide(id: RequestId, decision: OwnerDecision, at: Long = clock.now()): DecideResult {
+        val current = repository.get(id) ?: return DecideResult.NotFound
+        if (current.status.isPending && current.problemWith(decision) == null && !current.isExpiredAt(at)) {
+            val instead = when {
+                !waiters.isWaiting(id) -> NOT_WAITING_NOTE
+                decision is OwnerDecision.Deny -> null
+                else -> facts.targetRefusal(current.constraint)
+            }
+            if (instead != null) return DecideResult.AlreadyClosed(closeInstead(current, instead))
+        }
+        val result = repository.decide(id, decision, at, ids.grantId())
         when (result) {
             is DecideResult.Decided -> {
                 val request = result.request
@@ -95,6 +132,7 @@ class DefaultOwnerRequests(
                     request.decisionScope?.let { put("scope", it.name) }
                     result.grant?.let { put("grantId", it.id.value) }
                 }
+                result.grant?.let { covered.settle(it, answered = request) }
             }
             is DecideResult.Expired -> record(result.request, "Answered too late: ${result.request.toolTitle ?: result.request.capability.id}", result.request.summary, Severity.WARNING) {
                 put("status", result.request.status.name)
@@ -102,6 +140,13 @@ class DefaultOwnerRequests(
             is DecideResult.AlreadyClosed, is DecideResult.NotAccepted, DecideResult.NotFound -> Unit
         }
         return result
+    }
+
+    /** Closes [request] as CANCELLED with [why] instead of answering it, and returns it as it now is. */
+    private suspend fun closeInstead(request: OwnerRequest, why: String): OwnerRequest {
+        val closed = repository.close(request.id, OwnerRequestStatus.CANCELLED, clock.now(), why)
+        closed?.let { withdrawals.log(it, "Request closed, not answered", why) }
+        return closed ?: repository.get(request.id) ?: request
     }
 
     private suspend fun record(request: OwnerRequest, title: String, detail: String, severity: Severity, extra: kotlinx.serialization.json.JsonObjectBuilder.() -> Unit) =
@@ -120,9 +165,52 @@ class DefaultOwnerRequests(
 
     private fun clean(note: String?): String? = note?.trim()?.takeIf { it.isNotEmpty() }?.take(MAX_NOTE)
 
-    /** Limits. */
+    /** Limits and texts. */
     companion object {
         const val MAX_NOTE = 500
+
+        /** Why a request nothing waits for any more was closed instead of answered. */
+        const val NOT_WAITING_NOTE = "No longer waiting: the app stopped, or the call that asked was stopped, before you answered. Nothing was done."
+    }
+}
+
+/**
+ * Settles the pending permission requests a new TASK or ALWAYS grant covers ([PermissionGrant.covers]:
+ * same agent, permission and target, and the same task for TASK), so the owner is not asked the
+ * same question twice and no covered call waits or expires for nothing:
+ *  - a request whose call is waiting is answered "for this one call" ([GrantScope.ONCE], its own
+ *    grant, used up by that call alone), with a note naming the answer that covered it, and the
+ *    call goes on; later calls are covered by the lasting grant;
+ *  - an agent's own ask, or a request nothing waits for, is closed as CANCELLED with that note:
+ *    the lasting grant already answers it.
+ * ONCE grants settle nothing. Every request settled is logged with its id.
+ */
+internal class CoveredRequests(
+    private val repository: OwnerRequestRepository,
+    private val waiters: RequestWaiters,
+    private val withdrawals: RequestWithdrawals,
+    private val ids: IdGenerator,
+    private val clock: Clock,
+) {
+    /** Settles what [grant] covers; [answered] is the request whose answer created it, null for a direct grant. Returns those settled. */
+    suspend fun settle(grant: PermissionGrant, answered: OwnerRequest?): List<OwnerRequest> {
+        if (grant.scope == GrantScope.ONCE) return emptyList()
+        val now = clock.now()
+        val how = if (grant.scope == GrantScope.TASK) "for this task" else "always"
+        val note = "Already answered: you allowed this $how" + (if (answered != null) " in your answer to the same question." else " in Tools.")
+        val settled = ArrayList<OwnerRequest>()
+        for (other in orNull { repository.observePending().first() }.orEmpty()) {
+            if (other.id == answered?.id || other.kind != OwnerRequestKind.PERMISSION || other.isExpiredAt(now)) continue
+            if (!grant.covers(GrantQuery(other.agentId, other.capability, other.constraint, other.taskId, now))) continue
+            val done = if (other.toolId != null && waiters.isWaiting(other.id)) {
+                (orNull { repository.decide(other.id, OwnerDecision.Grant(GrantScope.ONCE, note), now, ids.grantId()) } as? DecideResult.Decided)?.request
+            } else {
+                orNull { repository.close(other.id, OwnerRequestStatus.CANCELLED, now, note) }
+            } ?: continue
+            settled += done
+            withdrawals.log(done, "Settled by your answer", note, Severity.INFO)
+        }
+        return settled
     }
 }
 
@@ -139,12 +227,17 @@ class DefaultOwnerGrants(
     private val folders: SharedFolderRepository,
     private val apps: OperatorAppRepository,
     private val protectedPackages: () -> ProtectedPackages,
+    /** The requests a direct grant settles and a revocation withdraws. */
+    private val requests: OwnerRequestRepository,
+    private val waiters: RequestWaiters,
     private val activity: ActivityRecorder,
     private val ids: IdGenerator,
     private val clock: Clock,
 ) : OwnerGrants {
     /** Makes "look for an identical grant, else insert" one step for this process. */
     private val lock = Mutex()
+    private val withdrawals = RequestWithdrawals(requests, activity, clock)
+    private val covered = CoveredRequests(requests, waiters, withdrawals, ids, clock)
 
     override fun observeForAgent(agentId: AgentId): Flow<List<PermissionGrant>> = grants.observeForAgent(agentId)
 
@@ -177,32 +270,53 @@ class DefaultOwnerGrants(
                 agentId = agentId, data = grantData(grant),
             )
         }
+        // Calls already waiting for this very permission go on.
+        covered.settle(grant, answered = null)
         OwnerResult.Done(grant)
     }
 
     override suspend fun revoke(id: GrantId): Boolean {
         val revoked = grants.revoke(id, clock.now()) ?: return false
+        val title = capabilities.info(revoked.capability)?.title ?: revoked.capability.id
         logSafely {
             activity.record(
-                ActivityType.PERMISSION, "Owner revoked a permission: ${capabilities.info(revoked.capability)?.title ?: revoked.capability.id}",
+                ActivityType.PERMISSION, "Owner revoked a permission: $title",
                 (agents.get(revoked.agentId)?.name ?: "A deleted agent") + targetOf(revoked.constraint),
                 agentId = revoked.agentId, data = grantData(revoked),
             )
+        }
+        // An action waiting for approval that relied on it would be refused after the approval: withdraw the question now.
+        val before = revoked.copy(revokedAt = null)
+        withdrawals.withdraw("Request withdrawn, permission revoked", "You removed the permission \"$title\" this relied on, so it was not done.") {
+            it.kind == OwnerRequestKind.APPROVAL && before.covers(queryOf(it)) && !coveredNow(it)
         }
         return true
     }
 
     override suspend fun revokeAll(agentId: AgentId): Int {
         val count = grants.revokeAllFor(agentId, clock.now())
+        val name = agents.get(agentId)?.name ?: "a deleted agent"
         if (count > 0) {
             logSafely {
                 activity.record(
-                    ActivityType.PERMISSION, "Owner revoked every permission of ${agents.get(agentId)?.name ?: "a deleted agent"}", "$count permission(s) revoked.",
+                    ActivityType.PERMISSION, "Owner revoked every permission of $name", "$count permission(s) revoked.",
                     agentId = agentId, data = buildJsonObject { put("count", count) },
                 )
             }
         }
+        // Its open questions go too: what it asks for, and what waits on a permission it no longer has.
+        withdrawals.withdraw("Request withdrawn, permissions revoked", "You removed every permission of $name, so this was not done.") {
+            it.agentId == agentId && (it.kind == OwnerRequestKind.PERMISSION || (capabilities.info(it.capability)?.grantedByDefault != true && !coveredNow(it)))
+        }
         return count
+    }
+
+    private fun queryOf(request: OwnerRequest) = GrantQuery(request.agentId, request.capability, request.constraint, request.taskId, clock.now())
+
+    /** Whether a grant in force still covers what [request] asks. */
+    private suspend fun coveredNow(request: OwnerRequest): Boolean {
+        val query = queryOf(request)
+        return grants.observeForAgent(request.agentId).first().any { it.covers(query) }
     }
 
     private fun targetOf(constraint: CapabilityConstraint): String = when (constraint) {
@@ -228,11 +342,14 @@ class DefaultOwnerFolders(
     private val gateway: SharedFolders,
     private val folders: SharedFolderRepository,
     private val grants: GrantStore,
+    /** The requests about a folder, withdrawn when it is removed. */
+    private val requests: OwnerRequestQueue,
     private val activity: ActivityRecorder,
     private val ids: IdGenerator,
     private val clock: Clock,
 ) : OwnerFolders {
     private val lock = Mutex()
+    private val withdrawals = RequestWithdrawals(requests, activity, clock)
 
     override fun observeAll(): Flow<List<SharedFolder>> = folders.observeAll()
 
@@ -259,6 +376,9 @@ class DefaultOwnerFolders(
             // The folder is gone from the app either way; Android drops an unused grant on its own.
         }
         log("Folder removed: ${folder.displayName}", folder, "$revoked permission(s) for it revoked.")
+        withdrawals.withdraw("Request withdrawn, folder removed", "You removed the folder \"${folder.displayName}\", so this was not done.") {
+            it.constraint == CapabilityConstraint.Folder(id)
+        }
         true
     }
 
@@ -289,10 +409,13 @@ class DefaultOwnerOperatorApps(
     private val apps: OperatorAppRepository,
     private val grants: GrantStore,
     private val protectedPackages: () -> ProtectedPackages,
+    /** The requests about an app, withdrawn when it is withdrawn. */
+    private val requests: OwnerRequestQueue,
     private val activity: ActivityRecorder,
     private val clock: Clock,
 ) : OwnerOperatorApps {
     private val lock = Mutex()
+    private val withdrawals = RequestWithdrawals(requests, activity, clock)
 
     override fun observeAll(): Flow<List<OperatorApp>> = apps.observeAll()
 
@@ -320,6 +443,9 @@ class DefaultOwnerOperatorApps(
         val revoked = grants.revokeAllWithConstraint(CapabilityConstraint.App(packageName), clock.now())
         apps.delete(packageName)
         log("App withdrawn from screen control: ${app.label}", app, "$revoked permission(s) for it revoked.")
+        withdrawals.withdraw("Request withdrawn, app withdrawn", "You withdrew ${app.label} from screen control, so this was not done.") {
+            it.constraint == CapabilityConstraint.App(packageName)
+        }
         true
     }
 

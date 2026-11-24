@@ -131,6 +131,7 @@ fun RequestCard(request: RequestUi, onOpen: () -> Unit, modifier: Modifier = Mod
                 }
             }
             PreviewTextView(request.summary, MaterialTheme.typography.bodyMedium, MaterialTheme.colorScheme.onSurface)
+            request.askedAgain?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = appColors.attention) }
             Row(Modifier, verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     request.dataGoesTo,

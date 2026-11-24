@@ -247,7 +247,9 @@ sealed interface FolderAccess {
 }
 
 /**
- * Files in the folders the owner picked, through the Storage Access Framework (`:device`).
+ * Files in the folders the owner picked, through the Storage Access Framework (`:device`), as
+ * the folder tools get them: they can read and change files inside a folder, never add, remove
+ * or release a folder ([SharedFolders] adds that, for [OwnerFolders] only).
  * Tool-facing operations name a folder by [FolderId] and a [RelativePath] inside it; every call
  * re-reads the folder from [SharedFolderRepository], so a folder removed or switched to
  * read-only meanwhile is honoured ([DocResult.NotAllowed]). The gateway walks the tree by display
@@ -255,13 +257,7 @@ sealed interface FolderAccess {
  * tree. Size limits are the caller's ([maxBytes]); larger files return [DocResult.TooLarge] for
  * copies and a truncated [FileContent] for reads.
  */
-interface SharedFolders {
-    /** Persists access to a tree the owner just picked. Called by [OwnerFolders] only. */
-    suspend fun takeAccess(treeUri: String): FolderAccess
-
-    /** Gives up the persisted access, when the owner removes the folder ([OwnerFolders]). */
-    suspend fun releaseAccess(folder: SharedFolder)
-
+interface SharedFolderFiles {
     /** Whether access still holds (it is lost if the folder is moved or deleted). */
     suspend fun hasAccess(folder: SharedFolder): Boolean
 
@@ -290,4 +286,17 @@ interface SharedFolders {
 
     /** Copies the workspace file [source] into the folder, as [write] would. */
     suspend fun copyFromWorkspace(source: WorkspaceFile, folder: FolderId, path: RelativePath, overwrite: Boolean): DocResult<DocumentEntry>
+}
+
+/**
+ * The whole folder gateway: [SharedFolderFiles] plus keeping and giving up Android's access to a
+ * tree, which only the owner's Folders screen does ([OwnerFolders]). Agent-facing code gets
+ * [SharedFolderFiles] only.
+ */
+interface SharedFolders : SharedFolderFiles {
+    /** Persists access to a tree the owner just picked. Called by [OwnerFolders] only. */
+    suspend fun takeAccess(treeUri: String): FolderAccess
+
+    /** Gives up the persisted access, when the owner removes the folder ([OwnerFolders]). */
+    suspend fun releaseAccess(folder: SharedFolder)
 }

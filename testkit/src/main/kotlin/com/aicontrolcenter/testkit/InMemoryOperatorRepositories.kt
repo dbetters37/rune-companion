@@ -13,12 +13,14 @@ import com.aicontrolcenter.core.operator.OperatorApp
 import com.aicontrolcenter.core.operator.OperatorAppRepository
 import com.aicontrolcenter.core.operator.OwnerDecision
 import com.aicontrolcenter.core.operator.OwnerRequest
+import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.OwnerRequestRepository
 import com.aicontrolcenter.core.operator.OwnerRequestStatus
 import com.aicontrolcenter.core.operator.PermissionGrant
 import com.aicontrolcenter.core.operator.PermissionRepository
 import com.aicontrolcenter.core.operator.SharedFolder
 import com.aicontrolcenter.core.operator.SharedFolderRepository
+import com.aicontrolcenter.core.tools.Capability
 import com.aicontrolcenter.core.tools.CapabilityConstraint
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -183,6 +185,19 @@ class InMemoryOwnerRequestRepository(
 
     override suspend fun cancelAsksForTask(taskId: TaskId, at: Long, note: String?): List<OwnerRequest> =
         closeWhere(OwnerRequestStatus.CANCELLED, at, note) { it.toolId == null && it.taskId == taskId }
+
+    override suspend fun lastRefusal(agentId: AgentId, capability: Capability, constraint: CapabilityConstraint, since: Long): OwnerRequest? =
+        state.value.values
+            .filter {
+                it.kind == OwnerRequestKind.PERMISSION && it.status == OwnerRequestStatus.DENIED && it.agentId == agentId &&
+                    it.capability == capability && it.constraint == constraint && (it.decidedAt ?: Long.MIN_VALUE) >= since
+            }
+            .maxWithOrNull(compareBy<OwnerRequest>({ it.decidedAt }, { it.id.value }))
+
+    override suspend fun countAskedAgain(id: RequestId): OwnerRequest? = synchronized(lock) {
+        state.value[id]?.takeIf { it.status == OwnerRequestStatus.DENIED }?.let { it.copy(askedAgain = it.askedAgain + 1) }
+            ?.also { state.value += id to it }
+    }
 
     private fun closeWhere(status: OwnerRequestStatus, at: Long, note: String?, predicate: (OwnerRequest) -> Boolean): List<OwnerRequest> =
         synchronized(lock) {

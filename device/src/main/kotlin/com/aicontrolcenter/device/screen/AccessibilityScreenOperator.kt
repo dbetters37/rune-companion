@@ -63,15 +63,18 @@ import java.util.concurrent.atomic.AtomicReference
  * [ScreenElement.sameControlAs] the one named, re-checks the window and Stop immediately before
  * the node action, and never touches password fields or views marked sensitive.
  *
- * Stop ([StopSwitch]) cancels the call in progress, which returns [ScreenResult.Stopped], ends
+ * Stop ([StopSignal]: it can read and press Stop, never Resume) cancels the call in progress, which returns [ScreenResult.Stopped], ends
  * every session and hides the banner. A session (the banner "<agent> is operating <app> · Stop")
  * starts with an agent's first call that passes the checks and lasts until [endSession], Stop,
  * or [ScreenOperator.SESSION_IDLE_MS] after its last call.
  */
 internal class AccessibilityScreenOperator(
-    private val apps: OperatorAppRepository,
-    private val protectedPackages: ProtectedPackages,
-    private val stopSwitch: StopSwitch,
+    /** The authorised apps, read only. */
+    private val apps: AuthorisedAppLookup,
+    /** Read on every check; resolved off the main thread at start-up ([ProtectedPackagesResolver.startResolving]). */
+    private val protectedPackages: () -> ProtectedPackages,
+    /** The owner's Stop, without Resume. */
+    private val stopSwitch: StopSignal,
     private val link: ServiceLink,
     private val availability: ScreenAvailability,
     private val device: DeviceFacts,
@@ -122,7 +125,8 @@ internal class AccessibilityScreenOperator(
     private fun start() {
         if (!started.compareAndSet(false, true)) return
         refreshState()
-        availability.watch { refreshState() }
+        // Android calls the settings observer on the main thread; the re-read (settings and PackageManager) runs off it.
+        availability.watch { scope.launch(io) { refreshState() } }
     }
 
     override suspend fun activeWindow(): ActiveWindow? = withContext(io) {
@@ -130,7 +134,7 @@ internal class AccessibilityScreenOperator(
         val host = link.host.value ?: return@withContext null
         val front = front(host) ?: return@withContext null
         val packageName = front.packageName ?: return@withContext null
-        val titled = !protectedPackages.isProtected(packageName) && !device.keyguardLocked() && authorised(packageName) != null
+        val titled = !protectedPackages().isProtected(packageName) && !device.keyguardLocked() && authorised(packageName) != null
         ActiveWindow(packageName, if (titled) ScreenReader.clean(front.title) else null)
     }
 
@@ -389,7 +393,7 @@ internal class AccessibilityScreenOperator(
         }
         if (stateFlow.value != ScreenServiceState.READY) refreshState()
         if (stopSwitch.stopped.value) return Gate.Shut(ScreenResult.Stopped)
-        if (protectedPackages.isProtected(packageName)) return Gate.Shut(ScreenResult.Protected(packageName))
+        if (protectedPackages().isProtected(packageName)) return Gate.Shut(ScreenResult.Protected(packageName))
         val app = authorised(packageName) ?: return Gate.Shut(ScreenResult.NotAuthorised(packageName))
         if (device.keyguardLocked()) return Gate.Shut(ScreenResult.WrongWindow(packageName, null))
         val front = front(host) ?: return Gate.Shut(ScreenResult.WrongWindow(packageName, null))
@@ -605,4 +609,19 @@ internal class AccessibilityScreenOperator(
         private const val COVERED =
             "Another window covers part of the app (the notification shade, a pop-up or another app), so a screenshot of the app alone is not possible right now."
     }
+}
+
+/** The authorised apps, read only: what the screen operator re-reads on every call. Never authorising or withdrawing one. */
+internal fun interface AuthorisedAppLookup {
+    suspend fun get(packageName: String): OperatorApp?
+
+    companion object {
+        /** A lookup over [store] that exposes its reads only. */
+        fun of(store: OperatorAppRepository): AuthorisedAppLookup = AuthorisedAppView(store)
+    }
+}
+
+/** [AuthorisedAppLookup] over the store: a separate object, so the operator cannot reach the store's writes. */
+internal class AuthorisedAppView(private val store: OperatorAppRepository) : AuthorisedAppLookup {
+    override suspend fun get(packageName: String): OperatorApp? = store.get(packageName)
 }

@@ -1,11 +1,15 @@
 package com.aicontrolcenter.app.di
 
+import com.aicontrolcenter.app.operator.AuthorisedAppsView
+import com.aicontrolcenter.app.operator.FolderDirectoryView
 import com.aicontrolcenter.app.operator.GrantLookupView
 import com.aicontrolcenter.app.operator.RequestQueueView
 import com.aicontrolcenter.app.operator.ScreenSessions
+import com.aicontrolcenter.app.operator.SharedFolderFilesView
 import com.aicontrolcenter.app.testing.TestApp
 import com.aicontrolcenter.core.ToolId
 import com.aicontrolcenter.core.operator.GrantStore
+import com.aicontrolcenter.core.operator.OperatorAppRepository
 import com.aicontrolcenter.core.operator.OperatorCapabilities
 import com.aicontrolcenter.core.operator.OperatorTools
 import com.aicontrolcenter.core.operator.OwnerFolders
@@ -17,6 +21,8 @@ import com.aicontrolcenter.core.operator.OwnerRequests
 import com.aicontrolcenter.core.operator.PermissionRepository
 import com.aicontrolcenter.core.operator.ProtectedPackages
 import com.aicontrolcenter.core.operator.ScreenControl
+import com.aicontrolcenter.core.operator.SharedFolderRepository
+import com.aicontrolcenter.core.operator.SharedFolders
 import com.aicontrolcenter.framework.operator.OperatorToolDependencies
 import com.aicontrolcenter.framework.operator.PermissionRequestTool
 import kotlinx.coroutines.CoroutineScope
@@ -34,7 +40,10 @@ import kotlin.test.assertTrue
 /**
  * The dependency rule of the phone operator, checked on the graph as the app wires it: nothing
  * reachable from the tool executor, the permission broker or any registered tool can answer a
- * request, give a grant, change folders or apps, or press Resume.
+ * request, give a grant, add or remove a folder or an app, take or release Android's access to a
+ * folder, or press Resume (review 5, R2: the stores of folders and apps, the folder gateway's
+ * owner side and the device's Stop switch are forbidden too, and the screen operator behind the
+ * agents' screen view is walked).
  *
  * The framework's own test walks declared field types. This one walks the objects themselves,
  * field by field from the executor, the broker and every registered tool, through the app's,
@@ -53,10 +62,20 @@ class OperatorDependencyTest {
     private val ownerOnly: List<Class<*>> = listOf(
         OwnerRequests::class.java, OwnerGrants::class.java, OwnerFolders::class.java, OwnerOperatorApps::class.java, ScreenControl::class.java,
         OwnerRequestDecisions::class.java, GrantStore::class.java, OwnerRequestRepository::class.java, PermissionRepository::class.java,
+        // Owner-capable mutators: adding and removing folders and apps, taking and releasing a folder's access, Resume after Stop.
+        SharedFolderRepository::class.java, OperatorAppRepository::class.java, SharedFolders::class.java,
+        Class.forName("com.aicontrolcenter.device.screen.StopSwitch"),
     )
 
-    /** The only objects allowed to hold a full store: each exposes the agent-side interface alone. */
-    private val views: List<Class<*>> = listOf(RequestQueueView::class.java, GrantLookupView::class.java, ScreenSessions::class.java)
+    /**
+     * The only objects allowed to hold a full store: each exposes the agent-side interface alone.
+     * The agents' screen view ([ScreenSessions]) is not one of them: it is walked, down to the
+     * screen operator it passes calls to.
+     */
+    private val views: List<Class<*>> = listOf(
+        RequestQueueView::class.java, GrantLookupView::class.java, FolderDirectoryView::class.java, AuthorisedAppsView::class.java,
+        SharedFolderFilesView::class.java,
+    )
 
     private fun isOwnerOnly(type: Class<*>): Boolean = ownerOnly.any { it.isAssignableFrom(type) }
 
@@ -157,6 +176,18 @@ class OperatorDependencyTest {
         assertTrue(walk(holder, "holder").violations.isNotEmpty())
         // The views themselves are what the broker and the tools hold.
         assertTrue(walk(app.graph.permissionBroker, "broker").let { it.violations.isEmpty() && it.unreadable.isEmpty() })
+        // R2: a folder or app store, the folder gateway's owner side or a screen that can resume, held by anything else, is caught.
+        val stores = object {
+            val folders: Any = app.sharedFolders
+            val apps: Any = app.operatorApps
+            val gateway: Any = app.folderAccess
+        }
+        assertEquals(3, walk(stores, "stores").violations.size, walk(stores, "stores").violations.toString())
+        val resumable = object : com.aicontrolcenter.core.operator.ScreenOperator by app.screen, ScreenControl by app.screen.asControl() {
+            override val stopped get() = app.screen.stopped
+        }
+        val screenView = ScreenSessions(resumable, AuthorisedAppsView(app.operatorApps), scope)
+        assertTrue(walk(screenView, "screen view").violations.isNotEmpty(), "the walk goes behind the agents' screen view")
     }
 
     @Test

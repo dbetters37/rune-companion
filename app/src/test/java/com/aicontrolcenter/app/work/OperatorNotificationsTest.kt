@@ -92,6 +92,24 @@ class OperatorNotificationsTest {
     }
 
     @Test
+    fun `requests that waited while notifications were off are posted once the owner allows them`() {
+        val application = ApplicationProvider.getApplicationContext<android.app.Application>()
+        shadowOf(application).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        val enabled = MutableStateFlow(false)
+        ApprovalNotifier(context, app.graph.ownerRequests.pending, app.clock, scope, enabled).start()
+        runBlocking { app.raise(sampleApproval(operator, createdAt = app.clock.current, minutes = 240)) }
+        assertTrue(tagsOfApprovals().isEmpty(), "Android takes nothing while notifications are not allowed")
+
+        // The owner allows notifications later (Android's question, or the system settings): the waiting request is shown (A2).
+        shadowOf(application).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        enabled.value = true
+        assertEquals(setOf("req_approval"), tagsOfApprovals())
+        runBlocking { app.raise(samplePermission(operator, agentName = "Operator", createdAt = app.clock.current, minutes = 240)) }
+        assertEquals(setOf("req_approval", "req_permission"), tagsOfApprovals())
+        assertEquals(1, approvals().count { it.extras.getString(Notification.EXTRA_TITLE) == "Approval needed" }, "posted once, not again")
+    }
+
+    @Test
     fun `what to post and what to remove`() {
         val a = sampleApproval(operator, id = "req_a")
         val b = sampleApproval(operator, id = "req_b")

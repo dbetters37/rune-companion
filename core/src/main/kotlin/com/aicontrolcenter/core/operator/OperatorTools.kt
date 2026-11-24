@@ -83,7 +83,8 @@ object OperatorTools {
         info("termux.run", C.SCRIPTS_TERMUX, RiskLevel.CONSEQUENTIAL, ToolCategory.SCRIPTS),
         info(
             "permissions.request", Capabilities.BASIC_INFO, RiskLevel.SAFE, ToolCategory.SYSTEM,
-            rule = "Its only dependency is CapabilityRequester; it never waits for the answer.",
+            rule = "Its only dependency is CapabilityRequester; it never waits for the answer. Within OwnerRequest.REFUSAL_COOLDOWN_MS " +
+                "of a refusal of the same permission and target, it is refused without a request.",
         ),
     )
 

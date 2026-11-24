@@ -50,7 +50,7 @@ class ScreenSessionsTest {
         assertTrue(sessions.sessions.value.isEmpty(), "ended after the idle time")
 
         sessions.read("Operator", notes.packageName)
-        (device as ScreenControl).stop()
+        device.stop()
         runCurrent()
         assertTrue(sessions.sessions.value.isEmpty(), "Stop ends every session")
     }

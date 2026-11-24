@@ -60,6 +60,21 @@ internal interface OwnerRequestDao {
     )
     suspend fun closePending(id: String, status: String, at: Long, scope: String?, note: String?): Int
 
+    /**
+     * The newest PERMISSION request of the agent for the capability and target that the owner
+     * refused at or after [since]. `PERMISSION` and `DENIED` are stored names pinned by
+     * `StoredNamesGoldenTest`.
+     */
+    @Query(
+        "SELECT * FROM owner_requests WHERE agent_id = :agentId AND capability = :capability AND constraint_key = :constraintKey " +
+            "AND kind = 'PERMISSION' AND status = 'DENIED' AND decided_at >= :since ORDER BY decided_at DESC, id DESC LIMIT 1",
+    )
+    suspend fun lastRefusal(agentId: String, capability: String, constraintKey: String, since: Long): OwnerRequestEntity?
+
+    /** One more ask refused during a refusal's cool-down. Returns 1 when the refused request was counted, 0 otherwise. */
+    @Query("UPDATE owner_requests SET asked_again = asked_again + 1 WHERE id = :id AND status = 'DENIED'")
+    suspend fun countAskedAgain(id: String): Int
+
     /** Returns the new row id, or -1 when a grant with this id exists already. */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertGrant(grant: PermissionGrantEntity): Long

@@ -2,6 +2,7 @@ package com.aicontrolcenter.app.ui.approvals
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -30,7 +31,9 @@ import com.aicontrolcenter.core.RequestId
 @Composable
 fun ApprovalsRoute(onBack: (() -> Unit)?, onOpenRequest: (RequestId) -> Unit) {
     val graph = LocalAppGraph.current
-    val viewModel = viewModel { ApprovalsViewModel(graph.ownerRequests, graph.registryDirectory, graph.capabilities::info, graph.clock) }
+    val viewModel = viewModel {
+        ApprovalsViewModel(graph.ownerRequests, graph.registryDirectory, graph.capabilities::info, graph.clock, notificationsEnabled = graph.notifications.enabled)
+    }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     ApprovalsScreen(state, onBack, onOpenRequest)
 }
@@ -44,18 +47,21 @@ fun ApprovalsScreen(state: ApprovalsUiState, onBack: (() -> Unit)?, onOpenReques
     ScreenScaffold(title = "Approvals", onBack = onBack) { padding ->
         when {
             state.isLoading -> Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-            state.requests.isEmpty() -> EmptyState(
-                icon = AppIcons.Approval,
-                title = "Nothing is waiting for you",
-                message = "When an agent needs a permission, or your approval for something hard to undo, the request waits here, " +
-                    "in a notification, and in the chat or task that asked.",
-                modifier = Modifier.padding(padding),
-            )
+            state.requests.isEmpty() -> Column(Modifier.padding(padding)) {
+                if (state.notificationsOff) ApprovalNotificationsOffBanner(Modifier.readableWidth().padding(horizontal = Spacing.screen))
+                EmptyState(
+                    icon = AppIcons.Approval,
+                    title = "Nothing is waiting for you",
+                    message = "When an agent needs a permission, or your approval for something hard to undo, the request waits here, " +
+                        "in the chat or task that asked, and in a notification while notifications are allowed.",
+                )
+            }
             else -> LazyColumn(
                 modifier = Modifier.padding(padding).readableWidth().fillMaxSize(),
                 contentPadding = PaddingValues(start = Spacing.screen, end = Spacing.screen, bottom = Spacing.xl),
                 verticalArrangement = Arrangement.spacedBy(Spacing.md),
             ) {
+                if (state.notificationsOff) item(key = "notifications") { ApprovalNotificationsOffBanner() }
                 item(key = "header") {
                     SectionHeader("Waiting for you · " + plural(state.requests.size, "request") + ", oldest first")
                     Text(

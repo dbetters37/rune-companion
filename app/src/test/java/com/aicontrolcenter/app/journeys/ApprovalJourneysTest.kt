@@ -113,7 +113,7 @@ class ApprovalJourneysTest {
         assertFalse(written().exists(), "nothing is written before the owner answers")
 
         robot.scrollTo("Allow just this once").tap("Allow just this once")
-            .waitUntilShown("Allowed just this once. The agent goes on.")
+            .waitUntilShown("Allowed just this once. The action is checked again before it runs.")
             .back()
             .waitUntilShown("Done: your list is in notes/todo.md.")
             .assertShown("Allowed just once")

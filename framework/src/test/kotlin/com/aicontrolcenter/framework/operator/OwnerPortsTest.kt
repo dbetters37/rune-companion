@@ -34,14 +34,15 @@ private class Built(world: OperatorWorld) {
     val log = InMemoryActivityLog()
     val activity = ActivityRecorder(log, world.ids, world.clock)
     val capabilities = CapabilityRegistry(world.capabilities.values.toList())
-    val facts = OperatorFacts(world.agents, world.settings, capabilities, world.folders, world.apps, world.screenStopped) { world.protectedPackages }
+    val facts = OperatorFacts(world.agents, world.settings, capabilities, world.folders.asDirectory(), world.apps.asAuthorisedApps(), world.screenStopped) { world.protectedPackages }
+    val waiters = RequestWaiters()
 }
 
 /** The testkit's contract for [CapabilityRequester], run against [DefaultCapabilityRequester]. */
 class DefaultCapabilityRequesterTest : CapabilityRequesterContract() {
     override fun createRequester(world: OperatorWorld): CapabilityRequester {
         val built = Built(world)
-        return DefaultCapabilityRequester(built.facts, world.requests, world.grants, built.activity, world.ids, world.clock)
+        return DefaultCapabilityRequester(built.facts, world.requests, world.grants, built.waiters, built.activity, world.ids, world.clock)
     }
 }
 
@@ -49,14 +50,17 @@ class DefaultCapabilityRequesterTest : CapabilityRequesterContract() {
 class DefaultOwnerPortsTest : OwnerPortsContract() {
     override fun createGrants(world: OperatorWorld): OwnerGrants {
         val built = Built(world)
-        return DefaultOwnerGrants(world.grants, world.agents, built.capabilities, world.folders, world.apps, { world.protectedPackages }, built.activity, world.ids, world.clock)
+        return DefaultOwnerGrants(
+            world.grants, world.agents, built.capabilities, world.folders, world.apps, { world.protectedPackages }, world.requests, built.waiters,
+            built.activity, world.ids, world.clock,
+        )
     }
 
     override fun createFolders(world: OperatorWorld): OwnerFolders =
-        DefaultOwnerFolders(world.gateway, world.folders, world.grants, Built(world).activity, world.ids, world.clock)
+        DefaultOwnerFolders(world.gateway, world.folders, world.grants, world.requests, Built(world).activity, world.ids, world.clock)
 
     override fun createApps(world: OperatorWorld): OwnerOperatorApps =
-        DefaultOwnerOperatorApps(world.apps, world.grants, { world.protectedPackages }, Built(world).activity, world.clock)
+        DefaultOwnerOperatorApps(world.apps, world.grants, { world.protectedPackages }, world.requests, Built(world).activity, world.clock)
 }
 
 /** What the framework adds to the contracts: answering through [DefaultOwnerRequests], and the log of every change. */
@@ -71,9 +75,9 @@ class OwnerServicesTest {
     fun `answering is one atomic decision - a grant stored with it, an approval never granted, a second answer refused`() = runTest {
         val world = OperatorWorld()
         val built = Built(world)
-        val owner = DefaultOwnerRequests(world.requests, built.activity, world.ids, world.clock)
-        val permission = request(world, OwnerRequestKind.PERMISSION).also { world.requests.create(it) }
-        val approval = request(world, OwnerRequestKind.APPROVAL).also { world.requests.create(it) }
+        val owner = DefaultOwnerRequests(world.requests, built.waiters, built.facts, built.activity, world.ids, world.clock)
+        val permission = request(world, OwnerRequestKind.PERMISSION).also { built.waiters.register(it.id); world.requests.create(it) }
+        val approval = request(world, OwnerRequestKind.APPROVAL).also { built.waiters.register(it.id); world.requests.create(it) }
 
         assertIs<DecideResult.NotAccepted>(owner.grant(approval.id, GrantScope.ALWAYS), "an approval is yes or no, never \"always\"")
         assertIs<DecideResult.NotAccepted>(owner.approve(permission.id), "a permission is answered with a scope")
@@ -95,9 +99,10 @@ class OwnerServicesTest {
     @Test
     fun `pending hides requests past their expiry, and a late answer only expires them`() = runTest {
         val world = OperatorWorld()
-        val owner = DefaultOwnerRequests(world.requests, Built(world).activity, world.ids, world.clock)
-        val soon = request(world, OwnerRequestKind.PERMISSION, expiresIn = 1_000).also { world.requests.create(it) }
-        val later = request(world, OwnerRequestKind.PERMISSION).also { world.requests.create(it) }
+        val built = Built(world)
+        val owner = DefaultOwnerRequests(world.requests, built.waiters, built.facts, built.activity, world.ids, world.clock)
+        val soon = request(world, OwnerRequestKind.PERMISSION, expiresIn = 1_000).also { built.waiters.register(it.id); world.requests.create(it) }
+        val later = request(world, OwnerRequestKind.PERMISSION).also { built.waiters.register(it.id); world.requests.create(it) }
         assertEquals(listOf(soon.id, later.id), owner.pending.first().map { it.id })
         world.clock.advance(1_000)
         assertEquals(listOf(later.id), owner.pending.first().map { it.id })
@@ -113,9 +118,12 @@ class OwnerServicesTest {
         val built = Built(world)
         val agent = Samples.agent(id = "agt_op", name = "Operator")
         world.agents.upsert(agent)
-        val grants = DefaultOwnerGrants(world.grants, world.agents, built.capabilities, world.folders, world.apps, { world.protectedPackages }, built.activity, world.ids, world.clock)
-        val folders = DefaultOwnerFolders(world.gateway, world.folders, world.grants, built.activity, world.ids, world.clock)
-        val apps = DefaultOwnerOperatorApps(world.apps, world.grants, { world.protectedPackages }, built.activity, world.clock)
+        val grants = DefaultOwnerGrants(
+            world.grants, world.agents, built.capabilities, world.folders, world.apps, { world.protectedPackages }, world.requests, built.waiters,
+            built.activity, world.ids, world.clock,
+        )
+        val folders = DefaultOwnerFolders(world.gateway, world.folders, world.grants, world.requests, built.activity, world.ids, world.clock)
+        val apps = DefaultOwnerOperatorApps(world.apps, world.grants, { world.protectedPackages }, world.requests, built.activity, world.clock)
 
         world.gateway.pickable["content://tree/reports"] = "Reports"
         val folder = assertIs<com.aicontrolcenter.core.operator.OwnerResult.Done<com.aicontrolcenter.core.operator.SharedFolder>>(folders.add("content://tree/reports")).value

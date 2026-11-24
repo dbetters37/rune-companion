@@ -32,7 +32,7 @@ enum class RequestOutcome(val label: String) {
     ALLOWED("Allowed"),
     DENIED("Denied"),
     EXPIRED("Expired"),
-    CANCELLED("Cancelled"),
+    CANCELLED("No longer waiting"),
     ;
 
     companion object {

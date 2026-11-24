@@ -86,6 +86,12 @@ data class OwnerRequest(
     val targetLabel: String? = null,
     /** Agents that delegated down to the asking agent, outermost first. */
     val delegationChain: List<AgentId> = emptyList(),
+    /**
+     * DENIED only: how many times the same agent asked again for the same permission within
+     * [REFUSAL_COOLDOWN_MS] of this refusal. Those asks were refused without asking the owner;
+     * the history shows the count here instead.
+     */
+    val askedAgain: Int = 0,
 ) {
     init {
         require(expiresAt > createdAt) { "A request must expire after it was created." }
@@ -96,6 +102,8 @@ data class OwnerRequest(
         }
         require(status != OwnerRequestStatus.PENDING || (decidedAt == null && decisionNote == null)) { "A pending request has no decision." }
         require(status == OwnerRequestStatus.PENDING || decidedAt != null) { "A closed request records when it was closed." }
+        require(askedAgain >= 0) { "askedAgain cannot be negative." }
+        require(askedAgain == 0 || status == OwnerRequestStatus.DENIED) { "Only a refused request counts the asks that followed it." }
     }
 
     /** The scopes the owner may choose from: none for an APPROVAL, and TASK only when the call belongs to a task. */
@@ -132,6 +140,16 @@ data class OwnerRequest(
             taskId = if (scope == GrantScope.ALWAYS) null else taskId, requestId = this.id, grantedAt = at,
             expiresAt = if (scope == GrantScope.ONCE) at + PermissionGrant.ONCE_LIFETIME_MS else null,
         )
+    }
+
+    /** Limits. */
+    companion object {
+        /**
+         * After the owner refuses a PERMISSION request, the same agent asking again for the same
+         * capability and target within this time is refused at once, without a new request: the
+         * owner is not asked the same question over and over ([OwnerRequestQueue.lastRefusal]).
+         */
+        const val REFUSAL_COOLDOWN_MS: Long = 10 * 60_000L
     }
 }
 
@@ -216,6 +234,20 @@ interface OwnerRequestQueue {
      * status, since nothing will use the answer. Returns those it closed, oldest first.
      */
     suspend fun cancelAsksForTask(taskId: TaskId, at: Long, note: String?): List<OwnerRequest>
+
+    /**
+     * The newest PERMISSION request of [agentId] for [capability] and [constraint] that the owner
+     * DENIED at or after [since] (its decidedAt), or null. Used to refuse asking the owner the
+     * same question again within [OwnerRequest.REFUSAL_COOLDOWN_MS] of a refusal.
+     */
+    suspend fun lastRefusal(agentId: AgentId, capability: Capability, constraint: CapabilityConstraint, since: Long): OwnerRequest?
+
+    /**
+     * Adds one to [OwnerRequest.askedAgain] of a DENIED request: the agent asked again within the
+     * cool-down and was refused without asking the owner. Returns the updated request, or null
+     * when it is missing or not DENIED. Room does it as one conditional `UPDATE`.
+     */
+    suspend fun countAskedAgain(id: RequestId): OwnerRequest?
 }
 
 /** The owner's answer, written. Handed only to the [OwnerRequests] implementation. */

@@ -87,7 +87,7 @@ class PermissionRequestToolTest {
     @Test
     fun `through the executor and the broker it raises the agent's ask at once, quoting its reason, and grants nothing`() = runTest {
         val f = BrokerFixture(this).setUp()
-        val requester = DefaultCapabilityRequester(f.facts, f.requests, f.grants, f.activity, f.ids, f.clock)
+        val requester = DefaultCapabilityRequester(f.facts, f.requests, f.grants, f.waiters, f.activity, f.ids, f.clock)
         val tool = PermissionRequestTool(requester)
         val agent = f.agent.copy(toolIds = f.agent.toolIds + tool.spec.id).also { f.agents.upsert(it) }
         val executor = ToolExecutor(DefaultToolRegistry().also { it.register(tool) }, f.broker, f.activity, f.clock)

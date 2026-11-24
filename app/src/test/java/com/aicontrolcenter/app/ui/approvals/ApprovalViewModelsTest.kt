@@ -72,7 +72,8 @@ class ApprovalViewModelsTest {
 
         vm.choose(RequestChoice.ALLOW_ONCE)
 
-        assertEquals("Allowed just this once. The agent goes on.", vm.uiState.value.message?.text)
+        // Said honestly: the call is checked again before it runs (INT-2).
+        assertEquals("Allowed just this once. The action is checked again before it runs.", vm.uiState.value.message?.text)
         val closed = assertNotNull(vm.uiState.value.request)
         assertEquals("Allowed just once", closed.status.text)
         assertEquals("Permission request", closed.title, "a closed request no longer says it needs the owner")
@@ -182,5 +183,13 @@ class ApprovalViewModelsTest {
         assertEquals("Waiting for you", shown.status.text)
         assertTrue("paused while it waits for you" in shown.timing, shown.timing)
         assertEquals(listOf("req_task"), detail.uiState.value.waitingFor.map { it.id.value })
+
+        // INT-10: a task waiting for a teammate whose answer waits for the owner (the request names this task) says the same.
+        app.tasks.update(task.id) { it.copy(status = TaskStatus.WAITING_FOR_AGENT) }
+        val asking = assertNotNull(detail.uiState.value.task)
+        assertTrue("paused while it waits for you" in asking.timing, asking.timing)
+        assertTrue("times out at" !in asking.timing, asking.timing)
+        app.graph.ownerRequests.deny(RequestId("req_task"))
+        assertTrue("times out at" in assertNotNull(detail.uiState.value.task).timing, "with nothing open, the deadline shows again")
     }
 }

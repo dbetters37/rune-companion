@@ -644,7 +644,7 @@ class AccessibilityScreenOperatorTest {
             h.authorise()
             h.show(TestWindow(NOTES))
             switch to AccessibilityScreenOperator(
-                h.apps, com.aicontrolcenter.core.operator.ProtectedPackages(OWN), switch, h.link, h.availability, h.facts, h.clock,
+                AuthorisedAppLookup.of(h.apps), { com.aicontrolcenter.core.operator.ProtectedPackages(OWN) }, StopSignal(switch), h.link, h.availability, h.facts, h.clock,
                 backgroundScope, io = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler),
                 main = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler),
             )
@@ -788,10 +788,14 @@ class AccessibilityScreenOperatorTest {
 
         h.availability.restricted = true
         h.availability.onChange!!()
+        // Android calls the observer on the main thread: the settings and PackageManager are read again off it (A7).
+        assertEquals(ScreenServiceState.NOT_ENABLED, h.operator.state.value, "nothing is read on the observer's thread")
+        runCurrent()
         assertEquals(ScreenServiceState.RESTRICTED, h.operator.state.value)
 
         h.availability.enabled = true
         h.availability.onChange!!()
+        runCurrent()
         assertEquals(ScreenServiceState.STARTING, h.operator.state.value)
         assertEquals(ScreenResult.Unavailable(ScreenServiceState.STARTING), h.operator.read("Scout", NOTES))
 

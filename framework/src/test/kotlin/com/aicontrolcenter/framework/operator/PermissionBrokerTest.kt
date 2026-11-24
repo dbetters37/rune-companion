@@ -208,6 +208,8 @@ class PermissionBrokerTest {
         assertTrue("did not give Operator the permission \"Change a shared folder\"" in reason, reason)
         assertTrue("The owner's note, quoted: \"Not that folder; use Drafts.\"" in reason, reason)
 
+        // Asked again only after the cool-down that follows a refusal (R4).
+        advanceTimeBy(OwnerRequest.REFUSAL_COOLDOWN_MS + 1)
         val unanswered = f.start(f.writeFolder, f.assessment(modifying))
         val request = f.pending()
         advanceTimeBy(30 * MINUTE - 1)
@@ -336,7 +338,9 @@ class PermissionBrokerTest {
         f.folders.delete(f.folder.id)
         f.owner.grant(f.pending().id, GrantScope.ALWAYS)
         assertTrue("removed" in write.await().reason())
+        assertTrue(f.grants.observeAll().first().isEmpty(), "an answer never grants access to a folder that was removed (INT-11)")
         f.folders.upsert(f.folder)
+        f.grants.insert(PermissionGrant(GrantId("grt_always"), f.agent.id, OperatorCapabilities.FOLDERS_WRITE, f.inFolder, GrantScope.ALWAYS, grantedAt = f.clock.now()))
         // The tool is switched off while its approval is pending (the permission is stored now).
         val delete = f.start(f.deleteInFolder, f.assessment(RiskLevel.CONSEQUENTIAL))
         assertEquals(OwnerRequestKind.APPROVAL, f.pending().kind)
@@ -377,7 +381,7 @@ class PermissionBrokerTest {
     }
 
     @Test
-    fun `an objective keeps its status while the Director waits, and a task the owner paused stays paused`() = runTest {
+    fun `an objective keeps its status and deadline while the Director waits, and a task the owner paused stays paused`() = runTest {
         val f = fixture()
         val root = TaskRecord(
             id = TaskId("tsk_root"), rootId = TaskId("tsk_root"), kind = TaskKind.OBJECTIVE, title = "Objective", instructions = "Do it.",
@@ -389,7 +393,8 @@ class PermissionBrokerTest {
         advanceTimeBy(2 * MINUTE)
         f.owner.grant(f.pending().id, GrantScope.ONCE)
         planning.await()
-        assertEquals(START + 32 * MINUTE, f.tasks.get(root.id)?.deadlineAt, "its time moved with the wait")
+        // An objective's deadline is the orchestrator's: its running limit pauses and stores it, even across a crash (INT-3).
+        assertEquals(START + 30 * MINUTE, f.tasks.get(root.id)?.deadlineAt, "the broker leaves an objective's deadline to the orchestrator")
 
         f.runningTask()
         val paused = f.start(f.writeFolder, f.assessment(modifying))

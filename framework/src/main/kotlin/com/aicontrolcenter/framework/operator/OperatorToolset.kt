@@ -1,6 +1,7 @@
 package com.aicontrolcenter.framework.operator
 
 import com.aicontrolcenter.core.Clock
+import com.aicontrolcenter.core.FolderId
 import com.aicontrolcenter.core.operator.AppActions
 import com.aicontrolcenter.core.operator.CommandLimits
 import com.aicontrolcenter.core.operator.MediaLibrary
@@ -9,8 +10,8 @@ import com.aicontrolcenter.core.operator.OperatorAppRepository
 import com.aicontrolcenter.core.operator.ProtectedPackages
 import com.aicontrolcenter.core.operator.ScreenOperator
 import com.aicontrolcenter.core.operator.SharedFolder
+import com.aicontrolcenter.core.operator.SharedFolderFiles
 import com.aicontrolcenter.core.operator.SharedFolderRepository
-import com.aicontrolcenter.core.operator.SharedFolders
 import com.aicontrolcenter.core.operator.ShellRunner
 import com.aicontrolcenter.core.operator.TermuxRunner
 import com.aicontrolcenter.core.operator.WebReadLimits
@@ -20,21 +21,32 @@ import com.aicontrolcenter.core.tools.Tool
 
 /**
  * The shared folders the owner picked, read-only: what folder tools need to turn the folder an
- * agent names into its id. Never the repository itself, which can add and remove folders.
+ * agent names into its id, and what the permission checks read. Never the repository itself,
+ * which can add and remove folders.
  */
 fun interface FolderDirectory {
     suspend fun all(): List<SharedFolder>
+
+    /** The folder with [id] as stored now, or null. */
+    suspend fun get(id: FolderId): SharedFolder? = all().firstOrNull { it.id == id }
 }
 
-/** The apps authorised for screen operation, read-only: the screen tools' check before they look at a screen. */
+/** The apps authorised for screen operation, read-only: the screen tools' and the permission checks' lookup. */
 fun interface AuthorisedApps {
     suspend fun get(packageName: String): OperatorApp?
 }
 
-/** [FolderDirectory] over the repository, exposing reads only. */
-fun SharedFolderRepository.asDirectory(): FolderDirectory = FolderDirectory { getAll() }
+/**
+ * [FolderDirectory] over the repository, exposing reads only. The app wires its own named view
+ * (its architecture test allows a full store only inside those); tests use this one.
+ */
+fun SharedFolderRepository.asDirectory(): FolderDirectory = object : FolderDirectory {
+    override suspend fun all(): List<SharedFolder> = getAll()
 
-/** [AuthorisedApps] over the repository, exposing reads only. */
+    override suspend fun get(id: FolderId): SharedFolder? = this@asDirectory.get(id)
+}
+
+/** [AuthorisedApps] over the repository, exposing reads only; see [asDirectory]. */
 fun OperatorAppRepository.asAuthorisedApps(): AuthorisedApps = AuthorisedApps { get(it) }
 
 /** Bounds the operator tools apply on top of the gateways' own. */
@@ -67,7 +79,8 @@ data class OperatorLimits(
 /** Everything the operator tools use: gateways, the workspace and read-only lookups. Nothing owner-only. */
 class OperatorToolDependencies(
     val workspace: Workspace,
-    val sharedFolders: SharedFolders,
+    /** Files inside the owner's folders; never adding, removing or releasing a folder. */
+    val sharedFolders: SharedFolderFiles,
     val folders: FolderDirectory,
     val media: MediaLibrary,
     val apps: AppActions,

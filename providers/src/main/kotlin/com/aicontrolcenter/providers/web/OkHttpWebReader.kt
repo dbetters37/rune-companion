@@ -1,6 +1,7 @@
 package com.aicontrolcenter.providers.web
 
 import com.aicontrolcenter.core.activity.EgressInfo
+import com.aicontrolcenter.core.activity.EgressOrigin
 import com.aicontrolcenter.core.operator.WebReadLimits
 import com.aicontrolcenter.core.operator.WebReadResult
 import com.aicontrolcenter.core.operator.WebReader
@@ -57,18 +58,19 @@ import kotlin.coroutines.resume
  * - **Egress.** [WebReadResult.Page.hostsContacted] lists the hosts a request was written to,
  *   in order. [onRequestSent] is told of every request written, also when the read then fails
  *   or a redirect is refused, which a [WebReadResult.Refused] or [WebReadResult.Failed] cannot
- *   carry; [WebEgress] turns either into the activity log's [EgressInfo].
+ *   carry; [WebEgress] turns either into the activity log's [EgressInfo]. It is also given the
+ *   [EgressOrigin] the read was called with (the agent and task of the tool call), or null.
  *
  * @param client lends its dispatcher, resolver, socket factory and TLS settings; everything
  *   listed above is set here regardless. When null, a client is created.
  * @param deviceAddresses this device's addresses, read once per page read.
- * @param onRequestSent called on an OkHttp thread for each request written; it must be quick
- *   and must not throw.
+ * @param onRequestSent called on an OkHttp thread for each request written, with the origin of
+ *   the read; it must be quick and must not throw.
  */
 class OkHttpWebReader(
     client: OkHttpClient? = null,
     private val deviceAddresses: () -> Set<InetAddress> = ::interfaceAddresses,
-    private val onRequestSent: (EgressInfo) -> Unit = {},
+    private val onRequestSent: (EgressInfo, EgressOrigin?) -> Unit = { _, _ -> },
 ) : WebReader {
     private val resolver: Dns = client?.dns?.let { (it as? GuardedDns)?.resolver ?: it } ?: Dns.SYSTEM
 
@@ -89,6 +91,8 @@ class OkHttpWebReader(
 
     override suspend fun read(url: String, limits: WebReadLimits): WebReadResult {
         val first = url.trim().toHttpUrlOrNull() ?: return WebReadResult.Refused(notReadable(url))
+        // Read here, in the caller's coroutine: the requests are reported from OkHttp's threads.
+        val origin = EgressOrigin.current()
         val guard = AddressGuard(
             try {
                 deviceAddresses()
@@ -104,7 +108,7 @@ class OkHttpWebReader(
             .addNetworkInterceptor(
                 PeerGuard(guard) { host, bytes ->
                     contacted.addIfAbsent(host)
-                    onRequestSent(WebEgress.of(host, bytes))
+                    onRequestSent(WebEgress.of(host, bytes), origin)
                 },
             )
             .callTimeout(limits.timeoutMs, TimeUnit.MILLISECONDS)

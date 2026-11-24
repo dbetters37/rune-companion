@@ -32,6 +32,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.aicontrolcenter.app.di.LocalAppGraph
+import com.aicontrolcenter.app.ui.approvals.ApprovalNotificationsOffBanner
 import com.aicontrolcenter.app.ui.components.ScreenScaffold
 import com.aicontrolcenter.app.ui.components.UserMessage
 import com.aicontrolcenter.app.ui.icons.AppIcons
@@ -40,6 +41,7 @@ import com.aicontrolcenter.app.ui.icons.Key
 import com.aicontrolcenter.app.ui.icons.Storage
 import com.aicontrolcenter.app.ui.icons.Tools
 import com.aicontrolcenter.app.ui.icons.TouchApp
+import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.appColors
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.RequestId
@@ -242,6 +244,9 @@ fun ToolsSectionRoute(initialTab: ToolsTab, initialAgent: AgentId?, navigation: 
                     }
                 }
             }
+            // Agents wait for the owner's answers; without notifications the owner is not told (A2).
+            val notificationsOn by graph.notifications.enabled.collectAsStateWithLifecycle()
+            if (!notificationsOn) ApprovalNotificationsOffBanner(Modifier.padding(horizontal = Spacing.screen))
             body()
         }
     }

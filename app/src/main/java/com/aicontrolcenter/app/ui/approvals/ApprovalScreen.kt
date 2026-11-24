@@ -407,8 +407,9 @@ private fun Outcome(request: RequestUi) {
         OwnerRequestStatus.APPROVED -> (if (request.kind == OwnerRequestKind.APPROVAL) "You approved it." else "You allowed it.") to StatusTone.READY
         OwnerRequestStatus.DENIED -> "You refused. The agent was told." to StatusTone.UNAVAILABLE
         OwnerRequestStatus.CANCELLED ->
-            "The agent stopped waiting before you answered: its chat or task was stopped, or the app restarted. Nothing was allowed." to null
+            "Nothing waits for this answer any more: the agent's chat or task was stopped, the app restarted, or you withdrew what " +
+                "it was about. Nothing was allowed." to null
         OwnerRequestStatus.PENDING, OwnerRequestStatus.EXPIRED -> "Nobody answered in time, so the agent was refused. Nothing was allowed." to null
     }
-    InfoBanner(title = request.status.text, text = listOfNotNull(text, request.note?.let { "Note: $it" }).joinToString(" "), tone = tone)
+    InfoBanner(title = request.status.text, text = listOfNotNull(text, request.note?.let { "Note: $it" }, request.askedAgain).joinToString(" "), tone = tone)
 }

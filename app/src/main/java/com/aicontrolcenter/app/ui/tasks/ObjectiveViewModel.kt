@@ -149,6 +149,12 @@ class ObjectiveViewModel(
     /** The requests waiting for the owner (`OwnerRequests.pending`); this objective's are shown with a link. */
     requests: Flow<List<OwnerRequest>> = flowOf(emptyList()),
     private val capabilityInfo: (Capability) -> CapabilityInfo? = { null },
+    /**
+     * Waits for the app's start-up work (recovering interrupted objectives) to finish. Resume and
+     * Run again wait for it, so work restarted on a screen restored after the app was killed never
+     * races the recovery.
+     */
+    private val awaitStartup: suspend () -> Unit = {},
 ) : ViewModel() {
 
     private data class Local(
@@ -192,11 +198,17 @@ class ObjectiveViewModel(
 
     fun pause() = act { orchestrator.pause(rootId) }
 
-    fun resume() = act { orchestrator.resume(rootId) }
+    fun resume() = act {
+        awaitStartup()
+        orchestrator.resume(rootId)
+    }
 
     fun cancel() = act("Cancelled. What the team produced is kept.") { orchestrator.cancel(rootId) }
 
-    fun runAgain() = act { orchestrator.retryTask(rootId) }
+    fun runAgain() = act {
+        awaitStartup()
+        orchestrator.retryTask(rootId)
+    }
 
     fun delete() = act {
         orchestrator.delete(rootId)

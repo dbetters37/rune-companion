@@ -3,11 +3,9 @@ package com.aicontrolcenter.framework.operator
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ToolId
 import com.aicontrolcenter.core.agents.AgentProfile
-import com.aicontrolcenter.core.operator.OperatorAppRepository
 import com.aicontrolcenter.core.operator.OperatorGate
 import com.aicontrolcenter.core.operator.OperatorTools
 import com.aicontrolcenter.core.operator.ProtectedPackages
-import com.aicontrolcenter.core.operator.SharedFolderRepository
 import com.aicontrolcenter.core.registry.AgentRepository
 import com.aicontrolcenter.core.settings.FrameworkSettings
 import com.aicontrolcenter.core.settings.SettingsRepository
@@ -25,15 +23,15 @@ import kotlinx.coroutines.flow.StateFlow
  * constraint, the authorised apps and the protected packages. Shared by [PermissionBroker] and
  * [DefaultCapabilityRequester], so both refuse the same calls with the same words.
  *
- * It only reads: it holds the folder and app stores but never changes them, and nothing here
- * reaches an owner-only port.
+ * It only reads: it gets read-only lookups of the folders and the authorised apps, never their
+ * stores, and nothing here reaches an owner-only port.
  */
 class OperatorFacts(
     private val agents: AgentRepository,
     private val settings: SettingsRepository,
     private val capabilities: CapabilityRegistry,
-    private val folders: SharedFolderRepository,
-    private val apps: OperatorAppRepository,
+    private val folders: FolderDirectory,
+    private val apps: AuthorisedApps,
     /** The owner's Stop, read-only: [com.aicontrolcenter.core.operator.ScreenOperator.stopped]. */
     private val screenStopped: StateFlow<Boolean>,
     /** The protected packages as resolved at start-up (`:device`); read on every check. */
@@ -73,6 +71,25 @@ class OperatorFacts(
         CapabilityConstraint.None -> null
     }
 
+    /**
+     * Why access to [constraint] cannot be given now: the folder was removed, the app is
+     * protected or no longer authorised, or the owner pressed Stop on screen control. Null when
+     * it can, or without a constraint. The owner's answers check it, as direct grants do.
+     */
+    suspend fun targetRefusal(constraint: CapabilityConstraint): String? = when (constraint) {
+        is CapabilityConstraint.Folder -> if (folders.get(constraint.folderId) == null) "The folder was removed, so this was not allowed." else null
+        is CapabilityConstraint.App -> {
+            val name = constraint.packageName
+            when {
+                protectedPackages().isProtected(name) -> "$name is never operated by agents, so this was not allowed."
+                apps.get(name) == null -> "$name is no longer authorised for screen control, so this was not allowed."
+                screenStopped.value -> "You pressed Stop on screen control, so this was not allowed."
+                else -> null
+            }
+        }
+        CapabilityConstraint.None -> null
+    }
+
     private suspend fun facts(
         agent: AgentProfile?,
         toolId: ToolId?,
@@ -82,13 +99,14 @@ class OperatorFacts(
         leadsTo: String?,
         sendsDataOffDevice: Boolean,
     ): OperatorGate.Facts {
-        val needsApps = constraint is CapabilityConstraint.App || leadsTo != null
+        // The gate asks only about the call's own app and the app it leads to.
+        val packages = listOfNotNull((constraint as? CapabilityConstraint.App)?.packageName, leadsTo)
         return OperatorGate.Facts(
             agent = agent, toolId = toolId, toolTitle = toolTitle, capability = capability,
             capabilityInfo = capabilities.info(capability), constraint = constraint, leadsTo = leadsTo,
             sendsDataOffDevice = sendsDataOffDevice, settings = settings.get(), screenStopped = screenStopped.value,
             folder = (constraint as? CapabilityConstraint.Folder)?.let { folders.get(it.folderId) },
-            authorisedApps = if (needsApps) apps.getAll().map { it.packageName }.toSet() else emptySet(),
+            authorisedApps = packages.filterTo(HashSet()) { apps.get(it) != null },
             protectedPackages = protectedPackages(),
         )
     }

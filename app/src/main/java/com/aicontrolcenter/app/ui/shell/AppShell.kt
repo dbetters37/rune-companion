@@ -32,6 +32,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.aicontrolcenter.app.di.AppGraph
 import com.aicontrolcenter.app.di.LocalAppGraph
+import com.aicontrolcenter.app.ui.approvals.OperatorNotificationsAsk
 import com.aicontrolcenter.app.ui.theme.AppTheme
 
 /** Width from which the app uses a navigation rail instead of a bottom bar. */
@@ -79,6 +80,9 @@ fun AppShell(modifier: Modifier = Modifier) {
             navController.navigate(ApprovalRoute(id.value)) { launchSingleTop = true }
         }
     }
+
+    // With the phone operator on, the owner is asked once for notifications, after an explanation, so a waiting request is seen.
+    OperatorNotificationsAsk()
 
     // An objective asked for from outside the app (its notification) opens once the shell exists.
     val objectiveToOpen by graph.objectiveToOpen.collectAsStateWithLifecycle()

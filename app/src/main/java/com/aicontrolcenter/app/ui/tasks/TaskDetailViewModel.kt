@@ -136,6 +136,12 @@ class TaskDetailViewModel(
     /** The requests waiting for the owner (`OwnerRequests.pending`); this task's are shown with a link. */
     requests: Flow<List<OwnerRequest>> = flowOf(emptyList()),
     private val capabilityInfo: (Capability) -> CapabilityInfo? = { null },
+    /**
+     * Waits for the app's start-up work (recovering interrupted objectives) to finish. Run again
+     * waits for it, so work restarted on a screen restored after the app was killed never races
+     * the recovery.
+     */
+    private val awaitStartup: suspend () -> Unit = {},
 ) : ViewModel() {
 
     private data class Local(val isBusy: Boolean = false, val message: UserMessage? = null)
@@ -164,7 +170,10 @@ class TaskDetailViewModel(
     val uiState: StateFlow<TaskDetailUiState> = combine(stored, entries, local, requests) { stored, entries, local, requests -> build(stored, entries, local, requests) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TaskDetailUiState())
 
-    fun retry() = act("Queued to run again.") { orchestrator.retryTask(taskId) }
+    fun retry() = act("Queued to run again.") {
+        awaitStartup()
+        orchestrator.retryTask(taskId)
+    }
 
     fun cancel() = act("Cancelled. The Director continues without it.") { orchestrator.cancelTask(taskId) }
 
@@ -207,7 +216,8 @@ class TaskDetailViewModel(
                     ReviewUi(faces.of(verdict.reviewer), verdict.decision.toStatusLabel(), verdict.summary, verdict.issues, formatCompactTimestamp(verdict.at, now, zone))
                 },
                 usage = usageOf(task.usage),
-                timing = timingOf(task, now),
+                // A helper answering this task's question (team.ask_agent) may be the one waiting for the owner.
+                timing = timingOf(task, now, waitsForOwner = requests.any { it.taskId == task.id && it.isOpenAt(now) }),
                 canRetry = task.status in RETRYABLE && task.kind != TaskKind.REVIEW && task.kind != TaskKind.OBJECTIVE && task.delegationChain.isEmpty(),
                 canCancel = !task.status.isFinished && task.kind != TaskKind.OBJECTIVE,
                 retryNote = retryNote(task),
@@ -232,14 +242,16 @@ class TaskDetailViewModel(
         ).joinToString(" · ")
     }
 
-    private fun timingOf(task: TaskRecord, now: Long): String {
+    private fun timingOf(task: TaskRecord, now: Long, waitsForOwner: Boolean): String {
         val started = task.startedAt ?: return "Not started yet"
         val parts = arrayListOf("Started ${formatCompactTimestamp(started, now, zone)}")
         val finished = task.finishedAt
         when {
             finished != null -> parts += "took ${formatDuration((finished - started).coerceAtLeast(0))}"
-            // Time spent waiting for the owner does not count: the limit moves on when the answer comes.
-            task.status == TaskStatus.WAITING_FOR_OWNER -> parts += "its time limit is paused while it waits for you"
+            // Time spent waiting for the owner does not count: the limit moves on when the answer comes. That is so
+            // too while the agent that answers this task's question waits for the owner (its request names this task).
+            task.status == TaskStatus.WAITING_FOR_OWNER || (waitsForOwner && !task.status.isFinished) ->
+                parts += "its time limit is paused while it waits for you"
             task.status == TaskStatus.RUNNING || task.status.isWaiting ->
                 task.deadlineAt?.let { parts += "times out at ${formatTimeOfDay(it, zone)}" }
             else -> Unit

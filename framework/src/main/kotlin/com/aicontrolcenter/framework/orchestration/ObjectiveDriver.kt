@@ -121,33 +121,28 @@ internal class ObjectiveDriver(
         if (ctx.tasks.getTree(rt.rootId).none { it.kind == TaskKind.WORK || it.kind == TaskKind.SYNTHESIS }) {
             val objective = ctx.tasks.get(rt.rootId) ?: return
             if (objective.deadlineAt != null && ctx.clock.now() >= objective.deadlineAt!!) {
-                planning.failObjective(rt, "The objective reached its time limit before the Director could make a plan.")
+                planning.failObjective(rt, NO_PLAN_IN_TIME)
                 return
             }
-            if (!planning.plan(rt)) return
+            // Planning runs under the objective's limit, like the work: a wait for the owner (the Director
+            // calling a tool that needs an answer) pauses it, and the heartbeat stores the moved deadline
+            // while the wait goes on, so the wait is not charged to the objective even if the app is killed.
+            when (underLimit(rt, objective) { planning.plan(rt) }) {
+                true -> Unit
+                false -> return
+                null -> {
+                    if (ctx.tasks.getTree(rt.rootId).none { it.kind == TaskKind.WORK || it.kind == TaskKind.SYNTHESIS }) {
+                        planning.failObjective(rt, NO_PLAN_IN_TIME)
+                        return
+                    }
+                }
+            }
         }
         // Only bookkeeping was left at start-up: finish now, and say so. A task queued again meanwhile runs as usual.
         if (atStartUp && readyToFinish(ctx.tasks.getTree(rt.rootId)) && finish(rt, atStartUp = true)) return
         while (true) {
             val objective = ctx.tasks.get(rt.rootId)?.takeIf { it.status == TaskStatus.RUNNING } ?: return
-            val remaining = ((objective.deadlineAt ?: Long.MAX_VALUE) - ctx.clock.now()).coerceAtLeast(1)
-            // Time spent waiting for the owner does not count: the limit pauses, and the stored deadline moves with it.
-            val inTime = withPausableTimeout(remaining, ctx.timeSource) {
-                rt.limit = objective.deadlineAt?.let { ObjectiveRuntime.RunningLimit(it, checkNotNull(WaitClock.current())) }
-                try {
-                    supervisorScope { schedule(rt, this) }.also {
-                        // Every task ended: what follows reads the deadline as the limit left it. A limit that ran out, or work the
-                        // owner or the app stopped, writes nothing here (pausing stores its own; after a crash the heartbeat's holds).
-                        try {
-                            storeRunning(rt)
-                        } catch (e: Exception) {
-                            rethrowIfCancelled(e)
-                        }
-                    }
-                } finally {
-                    rt.limit = null
-                }
-            }
+            val inTime = underLimit(rt, objective) { supervisorScope { schedule(rt, this) } }
             if (inTime == null) objectiveTimedOut(rt)
             if (!isRunning(rt.rootId)) return
             runSynthesis(rt)
@@ -155,6 +150,31 @@ internal class ObjectiveDriver(
             // The owner may have asked for a task to run again while the synthesis ran: work on it first.
             if (!readyToFinish(ctx.tasks.getTree(rt.rootId))) continue
             if (finish(rt)) return
+        }
+    }
+
+    /**
+     * Runs [block] under the objective's time limit, from [objective]'s stored deadline: time spent
+     * waiting for the owner does not count, and the stored deadline moves with it ([ObjectiveRuntime.limit],
+     * written by the heartbeat). Returns null when the limit ran out first. When [block] ends, what follows
+     * reads the deadline as the limit left it. A limit that ran out, or work the owner or the app stopped,
+     * writes nothing here (pausing stores its own; after a crash the heartbeat's holds).
+     */
+    private suspend fun <T> underLimit(rt: ObjectiveRuntime, objective: TaskRecord, block: suspend () -> T): T? {
+        val remaining = ((objective.deadlineAt ?: Long.MAX_VALUE) - ctx.clock.now()).coerceAtLeast(1)
+        return withPausableTimeout(remaining, ctx.timeSource) {
+            rt.limit = objective.deadlineAt?.let { ObjectiveRuntime.RunningLimit(it, checkNotNull(WaitClock.current())) }
+            try {
+                block().also {
+                    try {
+                        storeRunning(rt)
+                    } catch (e: Exception) {
+                        rethrowIfCancelled(e)
+                    }
+                }
+            } finally {
+                rt.limit = null
+            }
         }
     }
 
@@ -700,6 +720,9 @@ internal class ObjectiveDriver(
 
         /** How often a running objective stores that it is still running. */
         const val HEARTBEAT_MS = 60_000L
+
+        /** Why an objective failed when its time ran out before the Director made a plan. */
+        const val NO_PLAN_IN_TIME = "The objective reached its time limit before the Director could make a plan."
 
         /** Opens the status line of a result a limit made the objective use without the changes its review asked for. */
         const val UNREVISED = "Used without the changes its review asked for"

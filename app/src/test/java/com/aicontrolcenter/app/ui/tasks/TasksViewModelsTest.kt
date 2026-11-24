@@ -22,6 +22,7 @@ import com.aicontrolcenter.core.tasks.TaskStatus
 import com.aicontrolcenter.framework.memory.MemorySeeder
 import com.aicontrolcenter.testkit.ScriptStep
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
@@ -156,6 +157,35 @@ class TasksViewModelsTest {
         assertTrue(screen.uiState.value.deleted)
         assertNull(app.tasks.get(id))
         assertTrue(app.messages.list(id).isEmpty())
+    }
+
+    @Test
+    fun `Resume waits for the start-up recovery, so restarted work never races it`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.graph.start().join()
+        val model = app.serveModel(GatedLlmClient(listOf("never")))
+        for (agent in app.agents.getAll()) app.graph.agentManager.assignModel(agent.id, model.id)
+        val id = newObjective(app).give(OBJECTIVE)
+        letTheTeamWork(1_000)
+        app.graph.orchestrator.pause(id)
+        letTheTeamWork(1_000)
+        // A screen restored after the app was killed: start-up has not finished its recovery yet.
+        val startUp = CompletableDeferred<Unit>()
+        val screen = ObjectiveViewModel(
+            id, app.graph.tasks, app.graph.messages, app.graph.registryDirectory, app.graph.orchestrator, app.graph.activityLog, app.graph.settings,
+            app.clock, ZoneOffset.UTC, ticker = flowOf(Unit), awaitStartup = { startUp.await() },
+        ).also { it.uiState.activeIn(backgroundScope) }
+
+        screen.resume()
+        letTheTeamWork(1_000)
+        assertEquals("Paused", screen.uiState.value.header!!.status.text, "nothing restarts before the recovery")
+        assertTrue(app.graph.orchestrator.running.value.isEmpty())
+
+        startUp.complete(Unit)
+        letTheTeamWork(1_000)
+        assertEquals("Running", screen.uiState.value.header!!.status.text)
+        app.graph.orchestrator.cancel(id)
+        letTheTeamWork(1_000)
     }
 
     @Test

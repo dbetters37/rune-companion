@@ -4,6 +4,7 @@ import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.IdGenerator
 import com.aicontrolcenter.core.activity.ActivityRecorder
 import com.aicontrolcenter.core.activity.ActivityType
+import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.operator.AskResult
 import com.aicontrolcenter.core.operator.CapabilityRequester
 import com.aicontrolcenter.core.operator.GrantLookup
@@ -35,15 +36,20 @@ import kotlinx.serialization.json.put
  *    grant covers it;
  *  - at most one pending ask per agent, capability and constraint ([AskResult.AlreadyPending])
  *    and [CapabilityRequester.MAX_PENDING_ASKS_PER_AGENT] per agent;
+ *  - refused at once, without a request, when the owner refused this agent the same permission
+ *    and target less than [OwnerRequest.REFUSAL_COOLDOWN_MS] ago; the refusal counts the repeat
+ *    ([OwnerRequestQueue.countAskedAgain]);
  *  - the ask's risk is that of the capability's riskiest tool ([OperatorTools.riskOf]) and it
  *    expires after `approvalTimeoutMinutes`. Asks of a task are withdrawn when it ends
- *    ([OperatorTaskHooks]).
+ *    ([OperatorTaskHooks]). An ask raised here is registered in [RequestWaiters]: the agent of
+ *    this run of the app is the one that uses the answer.
  * Checks and creation run under one lock, so concurrent asks cannot pass the limits together.
  */
 class DefaultCapabilityRequester(
     private val facts: OperatorFacts,
     private val requests: OwnerRequestQueue,
     private val grants: GrantLookup,
+    private val waiters: RequestWaiters,
     private val activity: ActivityRecorder,
     private val ids: IdGenerator,
     private val clock: Clock,
@@ -65,6 +71,18 @@ class DefaultCapabilityRequester(
         }
         val waiting = requests.observePending().first().filter { it.agentId == agent.id && it.toolId == null && !it.isExpiredAt(now) }
         waiting.firstOrNull { it.capability == capability && it.constraint == constraint }?.let { return AskResult.AlreadyPending(it.id) }
+        requests.lastRefusal(agent.id, capability, constraint, now - OwnerRequest.REFUSAL_COOLDOWN_MS)?.let { refusal ->
+            val counted = orNull { requests.countAskedAgain(refusal.id) } ?: refusal
+            val reason = refusalCooldownReason(agent.name, info.title, refusal, now)
+            logSafely {
+                activity.record(
+                    ActivityType.PERMISSION, "Not asked again: ${info.title}", reason, severity = Severity.WARNING,
+                    agentId = agent.id, taskId = context.taskId, rootTaskId = context.rootTaskId,
+                    data = requestData(counted) { put("askedAgain", counted.askedAgain) },
+                )
+            }
+            return AskResult.Refused(reason)
+        }
         if (waiting.size >= CapabilityRequester.MAX_PENDING_ASKS_PER_AGENT) {
             return AskResult.Refused("You already have ${waiting.size} questions waiting for the owner; wait for an answer first.")
         }
@@ -78,7 +96,13 @@ class DefaultCapabilityRequester(
             createdAt = now, expiresAt = now + minutes * 60_000L,
             agentName = agent.name, targetLabel = target, delegationChain = context.delegationChain,
         )
-        requests.create(request)
+        waiters.register(request.id)
+        try {
+            requests.create(request)
+        } catch (e: Exception) {
+            waiters.unregister(request.id)
+            throw e
+        }
         logSafely {
             activity.record(
                 ActivityType.PERMISSION, "Permission asked for by the agent: ${info.title}", request.summary,

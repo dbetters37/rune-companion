@@ -63,7 +63,7 @@ fun ObjectiveRoute(objectiveId: TaskId, onBack: () -> Unit, onOpenTask: (TaskId)
     val viewModel = viewModel(key = "objective-${objectiveId.value}") {
         ObjectiveViewModel(
             objectiveId, graph.tasks, graph.messages, graph.registryDirectory, graph.orchestrator, graph.activityLog, graph.settings, graph.clock,
-            requests = graph.ownerRequests.pending, capabilityInfo = graph.capabilities::info,
+            requests = graph.ownerRequests.pending, capabilityInfo = graph.capabilities::info, awaitStartup = graph::awaitStartup,
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()

@@ -65,9 +65,12 @@ sealed interface ScreenCall {
 /**
  * A scriptable screen that follows the [ScreenOperator] contract: tests set [screen] (and change
  * it to simulate navigation, or from [onAction] after a tap), choose the [authorised] apps,
- * switch [setState] and Stop ([ScreenControl]), and check [calls] (every call), [performed]
+ * switch [setState] and Stop ([stop], [resume]), and check [calls] (every call), [performed]
  * (calls that acted) and [endedSessions]. Snapshots are numbered from 1; the last
  * [KEPT_SNAPSHOTS] are kept for [ScreenTarget.Numbered].
+ *
+ * Like the device's operator it is not the owner's [ScreenControl]: hand [asControl] to the
+ * owner's side, so nothing agent-facing that holds this fake can be cast to Stop and Resume.
  */
 class FakeScreenOperator(
     initialState: ScreenServiceState = ScreenServiceState.READY,
@@ -78,7 +81,7 @@ class FakeScreenOperator(
     @Volatile var launcher: String? = "com.android.launcher3",
     @Volatile var screenshotsSupported: Boolean = true,
     private val clock: Clock = Clock { 1_700_000_000_000L },
-) : ScreenOperator, ScreenControl {
+) : ScreenOperator {
     private val stateFlow = MutableStateFlow(initialState)
     private val stoppedFlow = MutableStateFlow(false)
     private val screenFlow = MutableStateFlow(screen)
@@ -118,13 +121,18 @@ class FakeScreenOperator(
         stateFlow.value = value
     }
 
-    override fun stop() {
+    /** The owner's Stop, as a test presses it. */
+    fun stop() {
         stoppedFlow.value = true
     }
 
-    override fun resume() {
+    /** The owner's Resume, as a test presses it. */
+    fun resume() {
         stoppedFlow.value = false
     }
+
+    /** The owner's Stop and Resume of this screen: a separate object, for the owner's side only. */
+    fun asControl(): ScreenControl = FakeScreenControl(this)
 
     override fun endSession(agentName: String) {
         endedSessions += agentName
@@ -291,4 +299,13 @@ class FakeScreenOperator(
         /** How many recent snapshots [ScreenTarget.Numbered] can refer to. */
         const val KEPT_SNAPSHOTS = 16
     }
+}
+
+/** [ScreenControl] over a [FakeScreenOperator]: what the owner's side gets, never the agents'. */
+private class FakeScreenControl(private val screen: FakeScreenOperator) : ScreenControl {
+    override val stopped: StateFlow<Boolean> get() = screen.stopped
+
+    override fun stop() = screen.stop()
+
+    override fun resume() = screen.resume()
 }

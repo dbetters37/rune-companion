@@ -1,5 +1,6 @@
 package com.aicontrolcenter.framework.operator
 
+import com.aicontrolcenter.core.activity.EgressOrigin
 import com.aicontrolcenter.core.operator.LinkPolicy
 import com.aicontrolcenter.core.operator.WebReadResult
 import com.aicontrolcenter.core.tools.ActionAssessment
@@ -7,6 +8,7 @@ import com.aicontrolcenter.core.tools.Tool
 import com.aicontrolcenter.core.tools.ToolContext
 import com.aicontrolcenter.core.tools.ToolOutcome
 import com.aicontrolcenter.framework.operator.OperatorText.q
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
@@ -52,14 +54,16 @@ internal class WebReadPage(private val d: OperatorToolDependencies) : OperatorTo
         val links = args.bool("include_links", false)
         return assessment(
             "Read the web page ${q(link.link)}",
-            prepared { read(link.link, max, links) },
+            prepared { read(link.link, max, links, context) },
             listOf("Address: ${q(link.link)}", "The website ${link.host} learns the address and this phone's network address."),
             dataGoesTo = link.host,
         )
     }
 
-    private suspend fun read(url: String, max: Int, withLinks: Boolean): ToolOutcome {
-        val page = when (val r = d.web.read(url, d.limits.web)) {
+    private suspend fun read(url: String, max: Int, withLinks: Boolean, context: ToolContext): ToolOutcome {
+        // The reader logs each request it sends off the phone; the origin lets each entry name the agent and the task.
+        val origin = EgressOrigin(context.agent.id, context.taskId, context.rootTaskId)
+        val page = when (val r = withContext(origin) { d.web.read(url, d.limits.web) }) {
             is WebReadResult.Page -> r
             is WebReadResult.Refused -> return ToolOutcome.failure("The page was not read: ${r.reason}")
             is WebReadResult.Failed -> return ToolOutcome.failure("The page could not be read: ${r.reason}")

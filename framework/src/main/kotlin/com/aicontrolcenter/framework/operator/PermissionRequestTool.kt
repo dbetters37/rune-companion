@@ -38,7 +38,8 @@ class PermissionRequestTool(private val requester: CapabilityRequester) : Tool {
         title = "Ask the owner for a permission",
         description = "Asks the owner to let you use a permission you do not have yet, with your reason. The owner answers later in the app; " +
             "this does not wait and you are not told the answer. Ask only when your task needs it, then go on without it or end your " +
-            "turn saying what you are waiting for. Folder permissions name one shared folder (folder_id) and screen permissions one " +
+            "turn saying what you are waiting for. After the owner refuses a permission, asking for it again within 10 minutes is " +
+            "refused without asking the owner. Folder permissions name one shared folder (folder_id) and screen permissions one " +
             "app (app, its package name). Permissions: " +
             OperatorCapabilities.all.joinToString("; ") { "${it.capability.id} (${it.title})" } + ".",
         parameters = buildJsonObject {

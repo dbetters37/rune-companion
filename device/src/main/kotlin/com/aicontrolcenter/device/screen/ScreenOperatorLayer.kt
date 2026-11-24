@@ -16,6 +16,7 @@ import com.aicontrolcenter.core.operator.ScreenServiceState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * The screen operator for the composition root. Create exactly one per process (it shares the
@@ -27,23 +28,28 @@ import kotlinx.coroutines.SupervisorJob
  * system service.
  *
  * @param operatorApps `operator_apps`, re-read on every call.
- * @param protectedPackages from [ProtectedPackagesResolver] at start-up; the same object the broker
- *   and the owner ports use.
+ * @param protectedPackages from [ProtectedPackagesResolver.startResolving] at start-up, read on
+ *   every check; the same set the broker and the owner ports use.
  * @param scope lives as long as the process: session timers, the Stop file, state updates.
  */
 class ScreenOperatorLayer(
     context: Context,
     operatorApps: OperatorAppRepository,
-    protectedPackages: ProtectedPackages,
+    protectedPackages: () -> ProtectedPackages,
     clock: Clock = WallClock,
-    scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) {
+    /** For a set known at once (tests). */
+    constructor(context: Context, operatorApps: OperatorAppRepository, protectedPackages: ProtectedPackages) :
+        this(context, operatorApps, { protectedPackages })
+
     private val appContext: Context = context.applicationContext ?: context
     private val switch = StopSwitch.process(appContext)
     private val impl = AccessibilityScreenOperator(
-        apps = operatorApps,
+        // Read-only views: the operator can neither authorise an app nor resume after the owner's Stop.
+        apps = AuthorisedAppLookup.of(operatorApps),
         protectedPackages = protectedPackages,
-        stopSwitch = switch,
+        stopSwitch = StopSignal(switch),
         link = ServiceLink.process,
         availability = AndroidScreenAvailability(appContext),
         device = AndroidDeviceFacts(appContext),
@@ -57,8 +63,19 @@ class ScreenOperatorLayer(
     /** Owner-only: Stop and Resume, persisted across restarts. */
     val control: ScreenControl = SwitchScreenControl(switch)
 
+    init {
+        // The first read of Android's settings and PackageManager happens here, off the main thread, rather than on
+        // whichever thread first looks at the state (often the main thread, for the Screen control screen).
+        scope.launch(Dispatchers.IO) { impl.state }
+    }
+
     /** Reads Android's settings again (Screen control calls it when it comes back into view: Android 9–12 send no change signal). */
     fun refreshState(): ScreenServiceState = impl.refreshState()
+
+    /** [refreshState] off the caller's thread: the app calls it from the main thread, and the state updates when the read is done. */
+    fun refreshStateInBackground() {
+        scope.launch(Dispatchers.IO) { impl.refreshState() }
+    }
 
     /** What the owner's Screen control screen needs to send them to Android's settings. */
     companion object {

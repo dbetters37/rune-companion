@@ -92,7 +92,8 @@ internal val PLAIN_WORDS: Map<String, String> = mapOf(
     "scripts.run_js" to "Runs a small JavaScript program in a sealed sandbox with no access to the phone or the network.",
     "scripts.run_shell" to "Runs a command with Android's shell in the workspace. You approve each command.",
     "termux.run" to "Runs a command in the Termux app. You approve each command.",
-    "permissions.request" to "Asks you for a permission it does not have, with its reason. It can never grant itself anything.",
+    "permissions.request" to "Asks you for a permission it does not have, with its reason. It can never grant itself anything, and after you " +
+        "refuse it cannot ask you for the same permission again for 10 minutes.",
 )
 
 /** Whether [id] is one of the phone operator's tools. */

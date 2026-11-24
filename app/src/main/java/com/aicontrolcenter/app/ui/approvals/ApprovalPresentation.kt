@@ -99,6 +99,8 @@ data class RequestUi(
     val hiddenWarning: String?,
     /** The owner's note, or why it expired or was cancelled. */
     val note: String?,
+    /** A refused permission the agent asked for again right away: how often, in words; null otherwise. */
+    val askedAgain: String? = null,
     val taskId: TaskId?,
     val rootId: TaskId?,
     val conversationId: ConversationId?,
@@ -151,7 +153,8 @@ fun OwnerRequest.statusAt(now: Long): StatusLabel = when (status) {
     }
     OwnerRequestStatus.DENIED -> StatusLabel("Denied", StatusTone.UNAVAILABLE)
     OwnerRequestStatus.EXPIRED -> StatusLabel("Expired", StatusTone.DISABLED)
-    OwnerRequestStatus.CANCELLED -> StatusLabel("Cancelled", StatusTone.DISABLED)
+    // Its call stopped, the app restarted, or the owner withdrew what it was about: nothing waits for the answer.
+    OwnerRequestStatus.CANCELLED -> StatusLabel("No longer waiting", StatusTone.DISABLED)
 }
 
 /**
@@ -252,7 +255,8 @@ fun requestUi(
                 RequestChoice.ALLOW_ONCE to "Only what is shown above, this one time. ${agent.name} asks you again next time.",
                 RequestChoice.ALLOW_FOR_TASK to "${agent.name} may $breadth$notOnly until this task ends.",
                 RequestChoice.ALLOW_ALWAYS to "${agent.name} may $breadth$notOnly in any task or chat, until you remove it in Tools › Allowed.",
-                RequestChoice.DENY to "${agent.name} is refused and told, with your note if you write one.",
+                RequestChoice.DENY to "${agent.name} is refused and told, with your note if you write one. It cannot ask you for this " +
+                    "again for ${OwnerRequest.REFUSAL_COOLDOWN_MS / MINUTE_MS} minutes.",
             ).filterKeys { it in choicesFor(request) }
         },
         approveLabel = action?.let { "Approve: " + it.replaceFirstChar(Char::lowercaseChar) } ?: RequestChoice.APPROVE.label,
@@ -268,10 +272,21 @@ fun requestUi(
         },
         hiddenWarning = hiddenCharacterWarning(marked),
         note = request.decisionNote?.let { inWords(PreviewText.exact(it)) },
+        askedAgain = askedAgainText(request.askedAgain),
         taskId = request.taskId,
         rootId = request.rootId,
         conversationId = request.conversationId,
     )
+}
+
+/**
+ * How often the agent asked again for a permission right after the owner refused it, in words:
+ * those asks were refused at once, without asking the owner ([OwnerRequest.askedAgain]).
+ */
+fun askedAgainText(times: Int): String? = when {
+    times <= 0 -> null
+    else -> "Asked again ${if (times == 1) "once" else "$times times"} within " +
+        "${OwnerRequest.REFUSAL_COOLDOWN_MS / MINUTE_MS} minutes of your refusal. Not put to you: each was refused at once."
 }
 
 /** Text from the request as the screens show it: hidden characters made visible ([visible]), then named ([inWords]). */

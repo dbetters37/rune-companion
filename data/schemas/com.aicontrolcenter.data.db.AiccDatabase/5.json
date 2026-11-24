@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 5,
-    "identityHash": "9c6a995229b79136b60ce54960b89124",
+    "identityHash": "db725e5a19f97ec826db572d4563c80d",
     "entities": [
       {
         "tableName": "agents",
@@ -1740,7 +1740,7 @@
       },
       {
         "tableName": "owner_requests",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `kind` TEXT NOT NULL, `status` TEXT NOT NULL, `agent_id` TEXT NOT NULL, `tool_id` TEXT, `capability` TEXT NOT NULL, `constraint_key` TEXT NOT NULL, `risk` TEXT NOT NULL, `summary` TEXT NOT NULL, `details_json` TEXT NOT NULL, `data_goes_to` TEXT, `reason` TEXT, `task_id` TEXT, `root_id` TEXT, `conversation_id` TEXT, `created_at` INTEGER NOT NULL, `expires_at` INTEGER NOT NULL, `decided_at` INTEGER, `decision_scope` TEXT, `decision_note` TEXT, `agent_name` TEXT, `tool_title` TEXT, `target_label` TEXT, `delegation_chain_json` TEXT NOT NULL, PRIMARY KEY(`id`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `kind` TEXT NOT NULL, `status` TEXT NOT NULL, `agent_id` TEXT NOT NULL, `tool_id` TEXT, `capability` TEXT NOT NULL, `constraint_key` TEXT NOT NULL, `risk` TEXT NOT NULL, `summary` TEXT NOT NULL, `details_json` TEXT NOT NULL, `data_goes_to` TEXT, `reason` TEXT, `task_id` TEXT, `root_id` TEXT, `conversation_id` TEXT, `created_at` INTEGER NOT NULL, `expires_at` INTEGER NOT NULL, `decided_at` INTEGER, `decision_scope` TEXT, `decision_note` TEXT, `agent_name` TEXT, `tool_title` TEXT, `target_label` TEXT, `delegation_chain_json` TEXT NOT NULL, `asked_again` INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(`id`))",
         "fields": [
           {
             "fieldPath": "id",
@@ -1873,6 +1873,13 @@
             "columnName": "delegation_chain_json",
             "affinity": "TEXT",
             "notNull": true
+          },
+          {
+            "fieldPath": "askedAgain",
+            "columnName": "asked_again",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
           }
         ],
         "primaryKey": {
@@ -2027,7 +2034,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '9c6a995229b79136b60ce54960b89124')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'db725e5a19f97ec826db572d4563c80d')"
     ]
   }
 }

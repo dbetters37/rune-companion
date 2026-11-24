@@ -40,7 +40,10 @@ sealed interface OwnerResult<out T> {
  * [OwnerRequestRepository] (answering logs the decision); `:app` hands it to view models only.
  */
 interface OwnerRequests {
-    /** Requests waiting for an answer, oldest first, without those already past their expiry. */
+    /**
+     * Requests waiting for an answer, oldest first, without those already past their expiry and
+     * those nothing waits for any more (see [closeIfAbandoned]).
+     */
     val pending: Flow<List<OwnerRequest>>
 
     /** The newest [limit] requests of any status. */
@@ -50,6 +53,15 @@ interface OwnerRequests {
     fun observeForConversation(conversationId: ConversationId): Flow<List<OwnerRequest>>
 
     suspend fun get(id: RequestId): OwnerRequest?
+
+    /**
+     * The request as it is now, closed first if nothing waits for its answer any more: a
+     * PENDING request whose waiting call is gone (it stopped with an earlier run of the app, or
+     * went away without closing it) can never be answered, so it is closed as CANCELLED and
+     * returned closed. Screens call this before offering the answers; answering such a request
+     * closes it the same way. Null when no request has this id.
+     */
+    suspend fun closeIfAbandoned(id: RequestId): OwnerRequest? = get(id)
 
     /** Yes to a PERMISSION request for [scope]; the grant is stored in the same transaction ([OwnerRequestDecisions.decide]). */
     suspend fun grant(id: RequestId, scope: GrantScope, note: String? = null): DecideResult
