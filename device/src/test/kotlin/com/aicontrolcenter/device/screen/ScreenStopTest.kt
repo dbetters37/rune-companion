@@ -157,6 +157,29 @@ class ScreenStopTest {
         }
     }
 
+    /**
+     * S7: what failed "the notification's Stop stops the process switch and saves it" once in a while. That test presses
+     * Stop and at once closes the switch as a restart would, which waits for the writes; the wait listed the writes in
+     * flight with a call that, for a single write, asks how many there are and then for the first, and a write finishing
+     * on its own thread in between left none (NoSuchElementException).
+     */
+    @Test
+    fun `waiting for the writes never fails while a write is finishing on another thread`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val switch = StopSwitch(InMemoryStopStore(), scope)
+            step("read") { switch.awaitLoaded() }
+            repeat(WAIT_ROUNDS) { round ->
+                if (round % 2 == 0) switch.stop() else switch.resume()
+                // One write was just started and finishes about now.
+                step("round $round") { switch.awaitWrites() }
+            }
+            assertFalse(switch.stopped.value)
+        } finally {
+            scope.cancel()
+        }
+    }
+
     @Test
     fun `the notification's Stop stops the process switch and saves it`() = runBlocking {
         val switch = StopSwitch.process(context)
@@ -216,6 +239,53 @@ class ScreenStopTest {
         assertEquals(ScreenServiceState.STARTING, layer.operator.state.value, "the state follows once the background read is done")
     }
 
+    /** S6: a screen that looks at the state before the layer's first read gets "not known yet"; it reads nothing itself. */
+    @Test
+    fun `the state is not known until the layer's first background read, whoever looks first`() {
+        val me = ScreenOperatorLayer.serviceComponent(context)
+        Settings.Secure.putString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, me.flattenToString())
+        val background = NewestFirst()
+        val layer = ScreenOperatorLayer(context, InMemoryOperatorAppRepository(), { ProtectedPackages(context.packageName) }, io = background)
+
+        // The Screen control screen opens at once, on the main thread, before the background read ran.
+        assertEquals(ScreenServiceState.CHECKING, layer.operator.state.value, "the caller's thread read Android's settings")
+        assertEquals(ScreenServiceState.CHECKING, layer.operator.state.value)
+        background.runAll()
+        assertEquals(ScreenServiceState.STARTING, layer.operator.state.value, "the state follows once the background read is done")
+    }
+
+    /**
+     * S7: the layer's own scope (the default thread pool in the app) follows the service connecting and going away. It
+     * used to read Android's settings right there, at a moment of its own choosing, which made the test above fail
+     * about once in 60 runs. Every read now runs where the layer says Android is read.
+     */
+    @Test
+    fun `the layer's own scope never reads Android's settings, only its background dispatcher does`() {
+        val own = NewestFirst()
+        val background = NewestFirst()
+        val scope = CoroutineScope(SupervisorJob() + own)
+        try {
+            val layer = ScreenOperatorLayer(context, InMemoryOperatorAppRepository(), { ProtectedPackages(context.packageName) }, scope = scope, io = background)
+            background.runAll()
+            val before = layer.operator.state.value
+            assertNotEquals(ScreenServiceState.CHECKING, before)
+            assertNotEquals(ScreenServiceState.STARTING, before)
+
+            // The owner switches the service on; then the layer's scope gets to run what it has queued (its watch of the service link).
+            val me = ScreenOperatorLayer.serviceComponent(context)
+            Settings.Secure.putString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, me.flattenToString())
+            own.runAll()
+            assertEquals(before, layer.operator.state.value, "the layer's own scope read Android's settings")
+            background.runAll()
+            own.runAll()
+            assertEquals(ScreenServiceState.STARTING, layer.operator.state.value, "the read it asked for ran on the background dispatcher")
+        } finally {
+            scope.cancel()
+            own.runAll()
+            background.runAll()
+        }
+    }
+
     @Test
     fun `nothing the agent-facing operator holds can resume, or authorise or withdraw an app`() {
         val layer = ScreenOperatorLayer(context, InMemoryOperatorAppRepository(), ProtectedPackages(context.packageName))
@@ -255,5 +325,8 @@ class ScreenStopTest {
     private companion object {
         const val STEP_MS = 10_000L
         const val ROUNDS = 20
+
+        /** Many times the rounds the old wait survived: it failed within the first few hundred. */
+        const val WAIT_ROUNDS = 10_000
     }
 }

@@ -14,6 +14,7 @@ import com.aicontrolcenter.core.operator.ScreenSnapshot
 import com.aicontrolcenter.core.operator.ScreenTarget
 import com.aicontrolcenter.core.operator.ScreenshotInfo
 import com.aicontrolcenter.core.operator.ScrollDirection
+import com.aicontrolcenter.core.operator.WindowDigest
 import com.aicontrolcenter.core.operator.WorkspaceFile
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -44,6 +45,8 @@ data class FakeControl(
     val checked: Boolean = false,
     val password: Boolean = false,
     val sensitive: Boolean = false,
+    val selected: Boolean = false,
+    val enabled: Boolean = true,
 ) {
     val withheld: Boolean get() = password || sensitive
 }
@@ -72,6 +75,12 @@ sealed interface ScreenCall {
  * [KEPT_SNAPSHOTS] are kept for [ScreenTarget.Numbered]. To act out the owner answering inside
  * this app, set [screen] to a window of [ownPackage] and back.
  *
+ * Like the device's operator it keeps at most [ScreenOperator.MAX_TEXT_CHARS] characters of a
+ * text, description or hint ([ScreenElement.cutChars] counts the rest), and [inspect] fingerprints
+ * the whole window, uncut texts and unlisted elements included ([ScreenSnapshot.windowDigest]),
+ * unless it holds more than [digestMaxElements] elements. Both pass the testkit's
+ * `ScreenInspectContract`.
+ *
  * Like the device's operator it is not the owner's [ScreenControl]: hand [asControl] to the
  * owner's side, so nothing agent-facing that holds this fake can be cast to Stop and Resume.
  */
@@ -84,6 +93,8 @@ class FakeScreenOperator(
     @Volatile var launcher: String? = "com.android.launcher3",
     @Volatile var screenshotsSupported: Boolean = true,
     private val clock: Clock = Clock { 1_700_000_000_000L },
+    /** The most elements of one window [inspect] fingerprints; above it a snapshot has no [ScreenSnapshot.windowDigest]. */
+    @Volatile var digestMaxElements: Int = ScreenOperator.DIGEST_MAX_ELEMENTS,
 ) : ScreenOperator {
     private val stateFlow = MutableStateFlow(initialState)
     private val stoppedFlow = MutableStateFlow(false)
@@ -186,6 +197,9 @@ class FakeScreenOperator(
     override suspend fun tap(agentName: String, element: ScreenElement): ScreenResult<Unit> {
         val call = ScreenCall.Tap(agentName, element)
         calls += call
+        val shown = gate(element.packageName) ?: return refusal(element.packageName)
+        val control = controlFor(element, shown)
+        if (control != null && !control.withheld && !control.enabled) return ScreenResult.NotSupported("That control is switched off (disabled) right now.")
         return resolve(element) { acted(call) }
     }
 
@@ -195,6 +209,7 @@ class FakeScreenOperator(
         val shown = gate(element.packageName) ?: return refusal(element.packageName)
         val control = controlFor(element, shown)
         if (control != null && !control.withheld && !control.editable) return ScreenResult.NotSupported("That element does not take text.")
+        if (control != null && !control.withheld && !control.enabled) return ScreenResult.NotSupported("That field is switched off (disabled) right now.")
         return resolve(element) {
             typed += element to text
             acted(call)
@@ -226,7 +241,9 @@ class FakeScreenOperator(
         val call = ScreenCall.WaitFor(agentName, packageName, text)
         calls += call
         gate(packageName) ?: return refusal(packageName)
-        fun hasText(s: FakeScreen?) = s != null && s.controls.any { !it.withheld && (it.text?.contains(text) == true || it.description?.contains(text) == true) }
+        fun hasText(s: FakeScreen?) = s != null && s.controls.any {
+            !it.withheld && (it.text?.take(MAX_TEXT)?.contains(text) == true || it.description?.take(MAX_TEXT)?.contains(text) == true)
+        }
         withTimeoutOrNull(timeoutMs) {
             combine(screenFlow, stoppedFlow, stateFlow) { s, stop, st -> stop || st != ScreenServiceState.READY || s?.packageName != packageName || hasText(s) }
                 .first { it }
@@ -275,24 +292,43 @@ class FakeScreenOperator(
         onAction(call)
     }
 
-    /** A snapshot of [shown]; [keep]: numbered and kept for [ScreenTarget.Numbered], else id 0 and not kept ([inspect]). */
+    /**
+     * A snapshot of [shown]; [keep]: numbered and kept for [ScreenTarget.Numbered], else id 0 and not kept ([inspect]),
+     * with the fingerprint of the whole window.
+     */
     private fun snapshot(shown: FakeScreen, maxElements: Int, keep: Boolean = true): ScreenSnapshot = synchronized(lock) {
         val visible = shown.controls.filter { !it.withheld }
         val id = if (keep) ++snapshotCounter else 0L
         val elements = visible.take(maxElements).mapIndexed { i, c -> element(c, shown.packageName, id, i + 1) }
-        ScreenSnapshot(id, shown.packageName, shown.title, elements, shown.controls.size - visible.size, visible.size > maxElements, clock.now())
-            .also {
-                if (keep) {
-                    snapshots[id] = it to shown
-                    while (snapshots.size > KEPT_SNAPSHOTS) snapshots.remove(snapshots.keys.first())
-                }
+        val digest = if (keep) null else windowDigest(shown)
+        ScreenSnapshot(
+            id, shown.packageName, shown.title, elements, shown.controls.size - visible.size, visible.size > maxElements, clock.now(),
+            windowDigest = digest, unlisted = if (digest != null) visible.size - elements.size else 0,
+        ).also {
+            if (keep) {
+                snapshots[id] = it to shown
+                while (snapshots.size > KEPT_SNAPSHOTS) snapshots.remove(snapshots.keys.first())
             }
+        }
+    }
+
+    /** Every control of [shown] in order, texts uncut, as the device's reader feeds [WindowDigest]; null above [digestMaxElements]. */
+    private fun windowDigest(shown: FakeScreen): String? {
+        if (shown.controls.size > digestMaxElements) return null
+        val digest = WindowDigest()
+        for (c in shown.controls) {
+            if (c.withheld) digest.withheld() else digest.element(c.role, c.text, c.description, c.hint, c.resourceId, c.label, c.checkable, c.checked, c.selected, c.enabled)
+        }
+        return digest.finish()
     }
 
     private fun element(c: FakeControl, packageName: String, snapshotId: Long, number: Int) = ScreenElement(
-        snapshotId = snapshotId, number = number, packageName = packageName, role = c.role, text = c.text, description = c.description,
-        hint = c.hint, resourceId = c.resourceId, label = c.label, context = c.context, nodeKey = c.nodeKey, bounds = c.bounds,
+        snapshotId = snapshotId, number = number, packageName = packageName, role = c.role, text = c.text?.take(MAX_TEXT),
+        description = c.description?.take(MAX_TEXT), hint = c.hint?.take(MAX_TEXT), resourceId = c.resourceId, label = c.label,
+        context = c.context, nodeKey = c.nodeKey, bounds = c.bounds,
         clickable = c.clickable, editable = c.editable, scrollable = c.scrollable, checkable = c.checkable, checked = c.checked,
+        enabled = c.enabled, selected = c.selected,
+        cutChars = listOf(c.text, c.description, c.hint).sumOf { ((it?.length ?: 0) - MAX_TEXT).coerceAtLeast(0) },
     )
 
     /** The one control on [shown] that [element] still is; null when none or several are. */
@@ -313,6 +349,8 @@ class FakeScreenOperator(
     companion object {
         /** How many recent snapshots [ScreenTarget.Numbered] can refer to. */
         const val KEPT_SNAPSHOTS = 16
+
+        private const val MAX_TEXT = ScreenOperator.MAX_TEXT_CHARS
     }
 }
 

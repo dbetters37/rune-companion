@@ -132,7 +132,13 @@ do it.
 - **Approval previews** show quote marks inside a quoted value as ⟨"⟩, count long runs of one
   character and piles of combining marks, and mark every invisible or format character, so a
   value cannot pretend to end early or hide what follows. The preview is always drawn left to
-  right.
+  right. Typographic quotes and other look-alikes of a quote mark, and two apostrophes in a
+  row, are shown by their code, such as ⟨U+201D⟩.
+- **Approvals of screen actions** list at most 150 texts of the window, each up to 300
+  characters, and say whether a control is checked, selected or disabled. What does not fit is
+  counted and still checked: if anything in the window changes before the action runs, it is
+  not done. A window with more than 10,000 elements cannot be checked that way, so an action
+  that needs your approval is refused there instead of being put to you.
 
 - **Questions to you do not outlive what asked them.** A request for a permission or an approval
   can only be answered while the call that raised it still waits. If the app was stopped, the
@@ -162,7 +168,9 @@ do it.
   authorised app therefore asks before every tap, typing, scroll, Back and Home by default, with
   the window's text in the approval. For an app you set to ask only before buying, sending,
   deleting and similar, the app recognises those from English words on the control, its row and
-  its window, prices, code fields and the keyboard's send key; a control worded some other way
+  its window, prices, code fields and the keyboard's send key, and a button such as OK, Next or
+  Save also asks when its screen shows an amount or holds a filled-in field; an OK under a
+  warning that uses none of these words, or a control worded some other way
   (another language, an icon with a misleading label) can run without asking. Screen actions are
   blocked in local-only mode, because the operated app may send data off the phone. Back is
   allowed only when the home screen app is authorised too, since it can leave the app.

@@ -141,7 +141,9 @@ internal class StopSwitch(private val store: StopStore, internal val scope: Coro
     /** Returns once every write started so far has finished (or was cancelled with [scope]). */
     suspend fun awaitWrites() {
         while (true) {
-            val writing = inFlight.toList()
+            // A copy the set makes itself. Not toList(): for a set of one it asks the size and then for the first element,
+            // and a write finishing on its own thread in between leaves none (NoSuchElementException).
+            val writing = ArrayList(inFlight)
             if (writing.isEmpty()) return
             writing.joinAll()
         }

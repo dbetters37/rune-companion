@@ -99,7 +99,7 @@ data class AppPickerUi(val isLoading: Boolean = true, val apps: List<InstalledAp
 @Immutable
 data class ScreenControlUiState(
     val isLoading: Boolean = true,
-    val service: ServiceStatusUi = serviceStatusOf(ScreenServiceState.NOT_ENABLED),
+    val service: ServiceStatusUi = serviceStatusOf(ScreenServiceState.CHECKING),
     /** Settings › Phone operator. */
     val operatorEnabled: Boolean = false,
     /** Settings › Screen control. */
@@ -341,6 +341,11 @@ class ScreenControlViewModel(
 
 /** The service's [state] for the owner, with the steps to switch it on. */
 fun serviceStatusOf(state: ScreenServiceState): ServiceStatusUi = when (state) {
+    ScreenServiceState.CHECKING -> ServiceStatusUi(
+        state,
+        StatusLabel("Checking", StatusTone.WAITING, "Looking up the service in Android's settings. This takes a moment."),
+        steps = emptyList(), offerAppInfo = false, offerAccessibilitySettings = false,
+    )
     ScreenServiceState.READY -> ServiceStatusUi(
         state,
         StatusLabel("Ready", StatusTone.READY, "The service is on. Agents can read and use only the apps listed below, each with your permission."),

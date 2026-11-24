@@ -75,7 +75,13 @@ internal class FakeAvailability(
 ) : ScreenAvailability {
     var onChange: (() -> Unit)? = null
 
-    override fun enabledInSettings() = enabled
+    /** How many times Android's settings were asked. */
+    @Volatile var reads = 0
+
+    override fun enabledInSettings(): Boolean {
+        reads++
+        return enabled
+    }
 
     override fun advancedProtectionOn() = advancedProtection
 
@@ -123,6 +129,7 @@ internal class OperatorHarness(
     sdkInt: Int = 35,
     connected: Boolean = true,
     val store: InMemoryStopStore = InMemoryStopStore(),
+    reader: ScreenReader = ScreenReader(),
 ) {
     val apps = InMemoryOperatorAppRepository()
     val host = FakeScreenHost()
@@ -145,6 +152,7 @@ internal class OperatorHarness(
         io = dispatcher,
         main = dispatcher,
         sdkInt = sdkInt,
+        reader = reader,
     )
 
     /** Authorises [packageName] as the owner would, recording [certificate], which is also what is installed. */

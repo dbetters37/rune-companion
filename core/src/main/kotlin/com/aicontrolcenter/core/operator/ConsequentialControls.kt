@@ -46,11 +46,18 @@ object ConsequentialControls {
     )
 
     /**
-     * Words of a control that answers yes to whatever its window asks ("Delete 248 photos?" · OK).
-     * Such a control is consequential when its window or row mentions a consequential word or a
-     * price ([consequentialReason]).
+     * Words of a control that answers yes to whatever its window asks, or moves it on
+     * ("Delete 248 photos?" · OK, "Total: 249.00 EUR" · Next). Such a control is consequential
+     * when its window or row mentions a consequential word, shows a price or an amount, or holds
+     * a filled-in field ([consequentialReason]).
      */
-    val POSITIVE_WORDS: Set<String> = setOf("ok", "okay", "yes", "continue", "done", "proceed", "confirm", "allow", "accept", "agree")
+    val POSITIVE_WORDS: Set<String> = setOf(
+        "ok", "okay", "yes", "continue", "done", "proceed", "confirm", "allow", "accept", "agree",
+        "next", "finish", "go", "apply", "save", "start", "place", "sure",
+    )
+
+    /** Yes-answers of two words, matched on two adjacent words ("Got it"). */
+    val POSITIVE_PHRASES: Set<String> = setOf("got it")
 
     /** Words that name a field for a one-time or security code: typing one can confirm a payment or a sign-in by itself. */
     val CODE_FIELD_WORDS: Set<String> = setOf("code", "codes", "otp", "passcode", "verify", "verification", "cvv", "cvc", "tan")
@@ -77,10 +84,36 @@ object ConsequentialControls {
         "kes", "egp", "uah", "ron", "btc", "eth", "usdt", "usdc", "rs",
     )
 
+    /** Currency words that are not ISO codes: the Polish złoty and the Nordic crowns ("5,00 zł", "20 kr"). */
+    private val CURRENCY_WORDS = listOf("zł", "zl", "kr")
+
+    /**
+     * A price: a number with a currency sign ("$4.99", "4,99 €"), with a currency code or word
+     * before or after it ("EUR 249.00", "249.00 EUR", "5,00 zł", "20 kr"), or in the price form
+     * "20,-" ("20.-", "20,–"). Word ends are spelled out with look-arounds instead of `\b`, which
+     * regex engines read differently next to letters such as "ł".
+     */
     private val PRICE: Regex = run {
-        val codes = CURRENCY_CODES.joinToString("|")
-        Regex("""\p{Sc}\s?\d[\d.,']*|\d[\d.,' ]*\s?\p{Sc}|\b(?:$codes)\.?\s?\d[\d.,']*|\d[\d.,' ]*\s?(?:$codes)\b""", RegexOption.IGNORE_CASE)
+        val codes = (CURRENCY_CODES + CURRENCY_WORDS).joinToString("|")
+        val wordStart = """(?<![\p{L}\p{N}])"""
+        val wordEnd = """(?![\p{L}])"""
+        Regex(
+            """\p{Sc}\s?\d[\d.,']*""" +
+                """|\d[\d.,' ]*\s?\p{Sc}""" +
+                """|$wordStart(?:$codes)\.?\s?\d[\d.,']*""" +
+                """|\d[\d.,' ]*\s?(?:$codes)$wordEnd""" +
+                """|\d[\d.' ]*[.,][-–—](?![\d\p{L}])""",
+            RegexOption.IGNORE_CASE,
+        )
     }
+
+    /**
+     * A number written like an amount of money without its currency: two decimals ("249.00",
+     * "5,00") or grouped thousands ("5,000", "1.299,00", "10 000"). Not a date, a time, a
+     * version of three parts, a phone number or a plain count ("24.12.2024", "12:30", "1.2.3",
+     * "555 123 4567", "248 photos").
+     */
+    private val AMOUNT = Regex("""(?<![\p{L}\p{N}.,])(?:\d{1,3}(?:[.,' ]\d{3})+(?:[.,]\d{1,2})?|\d+[.,]\d{2})(?![.,' ]?\d)(?!\p{L})""")
 
     /**
      * [text] made comparable with the English stems: compatibility forms unified (NFKC: full-width
@@ -124,10 +157,16 @@ object ConsequentialControls {
         matchedWord(element.text) ?: matchedWord(element.description) ?: matchedWord(element.label)
             ?: matchedWord(element.resourceId?.substringAfter(":id/"))
 
-    /** The first price in [text] ("$4.99", "€9.99/month", "249.00 EUR"), or null. */
+    /** The first price in [text] ("$4.99", "€9.99/month", "249.00 EUR", "5,00 zł", "20 kr", "20,-"), or null. */
     fun priceIn(text: String?): String? {
         if (text.isNullOrBlank()) return null
         return PRICE.find(fold(text))?.value?.trim()
+    }
+
+    /** The first number in [text] that is written like an amount of money ("249.00", "5,000"), or null. Looked for only around a yes-control. */
+    fun amountIn(text: String?): String? {
+        if (text.isNullOrBlank()) return null
+        return AMOUNT.find(fold(text))?.value?.trim()
     }
 
     /** [priceIn] over a control's text, description and merged label. */
@@ -137,18 +176,25 @@ object ConsequentialControls {
     fun isUnlabelled(element: ScreenElement): Boolean =
         element.text.isNullOrBlank() && element.description.isNullOrBlank() && element.label.isNullOrBlank()
 
-    /** True when the control's own words include a yes-word such as OK, Yes, Continue or Done ([POSITIVE_WORDS]). */
-    fun isPositive(element: ScreenElement): Boolean =
-        listOf(element.text, element.description, element.label).any { t -> t != null && words(fold(t)).any { it in POSITIVE_WORDS } }
+    /** True when the control's own words include a yes-word such as OK, Yes, Continue, Next or Save ([POSITIVE_WORDS], [POSITIVE_PHRASES]). */
+    fun isPositive(element: ScreenElement): Boolean = listOf(element.text, element.description, element.label).any { t ->
+        if (t == null) return@any false
+        val words = words(fold(t))
+        words.any { it in POSITIVE_WORDS } || (0 until words.size - 1).any { "${words[it]} ${words[it + 1]}" in POSITIVE_PHRASES }
+    }
 
     /**
      * Why acting on [element] in [window] is consequential, or null when it is not:
      * - a consequential word on the control ([matchedWord]);
      * - a price on the control ([priceIn]);
      * - a clickable control with no label, whose effect cannot be shown to the owner;
-     * - a yes-control ([isPositive]: OK, Yes, Continue, Done, Proceed…) whose row or window title,
-     *   or any text of its window that is not a control itself, mentions a consequential word or
-     *   a price: the "OK" of "Delete 248 photos?", the "Continue" under "Total: 249.00 EUR".
+     * - a yes-control ([isPositive]: OK, Yes, Continue, Next, Save, Done, Proceed…) whose row or
+     *   window title, or any text of its window that is not a control itself, mentions a
+     *   consequential word, a price or a number written like an amount ([amountIn]): the "OK" of
+     *   "Delete 248 photos?", the "Next" under "Total: 249.00 EUR";
+     * - a yes-control in a window with a filled-in field (the "Next" beside an amount of 5000:
+     *   it would pass on what was typed), or in a window that holds more than was read, so what
+     *   it answers cannot be told.
      *
      * [window] is the window the control is in, read just before; without it only the control's
      * own row ([ScreenElement.context]) is looked at for a yes-control.
@@ -168,6 +214,11 @@ object ConsequentialControls {
             }.filterNotNull()
             around.firstNotNullOfOrNull { matchedWord(it) }?.let { return "it answers a screen that mentions \"$it\"" }
             around.firstNotNullOfOrNull { priceIn(it) }?.let { return "it answers a screen that shows a price (\"${PreviewText.exact(it)}\")" }
+            around.firstNotNullOfOrNull { amountIn(it) }?.let { return "it answers a screen that shows an amount (\"${PreviewText.exact(it)}\")" }
+            // An empty field reports its hint as its text on some Android versions: that is not filled in.
+            window?.elements?.firstOrNull { it.editable && it.packageName == element.packageName && !it.text.isNullOrBlank() && it.text != it.hint }
+                ?.let { return "it answers a screen with a filled-in field" }
+            if (window?.truncated == true) return "it answers a screen that holds more than could be read"
         }
         return null
     }

@@ -61,7 +61,12 @@ import java.util.concurrent.atomic.AtomicReference
  * in front is that app's `TYPE_APPLICATION` window with no lock screen. Only then is anything of
  * the window read. An action re-reads the window, acts only on the single control that is
  * [ScreenElement.sameControlAs] the one named, re-checks the window and Stop immediately before
- * the node action, and never touches password fields or views marked sensitive.
+ * the node action, asks the app once more for the control and the row around it (Android's node
+ * cache can lag behind the app), and never touches password fields or views marked sensitive.
+ *
+ * Android's settings are never read on the thread of whoever looks at [state]: the first read
+ * runs on [io] and the state is [ScreenServiceState.CHECKING] until it is done; every later read
+ * runs on [io] too, one at a time.
  *
  * Stop ([StopSignal]: it can read and press Stop, never Resume) cancels the call in progress, which returns [ScreenResult.Stopped], ends
  * every session and hides the banner. A session (the banner "<agent> is operating <app> · Stop")
@@ -87,7 +92,8 @@ internal class AccessibilityScreenOperator(
     private val reader: ScreenReader = ScreenReader(),
     private val pollMs: Long = WAIT_POLL_MS,
 ) : ScreenOperator {
-    private val stateFlow = MutableStateFlow(ScreenServiceState.NOT_ENABLED)
+    private val stateFlow = MutableStateFlow(ScreenServiceState.CHECKING)
+    private val stateLock = Any()
     private val started = AtomicBoolean(false)
     private val snapshots = SnapshotStore(clock)
     private val callLock = Mutex()
@@ -112,7 +118,8 @@ internal class AccessibilityScreenOperator(
         stopSwitch.onStop(::onOwnerStop)
         scope.launch {
             link.host.collect {
-                if (started.get()) refreshState()
+                // The service connected or went away. Android is read where it always is, never on this scope's own threads.
+                if (started.get()) withContext(io) { refreshState() }
                 applyIndicator()
             }
         }
@@ -125,18 +132,26 @@ internal class AccessibilityScreenOperator(
         }
     }
 
-    /** Reads Android's settings again; the Screen control screen calls it when it comes back into view. */
-    fun refreshState(): ScreenServiceState {
-        val now = screenState(link.host.value != null, availability, sdkInt)
-        stateFlow.value = now
-        return now
+    /**
+     * Reads Android's settings again, on the caller's thread: call it on [io] only (the layer does, when the Screen
+     * control screen comes back into view). Reads run one at a time, each seeing the service as it is when it runs, so
+     * the last one to finish leaves the newest state.
+     */
+    fun refreshState(): ScreenServiceState = synchronized(stateLock) {
+        screenState(link.host.value != null, availability, sdkInt).also { stateFlow.value = it }
     }
 
-    private fun start() {
+    /**
+     * Starts the first read of Android's settings, and the watch for changes, on [io]: never on the thread that asked.
+     * Until that read is done the state is [ScreenServiceState.CHECKING].
+     */
+    internal fun start() {
         if (!started.compareAndSet(false, true)) return
-        refreshState()
-        // Android calls the settings observer on the main thread; the re-read (settings and PackageManager) runs off it.
-        availability.watch { scope.launch(io) { refreshState() } }
+        scope.launch(io) {
+            refreshState()
+            // Android calls the settings observer on the main thread; the re-read (settings and PackageManager) runs off it.
+            availability.watch { scope.launch(io) { refreshState() } }
+        }
     }
 
     override suspend fun activeWindow(): ActiveWindow? = withContext(io) {
@@ -157,7 +172,7 @@ internal class AccessibilityScreenOperator(
 
     /** No session starts (no agent is named) and nothing is kept: the read an assessment shows the owner. */
     override suspend fun inspect(packageName: String, maxElements: Int): ScreenResult<ScreenSnapshot> =
-        call(null, packageName) { open -> ScreenResult.Ok(snapshots.unrecorded(readTree(open), maxElements)) }
+        call(null, packageName) { open -> ScreenResult.Ok(snapshots.unrecorded(readTree(open, wholeWindow = true), maxElements)) }
 
     override suspend fun find(packageName: String, target: ScreenTarget): ScreenResult<ScreenElement> = call(null, packageName) { open ->
         val tree = readTree(open)
@@ -215,6 +230,7 @@ internal class AccessibilityScreenOperator(
                 is Refound.Refused -> return@call found.result
                 is Refound.Found -> found.entry
             }
+            var focusedFirst = false
             if (!entry.element.editable) return@call ScreenResult.NotSupported("That element does not take text.")
             if (!entry.element.enabled) return@call ScreenResult.NotSupported("That field is switched off (disabled) right now.")
             if (!entry.node.offers(AccessibilityNodeInfo.ACTION_SET_TEXT)) {
@@ -231,17 +247,17 @@ internal class AccessibilityScreenOperator(
                 }
                 val focused = act(open, entry, "The field could not be focused.") { it.performAction(AccessibilityNodeInfo.ACTION_FOCUS) }
                 if (focused !is ScreenResult.Ok) return@call focused
-                entry = when (val found = refind(readTree(open), element)) {
-                    is Refound.Refused -> return@call found.result
-                    is Refound.Found -> found.entry
-                }
-                if (!entry.node.offers(imeEnter)) return@call ScreenResult.NotSupported(NO_KEYBOARD_ACTION)
+                focusedFirst = true
+                entry = focused(open, entry, element, imeEnter) ?: return@call ScreenResult.NotSupported(NO_KEYBOARD_ACTION)
             }
             val arguments = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) }
-            val typed = act(open, entry, "The app did not accept the text.") { it.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments) }
+            // After this call's own focus the row around the field was just checked, and the keyboard coming up may move it.
+            val typed = act(open, entry, "The app did not accept the text.", if (focusedFirst) Recheck.NODE else Recheck.ROW) {
+                it.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
+            }
             if (typed !is ScreenResult.Ok || !submit) return@call typed
             // Stop or a window change between the two steps leaves the text unsent. The field now holds the new text.
-            act(open, entry, "The text was entered, but the field's keyboard action did not run.", textChanged = true) { it.performAction(imeEnter!!) }
+            act(open, entry, "The text was entered, but the field's keyboard action did not run.", Recheck.NODE_BUT_TEXT) { it.performAction(imeEnter!!) }
         }
 
     override suspend fun scroll(agentName: String, packageName: String, direction: ScrollDirection, element: ScreenElement?): ScreenResult<Unit> =
@@ -456,9 +472,10 @@ internal class AccessibilityScreenOperator(
         return null
     }
 
-    private suspend fun readTree(open: Passed): ScreenTree {
+    /** [wholeWindow]: go on past the node limit to fingerprint the rest of the window ([ScreenReader.read]). */
+    private suspend fun readTree(open: Passed, wholeWindow: Boolean = false): ScreenTree {
         val job = currentCoroutineContext().job
-        return reader.read(open.root, open.packageName, open.front.title) { job.ensureActive() }
+        return reader.read(open.root, open.packageName, open.front.title, wholeWindow) { job.ensureActive() }
     }
 
     /** The one current control that is [element]; [ScreenResult.Stale] for none or several. */
@@ -473,27 +490,76 @@ internal class AccessibilityScreenOperator(
     /** [entry] as numbered in a new snapshot of [tree], so a model can refer to it later. */
     private fun numbered(tree: ScreenTree, entry: ScreenEntry): ScreenElement = checkNotNull(snapshots.record(tree).elementOf(entry))
 
+    /** How much of a control is asked again from the app right before a node action. */
+    private enum class Recheck {
+        /** The node, everything its label is made of, and the row or ancestors its context came from: the first step of a call. */
+        ROW,
+
+        /** The node alone: a later step of the same call, moments after [ROW] passed. */
+        NODE,
+
+        /** The node alone and not its text: the step after this call typed into it. */
+        NODE_BUT_TEXT,
+    }
+
     /**
      * Re-checks what could have changed since the tree was read (Stop, the window in front, the
      * node itself), then runs [action] on the node. The node is refreshed from the app, and must
      * still be the control that was matched: a list that re-bound the view to another item in the
-     * meantime ([ScreenReader.sameIdentity]) is [ScreenResult.Stale]. [textChanged]: this action
-     * follows typing into the node, so its text is the new one.
+     * meantime ([ScreenReader.sameIdentity]) is [ScreenResult.Stale]. With [Recheck.ROW] the row
+     * around it is asked again too ([ScreenReader.reread]) and the control must be
+     * [ScreenElement.sameControlAs] the one matched, context and label included: a row re-bound
+     * to another item whose button still says "Delete" is [ScreenResult.Stale] as well.
      */
     private suspend fun act(
         open: Passed,
         entry: ScreenEntry,
         failure: String,
-        textChanged: Boolean = false,
+        recheck: Recheck = Recheck.ROW,
         action: (AccessibilityNodeInfo) -> Boolean,
     ): ScreenResult<Unit> {
-        currentCoroutineContext().ensureActive()
+        val job = currentCoroutineContext().job
+        job.ensureActive()
         stillInFront(open)?.let { return it }
         val node = entry.node
         if (!node.refresh()) return ScreenResult.Stale
         if (ScreenReader.isWithheld(node)) return ScreenResult.Sensitive
-        if (!ScreenReader.sameIdentity(node, entry.element, compareText = !textChanged)) return ScreenResult.Stale
+        if (!ScreenReader.sameIdentity(node, entry.element, compareText = recheck != Recheck.NODE_BUT_TEXT)) return ScreenResult.Stale
+        if (recheck == Recheck.ROW) {
+            // With the window's title as it is now: an app can show another page in the same window.
+            val title = front(open.host)?.takeIf { it.id == open.front.id }?.title
+            val now = reader.reread(entry, open.packageName, title) { job.ensureActive() }
+            // Asking took a moment: Stop and the window are looked at once more, right before the action.
+            stillInFront(open)?.let { return it }
+            if (now == null || !now.sameControlAs(entry.element)) return ScreenResult.Stale
+        }
         return if (action(node)) ScreenResult.Ok(Unit) else ScreenResult.Failed(failure)
+    }
+
+    /**
+     * [entry], the field this call just focused, once it offers [actionId]; null when it does not. Its own node is asked
+     * again from the app first, for at most [FOCUS_SETTLE_MS]: on a phone a new read of the tree is served from Android's
+     * node cache, which still shows the field as it was before the focus (for a second or so), while the node itself,
+     * refreshed, has the new actions at once. Only if that fails is the field looked up in the tree again.
+     */
+    private suspend fun focused(open: Passed, entry: ScreenEntry, element: ScreenElement, actionId: Int): ScreenEntry? {
+        if (awaitOffer(entry.node, actionId)) return entry
+        val again = (refind(readTree(open), element) as? Refound.Found)?.entry ?: return null
+        return again.takeIf { it.node.offers(actionId) }
+    }
+
+    /**
+     * Whether [node], asked again from the app, offers [actionId], now or within [FOCUS_SETTLE_MS]: a field reports its
+     * keyboard action a moment after it was focused. Stop ends the wait (the call is cancelled).
+     */
+    private suspend fun awaitOffer(node: AccessibilityNodeInfo, actionId: Int): Boolean {
+        var waited = 0L
+        while (true) {
+            if (node.refresh() && node.offers(actionId)) return true
+            if (waited >= FOCUS_SETTLE_MS) return false
+            delay(FOCUS_POLL_MS)
+            waited += FOCUS_POLL_MS
+        }
     }
 
     private fun AccessibilityNodeInfo.offers(actionId: Int): Boolean = actionList.orEmpty().any { it.id == actionId }
@@ -637,6 +703,12 @@ internal class AccessibilityScreenOperator(
     companion object {
         /** How often a wait looks again when no accessibility event arrives. */
         const val WAIT_POLL_MS = 500L
+
+        /** How long a field that was just focused may take to offer its keyboard action. */
+        const val FOCUS_SETTLE_MS = 500L
+
+        /** How often the focused field is asked again within [FOCUS_SETTLE_MS]. */
+        const val FOCUS_POLL_MS = 50L
 
         /** Android allows about three screenshots a second. */
         const val SCREENSHOT_RETRY_MS = 350L

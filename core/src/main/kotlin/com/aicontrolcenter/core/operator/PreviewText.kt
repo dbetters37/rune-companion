@@ -106,17 +106,37 @@ object PreviewText {
 
     /**
      * [text] as a value between double quotes, made [exact], with every double quote inside it
-     * written as [QUOTE] and characters that look like one as "⟨U+XXXX⟩": the only plain `"`
+     * written as [QUOTE] and characters that look like one as "⟨U+XXXX⟩" (typographic and
+     * full-width quotes, double primes and the like, [QUOTE_LOOKALIKES]): the only plain `"`
      * left is the one that ends the value, so nothing in it can pretend the value ended earlier.
+     * Two or more apostrophes or single quotes in a row draw like a double quote, so each of them
+     * is written as "⟨U+XXXX⟩" too; one alone ("don't", "it’s") is left as it is.
      */
     fun quoted(text: String): String {
-        val shown = exact(text)
-        val out = StringBuilder(shown.length + 8).append('"')
-        shown.codePoints().forEach { cp ->
+        val cps = exact(text).codePoints().toArray()
+        val out = StringBuilder(cps.size + 8).append('"')
+        var i = 0
+        while (i < cps.size) {
+            val cp = cps[i]
             when {
-                cp == '"'.code -> out.append(QUOTE)
-                cp in QUOTE_LOOKALIKES -> mark(out, cp)
-                else -> out.appendCodePoint(cp)
+                cp == '"'.code -> {
+                    out.append(QUOTE)
+                    i++
+                }
+                cp in QUOTE_LOOKALIKES -> {
+                    mark(out, cp)
+                    i++
+                }
+                cp in SINGLE_QUOTES -> {
+                    var run = 1
+                    while (i + run < cps.size && cps[i + run] in SINGLE_QUOTES) run++
+                    if (run == 1) out.appendCodePoint(cp) else for (k in 0 until run) mark(out, cps[i + k])
+                    i += run
+                }
+                else -> {
+                    out.appendCodePoint(cp)
+                    i++
+                }
             }
         }
         return out.append('"').toString()
@@ -145,8 +165,20 @@ object PreviewText {
         codePoint != ' '.code && (Character.getType(codePoint) == Character.SPACE_SEPARATOR.toInt() ||
             codePoint == 0x2028 || codePoint == 0x2029)
 
-    /** Characters that look like a plain double quote; [quoted] marks them. */
-    private val QUOTE_LOOKALIKES: Set<Int> = setOf(0xFF02, 0x2033, 0x02BA, 0x05F4, 0x3003, 0x02EE, 0x201F, 0x2036)
+    /**
+     * Characters that look like a plain double quote; [quoted] marks them: the typographic quotes
+     * (“ ” „ ‟), the full-width quote, double primes, the double acute accent, the heavy
+     * ornamental quotes and the East Asian double prime quotes.
+     */
+    private val QUOTE_LOOKALIKES: Set<Int> = setOf(
+        0xFF02, 0x2033, 0x02BA, 0x05F4, 0x3003, 0x02EE, 0x201F, 0x2036,
+        0x201C, 0x201D, 0x201E, 0x02DD, 0x275D, 0x275E, 0x301D, 0x301E, 0x301F, 0x2E42, 0x02F5, 0x02F6,
+    )
+
+    /** The apostrophe and the characters that look like it; two in a row look like a double quote ([quoted]). */
+    private val SINGLE_QUOTES: Set<Int> = setOf(
+        0x0027, 0x2018, 0x2019, 0x201A, 0x201B, 0x0060, 0x00B4, 0x2032, 0x2035, 0x02B9, 0x02BB, 0x02BC, 0x02BD, 0xFF07,
+    )
 
     private fun isControl(codePoint: Int): Boolean = Character.isISOControl(codePoint)
 

@@ -7,6 +7,7 @@ import com.aicontrolcenter.core.operator.OperatorApp
 import com.aicontrolcenter.core.operator.RelativePath
 import com.aicontrolcenter.core.operator.ScreenActionPolicy
 import com.aicontrolcenter.core.operator.ScreenElement
+import com.aicontrolcenter.core.operator.ScreenOperator
 import com.aicontrolcenter.core.operator.ScreenPreview
 import com.aicontrolcenter.core.operator.ScreenResult
 import com.aicontrolcenter.core.operator.ScreenServiceState
@@ -22,6 +23,7 @@ import com.aicontrolcenter.core.tools.ToolContext
 import com.aicontrolcenter.core.tools.ToolOutcome
 import com.aicontrolcenter.framework.operator.OperatorText.q
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
@@ -47,7 +49,9 @@ import java.util.Locale
  * to ask only before consequential actions, [ConsequentialControls] decides from the control, its
  * row and its window. A consequential call's preview shows the window's title and every text in it
  * ([ScreenPreview]), read without starting a session; before it acts, the window must still show
- * exactly that (its digest is compared) and the control must be the same one. Right after the owner
+ * exactly that (its digest is compared, which covers the whole window: also the elements a long
+ * list leaves out and the end of a cut text) and the control must be the same one. A window too
+ * large to fingerprint whole is not put to the owner at all: the call fails with the reason. Right after the owner
  * answered (inside this app), the call first waits, outside every time limit, for the app to be in
  * front again ([com.aicontrolcenter.core.tools.PreparedAction.changedSinceOwnerAnswered]).
  *
@@ -88,12 +92,22 @@ internal object ScreenTools {
         if (!settings.operatorEnabled) throw ToolCallRejected("Phone operation is switched off in Settings, so \"$title\" cannot be used.")
         if (!settings.accessibilityOperatorEnabled) throw ToolCallRejected("Screen control is switched off in Settings.")
         if (acting && settings.localOnlyMode) throw ToolCallRejected(localOnly(title))
-        val state = d.screen.state.value
+        val state = knownState(d)
         if (state != ScreenServiceState.READY) throw ToolCallRejected(unavailable(state))
         if (d.screen.stopped.value) throw ToolCallRejected(STOPPED)
         val window = d.screen.activeWindow() ?: throw ToolCallRejected("No app window is in front, so there is nothing to operate.")
         val protected = d.protectedPackages().isProtected(window.packageName)
         return Front(window.packageName, if (protected) null else d.authorisedApps.get(window.packageName), protected)
+    }
+
+    /**
+     * The service's state, waiting a moment when it is not known yet: Android's settings are first read in the
+     * background when the app starts ([ScreenServiceState.CHECKING]).
+     */
+    private suspend fun knownState(d: OperatorToolDependencies): ScreenServiceState {
+        val flow = d.screen.state
+        if (flow.value != ScreenServiceState.CHECKING) return flow.value
+        return withTimeoutOrNull(d.limits.screenSettleMs) { flow.first { it != ScreenServiceState.CHECKING } } ?: flow.value
     }
 
     fun localOnly(title: String): String =
@@ -157,6 +171,12 @@ internal object ScreenTools {
         }
     }
 
+    /** Why an action that needs the owner's approval is not taken in a window that could not be read to its end. */
+    fun tooLarge(front: Front): String =
+        "The window of ${front.name()} holds more than can be read in full (over ${ScreenOperator.DIGEST_MAX_ELEMENTS} elements, or " +
+            "nested too deep), so the owner could not be shown everything an approval would cover, and nothing was done. " +
+            "Do not retry on this screen: go to a simpler screen of the app first, or leave this step to the owner."
+
     /** Why an action in [front]'s app asks when the app asks before every action; null for an app that asks only before consequential ones. */
     fun everyTime(front: Front): String? = if (front.asksEveryTime) "${front.name()} is set to ask you before every action" else null
 
@@ -164,6 +184,7 @@ internal object ScreenTools {
     fun dataLine(front: Front): String = "May send data off this phone through ${front.name()}."
 
     fun unavailable(state: ScreenServiceState): String = "Screen control is not available: " + when (state) {
+        ScreenServiceState.CHECKING -> "this app is still looking up the accessibility service in Android's settings; try again in a moment."
         ScreenServiceState.NOT_ENABLED -> "the owner has not switched on this app's accessibility service."
         ScreenServiceState.RESTRICTED -> "Android blocks the accessibility service until the owner allows restricted settings for this app."
         ScreenServiceState.ADVANCED_PROTECTION -> "Android's Advanced Protection is on, which turns services like this off."
@@ -394,6 +415,10 @@ internal abstract class ScreenActingTool(
             !consequential -> null
             window != null -> window
             else -> inspect(front, summary, leadsTo).let { (read, failed) -> read ?: return failed!! }
+        }
+        // Nothing vouches for what such a window holds beyond the list, so the owner is not asked to approve it.
+        if (shown != null && shown.windowDigest == null) {
+            return assessment(summary, failing(ScreenTools.tooLarge(front)), constraint = front.constraint, leadsTo = leadsTo)
         }
         val digest = shown?.let(ScreenPreview::digest)
         val where = if (element != null) ScreenPreview.details(front.label, element, shown, consequential) else ScreenPreview.windowDetails(front.label, front.packageName, shown)
