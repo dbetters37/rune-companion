@@ -99,7 +99,9 @@ class JsHostError(message: String) : RuntimeException(message)
  * - a maximum interpreter stack depth, and a dedicated thread with its own stack, so deep
  *   recursion ends as an error rather than taking down a shared thread;
  * - built-ins that can build huge strings or walk huge arrays in one native call (`repeat`,
- *   `padStart`, `padEnd`, `split("")`, `join`, `fill`, `Array.from`, array `toString`) refuse beyond
+ *   `padStart`, `padEnd`, `split("")`, every array method that walks the length — `join`,
+ *   `forEach`, `map`, `reduce`, `slice`, `concat` and the rest — `Array.from`, `apply` with an
+ *   array-like, and `JSON.stringify`, also for the result and console output) refuse beyond
  *   [JsLimits.maxStringChars] / [JsLimits.maxArrayLength]; host functions cap what they accept
  *   and return;
  * - input is JSON (`input`), output is the JSON of the last expression, and `console.log`
@@ -157,6 +159,9 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
         private var logCut = false
         private var written = 0
 
+        /** JSON.stringify with the sandbox's array check (set before the script runs). */
+        private var stringify: (Context, Scriptable, Any?) -> Any? = { cx, scope, value -> NativeJSON.stringify(cx, scope, value, null, null) }
+
         fun <T> logOutcome(make: (List<String>, Boolean) -> T): T = synchronized(log) { make(log.toList(), logCut) }
 
         fun execute(): JsOutcome = try {
@@ -182,11 +187,15 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
             ScriptableObject.defineProperty(scope, "input", input, ScriptableObject.DONTENUM)
             host?.let { ScriptableObject.defineProperty(scope, "workspace", workspace(cx, scope, it), ScriptableObject.DONTENUM or ScriptableObject.READONLY) }
             cx.evaluateString(scope, guards(), "sandbox", 1, null)
+            // The guarded JSON.stringify, held here so a script that replaces the global cannot take the check away.
+            val jsonObject = ScriptableObject.getProperty(scope, "JSON") as Scriptable
+            val guarded = ScriptableObject.getProperty(jsonObject, "stringify") as org.mozilla.javascript.Function
+            stringify = { c, s, value -> guarded.call(c, s, jsonObject, arrayOf(value)) }
             val result = cx.evaluateString(scope, code, "script", 1, null)
             if (result is CharSequence && result.length > limits.maxResultChars) {
                 return logOutcome { log, cut -> JsOutcome.Finished(null, true, log, cut) }
             }
-            val json = NativeJSON.stringify(cx, scope, result, null, null)
+            val json = stringify(cx, scope, result)
             val text = if (json == Undefined.instance || json == null) null else json.toString()
             val cut = text != null && text.length > limits.maxResultChars
             return logOutcome { log, logCut -> JsOutcome.Finished(if (cut) text.take(limits.maxResultChars) else text, cut, log, logCut) }
@@ -231,7 +240,7 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
         private fun show(cx: Context, scope: Scriptable, value: Any?): String = when {
             value is CharSequence && value.length > limits.maxLogChars -> "[a string of ${value.length} characters]"
             value is Scriptable && value !is org.mozilla.javascript.Function -> {
-                val json = runCatching { NativeJSON.stringify(cx, scope, value, null, null) }.getOrNull()
+                val json = runCatching { stringify(cx, scope, value) }.getOrNull()
                 if (json is CharSequence && json.length <= limits.maxLogChars) json.toString() else Context.toString(value).take(limits.maxLogChars)
             }
             else -> Context.toString(value).take(limits.maxLogChars)
@@ -331,11 +340,13 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
         val GUARDS = """
             (function () {
               var MAXS = MAX_STR, MAXA = MAX_ARR;
+              // The originals, captured before anything is wrapped: the wrappers call through them, never through what a script can replace.
+              var callApply = Function.prototype.call.bind(Function.prototype.apply);
               function guard(owner, name, check) {
                 var original = owner[name];
                 if (typeof original !== "function") return;
                 Object.defineProperty(owner, name, {
-                  value: function () { check.apply(this, arguments); return original.apply(this, arguments); },
+                  value: function () { callApply(check, this, arguments); return callApply(original, this, arguments); },
                   writable: true, configurable: true, enumerable: false
                 });
               }
@@ -346,10 +357,34 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) {
               guard(String.prototype, "padEnd", function (length) { tooLong(length); });
               // Splitting at every character makes one array element per character in a single native call.
               guard(String.prototype, "split", function (separator) { if (separator === "") tooMany(Object(this).length); });
-              ["join", "fill", "toString", "toLocaleString", "reverse", "sort", "copyWithin", "indexOf", "lastIndexOf", "includes", "flat"].forEach(function (name) {
+              // Every built-in that walks an array's length in one native call: a sparse array of length 2^32-1 would keep it
+              // busy past the time limit, where the budget check cannot reach it.
+              ["join", "fill", "toString", "toLocaleString", "reverse", "sort", "copyWithin", "indexOf", "lastIndexOf", "includes", "flat",
+               "forEach", "map", "filter", "some", "every", "reduce", "reduceRight", "find", "findIndex", "findLast", "findLastIndex",
+               "slice", "splice", "shift", "unshift", "keys", "values", "entries", "flatMap", "toReversed", "toSorted", "toSpliced",
+               "with"].forEach(function (name) {
                 guard(Array.prototype, name, function () { tooMany(Object(this).length); });
               });
+              guard(Array.prototype, "concat", function () {
+                tooMany(Object(this).length);
+                for (var i = 0; i < arguments.length; i++) if (arguments[i] != null && typeof arguments[i] === "object") tooMany(Object(arguments[i]).length);
+              });
               guard(Array, "from", function (source) { if (source != null) tooMany(Object(source).length); });
+              // Calling with an array-like copies every element first, natively.
+              guard(Function.prototype, "apply", function (self, args) { if (args != null) tooMany(Object(args).length); });
+              if (typeof Reflect === "object") {
+                guard(Reflect, "apply", function (target, self, args) { if (args != null) tooMany(Object(args).length); });
+                guard(Reflect, "construct", function (target, args) { if (args != null) tooMany(Object(args).length); });
+              }
+              // JSON.stringify walks every array it meets natively: check them all first, in script code the budget reaches.
+              guard(JSON, "stringify", function (value) { checkArrays(value, []); });
+              function checkArrays(value, seen) {
+                if (value === null || typeof value !== "object" || seen.indexOf(value) >= 0) return;
+                seen.push(value);
+                if (Array.isArray(value)) tooMany(value.length);
+                var keys = Object.keys(value);
+                for (var i = 0; i < keys.length; i++) checkArrays(value[keys[i]], seen);
+              }
             })();
         """.trimIndent()
     }

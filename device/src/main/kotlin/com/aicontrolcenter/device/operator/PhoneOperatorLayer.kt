@@ -3,11 +3,14 @@ package com.aicontrolcenter.device.operator
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.core.content.ContextCompat
 import com.aicontrolcenter.core.operator.AppActions
 import com.aicontrolcenter.core.operator.DeviceAccess
+import com.aicontrolcenter.core.operator.DeviceAccessState
 import com.aicontrolcenter.core.operator.MediaLibrary
 import com.aicontrolcenter.core.operator.ProtectedPackages
 import com.aicontrolcenter.core.operator.SharedFolderRepository
@@ -22,6 +25,7 @@ import com.aicontrolcenter.device.operator.commands.SystemShellRunner
 import com.aicontrolcenter.device.operator.commands.TermuxCommandRunner
 import com.aicontrolcenter.device.operator.files.SafSharedFolders
 import com.aicontrolcenter.device.operator.media.MediaStoreLibrary
+import com.aicontrolcenter.device.platform.packageInfoOrNull
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import java.io.File
@@ -71,6 +75,39 @@ class PhoneOperatorLayer(
 
     /** The runtime permissions to request, in one call, for the photo library on this Android version. */
     val mediaPermissions: List<String> = mediaPermissionsFor(Build.VERSION.SDK_INT)
+
+    /**
+     * The runtime permissions Android's own dialog asks the owner for to turn [access] on, in one
+     * request: the photo permissions, or Termux's "Run commands in Termux environment". Empty when
+     * only a settings screen turns it on ([settingsIntent]).
+     */
+    fun runtimePermissions(access: DeviceAccess): List<String> = when (access) {
+        DeviceAccess.MEDIA -> mediaPermissions
+        DeviceAccess.TERMUX_RUN_COMMAND -> listOf(TermuxCommandRunner.PERMISSION)
+        DeviceAccess.INSTALL_UNKNOWN_APPS, DeviceAccess.ACCESSIBILITY_SERVICE -> emptyList()
+    }
+
+    /** Whether [access] is on now. The accessibility service has its own state in the screen operator. */
+    fun accessState(access: DeviceAccess): DeviceAccessState {
+        val pm = appContext.packageManager
+        fun granted(permission: String) = ContextCompat.checkSelfPermission(appContext, permission) == PackageManager.PERMISSION_GRANTED
+        return when (access) {
+            DeviceAccess.MEDIA -> when {
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && granted(Manifest.permission.READ_MEDIA_IMAGES) && granted(Manifest.permission.READ_MEDIA_VIDEO) ->
+                    DeviceAccessState.ALLOWED
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && granted(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) -> DeviceAccessState.SELECTED_ONLY
+                Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU && granted(Manifest.permission.READ_EXTERNAL_STORAGE) -> DeviceAccessState.ALLOWED
+                else -> DeviceAccessState.NOT_ALLOWED
+            }
+            DeviceAccess.INSTALL_UNKNOWN_APPS -> if (pm.canRequestPackageInstalls()) DeviceAccessState.ALLOWED else DeviceAccessState.NOT_ALLOWED
+            DeviceAccess.TERMUX_RUN_COMMAND -> when {
+                pm.packageInfoOrNull(TermuxCommandRunner.PACKAGE) == null -> DeviceAccessState.NOT_INSTALLED
+                granted(TermuxCommandRunner.PERMISSION) -> DeviceAccessState.ALLOWED
+                else -> DeviceAccessState.NOT_ALLOWED
+            }
+            DeviceAccess.ACCESSIBILITY_SERVICE -> DeviceAccessState.NOT_ALLOWED
+        }
+    }
 
     /**
      * The Android settings screen where the owner turns on [access], or null when another part

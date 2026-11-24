@@ -335,7 +335,7 @@ object ScreenPreview {
     fun nameOf(element: ScreenElement): String {
         val name = listOf(element.text, element.description, element.label, element.hint, element.resourceId?.substringAfter(":id/"))
             .firstOrNull { !it.isNullOrBlank() }
-        return if (name == null) "unlabelled ${element.role}" else "${element.role} \"${PreviewText.exact(name)}\""
+        return if (name == null) "unlabelled ${element.role}" else "${element.role} ${PreviewText.quoted(name)}"
     }
 
     /**
@@ -359,14 +359,14 @@ object ScreenPreview {
         listOf(appLine(appLabel, packageName, snapshot)) + (snapshot?.let(::contents) ?: emptyList())
 
     private fun appLine(appLabel: String, packageName: String, snapshot: ScreenSnapshot?): String {
-        val title = snapshot?.windowTitle?.let { ", window \"${PreviewText.exact(it)}\"" } ?: ""
+        val title = snapshot?.windowTitle?.let { ", window ${PreviewText.quoted(it)}" } ?: ""
         return "App: ${PreviewText.exact(appLabel)} ($packageName)$title"
     }
 
     /** The fields that hold text, then [windowLines]. */
     private fun contents(snapshot: ScreenSnapshot): List<String> = buildList {
         for (field in snapshot.elements.filter { it.editable && !it.text.isNullOrEmpty() }) {
-            add("Field \"${PreviewText.exact(fieldName(field))}\" contains: \"${PreviewText.exact(field.text!!)}\"")
+            add("Field ${PreviewText.quoted(fieldName(field))} contains: ${PreviewText.quoted(field.text!!)}")
         }
         addAll(windowLines(snapshot))
     }
@@ -381,7 +381,7 @@ object ScreenPreview {
     fun windowLines(snapshot: ScreenSnapshot): List<String> = buildList {
         val texts = snapshot.elements.filter { !it.editable }.mapNotNull { e ->
             listOfNotNull(e.text, e.description?.takeIf { it != e.text }).filter { it.isNotBlank() }.joinToString(" · ").ifEmpty { null }
-                ?.let { "${e.role}: \"${PreviewText.exact(clip(it))}\"" }
+                ?.let { "${e.role}: ${PreviewText.quoted(clip(it))}" }
         }
         add("On screen now (${texts.size} ${if (texts.size == 1) "text" else "texts"}):")
         texts.take(MAX_WINDOW_LINES).forEach { add("  $it") }

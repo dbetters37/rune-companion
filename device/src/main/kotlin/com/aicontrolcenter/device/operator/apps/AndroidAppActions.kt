@@ -24,6 +24,7 @@ import com.aicontrolcenter.core.operator.LinkPolicy
 import com.aicontrolcenter.core.operator.ProtectedPackages
 import com.aicontrolcenter.core.operator.WorkspaceFile
 import com.aicontrolcenter.core.registry.InstalledAppInfo
+import com.aicontrolcenter.core.tasks.WaitClock
 import com.aicontrolcenter.device.launch.ActivityStartGate
 import com.aicontrolcenter.device.operator.ResultMailbox
 import com.aicontrolcenter.device.platform.activitiesFor
@@ -115,6 +116,18 @@ internal class AndroidAppActions(
             Target.NoneVisible -> handOver(intent, "the link", notFound = "an app that opens ${allowed.scheme}: links")
             is Target.Ready -> handOver(target.intent, "the link")
         }
+    }
+
+    override suspend fun linkHandlers(link: String): List<InstalledAppInfo> = withContext(dispatcher) {
+        val allowed = LinkPolicy.check(link, ownPackage) as? LinkPolicy.Check.Allowed ?: return@withContext emptyList()
+        val protected = protectedPackages()
+        // The same intent openLink starts, so the apps named are the ones that can take it.
+        handlersOf(Intent(Intent.ACTION_VIEW, Uri.parse(allowed.link)).addCategory(Intent.CATEGORY_BROWSABLE))
+            .map { it.packageName }
+            .distinct()
+            .filterNot(protected::isProtected)
+            .map { InstalledAppInfo(packageName = it, label = nameOf(it)) }
+            .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.label })
     }
 
     override suspend fun openInBrowser(url: String): AppActionResult = withContext(dispatcher) {
@@ -316,6 +329,10 @@ internal class AndroidAppActions(
      * after [waitMs].
      */
     private suspend fun awaitOutcome(mailbox: ResultMailbox, waitMs: Long, what: String, success: (Intent) -> AppActionResult): AppActionResult =
+        // The owner's time on Android's confirmation does not count against the task's limits (it is the owner's, not the agent's).
+        WaitClock.pausedWhile { awaitOutcomeOn(mailbox, waitMs, what, success) }
+
+    private suspend fun awaitOutcomeOn(mailbox: ResultMailbox, waitMs: Long, what: String, success: (Intent) -> AppActionResult): AppActionResult =
         withTimeoutOrNull(waitMs.coerceAtLeast(1)) {
             var outcome: AppActionResult? = null
             while (outcome == null) {

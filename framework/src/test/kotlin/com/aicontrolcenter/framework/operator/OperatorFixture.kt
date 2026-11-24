@@ -60,11 +60,15 @@ internal class OperatorFixture(
     /** The owner's settings as the screen tools read them: phone operation and screen control on. */
     @Volatile var settings: FrameworkSettings = FrameworkSettings(operatorEnabled = true, accessibilityOperatorEnabled = true)
 
+    /** What the tools logged as possibly leaving the phone: (title, destination). */
+    val egress = java.util.concurrent.CopyOnWriteArrayList<Pair<String, String>>()
+
     val dependencies = OperatorToolDependencies(
         workspace = workspace, sharedFolders = sharedFolders, folders = folderRepository.asDirectory(), media = media, apps = apps,
         web = web, screen = screen, authorisedApps = operatorApps.asAuthorisedApps(), settings = { settings },
         protectedPackages = { ProtectedPackages(OWN, extraProtected) },
         shell = shell, termux = termux, clock = clock, ownPackage = OWN, limits = limits,
+        egress = OperatorEgress { _, title, _, info -> egress += title to info.destinationHost },
     )
     val tools: Map<String, Tool> = OperatorToolset.create(dependencies).associateBy { it.spec.id.value }
     val context = ToolContext(Samples.agent(id = "agt_operator", name = "Operator"))

@@ -3,6 +3,8 @@ package com.aicontrolcenter.app.testing
 import kotlin.coroutines.EmptyCoroutineContext
 import android.content.Intent
 import com.aicontrolcenter.app.operator.SystemScreens
+import com.aicontrolcenter.core.operator.DeviceAccess
+import com.aicontrolcenter.core.operator.DeviceAccessState
 import java.io.File
 import com.aicontrolcenter.app.di.AppGraph
 import com.aicontrolcenter.app.di.OperatorPorts
@@ -264,6 +266,9 @@ fun <T> StateFlow<T>.activeIn(scope: CoroutineScope): StateFlow<T> {
 
 /** [SystemScreens] whose intents name what they stand for, so a test can check which screen the app asked Android for. */
 class TestSystemScreens : SystemScreens {
+    /** What [accessState] reports; everything is off until a test turns it on. */
+    val access: MutableMap<DeviceAccess, DeviceAccessState> = java.util.concurrent.ConcurrentHashMap()
+
     override fun accessibilitySettings(): Intent = Intent(ACCESSIBILITY_SETTINGS)
 
     override fun appInfo(): Intent = Intent(APP_INFO)
@@ -271,9 +276,22 @@ class TestSystemScreens : SystemScreens {
     override fun shareFile(file: File, mimeType: String, title: String): Intent =
         Intent(Intent.ACTION_SEND).setType(mimeType).putExtra(SHARED_FILE, file.path).putExtra(Intent.EXTRA_TITLE, title)
 
+    override fun accessState(access: DeviceAccess): DeviceAccessState = this.access[access] ?: DeviceAccessState.NOT_ALLOWED
+
+    override fun accessPermissions(access: DeviceAccess): List<String> = when (access) {
+        DeviceAccess.MEDIA -> listOf(android.Manifest.permission.READ_MEDIA_IMAGES, android.Manifest.permission.READ_MEDIA_VIDEO)
+        DeviceAccess.TERMUX_RUN_COMMAND -> listOf("com.termux.permission.RUN_COMMAND")
+        else -> emptyList()
+    }
+
+    override fun accessSettings(access: DeviceAccess): Intent? =
+        if (access == DeviceAccess.ACCESSIBILITY_SERVICE) null else Intent(ACCESS_SETTINGS).putExtra(ACCESS, access.name)
+
     companion object {
         const val ACCESSIBILITY_SETTINGS = "test.ACCESSIBILITY_SETTINGS"
         const val APP_INFO = "test.APP_INFO"
         const val SHARED_FILE = "test.SHARED_FILE"
+        const val ACCESS_SETTINGS = "test.ACCESS_SETTINGS"
+        const val ACCESS = "test.ACCESS"
     }
 }

@@ -275,8 +275,8 @@ internal class WorkspaceSearch(private val d: OperatorToolDependencies) : Operat
 /** workspace.write */
 internal class WorkspaceWrite(private val d: OperatorToolDependencies) : OperatorTool(
     "workspace.write", "Write a workspace file",
-    "Creates a text file in the workspace (missing folders are created), or replaces an existing one when \"overwrite\" is true. " +
-        "Use it for txt, md, csv, json and html documents.",
+    "Creates a text file in the workspace (missing folders are created), or replaces an existing one when \"overwrite\" is true; " +
+        "the replaced file is kept in the workspace trash. Use it for txt, md, csv, json and html documents.",
     objectSchema("path", "content") {
         stringProp("path", "The file to write, e.g. \"reports/summary.md\".")
         stringProp("content", "The complete text of the file.")
@@ -298,25 +298,41 @@ internal class WorkspaceWrite(private val d: OperatorToolDependencies) : Operato
                 failing("${q(path.value)} already exists; nothing was written. Pass \"overwrite\": true to replace it, or choose another name."),
                 details,
             )
-            else -> assessment(
-                if (before.exists) "Replace the workspace file ${q(path.value)} (${size(before.sizeBytes)}) with new text (${size(bytes.size.toLong())})"
-                else "Create the workspace file ${q(path.value)} (${size(bytes.size.toLong())})",
-                prepared(check = { before.changeTo(WorkspaceStates.of(d.workspace, path), q(path.value)) }) {
-                    when (val r = d.workspace.write(path, bytes, overwrite = before.exists)) {
-                        is DocResult.Ok -> ToolOutcome.success("${if (before.exists) "Replaced" else "Created"} ${q(path.value)} (${size(r.value.sizeBytes)}).")
-                        else -> ToolOutcome.failure(OperatorText.problem(r, "Writing ${q(path.value)}"))
-                    }
-                },
-                details,
-            )
+            else -> {
+                val replaced = if (before.exists) 1 else 0
+                val risk = BulkRule.risk(d, context, replaced)
+                assessment(
+                    if (before.exists) "Replace the workspace file ${q(path.value)} (${size(before.sizeBytes)}) with new text (${size(bytes.size.toLong())}); " +
+                        "the current file goes to the workspace trash"
+                    else "Create the workspace file ${q(path.value)} (${size(bytes.size.toLong())})",
+                    prepared(check = { before.changeTo(WorkspaceStates.of(d.workspace, path), q(path.value)) }) { ctx ->
+                        BulkRule.take(d, ctx, replaced, risk)?.let { return@prepared ToolOutcome.failure(it) }
+                        when (val r = d.workspace.write(path, bytes, overwrite = before.exists)) {
+                            is DocResult.Ok -> ToolOutcome.success(
+                                if (before.exists) "Replaced ${q(path.value)} (${size(r.value.sizeBytes)}); the previous version is in the workspace trash (workspace_restore lists it)."
+                                else "Created ${q(path.value)} (${size(r.value.sizeBytes)}).",
+                            )
+                            else -> ToolOutcome.failure(OperatorText.problem(r, "Writing ${q(path.value)}"))
+                        }
+                    },
+                    details + listOfNotNull(
+                        if (before.exists) KEPT_IN_TRASH else null,
+                        BulkRule.detail(d, context, replaced),
+                    ),
+                    risk = risk,
+                )
+            }
         }
     }
 
     companion object {
         /** The start of a text for a details line, exact. */
         fun preview(text: String, chars: Int = 300): String =
-            if (text.length <= chars) "text: \"${com.aicontrolcenter.core.operator.PreviewText.exact(text)}\""
-            else "starting: \"${com.aicontrolcenter.core.operator.PreviewText.exact(text.take(chars))}\" (+${text.length - chars} more characters)"
+            if (text.length <= chars) "text: ${com.aicontrolcenter.core.operator.PreviewText.quoted(text)}"
+            else "starting: ${com.aicontrolcenter.core.operator.PreviewText.quoted(text.take(chars))} (+${text.length - chars} more characters)"
+
+        /** The details line of a call that replaces a workspace file. */
+        const val KEPT_IN_TRASH = "The file it replaces is kept in the workspace trash, from where it can be restored."
     }
 }
 
@@ -386,16 +402,21 @@ internal class WorkspaceReplaceText(private val d: OperatorToolDependencies) : O
             count == 0 -> assessment(summary, failing("${q(find)} does not occur in ${q(path.value)}; nothing was changed."), details)
             expected != null && count != expected ->
                 assessment(summary, failing("${q(find)} occurs ${OperatorText.count(count, "time")} in ${q(path.value)}, not $expected; nothing was changed."), details)
-            else -> assessment(
-                "Replace ${OperatorText.count(count, "occurrence")} of ${q(find)} with ${q(replacement)} in the workspace file ${q(path.value)}",
-                prepared(check = { before.changeTo(WorkspaceStates.of(d.workspace, path, hashUpTo = d.limits.maxCopyBytes), q(path.value)) }) {
-                    when (val r = d.workspace.replaceText(path, find, replacement, expectedCount = count)) {
-                        is DocResult.Ok -> ToolOutcome.success("Replaced ${OperatorText.count(r.value, "occurrence")} in ${q(path.value)}.")
-                        else -> ToolOutcome.failure(OperatorText.problem(r, "Editing ${q(path.value)}"))
-                    }
-                },
-                details,
-            )
+            else -> {
+                val risk = BulkRule.risk(d, context, 1)
+                assessment(
+                    "Replace ${OperatorText.count(count, "occurrence")} of ${q(find)} with ${q(replacement)} in the workspace file ${q(path.value)}",
+                    prepared(check = { before.changeTo(WorkspaceStates.of(d.workspace, path, hashUpTo = d.limits.maxCopyBytes), q(path.value)) }) { ctx ->
+                        BulkRule.take(d, ctx, 1, risk)?.let { return@prepared ToolOutcome.failure(it) }
+                        when (val r = d.workspace.replaceText(path, find, replacement, expectedCount = count)) {
+                            is DocResult.Ok -> ToolOutcome.success("Replaced ${OperatorText.count(r.value, "occurrence")} in ${q(path.value)}.")
+                            else -> ToolOutcome.failure(OperatorText.problem(r, "Editing ${q(path.value)}"))
+                        }
+                    },
+                    details + listOfNotNull(BulkRule.detail(d, context, 1)),
+                    risk = risk,
+                )
+            }
         }
     }
 
@@ -440,7 +461,7 @@ internal class WorkspaceMakeFolder(private val d: OperatorToolDependencies) : Op
 internal class WorkspaceMove(private val d: OperatorToolDependencies) : OperatorTool(
     "workspace.move", "Move or rename in the workspace",
     "Moves or renames a file or folder inside the workspace. \"to\" is the new full path, not a folder to move into. " +
-        "An existing file at \"to\" is replaced only with \"overwrite\": true; a folder is never replaced.",
+        "An existing file at \"to\" is replaced only with \"overwrite\": true (it is kept in the workspace trash); a folder is never replaced.",
     objectSchema("from", "to") {
         stringProp("from", "What to move, e.g. \"draft.md\".")
         stringProp("to", "Its new path, e.g. \"archive/2025/draft.md\".")
@@ -467,21 +488,25 @@ internal class WorkspaceMove(private val d: OperatorToolDependencies) : Operator
                 details,
             )
             else -> {
-                // Only a single file can be replaced, so a move never overwrites more than BULK_FILE_LIMIT files.
+                // At most one file is replaced; it is kept in the trash and counted by the bulk rule.
                 val replaced = if (target.exists) 1 else 0
+                val risk = BulkRule.risk(d, context, replaced)
                 assessment(
-                    summary + if (replaced == 1) ", replacing the file there (${size(target.sizeBytes)})" else "",
+                    summary + if (replaced == 1) ", replacing the file there (${size(target.sizeBytes)}), which goes to the workspace trash" else "",
                     prepared(check = {
                         source.changeTo(WorkspaceStates.of(d.workspace, from, tree = true), q(from.value))
                             ?: target.changeTo(WorkspaceStates.of(d.workspace, to), q(to.value))
-                    }) {
+                    }) { ctx ->
+                        BulkRule.take(d, ctx, replaced, risk)?.let { return@prepared ToolOutcome.failure(it) }
                         when (val r = d.workspace.move(from, to, overwrite = target.exists)) {
-                            is DocResult.Ok -> ToolOutcome.success("Moved ${q(from.value)} to ${q(to.value)}.")
+                            is DocResult.Ok -> ToolOutcome.success(
+                                "Moved ${q(from.value)} to ${q(to.value)}." + if (replaced == 1) " The file it replaced is in the workspace trash." else "",
+                            )
                             else -> ToolOutcome.failure(OperatorText.problem(r, "Moving ${q(from.value)}"))
                         }
                     },
-                    details,
-                    risk = if (replaced > ConsequentialControls.BULK_FILE_LIMIT) RiskLevel.CONSEQUENTIAL else RiskLevel.MODIFYING,
+                    details + listOfNotNull(if (replaced == 1) WorkspaceWrite.KEPT_IN_TRASH else null, BulkRule.detail(d, context, replaced)),
+                    risk = risk,
                 )
             }
         }
@@ -492,7 +517,8 @@ internal class WorkspaceMove(private val d: OperatorToolDependencies) : Operator
 internal class WorkspaceTrash(private val d: OperatorToolDependencies) : OperatorTool(
     "workspace.trash", "Move to the workspace trash",
     "Moves files or folders of the workspace to its trash, from where workspace_restore can bring them back. " +
-        "More than ${ConsequentialControls.BULK_FILE_LIMIT} files in one call need the owner's approval.",
+        "More than ${ConsequentialControls.BULK_FILE_LIMIT} files replaced, edited or trashed within " +
+        "${ConsequentialControls.BULK_WINDOW_MS / 60_000} minutes need the owner's approval.",
     objectSchema("paths") { stringArrayProp("paths", "The files or folders to trash, e.g. [\"old.md\", \"drafts\"].", 100) },
 ) {
     override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
@@ -508,11 +534,13 @@ internal class WorkspaceTrash(private val d: OperatorToolDependencies) : Operato
         val details = states.map { (p, s) -> "${q(p.value)}: ${WorkspaceStates.describe(s)}" }
         val summary = "Move ${OperatorText.count(paths.size, "item")} (${OperatorText.count(files, "file")}, ${size(bytes)}) to the workspace trash"
         states.firstOrNull { !it.second.exists }?.let { (p, _) -> return assessment(summary, failing("There is nothing at ${q(p.value)}; nothing was trashed."), details) }
+        val risk = BulkRule.risk(d, context, files)
         return assessment(
             summary,
             prepared(check = {
                 states.firstNotNullOfOrNull { (p, s) -> s.changeTo(WorkspaceStates.of(d.workspace, p, tree = true), q(p.value)) }
-            }) {
+            }) { ctx ->
+                BulkRule.take(d, ctx, files, risk)?.let { return@prepared ToolOutcome.failure(it) }
                 val done = ArrayList<TrashItem>()
                 for ((p, _) in states) {
                     when (val r = d.workspace.trash(p)) {
@@ -527,8 +555,8 @@ internal class WorkspaceTrash(private val d: OperatorToolDependencies) : Operato
                     buildJsonArray { done.forEach { addJsonObject { put("id", it.id); put("originalPath", it.originalPath) } } },
                 )
             },
-            details,
-            risk = if (files > ConsequentialControls.BULK_FILE_LIMIT) RiskLevel.CONSEQUENTIAL else RiskLevel.MODIFYING,
+            details + listOfNotNull(BulkRule.detail(d, context, files)),
+            risk = risk,
         )
     }
 

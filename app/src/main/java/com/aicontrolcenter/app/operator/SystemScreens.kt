@@ -1,13 +1,17 @@
 package com.aicontrolcenter.app.operator
 
 import android.content.Intent
+import com.aicontrolcenter.core.operator.DeviceAccess
+import com.aicontrolcenter.core.operator.DeviceAccessState
 import java.io.File
 
 /**
  * Android's own screens and sheets that the owner's Tools and Workspace screens hand over to:
- * the accessibility settings, this app's App info page, and the share sheet for a workspace
- * file. Production builds them from `:device` (which knows the service and the workspace file
- * provider) in `createProductionPorts`; tests pass plain intents they can recognise.
+ * the accessibility settings, this app's App info page, the share sheet for a workspace file,
+ * and the permissions and special access phone tools need (photos and videos, "Install unknown
+ * apps", Termux). Production builds them from `:device` (which knows the service, the workspace
+ * file provider and the permissions) in `createProductionPorts`; tests pass plain intents they
+ * can recognise.
  *
  * Owner-only: only screens use it. Nothing an agent can reach holds it.
  */
@@ -20,6 +24,15 @@ interface SystemScreens {
 
     /** The share sheet for one workspace [file], readable only by the one app the owner picks, and only for that hand-off. */
     fun shareFile(file: File, mimeType: String, title: String): Intent
+
+    /** Whether [access] is on now. */
+    fun accessState(access: DeviceAccess): DeviceAccessState
+
+    /** The runtime permissions Android's own dialog asks for to turn [access] on; empty when only [accessSettings] can. */
+    fun accessPermissions(access: DeviceAccess): List<String>
+
+    /** Android's settings screen where the owner turns [access] on or off, or null when there is none. */
+    fun accessSettings(access: DeviceAccess): Intent?
 }
 
 /** The type Android is told a shared or previewed file has, from its name. Unknown kinds are shared as plain bytes. */

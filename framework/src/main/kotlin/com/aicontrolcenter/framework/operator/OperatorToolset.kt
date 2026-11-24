@@ -98,6 +98,10 @@ class OperatorToolDependencies(
     /** This app's package, for link checks. */
     val ownPackage: String?,
     val limits: OperatorLimits = OperatorLimits(),
+    /** Where hand-overs that may leave the phone (commands, links) are logged as they happen. */
+    val egress: OperatorEgress = OperatorEgress.NONE,
+    /** The files each agent changed recently: the bulk rule counts over a time window, not per call. */
+    val recentChanges: RecentFileChanges = RecentFileChanges(),
 )
 
 /**

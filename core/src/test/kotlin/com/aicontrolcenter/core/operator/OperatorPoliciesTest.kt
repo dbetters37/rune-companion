@@ -115,9 +115,13 @@ class OperatorPoliciesTest {
             setOf("workspace.empty_trash", "folders.delete", "apps.install", "apps.uninstall", "scripts.run_shell", "termux.run"),
             all.filter { it.risk == RiskLevel.CONSEQUENTIAL }.map { it.id.value }.toSet(),
         )
-        // Acting on another app's screen may send data off the phone through that app, so local-only mode blocks it too.
+        // Acting on another app's screen may send data off the phone through that app, and the shell and Termux
+        // can use the network, so local-only mode blocks them too.
         assertEquals(
-            setOf("web.read_page", "browser.open", "apps.open_link", "screen.tap", "screen.type", "screen.scroll", "screen.back", "screen.home"),
+            setOf(
+                "web.read_page", "browser.open", "apps.open_link", "scripts.run_shell", "termux.run",
+                "screen.tap", "screen.type", "screen.scroll", "screen.back", "screen.home",
+            ),
             all.filter { it.sendsDataOffDevice }.map { it.id.value }.toSet(),
         )
         assertEquals(Capabilities.BASIC_INFO, OperatorTools.info(ToolId("permissions.request"))?.capability)

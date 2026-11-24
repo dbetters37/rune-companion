@@ -6,6 +6,7 @@ import com.aicontrolcenter.core.operator.RelativePath
 import com.aicontrolcenter.core.operator.SharedFolder
 import com.aicontrolcenter.core.tools.ActionAssessment
 import com.aicontrolcenter.core.tools.CapabilityConstraint
+import com.aicontrolcenter.core.tools.RiskLevel
 import com.aicontrolcenter.core.tools.Tool
 import com.aicontrolcenter.core.tools.ToolContext
 import com.aicontrolcenter.core.tools.ToolOutcome
@@ -99,6 +100,9 @@ internal object FolderTools {
         if (path.isRoot) "the shared folder ${q(folder.displayName)}" else "${q(path.value)} in the shared folder ${q(folder.displayName)}"
 
     fun constraint(folder: SharedFolder) = CapabilityConstraint.Folder(folder.id)
+
+    /** The details line of a call that replaces a file in a shared folder. */
+    const val NO_TRASH = "Shared folders have no trash: the file it replaces cannot be recovered, so you approve this every time."
 
     /** For a call that changes the folder: fails when the owner made it read-only. */
     fun readOnlyProblem(folder: SharedFolder): String? =
@@ -199,11 +203,8 @@ internal class FoldersCopyToWorkspace(private val d: OperatorToolDependencies) :
                             ?: source.changeTo(FolderTools.state(d, folder, path), FolderTools.where(folder, path))
                             ?: target.changeTo(WorkspaceStates.of(d.workspace, to), q(to.value))
                     }) {
-                        val file = when (val r = d.workspace.resolve(to)) {
-                            is DocResult.Ok -> r.value
-                            else -> return@prepared ToolOutcome.failure(OperatorText.problem(r, "Copying to ${q(to.value)}"))
-                        }
-                        when (val r = d.sharedFolders.copyToWorkspace(folder.id, path, file, d.limits.maxCopyBytes)) {
+                        // Through the workspace, so its size limits, lock and change signal apply to the copy.
+                        when (val r = d.workspace.receive(to, d.limits.maxCopyBytes) { file, max -> d.sharedFolders.copyToWorkspace(folder.id, path, file, max) }) {
                             is DocResult.Ok -> ToolOutcome.success("Copied ${FolderTools.where(folder, path)} to ${q(to.value)} in the workspace (${size(r.value)}).")
                             else -> ToolOutcome.failure(OperatorText.problem(r, "Copying ${FolderTools.where(folder, path)}"))
                         }
@@ -219,7 +220,8 @@ internal class FoldersCopyToWorkspace(private val d: OperatorToolDependencies) :
 /** folders.write */
 internal class FoldersWrite(private val d: OperatorToolDependencies) : OperatorTool(
     "folders.write", "Write in a shared folder",
-    "Creates a text file in a folder the owner shared, or replaces an existing file when \"overwrite\" is true.",
+    "Creates a text file in a folder the owner shared, or replaces an existing file when \"overwrite\" is true. Shared folders have no " +
+        "trash, so replacing a file needs the owner's approval every time.",
     objectSchema("folder", "path", "content") {
         with(FolderTools) { folderProp() }
         stringProp("path", "The file inside the shared folder, e.g. \"notes/today.md\".")
@@ -243,21 +245,28 @@ internal class FoldersWrite(private val d: OperatorToolDependencies) : OperatorT
             when {
                 before.isFolder -> assessment(summary, failing("${FolderTools.where(folder, path)} is a folder."), details, constraint = c)
                 before.exists && !overwrite -> assessment(summary, failing("${FolderTools.where(folder, path)} already exists; pass \"overwrite\": true to replace it."), details, constraint = c)
-                else -> assessment(
-                    if (before.exists) "Replace ${FolderTools.where(folder, path)} (${size(before.sizeBytes)}) with new text (${size(bytes.size.toLong())})"
-                    else "Create ${FolderTools.where(folder, path)} (${size(bytes.size.toLong())})",
-                    prepared(check = {
-                        FolderTools.folderChange(d, folder, writing = true)
-                            ?: before.changeTo(FolderTools.state(d, folder, path), FolderTools.where(folder, path))
-                    }) {
-                        when (val r = d.sharedFolders.write(folder.id, path, bytes, MimeTypes.of(path.name), overwrite = before.exists)) {
-                            is DocResult.Ok -> ToolOutcome.success("${if (before.exists) "Replaced" else "Created"} ${FolderTools.where(folder, path)}.")
-                            else -> ToolOutcome.failure(OperatorText.problem(r, "Writing ${FolderTools.where(folder, path)}"))
-                        }
-                    },
-                    details,
-                    constraint = c,
-                )
+                else -> {
+                    // Replacing a file the owner keeps there cannot be undone: approved every time.
+                    val replaced = if (before.exists) 1 else 0
+                    val risk = if (before.exists) RiskLevel.CONSEQUENTIAL else RiskLevel.MODIFYING
+                    assessment(
+                        if (before.exists) "Replace ${FolderTools.where(folder, path)} (${size(before.sizeBytes)}) with new text (${size(bytes.size.toLong())}), for good"
+                        else "Create ${FolderTools.where(folder, path)} (${size(bytes.size.toLong())})",
+                        prepared(check = {
+                            FolderTools.folderChange(d, folder, writing = true)
+                                ?: before.changeTo(FolderTools.state(d, folder, path), FolderTools.where(folder, path))
+                        }) { ctx ->
+                            BulkRule.take(d, ctx, replaced, risk)?.let { return@prepared ToolOutcome.failure(it) }
+                            when (val r = d.sharedFolders.write(folder.id, path, bytes, MimeTypes.of(path.name), overwrite = before.exists)) {
+                                is DocResult.Ok -> ToolOutcome.success("${if (before.exists) "Replaced" else "Created"} ${FolderTools.where(folder, path)}.")
+                                else -> ToolOutcome.failure(OperatorText.problem(r, "Writing ${FolderTools.where(folder, path)}"))
+                            }
+                        },
+                        details + listOfNotNull(if (before.exists) FolderTools.NO_TRASH else null),
+                        risk = risk,
+                        constraint = c,
+                    )
+                }
             }
         }
     }
@@ -354,7 +363,8 @@ internal class FoldersRename(private val d: OperatorToolDependencies) : Operator
 /** folders.copy_from_workspace */
 internal class FoldersCopyFromWorkspace(private val d: OperatorToolDependencies) : OperatorTool(
     "folders.copy_from_workspace", "Copy into a shared folder",
-    "Copies a workspace file into a folder the owner shared. An existing file there is replaced only with \"overwrite\": true.",
+    "Copies a workspace file into a folder the owner shared. An existing file there is replaced only with \"overwrite\": true, " +
+        "and then only with the owner's approval, every time (shared folders have no trash).",
     objectSchema("from", "folder", "to") {
         stringProp("from", "The workspace file to copy.")
         with(FolderTools) { folderProp() }
@@ -380,25 +390,31 @@ internal class FoldersCopyFromWorkspace(private val d: OperatorToolDependencies)
                 source.sha256 == null -> assessment(summary, failing("${q(from.value)} is larger than ${size(d.limits.maxCopyBytes)}."), details, constraint = c)
                 target.isFolder -> assessment(summary, failing("${FolderTools.where(folder, to)} is a folder."), details, constraint = c)
                 target.exists && !overwrite -> assessment(summary, failing("${FolderTools.where(folder, to)} already exists; pass \"overwrite\": true to replace it."), details, constraint = c)
-                else -> assessment(
-                    summary + if (target.exists) ", replacing the file there (${size(target.sizeBytes)})" else " (${size(source.sizeBytes)})",
-                    prepared(check = {
-                        FolderTools.folderChange(d, folder, writing = true)
-                            ?: source.changeTo(WorkspaceStates.of(d.workspace, from, hashUpTo = d.limits.maxCopyBytes), q(from.value))
-                            ?: target.changeTo(FolderTools.state(d, folder, to), FolderTools.where(folder, to))
-                    }) {
-                        val file = when (val r = d.workspace.resolve(from)) {
-                            is DocResult.Ok -> r.value
-                            else -> return@prepared ToolOutcome.failure(OperatorText.problem(r, "Copying ${q(from.value)}"))
-                        }
-                        when (val r = d.sharedFolders.copyFromWorkspace(file, folder.id, to, overwrite = target.exists)) {
-                            is DocResult.Ok -> ToolOutcome.success("Copied ${q(from.value)} to ${FolderTools.where(folder, to)}.")
-                            else -> ToolOutcome.failure(OperatorText.problem(r, "Copying ${q(from.value)}"))
-                        }
-                    },
-                    details,
-                    constraint = c,
-                )
+                else -> {
+                    val replaced = if (target.exists) 1 else 0
+                    val risk = if (target.exists) RiskLevel.CONSEQUENTIAL else RiskLevel.MODIFYING
+                    assessment(
+                        summary + if (target.exists) ", replacing the file there (${size(target.sizeBytes)}) for good" else " (${size(source.sizeBytes)})",
+                        prepared(check = {
+                            FolderTools.folderChange(d, folder, writing = true)
+                                ?: source.changeTo(WorkspaceStates.of(d.workspace, from, hashUpTo = d.limits.maxCopyBytes), q(from.value))
+                                ?: target.changeTo(FolderTools.state(d, folder, to), FolderTools.where(folder, to))
+                        }) { ctx ->
+                            val file = when (val r = d.workspace.resolve(from)) {
+                                is DocResult.Ok -> r.value
+                                else -> return@prepared ToolOutcome.failure(OperatorText.problem(r, "Copying ${q(from.value)}"))
+                            }
+                            BulkRule.take(d, ctx, replaced, risk)?.let { return@prepared ToolOutcome.failure(it) }
+                            when (val r = d.sharedFolders.copyFromWorkspace(file, folder.id, to, overwrite = target.exists)) {
+                                is DocResult.Ok -> ToolOutcome.success("Copied ${q(from.value)} to ${FolderTools.where(folder, to)}.")
+                                else -> ToolOutcome.failure(OperatorText.problem(r, "Copying ${q(from.value)}"))
+                            }
+                        },
+                        details + listOfNotNull(if (target.exists) FolderTools.NO_TRASH else null),
+                        risk = risk,
+                        constraint = c,
+                    )
+                }
             }
         }
     }
@@ -434,7 +450,8 @@ internal class FoldersDelete(private val d: OperatorToolDependencies) : Operator
                 prepared(check = {
                     FolderTools.folderChange(d, folder, writing = true)
                         ?: before.changeTo(FolderTools.state(d, folder, path, tree = true), FolderTools.where(folder, path))
-                }) {
+                }) { ctx ->
+                    BulkRule.take(d, ctx, tree?.files ?: 1, RiskLevel.CONSEQUENTIAL)
                     when (val r = d.sharedFolders.delete(folder.id, path)) {
                         is DocResult.Ok -> ToolOutcome.success("Deleted ${FolderTools.where(folder, path)}.")
                         else -> ToolOutcome.failure(OperatorText.problem(r, "Deleting ${FolderTools.where(folder, path)}"))

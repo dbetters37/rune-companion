@@ -3,6 +3,7 @@ package com.aicontrolcenter.framework.operator
 import com.aicontrolcenter.core.operator.CommandLimits
 import com.aicontrolcenter.core.operator.CommandOutcome
 import com.aicontrolcenter.core.operator.DocResult
+import com.aicontrolcenter.core.operator.PreviewText
 import com.aicontrolcenter.core.operator.RelativePath
 import com.aicontrolcenter.core.operator.TermuxAvailability
 import com.aicontrolcenter.core.operator.Workspace
@@ -11,7 +12,9 @@ import com.aicontrolcenter.core.tools.Tool
 import com.aicontrolcenter.core.tools.ToolContext
 import com.aicontrolcenter.core.tools.ToolOutcome
 import com.aicontrolcenter.framework.operator.OperatorText.q
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -25,7 +28,8 @@ internal object ScriptTools {
     fun answer(outcome: CommandOutcome): ToolOutcome = when (outcome) {
         is CommandOutcome.Finished -> ToolOutcome(
             outcome.exitCode == 0,
-            "Exit code ${outcome.exitCode} after ${outcome.durationMs} ms.${if (outcome.truncated) " Output was cut at the limit." else ""}\n" +
+            "Exit code ${outcome.exitCode} after ${outcome.durationMs} ms.${if (outcome.truncated) " Output was cut at the limit." else ""}" +
+                (if (outcome.stoppedLeftovers) " It left processes running, and they were stopped when it ended." else "") + "\n" +
                 streams(outcome.stdout, outcome.stderr),
             buildJsonObject {
                 put("exitCode", outcome.exitCode)
@@ -81,7 +85,8 @@ internal class ScriptsRunJs(private val d: OperatorToolDependencies, private val
                 val host = if (access == "none") null else WorkspaceJsHost(d.workspace, canWrite = access == "write", d.limits.js.maxStringChars)
                 answer(sandbox.run(code, input, host, timeout))
             },
-            listOfNotNull("Code: ${q(code)}", input?.let { "Input: ${q(it)}" }, "Workspace access: $accessText", "Time limit: $timeout ms"),
+            // JSON delimits itself, so the input is shown as it is rather than in quotes.
+            listOfNotNull("Code: ${q(code)}", input?.let { "Input (JSON): ${PreviewText.exact(it)}" }, "Workspace access: $accessText", "Time limit: $timeout ms"),
         )
     }
 
@@ -142,7 +147,10 @@ internal class WorkspaceJsHost(private val workspace: Workspace, override val ca
 internal class ScriptsRunShell(private val d: OperatorToolDependencies) : OperatorTool(
     "scripts.run_shell", "Run a shell command",
     "Runs one command with Android's shell (/system/bin/sh, toybox tools) as this app, in a workspace folder, with a time limit. " +
-        "It cannot run downloaded programs. The owner approves every command.",
+        "On Android 10 and later it cannot run programs downloaded into the workspace. Work sent to the background (&, nohup, " +
+        "setsid, disown) is refused: everything the command starts ends with it. The command can use the internet, so it is " +
+        "blocked in local-only mode. The owner approves every command, and the workspace files it names are shown and checked " +
+        "again before it runs.",
     objectSchema("command") {
         stringProp("command", "The command line, e.g. \"ls -la && wc -l notes.md\".")
         stringProp("directory", "Workspace folder to run in. Default: the top level.")
@@ -154,29 +162,120 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
         val command = args.text("command", 8_000)!!
         val dir = args.path("directory", RelativePath.ROOT)
         val limits = ScriptTools.limits(d, args)
+        // Decided on the command text alone, so it is said before anything is looked at or asked.
+        ShellCommands.backgroundProblem(command)?.let { throw ToolCallRejected(it) }
         val summary = "Run the shell command ${q(command)} in ${OperatorText.path(dir)}"
         val details = listOf(
             "Command: ${q(command)}",
             "Folder: ${OperatorText.path(dir)}",
-            "Time limit: ${limits.timeoutMs / 1000} s",
+            "Time limit: ${limits.timeoutMs / 1000} s. When it ends, at the limit or when stopped, everything it started is stopped too.",
             "It runs as this app: it can read and change everything this app can, including the workspace and this app's own data.",
+            "It can use the internet: whatever it can read, it can send anywhere.",
         )
         val before = WorkspaceStates.of(d.workspace, dir)
-        if (!dir.isRoot && (!before.exists || !before.isFolder)) return assessment(summary, failing("There is no workspace folder ${q(dir.value)}."), details)
+        if (!dir.isRoot && (!before.exists || !before.isFolder)) return assessment(summary, failing("There is no workspace folder ${q(dir.value)}."), details, dataGoesTo = GOES_TO)
+        val named = namedFiles(command, dir)
         return assessment(
             summary,
             prepared(check = {
                 val now = WorkspaceStates.of(d.workspace, dir)
-                if (dir.isRoot || (now.exists && now.isFolder)) null else "the folder ${q(dir.value)} is gone"
-            }) {
+                if (!dir.isRoot && !(now.exists && now.isFolder)) "the folder ${q(dir.value)} is gone"
+                // Every file the command names must be as the owner saw it: a script rewritten after approval does not run.
+                else named.firstNotNullOfOrNull { n -> n.state.changeTo(stateOf(n.path), q(n.path.value)) }
+            }) { ctx ->
                 val folder = when (val r = d.workspace.resolve(dir)) {
                     is DocResult.Ok -> r.value
                     else -> return@prepared ToolOutcome.failure(OperatorText.problem(r, "Running in ${OperatorText.path(dir)}"))
                 }
-                ScriptTools.answer(d.shell.run(command, folder, limits))
+                d.egress.handedOver(
+                    ctx, "Shell command run (it can use the internet)",
+                    "The owner approved a shell command that can reach the internet; anything it read may have been sent: ${q(command.take(300))}",
+                    OperatorEgress.toHost(null, "a shell command, which can use the network"),
+                )
+                var full: String? = null
+                val answer = try {
+                    ScriptTools.answer(d.shell.run(command, folder, limits))
+                } finally {
+                    // The command may have changed files: the owner's screens refresh, and a full workspace is said.
+                    withContext(NonCancellable) { full = d.workspace.changedOutside() }
+                }
+                full?.let { answer.copy(content = answer.content + "\nNote: $it") } ?: answer
             },
-            details,
+            details + preview(named),
+            dataGoesTo = GOES_TO,
         )
+    }
+
+    /** A workspace file or folder the command names, as it was when the owner was asked. */
+    private class Named(val path: RelativePath, val state: EntryState, val asScript: Boolean, val text: String?)
+
+    /** A file by its content (larger files by size and time), a folder by what is in it (the first entries, bounded). */
+    private suspend fun stateOf(path: RelativePath): EntryState {
+        val stat = WorkspaceStates.of(d.workspace, path, hashUpTo = MAX_HASH_BYTES)
+        return if (stat.isFolder) stat.copy(tree = WorkspaceStates.treeOf(d.workspace, path, d.limits.maxCountedEntries)) else stat
+    }
+
+    /** The workspace entries [command] names (from [dir]), each with its state; scripts with their text when it is short enough to show. */
+    private suspend fun namedFiles(command: String, dir: RelativePath): List<Named> {
+        val out = ArrayList<Named>()
+        for (name in ShellCommands.names(command)) {
+            val path = ShellCommands.pathOf(name.raw, dir) ?: continue
+            if (out.any { it.path == path }) continue
+            val state = try {
+                stateOf(path)
+            } catch (e: ToolCallRejected) {
+                continue
+            }
+            // A missing script is pinned too: one that appears before the command runs stops it.
+            if (!state.exists && !name.asScript) continue
+            val script = name.asScript && !state.isFolder
+            val text = if (script && (state.sizeBytes ?: Long.MAX_VALUE) <= MAX_SCRIPT_BYTES) {
+                (d.workspace.read(path, 0, MAX_SCRIPT_BYTES) as? DocResult.Ok)?.value?.bytes?.let { OperatorText.decodeText(it, cutAtEnd = false) }
+            } else null
+            out += Named(path, state, script, text)
+        }
+        return out
+    }
+
+    /** Details lines: each script's text (bounded), then the other names that are checked again. */
+    private fun preview(named: List<Named>): List<String> {
+        val lines = ArrayList<String>()
+        var shown = 0
+        for (n in named.filter { it.asScript }) {
+            val size = OperatorText.size(n.state.sizeBytes)
+            lines += when {
+                !n.state.exists -> "Script ${q(n.path.value)} does not exist now."
+                n.text == null && (n.state.sizeBytes ?: 0) > MAX_SCRIPT_BYTES ->
+                    "Script ${q(n.path.value)} ($size) is too long to show here. Read it in Workspace before you approve."
+                n.text == null -> "Script ${q(n.path.value)} ($size) is not text, so it cannot be shown. Deny unless you know what it is."
+                shown + n.text.length <= MAX_SCRIPT_CHARS -> "Script ${q(n.path.value)} ($size), all of it: ${q(n.text)}".also { shown += n.text.length }
+                else -> {
+                    val room = (MAX_SCRIPT_CHARS - shown).coerceAtLeast(MIN_SCRIPT_CHARS)
+                    shown += room
+                    "Script ${q(n.path.value)} ($size), the first $room of ${n.text.length} characters: ${q(n.text.take(room))} " +
+                        "The rest is not shown here. Read the whole file in Workspace before you approve."
+                }
+            }
+        }
+        val others = named.filterNot { it.asScript }
+        if (others.isNotEmpty()) {
+            val listed = others.take(MAX_LISTED).joinToString(", ") { "${q(it.path.value)} (${WorkspaceStates.describe(it.state)})" }
+            lines += "Workspace files and folders it names: $listed" + (if (others.size > MAX_LISTED) " and ${others.size - MAX_LISTED} more" else "") + "."
+        }
+        if (named.isNotEmpty()) lines += "If any of these change before it runs, it does not run."
+        return lines
+    }
+
+    private companion object {
+        /** Shown as the destination: the command can reach the network. */
+        const val GOES_TO = "any address the command connects to (it can use the internet)"
+        const val MAX_SCRIPT_BYTES = 64L * 1024
+        /** Files up to this size are pinned by their content, larger ones by size and time. */
+        const val MAX_HASH_BYTES = 8L * 1024 * 1024
+        /** Script text shown in one approval, all scripts together. */
+        const val MAX_SCRIPT_CHARS = 16_000
+        const val MIN_SCRIPT_CHARS = 2_000
+        const val MAX_LISTED = 30
     }
 }
 
@@ -184,7 +283,7 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
 internal class TermuxRun(private val d: OperatorToolDependencies) : OperatorTool(
     "termux.run", "Run a Termux command",
     "Runs one command in the Termux app (bash, in Termux's home folder) and returns its output. Needs Termux installed and set up " +
-        "by the owner. The owner approves every command.",
+        "by the owner. The command can use the internet, so it is blocked in local-only mode. The owner approves every command.",
     objectSchema("command") {
         stringProp("command", "The command, e.g. \"python3 --version\".")
         intProp("timeout_ms", "How long to wait for the result. Default 30000.", 1_000, 55_000)
@@ -197,8 +296,10 @@ internal class TermuxRun(private val d: OperatorToolDependencies) : OperatorTool
         val summary = "Run the command ${q(command)} in Termux"
         val details = listOf(
             "Command: ${q(command)}",
-            "Time limit: ${limits.timeoutMs / 1000} s",
+            "Time limit: ${limits.timeoutMs / 1000} s. This app stops waiting then, but Termux keeps running the command, and anything it " +
+                "started in the background, until they end.",
             "It runs with everything Termux can reach: its own files, its installed programs, and shared storage if you allowed Termux that.",
+            "It can use the internet: whatever it can read, it can send anywhere.",
         )
         val availability = d.termux.availability()
         val problem = when (availability) {
@@ -206,14 +307,26 @@ internal class TermuxRun(private val d: OperatorToolDependencies) : OperatorTool
             TermuxAvailability.PERMISSION_MISSING -> "This app may not run commands in Termux yet; the owner allows it in Android's app permissions."
             TermuxAvailability.READY -> null
         }
-        if (problem != null) return assessment(summary, failing(problem), details)
+        if (problem != null) return assessment(summary, failing(problem), details, dataGoesTo = GOES_TO)
         return assessment(
             summary,
-            prepared(check = { if (d.termux.availability() == TermuxAvailability.READY) null else "Termux is no longer available" }) {
+            prepared(check = { if (d.termux.availability() == TermuxAvailability.READY) null else "Termux is no longer available" }) { ctx ->
+                d.egress.handedOver(
+                    ctx, "Command handed to Termux (it can use the internet)",
+                    "The owner approved a Termux command, which can reach the internet: ${q(command.take(300))}",
+                    OperatorEgress.toApp(TERMUX_PACKAGE, "a command run in Termux, which can use the network"),
+                )
                 ScriptTools.answer(d.termux.run(command, limits))
             },
             details,
-            dataGoesTo = "the Termux app",
+            dataGoesTo = GOES_TO,
         )
+    }
+
+    private companion object {
+        const val TERMUX_PACKAGE = "com.termux"
+
+        /** Shown as the destination: Termux, and through it the network. */
+        const val GOES_TO = "the Termux app, and any address its command connects to (it can use the internet)"
     }
 }

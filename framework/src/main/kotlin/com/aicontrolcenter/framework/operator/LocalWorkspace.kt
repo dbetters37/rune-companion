@@ -68,7 +68,13 @@ data class WorkspaceLimits(
  *
  * Trash layout, as [Workspace] describes: `.trash/<id>/<name>` plus `.trash/<id>.json` with the
  * [TrashItem]; ids are `<millis>-<random>` in lower-case letters, digits and "-". In-flight
- * writes are staged in `.trash/.staging`, which no trash operation lists or deletes.
+ * writes are staged in `.trash/.staging`, which no trash operation lists or deletes. A file that
+ * a write, move or import replaces goes to the trash first, so it stays restorable and keeps
+ * counting against the size limit until the trash is emptied.
+ *
+ * Gateways that create workspace files themselves (media and folder copies, screenshots) do so
+ * through [receive], under the same lock and limits; after a shell command, [changedOutside]
+ * tells the screens and reports a workspace over its limit.
  *
  * Residual risk: the sandbox checks paths when they are resolved. A process the owner approved
  * (a shell command) that swaps a folder for a link between that check and the use could
@@ -201,7 +207,7 @@ class LocalWorkspace(
         val updated = text.replace(find, replacement).toByteArray(Charsets.UTF_8)
         if (updated.size > limits.maxFileBytes) return@changing DocResult.TooLarge(updated.size.toLong(), limits.maxFileBytes)
         quotaProblem(updated.size - size)?.let { return@changing it }
-        stageAndMove(file, replace = true) { Files.write(it, updated) }
+        stageAndMove(file, replace = true, fill = { Files.write(it, updated) })
         DocResult.Ok(count)
     }
 
@@ -229,13 +235,21 @@ class LocalWorkspace(
         if (!Files.exists(source, NOFOLLOW)) return@changing DocResult.NotFound(from.value)
         if (from == to) return@changing DocResult.Failed("${OperatorText.q(from.value)} is already there.")
         if (to.value.startsWith(from.value + "/")) return@changing DocResult.Failed("A folder cannot be moved into itself.")
-        if (Files.exists(target, NOFOLLOW)) {
+        val replacing = Files.exists(target, NOFOLLOW)
+        if (replacing) {
             if (!overwrite || Files.isDirectory(source, NOFOLLOW) || !Files.isRegularFile(target, NOFOLLOW)) {
                 return@changing DocResult.AlreadyExists(to.value)
             }
         }
         makeParents(to, includingSelf = false)?.let { return@changing it }
-        moveAtomically(source, target, replace = overwrite)
+        // The file moved over goes to the trash first, so the move can be undone.
+        val kept = if (replacing) moveToTrash(to, target) else null
+        try {
+            moveAtomically(source, target, replace = false)
+        } catch (e: IOException) {
+            kept?.let { putBack(it, to, target) }
+            throw e
+        }
         DocResult.Ok(entryOf(to, target))
     }
 
@@ -246,23 +260,7 @@ class LocalWorkspace(
             else -> return@changing r.cast()
         }
         if (!Files.exists(source, NOFOLLOW)) return@changing DocResult.NotFound(path.value)
-        val isFolder = Files.isDirectory(source, NOFOLLOW)
-        val size = treeSize(source)
-        Files.createDirectories(trashDir())
-        val id = newTrashId()
-        val holder = trashDir().resolve(id)
-        Files.createDirectory(holder)
-        moveAtomically(source, holder.resolve(path.name), replace = false)
-        val item = TrashItem(id = id, originalPath = path.value, isFolder = isFolder, sizeBytes = size, trashedAt = clock.now())
-        try {
-            stageAndMove(trashDir().resolve("$id.json"), replace = false) { Files.write(it, JSON.encodeToString(TrashItem.serializer(), item).toByteArray()) }
-        } catch (e: IOException) {
-            // Without its record the item could not be restored: put it back.
-            moveAtomically(holder.resolve(path.name), source, replace = false)
-            Files.deleteIfExists(holder)
-            throw e
-        }
-        DocResult.Ok(item)
+        DocResult.Ok(moveToTrash(path, source))
     }
 
     override suspend fun listTrash(): DocResult<List<TrashItem>> = reading { DocResult.Ok(trashItems()) }
@@ -367,9 +365,6 @@ class LocalWorkspace(
     override suspend fun import(path: RelativePath, source: InputStream, maxBytes: Long, overwrite: Boolean): DocResult<DocumentEntry> = changing {
         val limit = minOf(maxBytes, limits.maxFileBytes)
         var tooLarge: Long? = null
-        // The file this import would replace, which no longer counts once it is replaced.
-        val replaced = (check(path) as? DocResult.Ok)?.value?.file?.toPath()
-            ?.takeIf { overwrite && Files.isRegularFile(it, NOFOLLOW) }?.let { Files.size(it) } ?: 0
         val result = writeLocked(path, overwrite, sizeHint = 0) { staging ->
             Files.newOutputStream(staging).use { out ->
                 val buffer = ByteArray(64 * 1024)
@@ -385,12 +380,69 @@ class LocalWorkspace(
                     out.write(buffer, 0, n)
                 }
             }
-            // The staged copy already counts as used (it is inside the workspace); the file it replaces will not.
+            // The staged copy already counts as used (it is inside the workspace), and so does a file it replaces (kept in the trash).
             val staged = Files.size(staging)
             val used = treeSize(base()) ?: 0
-            if (staged > replaced && used - replaced > limits.maxTotalBytes) throw ImportOverQuota(fullProblem(used - staged))
+            if (used > limits.maxTotalBytes) throw ImportOverQuota(fullProblem(used - staged))
         }
         tooLarge?.let { DocResult.TooLarge(it, limit) } ?: result
+    }
+
+    override suspend fun <T> receive(
+        path: RelativePath,
+        maxBytes: Long,
+        write: suspend (target: WorkspaceFile, maxBytes: Long) -> DocResult<T>,
+    ): DocResult<T> = withContext(io) {
+        mutex.withLock {
+            var touched = false
+            try {
+                guard {
+                    if (path.isRoot) return@guard DocResult.NotAllowed("A file needs a name.")
+                    val file = when (val r = check(path)) {
+                        is DocResult.Ok -> r.value
+                        else -> return@guard r.cast()
+                    }
+                    val target = file.file.toPath()
+                    if (Files.exists(target, NOFOLLOW)) return@guard DocResult.AlreadyExists(path.value)
+                    val used = treeSize(base()) ?: 0
+                    val room = limits.maxTotalBytes - used
+                    if (room <= 0) return@guard fullProblem(used)
+                    makeParents(path, includingSelf = false)?.let { return@guard it }
+                    val limit = minOf(maxBytes, limits.maxFileBytes, room)
+                    val result = write(file, limit)
+                    touched = Files.exists(target, NOFOLLOW)
+                    if (touched) {
+                        // What the gateway left must keep every limit; it is new, so removing it loses nothing.
+                        val size = if (Files.isRegularFile(target, NOFOLLOW)) Files.size(target) else null
+                        val problem = when {
+                            size == null -> DocResult.Failed("${OperatorText.q(path.value)} was not created as a plain file.")
+                            size > limits.maxFileBytes -> DocResult.TooLarge(size, limits.maxFileBytes)
+                            used + size > limits.maxTotalBytes -> fullProblem(used)
+                            else -> null
+                        }
+                        if (problem != null) {
+                            deleteTree(target)
+                            return@guard problem
+                        }
+                    }
+                    if (result is DocResult.TooLarge && limit == room && room < minOf(maxBytes, limits.maxFileBytes)) fullProblem(used) else result
+                }
+            } finally {
+                if (touched) changed()
+            }
+        }
+    }
+
+    override suspend fun changedOutside(): String? = withContext(io) {
+        mutex.withLock {
+            changed()
+            val used = try {
+                treeSize(base()) ?: 0
+            } catch (e: IOException) {
+                0
+            }
+            if (used <= limits.maxTotalBytes) null else (fullProblem(used) as DocResult.Failed).reason
+        }
     }
 
     override suspend fun resolve(path: RelativePath): DocResult<WorkspaceFile> = reading { check(path) }
@@ -421,11 +473,11 @@ class LocalWorkspace(
         }
         val exists = Files.exists(target, NOFOLLOW)
         if (exists && (!overwrite || !Files.isRegularFile(target, NOFOLLOW))) return DocResult.AlreadyExists(path.value)
-        val existing = if (exists) Files.size(target) else 0
-        quotaProblem(sizeHint - existing)?.let { return it }
+        // A replaced file is kept in the trash, so it still counts: the whole new size is growth.
+        quotaProblem(sizeHint)?.let { return it }
         makeParents(path, includingSelf = false)?.let { return it }
         try {
-            stageAndMove(target, replace = overwrite, fill)
+            stageAndMove(target, replace = false, fill, beforeMove = if (exists) { { moveToTrash(path, target) } } else null)
         } catch (e: ImportTooLarge) {
             return DocResult.TooLarge(limits.maxFileBytes + 1, limits.maxFileBytes)
         } catch (e: ImportOverQuota) {
@@ -466,16 +518,58 @@ class LocalWorkspace(
         return null
     }
 
-    /** Writes through a staging file in the trash folder, then renames it to [target]. */
-    private fun stageAndMove(target: Path, replace: Boolean, fill: (Path) -> Unit) {
+    /**
+     * Writes through a staging file in the trash folder, then renames it to [target]. [beforeMove]
+     * runs once the new content is complete (it moves the file being replaced to the trash); if
+     * the rename then fails, that file is put back.
+     */
+    private fun stageAndMove(target: Path, replace: Boolean, fill: (Path) -> Unit, beforeMove: (() -> TrashItem)? = null) {
         val staging = trashDir().resolve(STAGING)
         Files.createDirectories(staging)
         val temp = staging.resolve("w-" + java.lang.Long.toUnsignedString(random.nextLong(), 36))
         try {
             fill(temp)
-            moveAtomically(temp, target, replace)
+            val kept = beforeMove?.invoke()
+            try {
+                moveAtomically(temp, target, replace)
+            } catch (e: IOException) {
+                kept?.let { item -> RelativePath.parse(item.originalPath).let { it as? RelativePath.Check.Valid }?.let { putBack(item, it.path, target) } }
+                throw e
+            }
         } finally {
             Files.deleteIfExists(temp)
+        }
+    }
+
+    /** Moves [source] (at [path]) into a new trash item with its record; nothing is left half done. */
+    private fun moveToTrash(path: RelativePath, source: Path): TrashItem {
+        val isFolder = Files.isDirectory(source, NOFOLLOW)
+        val size = treeSize(source)
+        Files.createDirectories(trashDir())
+        val id = newTrashId()
+        val holder = trashDir().resolve(id)
+        Files.createDirectory(holder)
+        moveAtomically(source, holder.resolve(path.name), replace = false)
+        val item = TrashItem(id = id, originalPath = path.value, isFolder = isFolder, sizeBytes = size, trashedAt = clock.now())
+        try {
+            stageAndMove(trashDir().resolve("$id.json"), replace = false, fill = { Files.write(it, JSON.encodeToString(TrashItem.serializer(), item).toByteArray()) })
+        } catch (e: IOException) {
+            // Without its record the item could not be restored: put it back.
+            moveAtomically(holder.resolve(path.name), source, replace = false)
+            Files.deleteIfExists(holder)
+            throw e
+        }
+        return item
+    }
+
+    /** Undoes [moveToTrash] of [item] when what was to replace it could not be put in place. */
+    private fun putBack(item: TrashItem, path: RelativePath, target: Path) {
+        try {
+            moveAtomically(trashDir().resolve(item.id).resolve(path.name), target, replace = false)
+            Files.deleteIfExists(trashDir().resolve("${item.id}.json"))
+            deleteTree(trashDir().resolve(item.id))
+        } catch (_: IOException) {
+            // It stays in the trash, restorable from there.
         }
     }
 

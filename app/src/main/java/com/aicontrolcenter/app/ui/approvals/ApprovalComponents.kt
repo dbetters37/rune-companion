@@ -21,6 +21,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.aicontrolcenter.app.ui.components.AgentAvatar
@@ -47,7 +48,8 @@ import com.aicontrolcenter.core.tools.RiskLevel
 fun PreviewTextView(text: String, style: TextStyle, color: Color, modifier: Modifier = Modifier) {
     val markColor = appColors.attention
     val shown = remember(text, markColor) { previewAnnotated(text, markColor) }
-    Text(shown, style = style, color = color, modifier = modifier)
+    // Always left to right: a value that starts with right-to-left letters cannot flip or reorder the whole line.
+    Text(shown, style = style.copy(textDirection = TextDirection.Ltr), color = color, modifier = modifier)
 }
 
 /** [text] with its [previewMarks] highlighted in [markColor]. */
