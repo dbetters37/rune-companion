@@ -2,6 +2,7 @@ package com.aicontrolcenter.framework.operator
 
 import com.aicontrolcenter.core.operator.CommandLimits
 import com.aicontrolcenter.core.operator.CommandOutcome
+import com.aicontrolcenter.core.operator.CommandTurn
 import com.aicontrolcenter.core.operator.DocResult
 import com.aicontrolcenter.core.operator.PreviewText
 import com.aicontrolcenter.core.operator.RelativePath
@@ -12,9 +13,7 @@ import com.aicontrolcenter.core.tools.Tool
 import com.aicontrolcenter.core.tools.ToolContext
 import com.aicontrolcenter.core.tools.ToolOutcome
 import com.aicontrolcenter.framework.operator.OperatorText.q
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -164,6 +163,9 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
         val command = args.text("command", 8_000)!!
         val dir = args.path("directory", RelativePath.ROOT)
         val limits = ScriptTools.limits(d, args)
+        // Read before anything of the workspace is looked at: the command runs only if nothing changed the workspace
+        // through this app from here until it has ended (G1), however the command names what it runs.
+        val seen = d.workspace.changeCount()
         // Decided on the command text alone, so it is said before anything is looked at or asked.
         ShellCommands.backgroundProblem(command)?.let { throw ToolCallRejected(it) }
         val summary = "Run the shell command ${q(command)} in ${OperatorText.path(dir)}"
@@ -182,28 +184,31 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
             summary,
             prepared(check = {
                 val now = WorkspaceStates.of(d.workspace, dir)
-                if (!dir.isRoot && !(now.exists && now.isFolder)) "the folder ${q(dir.value)} is gone"
-                // Every file the command names must be as the owner saw it: a script rewritten after approval does not run.
+                // First the counter: any change through this app since the question was put, to a file the command names or not.
+                if (d.workspace.changeCount() != seen) WORKSPACE_CHANGED
+                else if (!dir.isRoot && !(now.exists && now.isFolder)) "the folder ${q(dir.value)} is gone"
+                // Then, as a second check, every file the command names must be as the owner saw it.
                 else found.named.firstNotNullOfOrNull { n -> n.state.changeTo(stateOrGone(n.path), q(n.path.value)) }
                     ?: found.pins.firstNotNullOfOrNull { it() }
             }) { ctx ->
-                val folder = when (val r = d.workspace.resolve(dir)) {
-                    is DocResult.Ok -> r.value
-                    else -> return@prepared ToolOutcome.failure(OperatorText.problem(r, "Running in ${OperatorText.path(dir)}"))
-                }
-                d.egress.handedOver(
-                    ctx, "Shell command run (it can use the internet)",
-                    "The owner approved a shell command that can reach the internet; anything it read may have been sent: ${q(command.take(300))}",
-                    OperatorEgress.toHost(null, "a shell command, which can use the network"),
-                )
-                var full: String? = null
-                val answer = try {
+                // The last check and the run are one step: the workspace holds every other change back from the moment it
+                // has compared the counter until the command has ended, and it tells the owner's screens when it has.
+                val turn = d.workspace.runCommand(seen) {
+                    val folder = when (val r = d.workspace.resolve(dir)) {
+                        is DocResult.Ok -> r.value
+                        else -> return@runCommand ToolOutcome.failure(OperatorText.problem(r, "Running in ${OperatorText.path(dir)}"))
+                    }
+                    d.egress.handedOver(
+                        ctx, "Shell command run (it can use the internet)",
+                        "The owner approved a shell command that can reach the internet; anything it read may have been sent: ${q(command.take(300))}",
+                        OperatorEgress.toHost(null, "a shell command, which can use the network"),
+                    )
                     ScriptTools.answer(d.shell.run(command, folder, limits))
-                } finally {
-                    // The command may have changed files: the owner's screens refresh, and a full workspace is said.
-                    withContext(NonCancellable) { full = d.workspace.changedOutside() }
                 }
-                full?.let { answer.copy(content = answer.content + "\nNote: $it") } ?: answer
+                when (turn) {
+                    is CommandTurn.Changed -> ToolOutcome.changedSinceApproved(WORKSPACE_CHANGED)
+                    is CommandTurn.Ran -> turn.overLimit?.let { turn.result.copy(content = turn.result.content + "\nNote: $it") } ?: turn.result
+                }
             },
             details + preview(found),
             dataGoesTo = GOES_TO,
@@ -390,6 +395,9 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
     private companion object {
         /** Shown as the destination: the command can reach the network. */
         const val GOES_TO = "any address the command connects to (it can use the internet)"
+
+        /** What the model is told when the change counter moved; it completes "Nothing was done: … since this action was checked and approved." */
+        const val WORKSPACE_CHANGED = "something in the workspace changed (a file was written, moved or removed by a tool, an agent or the owner, or another shell command ran)"
         const val MAX_SCRIPT_BYTES = 64L * 1024
         /** Files up to this size are pinned by their content, larger ones by size and time. */
         const val MAX_HASH_BYTES = 8L * 1024 * 1024
