@@ -119,9 +119,9 @@ do it.
   leftovers. Only you can delete those, with "Empty the trash", which is offered whenever the
   trash holds anything at all. The workspace's 2 GB count everything in it, also the trash's
   notes (100 to 200 bytes per item, more for a very long path), and the last 4 KB are kept free
-  for those notes, so a full workspace can still move files to the trash. While the trash is empty one item can always be
-  moved there, even after a shell command filled the workspace completely; the workspace is
-  then over its limit by that note until you empty the trash.
+  for those notes, so a full workspace can still move files to the trash. While the trash is
+  empty one item can always be moved there, even after a shell command filled the workspace
+  completely; the workspace is then over its limit by that note until you empty the trash.
 - **Replacing files.** In the workspace a file that is replaced (written over, edited, moved
   over or imported over) is kept in the workspace trash, so it can be restored; it keeps
   counting against the workspace's 2 GB until the trash is emptied. The file never leaves its
@@ -146,7 +146,12 @@ do it.
   other change waits; one shell command runs at a time. So a script cannot be swapped after you
   approved, whether the approval showed that script or not. The price: if you or an agent
   change any workspace file while a command waits for your answer, the command is not run and
-  the agent has to ask again.
+  the agent has to ask again. The same holds when the app puts the trash right after it was
+  stopped in the middle of a change (see "The workspace trash"). And while a command runs
+  (about a minute at most), what you do in the Workspace screens waits for it to end: the
+  buttons are switched off meanwhile, and the screen does not say what it waits for. A script
+  (JavaScript) that writes to the workspace waits too, and is stopped without having written
+  if its own time limit passes first. Sharing a file does not wait.
   (3) Everything the command starts is stopped when it ends, at its time limit or when it is
   stopped: its process group is killed, and then every process left that runs under this app's
   user id and is not the app itself, also work sent to the background with `&`, `nohup`,
@@ -183,12 +188,17 @@ do it.
   waiting for them.
 - **The JavaScript sandbox** checks every array built-in that would walk a huge array in one
   step, and refuses it. A construct it does not know of could still keep a script thread busy
-  past its time limit; while two such threads run, new scripts are refused.
+  past its time limit; while two such threads run, new scripts are refused. The memory limit is
+  measured roughly, on the whole app: a script is stopped when the app's memory grew by more
+  than 96 MB since it began, or when less than an eighth of the memory Android gives the app
+  (and less than 96 MB) is left, whichever comes first.
 - **Approval previews** show quote marks inside a quoted value as ⟨"⟩, count long runs of one
   character and piles of combining marks, and mark every invisible or format character, so a
   value cannot pretend to end early or hide what follows. The preview is always drawn left to
   right. Typographic quotes and other look-alikes of a quote mark, and two apostrophes in a
-  row, are shown by their code, such as ⟨U+201D⟩.
+  row, are shown by their code, such as ⟨U+201D⟩. That includes the curly apostrophe of
+  ordinary writing ("it⟨U+2019⟩s") and accents that stand alone; a plain apostrophe, letters
+  with accents and text in other scripts are left as they are.
 - **Approvals of screen actions** list at most 150 texts of the window, each up to 300
   characters, and say whether a control is checked, selected or disabled. What does not fit is
   counted and still checked: if anything in the window changes before the action runs, it is

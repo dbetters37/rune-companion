@@ -239,9 +239,20 @@ Rules that hold around this:
 - **Files.** Shared storage is reached only through folders you pick; the app does not ask for
   all-files access. A replaced workspace file goes to the trash; replacing or deleting in a
   shared folder, emptying the trash, and changing many files in a short time are consequential.
-- **Scripts.** The JavaScript sandbox has a budget of instructions, time and memory. A shell
-  command shows the scripts it would run and pins them, refuses background work, and runs in a
-  process group that is killed when it ends.
+  The trash writes its record of an item before the item moves, so a kill leaves a file in its
+  place or in the trash, and what a kill left behind is put right at the first change after a
+  start (`TrashItem.recovered`, `Workspace.trashLeftovers`). Trash records count against the
+  workspace's size limit, and a little room is kept free for them.
+- **Scripts.** The JavaScript sandbox has a budget of instructions, time and memory, and its
+  host functions reach the workspace only. A shell command is put to you every time. It runs
+  only if nothing changed the workspace through the app since you were asked (a change counter
+  that every change raises), and while it runs it holds the workspace's change lock, so every
+  other change waits and one command runs at a time (`Workspace.runCommand`). Everything it
+  starts is stopped when it ends: its process group is killed, then every process left under
+  the app's user id that is not the app; the same sweep runs at start-up. Its `HOME` is an empty
+  folder outside the workspace. Finding, showing and pinning the scripts a command runs is help
+  on top of that, on a best-effort basis; a command the reader is not sure of is refused before
+  you are asked.
 - **Data leaving the phone.** Tools that can send data out are marked in the catalogue, refused
   in local-only mode, and write an egress entry naming the agent, task and objective.
 
