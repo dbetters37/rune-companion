@@ -492,6 +492,40 @@ class ToolsViewModelsTest {
             .also { it.uiState.activeIn(backgroundScope) }
 
     @Test
+    fun `B2 - in the history a refused permission offers to let its agent ask again, and doing so ends the wait`() = runTest(mainRule.dispatcher) {
+        val app = started()
+        val operator = app.id("Operator")
+        app.raise(samplePermission(operator, agentName = "Operator", id = "req_refused", createdAt = app.clock.current, minutes = 240))
+        app.raise(sampleApproval(operator, id = "req_denied_approval", createdAt = app.clock.current, minutes = 240))
+        app.raise(samplePermission(app.id("Researcher"), id = "req_waiting", createdAt = app.clock.current, minutes = 240))
+        app.graph.ownerRequests.deny(RequestId("req_refused"))
+        app.graph.ownerRequests.deny(RequestId("req_denied_approval"))
+        // The test clock jumps ahead on every read: back to just after the refusal, so the ten minutes are not over.
+        app.clock.current = app.ownerRequestStore.get(RequestId("req_refused"))!!.decidedAt!! + 1_000
+        val vm = requests(app)
+        fun shown(id: String) = vm.uiState.value.requests.first { it.id.value == id }
+
+        assertTrue(assertNotNull(shown("req_refused").askAgain).canLetAskAgain)
+        assertNull(shown("req_denied_approval").askAgain, "an approval is always put to the owner again")
+        assertNull(shown("req_waiting").askAgain)
+
+        vm.letAskAgain(RequestId("req_refused"))
+        assertEquals("Operator can ask again. Its next call or request for this permission is put to you.", vm.uiState.value.message?.text)
+        val opened = assertNotNull(shown("req_refused").askAgain)
+        assertFalse(opened.canLetAskAgain)
+        assertTrue(opened.text.startsWith("You let Operator ask again ("), opened.text)
+        assertNull(app.ownerRequestStore.lastRefusal(operator, OperatorCapabilities.WEB_READ, CapabilityConstraint.None, 0))
+        assertTrue(app.permissions.observeAll().first().isEmpty(), "nothing was given")
+        vm.messageShown()
+        assertNull(vm.uiState.value.message)
+
+        // Not a refused permission: said, nothing changes.
+        vm.letAskAgain(RequestId("req_waiting"))
+        assertEquals("Only a permission you refused keeps an agent from asking again.", vm.uiState.value.message?.text)
+        assertNull(app.ownerRequestStore.get(RequestId("req_waiting"))?.askAgainAt)
+    }
+
+    @Test
     fun `the history lists every request newest first and filters by kind, outcome and agent`() = runTest(mainRule.dispatcher) {
         val app = started()
         val now = app.clock.current

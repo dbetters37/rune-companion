@@ -333,6 +333,9 @@ class AppGraph(
         authorizer = broker,
         activity = activityRecorder,
         clock = ports.clock,
+        // Time a call waits for the owner outside the broker (Android's install confirmation, the wait for an operated
+        // app after an approval) is written to the task's stored deadline, as the broker writes its own waits.
+        tasks = ports.tasks,
     )
 
     /** The broker, for the architecture test. */

@@ -116,11 +116,13 @@ class OperatorPoliciesTest {
             all.filter { it.risk == RiskLevel.CONSEQUENTIAL }.map { it.id.value }.toSet(),
         )
         // Acting on another app's screen may send data off the phone through that app, and the shell and Termux
-        // can use the network, so local-only mode blocks them too.
+        // can use the network, so local-only mode blocks them too. So it does every hand-over of content to
+        // another app (round 2, B1): what that app does with a shared text, a file or a draft is out of this app's hands.
         assertEquals(
             setOf(
                 "web.read_page", "browser.open", "apps.open_link", "scripts.run_shell", "termux.run",
                 "screen.tap", "screen.type", "screen.scroll", "screen.back", "screen.home",
+                "apps.share_text", "workspace.export", "apps.compose_email", "apps.compose_sms", "apps.dial",
             ),
             all.filter { it.sendsDataOffDevice }.map { it.id.value }.toSet(),
         )

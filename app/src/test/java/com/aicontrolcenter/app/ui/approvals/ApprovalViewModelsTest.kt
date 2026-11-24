@@ -253,4 +253,94 @@ class ApprovalViewModelsTest {
         app.graph.ownerRequests.deny(RequestId("req_task"))
         assertTrue("times out at" in assertNotNull(detail.uiState.value.task).timing, "with nothing open, the deadline shows again")
     }
+
+    @Test
+    fun `B4 - a running task whose agent only asked for a permission shows when it times out, not a paused limit`() = runTest(mainRule.dispatcher) {
+        // The verifier's N2: permissions.request never waits and pauses nothing, so the task runs on against its limit.
+        val app = TestApp(backgroundScope, com.aicontrolcenter.core.settings.FrameworkSettings(operatorEnabled = true, approvalTimeoutMinutes = 100_000)).started()
+        app.populateWithObjectives()
+        val task = assertNotNull(
+            app.tasks.update(SampleObjectives.COMPARE) {
+                it.copy(status = TaskStatus.RUNNING, startedAt = app.clock.current, deadlineAt = app.clock.current + 15 * 60_000L, finishedAt = null)
+            },
+        )
+        val agent = assertNotNull(app.agents.get(task.assignee!!))
+        val asked = app.graph.toolExecutor.execute(
+            com.aicontrolcenter.core.llm.ToolCallRequest(
+                "c1", "permissions_request",
+                kotlinx.serialization.json.buildJsonObject {
+                    put("capability", kotlinx.serialization.json.JsonPrimitive("web.read"))
+                    put("reason", kotlinx.serialization.json.JsonPrimitive("To read reviews."))
+                },
+            ),
+            com.aicontrolcenter.core.tools.ToolContext(agent.copy(toolIds = agent.toolIds + ToolId("permissions.request")), task.id, task.rootId),
+        )
+        assertTrue(asked.outcome.ok, asked.outcome.content)
+        val ask = app.graph.ownerRequests.pending.first().single()
+        assertNull(ask.toolId, "the agent's own ask: no call waits for it")
+        assertEquals(task.id, ask.taskId)
+        val detail = TaskDetailViewModel(
+            task.id, app.graph.tasks, app.graph.messages, app.graph.registryDirectory, app.graph.agentChat, app.graph.toolRegistry,
+            app.graph.orchestrator, app.graph.activityMonitor, app.clock, ZoneOffset.UTC,
+            requests = app.graph.ownerRequests.pending, capabilityInfo = app.graph.capabilities::info,
+        ).also { it.uiState.activeIn(backgroundScope) }
+
+        val running = assertNotNull(detail.uiState.value.task)
+        assertEquals(TaskStatus.RUNNING, app.tasks.get(task.id)?.status)
+        assertTrue("times out at" in running.timing, running.timing)
+        assertFalse("paused" in running.timing, running.timing)
+        assertEquals(listOf(ask.id), detail.uiState.value.waitingFor.map { it.id }, "the ask is still shown with the task, for the owner to answer")
+
+        // A request a call waits for does not pause a task that is not waiting either: only a waiting task's limit is paused.
+        app.raise(samplePermission(agent.id, id = "req_call", taskId = task.id, rootId = task.rootId, createdAt = app.clock.current, minutes = 100_000))
+        assertTrue("times out at" in assertNotNull(detail.uiState.value.task).timing, "RUNNING: the limit runs")
+        // While the task waits for a teammate, only a request a call waits for pauses it; the agent's own ask does not.
+        app.graph.ownerRequests.deny(RequestId("req_call"))
+        app.tasks.update(task.id) { it.copy(status = TaskStatus.WAITING_FOR_AGENT) }
+        assertTrue("times out at" in assertNotNull(detail.uiState.value.task).timing, "an ask alone pauses nothing")
+        app.raise(samplePermission(agent.id, id = "req_helper", taskId = task.id, rootId = task.rootId, createdAt = app.clock.current, minutes = 100_000))
+        assertTrue("paused while it waits for you" in assertNotNull(detail.uiState.value.task).timing, "the helper's call waits for the owner (INT-10)")
+        // And a task the broker marked as waiting for the owner is paused, as before.
+        app.tasks.update(task.id) { it.copy(status = TaskStatus.WAITING_FOR_OWNER) }
+        assertTrue("paused while it waits for you" in assertNotNull(detail.uiState.value.task).timing)
+    }
+
+    @Test
+    fun `B2 - on the refused request's own screen the owner lets the agent ask again`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope).started()
+        val operator = app.operatorId()
+        app.raise(samplePermission(operator, agentName = "Operator", id = "req_refused", createdAt = app.clock.current, minutes = 240))
+        app.raise(sampleApproval(operator, id = "req_approval", createdAt = app.clock.current, minutes = 240))
+        val vm = approval(app, "req_refused")
+        assertNull(assertNotNull(vm.uiState.value.request).askAgain, "while it waits there is nothing to open")
+
+        // The test clock jumps ahead on every read: kept just after the refusal, so the ten minutes are not over.
+        val refusedAt = app.clock.current
+        vm.choose(RequestChoice.DENY)
+        app.clock.current = refusedAt + 60_000
+        vm.messageShown()
+        val refused = assertNotNull(vm.uiState.value.request)
+        val held = assertNotNull(refused.askAgain, "a refused permission says how long its agent is held, and offers to end that")
+        assertTrue(held.canLetAskAgain)
+        assertTrue(held.text.startsWith("Operator cannot ask you for this permission again until "), held.text)
+        assertNotNull(app.ownerRequestStore.lastRefusal(operator, OperatorCapabilities.WEB_READ, CapabilityConstraint.None, 0))
+
+        vm.letAskAgain()
+        assertEquals("Operator can ask again. Its next call or request for this permission is put to you.", vm.uiState.value.message?.text)
+        val opened = assertNotNull(assertNotNull(vm.uiState.value.request).askAgain)
+        assertFalse(opened.canLetAskAgain, "done once, nothing more to tap")
+        assertTrue(opened.text.startsWith("You let Operator ask again ("), opened.text)
+        assertEquals("Denied", vm.uiState.value.request?.status?.text, "the refusal stays in the history as a refusal")
+        assertNull(app.ownerRequestStore.lastRefusal(operator, OperatorCapabilities.WEB_READ, CapabilityConstraint.None, 0), "the wait is over in the store the broker reads")
+        assertNotNull(app.ownerRequestStore.get(RequestId("req_refused"))?.askAgainAt)
+        assertTrue(app.permissions.observeAll().first().isEmpty(), "nothing was given")
+        assertEquals(1, app.activityLog.recent().count { it.title.startsWith("Owner let the agent ask again") })
+
+        // A denied approval holds nothing back: its screen offers nothing, and the port refuses.
+        val approvalVm = approval(app, "req_approval")
+        approvalVm.choose(RequestChoice.DENY)
+        assertNull(assertNotNull(approvalVm.uiState.value.request).askAgain)
+        approvalVm.letAskAgain()
+        assertEquals("Only a permission you refused keeps an agent from asking again.", approvalVm.uiState.value.message?.text)
+    }
 }

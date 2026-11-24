@@ -148,8 +148,9 @@ private fun PrivacySection(
         AppCard {
             SwitchRow(
                 title = "Local-only mode",
-                description = "Blocks every provider and tool that is not on this device. Blocked providers are not even " +
-                    "contacted for a status check, and their agents cannot run until you turn it off.",
+                description = "Blocks every provider that is not on this device, and the tools that send something off " +
+                    "this phone or hand it to another app (listed below). Blocked providers are not even contacted for a " +
+                    "status check, and their agents cannot run until you turn it off.",
                 checked = settings.localOnlyMode,
                 onCheckedChange = actions.onLocalOnlyModeChange,
             )
@@ -311,7 +312,7 @@ private fun LocalOnlyEffect(effect: LocalOnlyEffectUi, on: Boolean) {
         }
         add(
             if (effect.tools.isEmpty()) {
-                "Tools: none of the registered tools send anything off this device."
+                "Tools: none of the registered tools send anything off this device or hand it to another app."
             } else {
                 "Tools ${if (on) "blocked" else "that would be blocked"}: ${effect.tools.joinToString(", ")}."
             },

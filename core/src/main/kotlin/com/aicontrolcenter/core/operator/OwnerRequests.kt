@@ -92,6 +92,12 @@ data class OwnerRequest(
      * the history shows the count here instead.
      */
     val askedAgain: Int = 0,
+    /**
+     * A refused PERMISSION request only: when the owner let the agent ask again
+     * ([OwnerRequests.letAskAgain]). From then on this refusal holds nothing back: the agent's
+     * next call or ask for the permission is put to the owner as usual. Null otherwise.
+     */
+    val askAgainAt: Long? = null,
 ) {
     init {
         require(expiresAt > createdAt) { "A request must expire after it was created." }
@@ -104,7 +110,20 @@ data class OwnerRequest(
         require(status == OwnerRequestStatus.PENDING || decidedAt != null) { "A closed request records when it was closed." }
         require(askedAgain >= 0) { "askedAgain cannot be negative." }
         require(askedAgain == 0 || status == OwnerRequestStatus.DENIED) { "Only a refused request counts the asks that followed it." }
+        require(askAgainAt == null || (status == OwnerRequestStatus.DENIED && kind == OwnerRequestKind.PERMISSION)) {
+            "Only a refused permission request can be opened for asking again."
+        }
     }
+
+    /**
+     * True while this refusal holds the agent back at [now]: a refused PERMISSION request, less
+     * than [REFUSAL_COOLDOWN_MS] old, that the owner has not opened for asking again. While it
+     * does, the same agent's calls and asks for the same permission and target are refused
+     * without a new request ([OwnerRequestQueue.lastRefusal]).
+     */
+    fun holdsBackAt(now: Long): Boolean =
+        kind == OwnerRequestKind.PERMISSION && status == OwnerRequestStatus.DENIED && askAgainAt == null &&
+            decidedAt != null && now < decidedAt + REFUSAL_COOLDOWN_MS
 
     /** The scopes the owner may choose from: none for an APPROVAL, and TASK only when the call belongs to a task. */
     val offeredScopes: List<GrantScope>
@@ -148,6 +167,7 @@ data class OwnerRequest(
          * After the owner refuses a PERMISSION request, the same agent asking again for the same
          * capability and target within this time is refused at once, without a new request: the
          * owner is not asked the same question over and over ([OwnerRequestQueue.lastRefusal]).
+         * The owner can end it sooner on the refused request ([OwnerRequests.letAskAgain]).
          */
         const val REFUSAL_COOLDOWN_MS: Long = 10 * 60_000L
     }
@@ -242,8 +262,9 @@ interface OwnerRequestQueue {
 
     /**
      * The newest PERMISSION request of [agentId] for [capability] and [constraint] that the owner
-     * DENIED at or after [since] (its decidedAt), or null. Used to refuse asking the owner the
-     * same question again within [OwnerRequest.REFUSAL_COOLDOWN_MS] of a refusal.
+     * DENIED at or after [since] (its decidedAt) and has not opened for asking again
+     * ([OwnerRequest.askAgainAt] is null), or null. Used to refuse asking the owner the same
+     * question again within [OwnerRequest.REFUSAL_COOLDOWN_MS] of a refusal.
      */
     suspend fun lastRefusal(agentId: AgentId, capability: Capability, constraint: CapabilityConstraint, since: Long): OwnerRequest?
 
@@ -269,6 +290,17 @@ interface OwnerRequestDecisions {
      * ([GrantLookup.findByRequest]). [grantId] is used for nothing else.
      */
     suspend fun decide(id: RequestId, decision: OwnerDecision, at: Long, grantId: GrantId): DecideResult
+
+    /**
+     * The owner lets the agent ask again after refusing the PERMISSION request [id]: sets
+     * [OwnerRequest.askAgainAt] to [at] on it and on every other refused PERMISSION request of
+     * the same agent, capability and target that carries none yet, atomically, so that
+     * [OwnerRequestQueue.lastRefusal] finds none of them and the cool-down is over for that
+     * agent, permission and target. A request already opened keeps its first time. Returns the
+     * request as it is now; null, changing nothing, when it is missing or is not a refused
+     * PERMISSION request. It gives no permission: the next call or ask raises a normal request.
+     */
+    suspend fun letAskAgain(id: RequestId, at: Long): OwnerRequest?
 }
 
 /**

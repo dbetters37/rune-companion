@@ -29,6 +29,8 @@ import com.aicontrolcenter.core.tools.ToolContext
 import com.aicontrolcenter.core.tools.ToolSpec
 import com.aicontrolcenter.framework.agents.currentAgentTurn
 import com.aicontrolcenter.framework.llm.rethrowIfCancelled
+import com.aicontrolcenter.framework.tools.OwnerTimeAccount
+import com.aicontrolcenter.framework.tools.StoredDeadlines
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -51,9 +53,9 @@ import kotlinx.serialization.json.put
  *  4.   The call passes when its capability is granted by default or a stored grant covers it
  *       ([GrantLookup.findMatching]: agent, capability, constraint, task). Otherwise, unless the
  *       owner refused this agent the same permission and target within
- *       [OwnerRequest.REFUSAL_COOLDOWN_MS] (then the call is refused at once, the refusal counts
- *       the repeat, and the owner is not asked again), a PERMISSION request is raised and the
- *       call waits. Approved for one call (ONCE), the call uses up exactly the grant of its own
+ *       [OwnerRequest.REFUSAL_COOLDOWN_MS] and has not let it ask again since (then the call is
+ *       refused at once, the refusal counts the repeat, and the owner is not asked again), a
+ *       PERMISSION request is raised and the call waits. Approved for one call (ONCE), the call uses up exactly the grant of its own
  *       request ([GrantLookup.consumeOnceFor]); for the task or always, that grant must be in
  *       force. Refused, expired or cancelled: denied, with the owner's note passed on as quoted
  *       text.
@@ -79,7 +81,9 @@ import kotlinx.serialization.json.put
  *  - While it waits, the call's task shows WAITING_FOR_OWNER (changed only from RUNNING, never
  *    on an objective) and the run is told ([OwnerWaits]). Afterwards the task is RUNNING again
  *    and its stored deadline, and that of every delegating task waiting for it, is moved later
- *    by the time waited, so what is stored agrees with the paused limits. An objective's own
+ *    by the time waited, so what is stored agrees with the paused limits (waits a call makes
+ *    outside the broker are stored by [com.aicontrolcenter.framework.tools.ToolExecutor], which
+ *    is told what the broker stored: [OwnerTimeAccount]). An objective's own
  *    deadline (the Director's calls while planning) is left to the orchestrator, whose running
  *    limit pauses and stores it as the wait goes on, also if the app is killed during the wait.
  *  - When the waiting coroutine is cancelled (the task paused or cancelled, the chat stopped),
@@ -195,6 +199,9 @@ class PermissionBroker(
             throw e
         }
         val startedAt = clock.now()
+        // The wait as the paused limits count it, for whoever accounts for this call's paused time (the tool executor).
+        val waitClock = WaitClock.current()
+        val pausedBefore = waitClock?.pausedMs() ?: 0L
         var waitingTask: WaitingTask? = null
         var ended: OwnerRequest? = null
         var outcome: Asked? = null
@@ -212,7 +219,8 @@ class PermissionBroker(
                     ?: safely { requests.get(request.id) } ?: request
                 safely { grants.releaseOnceFor(request.id, at) }
                 waiters.unregister(request.id)
-                waitingTask?.let { safely { resume(it, (at - startedAt).coerceAtLeast(0), at) } }
+                val pausedMs = ((waitClock?.pausedMs() ?: 0L) - pausedBefore).coerceAtLeast(0)
+                waitingTask?.let { safely { resume(it, (at - startedAt).coerceAtLeast(0), pausedMs, at) } }
                 logOutcome(final, outcome)
                 waits?.let { safely { it.answered(final) } }
             }
@@ -312,26 +320,22 @@ class PermissionBroker(
 
     /**
      * After the wait: the task is RUNNING again (unless the owner changed its status meanwhile)
-     * and its deadline, with that of every delegating task waiting on it, is [waitedMs] later.
+     * and its deadline, with that of every delegating task waiting on it, is [waitedMs] later
+     * ([StoredDeadlines], the rule the tool executor keeps for every other wait of a call).
+     * The executor around this call is told that the wait ([pausedMs], as the paused limits
+     * counted it) is in the store, so it does not write it again ([OwnerTimeAccount]).
      */
-    private suspend fun resume(waiting: WaitingTask, waitedMs: Long, at: Long) {
+    private suspend fun resume(waiting: WaitingTask, waitedMs: Long, pausedMs: Long, at: Long) {
         val store = tasks ?: return
         val task = store.update(waiting.id) { task ->
             var next = task
             if (waiting.flipped && task.status == TaskStatus.WAITING_FOR_OWNER) next = next.copy(status = TaskStatus.RUNNING, statusDetail = waiting.detailBefore)
             // An objective's deadline is the orchestrator's: its running limit keeps it ([ObjectiveDriver]).
-            if (!task.status.isFinished && waitedMs > 0 && task.kind != TaskKind.OBJECTIVE) next = next.copy(deadlineAt = task.deadlineAt?.plus(waitedMs))
+            next = StoredDeadlines.later(next, waitedMs)
             if (next == task) task else next.copy(updatedAt = at)
         } ?: return
-        if (waitedMs <= 0 || task.kind != TaskKind.WORK) return
-        var parentId = task.parentId
-        var depth = 0
-        while (parentId != null && depth++ < MAX_DELEGATION_WALK) {
-            val parent = store.get(parentId) ?: return
-            if (parent.kind != TaskKind.WORK || parent.status != TaskStatus.WAITING_FOR_AGENT) return
-            store.update(parentId) { if (it.status == TaskStatus.WAITING_FOR_AGENT) it.copy(deadlineAt = it.deadlineAt?.plus(waitedMs), updatedAt = at) else it }
-            parentId = parent.parentId
-        }
+        val delegating = StoredDeadlines.moveDelegating(store, task, waitedMs, at)
+        OwnerTimeAccount.stored(delegating + waiting.id, pausedMs)
     }
 
     private fun waitingDetail(request: OwnerRequest): String {
@@ -415,7 +419,6 @@ class PermissionBroker(
         private const val MAX_NOTE = 500
         private const val MAX_DETAIL = 300
         private const val MAX_LOGGED = 600
-        private const val MAX_DELEGATION_WALK = 16
     }
 }
 
@@ -430,6 +433,6 @@ internal fun refusalCooldownReason(agentName: String, permission: String, refusa
     val left = ((decided + OwnerRequest.REFUSAL_COOLDOWN_MS - now + 59_999L) / 60_000L).coerceAtLeast(1)
     val whenRefused = if (ago < 1) "less than a minute ago" else "$ago minute${if (ago == 1L) "" else "s"} ago"
     return "The owner refused $agentName the permission \"$permission\" $whenRefused, so the owner is not asked again for " +
-        "$left more minute${if (left == 1L) "" else "s"}. Carry on without it, or say in your answer what you need it for; the owner " +
-        "can still allow it in the app."
+        "$left more minute${if (left == 1L) "" else "s"}. Carry on without it, or say in your answer what you need it for. Only the " +
+        "owner can end this wait sooner: in the app under Tools, History, on the refused request, with \"Let it ask again\"."
 }

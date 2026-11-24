@@ -57,17 +57,50 @@ class OperatorDependencyTest {
         return seen
     }
 
+    /**
+     * Actions that are the owner's alone, by method name: a type that offers one is owner-only
+     * whatever it is called. Round 2 (B2): letting an agent ask again after a refusal.
+     */
+    private val ownerOnlyActions = setOf("letAskAgain")
+
+    /** A method taking an id (a value class) is compiled as "name-hash": compared by the name in front. */
+    private fun offersOwnerAction(type: Class<*>): Boolean = type.methods.any { it.name.substringBefore('-') in ownerOnlyActions }
+
     private fun violations(root: Class<*>): List<String> =
-        reachable(root).filter { (type, _) -> ownerOnly.any { it.isAssignableFrom(type) } }.map { (type, path) -> "$path: ${type.simpleName}" }
+        reachable(root).filter { (type, _) -> ownerOnly.any { it.isAssignableFrom(type) } || offersOwnerAction(type) }.map { (type, path) -> "$path: ${type.simpleName}" }
+
+    /** What agents run through: the executor, the broker and what it reads, the requester, the hooks, the runner, the orchestrator and every tool. */
+    private fun agentFacingRoots(): List<Class<*>> = (
+        listOf(
+            ToolExecutor::class.java, PermissionBroker::class.java, OperatorFacts::class.java, DefaultCapabilityRequester::class.java,
+            PermissionRequestTool::class.java, OperatorTaskHooks::class.java, AgentRunner::class.java, DefaultOrchestrator::class.java,
+        ) + TestWorld().toolRegistry.all().map { it.javaClass }
+        ).distinct()
+
+    @Test
+    fun `letting an agent ask again after a refusal is offered by the owner's port and the owner's side of the store only`() {
+        // Round 2 (B2). Where it is declared: the owner's port, and the store's owner side behind it.
+        assertTrue(offersOwnerAction(OwnerRequests::class.java) && offersOwnerAction(OwnerRequestDecisions::class.java))
+        assertTrue(offersOwnerAction(DefaultOwnerRequests::class.java))
+        // What agent-facing code is handed instead cannot do it: the request queue, the grant lookup, the requester, the waiters.
+        val agentSide = listOf(
+            com.aicontrolcenter.core.operator.OwnerRequestQueue::class.java, com.aicontrolcenter.core.operator.GrantLookup::class.java,
+            com.aicontrolcenter.core.operator.CapabilityRequester::class.java, RequestWaiters::class.java, OperatorFacts::class.java,
+        )
+        for (type in agentSide) assertTrue(!offersOwnerAction(type), "${type.simpleName} must not offer an owner-only action")
+        // Nothing reachable from the executor, the broker, the requester, the runner, the orchestrator or any tool offers it.
+        for (root in agentFacingRoots()) {
+            val offering = reachable(root).filter { (type, _) -> offersOwnerAction(type) }.map { (type, path) -> "$path: ${type.simpleName}" }
+            assertEquals(emptyList(), offering, "${root.simpleName} reaches an owner-only action")
+        }
+        // The walk does find it where it is: behind the owner's own service.
+        assertTrue(reachable(DefaultOwnerRequests::class.java).keys.any { offersOwnerAction(it) })
+    }
 
     @Test
     fun `the executor, the broker, the runner, the orchestrator and every tool reach no owner-only port`() {
-        val world = TestWorld()
-        val roots = listOf(
-            ToolExecutor::class.java, PermissionBroker::class.java, OperatorFacts::class.java, DefaultCapabilityRequester::class.java,
-            PermissionRequestTool::class.java, OperatorTaskHooks::class.java, AgentRunner::class.java, DefaultOrchestrator::class.java,
-        ) + world.toolRegistry.all().map { it.javaClass }
-        for (root in roots.distinct()) assertEquals(emptyList(), violations(root), "${root.simpleName} reaches an owner-only port")
+        val roots = agentFacingRoots()
+        for (root in roots) assertEquals(emptyList(), violations(root), "${root.simpleName} reaches an owner-only port")
         // The walk does find what it looks for: the owner's own services hold the full stores.
         assertTrue(violations(DefaultOwnerRequests::class.java).isNotEmpty())
         assertTrue(violations(DefaultOwnerGrants::class.java).isNotEmpty())

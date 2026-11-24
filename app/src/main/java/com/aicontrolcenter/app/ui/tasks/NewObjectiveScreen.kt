@@ -233,7 +233,12 @@ private fun WhereTheWorkGoes(team: TeamDestinationsUi) {
             Column(verticalArrangement = Arrangement.spacedBy(Spacing.md)) {
                 val (tone, title, text) = when {
                     team.models.isEmpty() -> Triple(StatusTone.UNAVAILABLE, "No agent can run", "Give the team a model first: no agent has one it can use right now.")
-                    team.localOnly -> Triple(StatusTone.READY, "Stays on this phone", "Local-only mode is on: nothing is sent off this phone.")
+                    team.localOnly -> Triple(
+                        StatusTone.READY,
+                        "Stays on this phone",
+                        "Local-only mode is on: only models on this phone are used, and the tools that send something off this phone " +
+                            "or hand it to another app are blocked.",
+                    )
                     team.leavesDevice -> Triple(
                         StatusTone.ATTENTION,
                         "Some of it leaves this phone",

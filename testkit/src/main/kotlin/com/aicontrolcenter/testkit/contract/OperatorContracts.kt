@@ -554,6 +554,52 @@ abstract class OwnerRequestRepositoryContract {
     }
 
     @Test
+    fun `letting the agent ask again ends every refusal of that agent, permission and target, and nothing else`() = runTest {
+        val repo = createRepository()
+        val first = s.request("req_a", at = 10)
+        val second = s.request("req_b", at = 20)
+        val otherFolder = s.request("req_fld", at = 30).copy(constraint = s.otherFolder)
+        val otherAgent = s.request("req_agt", at = 40).copy(agentId = s.otherAgent)
+        val approval = s.request("req_appr", OwnerRequestKind.APPROVAL, at = 50)
+        val approved = s.request("req_ok", at = 60)
+        val open = s.request("req_open", at = 70)
+        listOf(first, second, otherFolder, otherAgent, approval, approved, open).forEach { repo.create(it) }
+        listOf(first, second, otherFolder, otherAgent, approval).forEachIndexed { i, r -> repo.decide(r.id, OwnerDecision.Deny(), 1_000L + i, GrantId("grt_d$i")) }
+        repo.decide(approved.id, OwnerDecision.Grant(GrantScope.ONCE), 2_000, GrantId("grt_ok"))
+        val capability = OperatorCapabilities.FOLDERS_WRITE
+        assertEquals(second.id, repo.lastRefusal(s.agent, capability, s.folder, since = 0)?.id)
+
+        // Not a refused permission request: nothing changes.
+        assertNull(repo.letAskAgain(RequestId("req_missing"), 3_000))
+        assertNull(repo.letAskAgain(approval.id, 3_000), "a refused approval holds nothing back")
+        assertNull(repo.letAskAgain(approved.id, 3_000))
+        assertNull(repo.letAskAgain(open.id, 3_000))
+        assertEquals(second.id, repo.lastRefusal(s.agent, capability, s.folder, since = 0)?.id)
+
+        // The older refusal is opened: the newer one of the same agent, permission and target goes with it.
+        val opened = repo.letAskAgain(first.id, 3_000)
+        assertEquals(3_000L, opened?.askAgainAt)
+        assertEquals(OwnerRequestStatus.DENIED, opened?.status)
+        assertEquals(3_000L, repo.get(second.id)?.askAgainAt)
+        assertNull(repo.lastRefusal(s.agent, capability, s.folder, since = 0), "the cool-down is over for that agent, permission and target")
+        assertEquals(otherFolder.id, repo.lastRefusal(s.agent, capability, s.otherFolder, since = 0)?.id, "another target still holds")
+        assertEquals(otherAgent.id, repo.lastRefusal(s.otherAgent, capability, s.folder, since = 0)?.id, "another agent still holds")
+        assertNull(repo.get(otherFolder.id)?.askAgainAt)
+        assertNull(repo.get(approval.id)?.askAgainAt)
+
+        // Again: the first time is kept.
+        assertEquals(3_000L, repo.letAskAgain(second.id, 4_000)?.askAgainAt)
+        assertEquals(3_000L, repo.get(first.id)?.askAgainAt)
+
+        // A new refusal after that starts a cool-down of its own.
+        val third = s.request("req_c", at = 80)
+        repo.create(third)
+        repo.decide(third.id, OwnerDecision.Deny(), 5_000, GrantId("grt_d9"))
+        assertEquals(third.id, repo.lastRefusal(s.agent, capability, s.folder, since = 0)?.id)
+        assertEquals(OwnerRequestStatus.PENDING, repo.get(open.id)?.status)
+    }
+
+    @Test
     fun `open observers see later changes`() = runTest {
         val repo = createRepository()
         val pending = collectIn(backgroundScope, repo.observePending())

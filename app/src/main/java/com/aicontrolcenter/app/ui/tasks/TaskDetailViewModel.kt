@@ -216,8 +216,7 @@ class TaskDetailViewModel(
                     ReviewUi(faces.of(verdict.reviewer), verdict.decision.toStatusLabel(), verdict.summary, verdict.issues, formatCompactTimestamp(verdict.at, now, zone))
                 },
                 usage = usageOf(task.usage),
-                // A helper answering this task's question (team.ask_agent) may be the one waiting for the owner.
-                timing = timingOf(task, now, waitsForOwner = requests.any { it.taskId == task.id && it.isOpenAt(now) }),
+                timing = timingOf(task, now, limitPaused = limitPaused(task, requests, now)),
                 canRetry = task.status in RETRYABLE && task.kind != TaskKind.REVIEW && task.kind != TaskKind.OBJECTIVE && task.delegationChain.isEmpty(),
                 canCancel = !task.status.isFinished && task.kind != TaskKind.OBJECTIVE,
                 retryNote = retryNote(task),
@@ -242,16 +241,28 @@ class TaskDetailViewModel(
         ).joinToString(" · ")
     }
 
-    private fun timingOf(task: TaskRecord, now: Long, waitsForOwner: Boolean): String {
+    /**
+     * Whether [task]'s time limit is paused now because a call waits for the owner: the task
+     * itself waits for the owner (the broker marks it while its call waits), or it waits for a
+     * teammate whose call waits for the owner (team.ask_agent: that request names this task).
+     * An agent's own ask (`permissions.request`, no tool) never waits and pauses nothing, and
+     * a task that is not waiting runs against its limit whatever is open (round 2, B4).
+     * [requests] are the ones a live call or ask still waits for (`OwnerRequests.pending`).
+     */
+    private fun limitPaused(task: TaskRecord, requests: List<OwnerRequest>, now: Long): Boolean = when (task.status) {
+        TaskStatus.WAITING_FOR_OWNER -> true
+        TaskStatus.WAITING_FOR_AGENT -> requests.any { it.taskId == task.id && it.toolId != null && it.isOpenAt(now) }
+        else -> false
+    }
+
+    private fun timingOf(task: TaskRecord, now: Long, limitPaused: Boolean): String {
         val started = task.startedAt ?: return "Not started yet"
         val parts = arrayListOf("Started ${formatCompactTimestamp(started, now, zone)}")
         val finished = task.finishedAt
         when {
             finished != null -> parts += "took ${formatDuration((finished - started).coerceAtLeast(0))}"
-            // Time spent waiting for the owner does not count: the limit moves on when the answer comes. That is so
-            // too while the agent that answers this task's question waits for the owner (its request names this task).
-            task.status == TaskStatus.WAITING_FOR_OWNER || (waitsForOwner && !task.status.isFinished) ->
-                parts += "its time limit is paused while it waits for you"
+            // Time spent waiting for the owner does not count: the limit moves on when the answer comes.
+            limitPaused -> parts += "its time limit is paused while it waits for you"
             task.status == TaskStatus.RUNNING || task.status.isWaiting ->
                 task.deadlineAt?.let { parts += "times out at ${formatTimeOfDay(it, zone)}" }
             else -> Unit

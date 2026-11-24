@@ -25,6 +25,7 @@ import org.junit.Test
 import java.time.ZoneOffset
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -186,6 +187,37 @@ class ApprovalPresentationTest {
         assertEquals("Asked again 3 times within 10 minutes of your refusal. Not put to you: each was refused at once.", ui(refused).askedAgain)
         assertEquals("Asked again once within 10 minutes of your refusal. Not put to you: each was refused at once.", askedAgainText(1))
         assertNull(askedAgainText(0))
+    }
+
+    @Test
+    fun `B2 - Deny says how to change your mind, and a refused permission offers to let its agent ask again`() {
+        // What the Approval screen says under Deny names a way that exists: the action on the refused request.
+        val open = samplePermission(operator, agentName = "Operator")
+        assertEquals(
+            "Operator is refused and told, with your note if you write one. It cannot ask you for this permission again for 10 minutes, " +
+                "unless you open the refused request in Tools › History and tap “Let it ask again”.",
+            ui(open, at = TestApp.START_TIME).consequences[RequestChoice.DENY],
+        )
+        assertNull(ui(open, at = TestApp.START_TIME).askAgain, "an open request holds nobody back")
+
+        // Refused a minute ago: the agent is held until ten minutes after the refusal, and the action is offered.
+        val refused = open.copy(status = OwnerRequestStatus.DENIED, decidedAt = now - 60_000L)
+        val held = assertNotNull(ui(refused).askAgain)
+        assertTrue(held.canLetAskAgain)
+        assertEquals("Operator cannot ask you for this permission again until 12:15: its calls that need it are refused without asking you.", held.text)
+        assertEquals("Changed your mind? Then its next call or request for this permission is put to you as usual. This allows nothing by itself.", held.consequence)
+        assertEquals("Let it ask again", LET_ASK_AGAIN)
+
+        // The owner let it: said so, and nothing more to tap.
+        val opened = assertNotNull(ui(refused.copy(askAgainAt = now - 30_000L)).askAgain)
+        assertFalse(opened.canLetAskAgain)
+        assertEquals("You let Operator ask again (12:05).", opened.text)
+
+        // Ten minutes on, the refusal holds nothing back by itself; a denied approval never did.
+        assertNull(ui(refused, at = now + 9 * 60_000L).askAgain)
+        assertNotNull(ui(refused, at = now + 9 * 60_000L - 1).askAgain)
+        val deniedApproval = sampleApproval(operator).copy(status = OwnerRequestStatus.DENIED, decidedAt = now - 60_000L)
+        assertNull(ui(deniedApproval).askAgain)
     }
 
     @Test

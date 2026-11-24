@@ -74,6 +74,10 @@ import kotlinx.serialization.json.put
  *
  * A yes for the task or always also settles the other pending permission requests it covers
  * ([CoveredRequests]): their waiting calls go on.
+ *
+ * After a refused permission the owner can change their mind without waiting for the cool-down
+ * ([letAskAgain]): the refusal then holds nothing back, and the agent's next call or ask for
+ * that permission is put to the owner as usual. It gives nothing by itself.
  */
 class DefaultOwnerRequests(
     private val repository: OwnerRequestRepository,
@@ -108,6 +112,29 @@ class DefaultOwnerRequests(
     override suspend fun approve(id: RequestId, note: String?): DecideResult = decide(id, OwnerDecision.Approve(clean(note)))
 
     override suspend fun deny(id: RequestId, note: String?): DecideResult = decide(id, OwnerDecision.Deny(clean(note)))
+
+    override suspend fun letAskAgain(id: RequestId): OwnerResult<OwnerRequest> {
+        val current = repository.get(id) ?: return OwnerResult.Refused("This request no longer exists.")
+        if (current.kind != OwnerRequestKind.PERMISSION || current.status != OwnerRequestStatus.DENIED) {
+            return OwnerResult.Refused("Only a permission you refused keeps an agent from asking again.")
+        }
+        // Whether any refusal of that agent, permission and target still holds: only then does this change anything.
+        val held = repository.lastRefusal(current.agentId, current.capability, current.constraint, since = Long.MIN_VALUE) != null
+        val opened = repository.letAskAgain(id, clock.now()) ?: return OwnerResult.Refused("This request no longer exists.")
+        if (held) {
+            val permission = facts.capabilityInfo(opened.capability)?.title ?: opened.capability.id
+            record(
+                opened, "Owner let the agent ask again: $permission",
+                "${opened.agentName ?: "The agent"} may ask for \"$permission\"" + (opened.targetLabel?.let { " ($it)" } ?: "") +
+                    " again at once. Nothing was allowed: its next call or request for it is put to the owner.",
+                Severity.INFO,
+            ) {
+                put("status", opened.status.name)
+                opened.askAgainAt?.let { put("askAgainAt", it) }
+            }
+        }
+        return OwnerResult.Done(opened)
+    }
 
     private suspend fun decide(id: RequestId, decision: OwnerDecision, at: Long = clock.now()): DecideResult {
         val current = repository.get(id) ?: return DecideResult.NotFound

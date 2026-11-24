@@ -63,7 +63,8 @@ object OperatorCapabilities {
         ),
         CapabilityInfo(
             APPS_COMPOSE, "Prepare messages",
-            "Open a prefilled email, text message, dialer or share screen. Nothing is sent: you send it in that app.",
+            "Open a prefilled email, text message, dialer or share screen. Nothing is sent: you send it in that app. " +
+                "Blocked in local-only mode, because that app receives the text or file and may send it on.",
             ToolCategory.APPS, grantedByDefault = false,
         ),
         CapabilityInfo(

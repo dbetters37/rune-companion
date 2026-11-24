@@ -79,6 +79,16 @@ class OperatorDependencyTest {
 
     private fun isOwnerOnly(type: Class<*>): Boolean = ownerOnly.any { it.isAssignableFrom(type) }
 
+    /**
+     * Actions that are the owner's alone, by method name: an object that offers one is a
+     * violation whatever its class, also inside a view. Round 2 (B2): letting an agent ask again
+     * after a refusal ([OwnerRequests.letAskAgain], written by [OwnerRequestDecisions.letAskAgain]).
+     */
+    private val ownerOnlyActions = setOf("letAskAgain")
+
+    /** A method taking an id (a value class) is compiled as "name-hash": compared by the name in front. */
+    private fun ownerActionsOf(type: Class<*>): List<String> = type.methods.map { it.name.substringBefore('-') }.filter { it in ownerOnlyActions }.distinct()
+
     private class Walk(val violations: MutableList<String> = ArrayList(), val unreadable: MutableList<String> = ArrayList(), var objects: Int = 0)
 
     /** Every object reachable from [root], checking each field's declared type and each value's class. */
@@ -91,6 +101,8 @@ class OperatorDependencyTest {
             if (seen.put(value, Unit) != null) continue
             result.objects++
             val type = value.javaClass
+            // Checked on every object reached, the narrow views too: none of them may be able to do what only the owner does.
+            ownerActionsOf(type).forEach { result.violations += "$path: ${type.name} offers $it" }
             if (isOwnerOnly(type)) {
                 result.violations += "$path: ${type.name}"
                 continue
@@ -160,6 +172,30 @@ class OperatorDependencyTest {
         }
         // The walk goes deep: the executor reaches the registry, every tool and the broker's stores.
         assertTrue(walk(app.graph.toolExecutor, "executor").objects > 100)
+    }
+
+    @Test
+    fun `letting an agent ask again after a refusal cannot be reached from the executor, the broker or any tool`() {
+        // Round 2 (B2). The owner's screens can: the port offers it, and the store's owner side writes it.
+        assertEquals(listOf("letAskAgain"), ownerActionsOf(app.graph.ownerRequests.javaClass))
+        assertEquals(listOf("letAskAgain"), ownerActionsOf(app.ownerRequestStore.javaClass))
+        assertTrue(walk(app.graph.ownerRequests, "ownerRequests").violations.any { it.endsWith("offers letAskAgain") })
+        // What the broker, the requester and the hooks are handed cannot, by type and as wired.
+        assertEquals(emptyList(), ownerActionsOf(com.aicontrolcenter.core.operator.OwnerRequestQueue::class.java))
+        assertEquals(emptyList(), ownerActionsOf(com.aicontrolcenter.core.operator.GrantLookup::class.java))
+        assertEquals(emptyList(), ownerActionsOf(com.aicontrolcenter.core.operator.CapabilityRequester::class.java))
+        assertEquals(emptyList(), ownerActionsOf(RequestQueueView::class.java), "the view over the full request store exposes the queue alone")
+        assertEquals(emptyList(), ownerActionsOf(GrantLookupView::class.java))
+        for ((root, name) in roots()) {
+            val offering = walk(root, name).violations.filter { " offers " in it }
+            assertEquals(emptyList(), offering, "$name reaches an action that is the owner's alone")
+        }
+        // A view that handed the action through would be caught, although views are not walked into.
+        val leakyView = object : com.aicontrolcenter.core.operator.OwnerRequestQueue by app.ownerRequestStore {
+            @Suppress("unused")
+            suspend fun letAskAgain(id: com.aicontrolcenter.core.RequestId) = app.ownerRequestStore.letAskAgain(id, 0)
+        }
+        assertTrue(walk(object { val queue: Any = leakyView }, "holder").violations.any { it.endsWith("offers letAskAgain") })
     }
 
     @Test

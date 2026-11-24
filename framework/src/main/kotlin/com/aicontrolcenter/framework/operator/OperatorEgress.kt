@@ -10,7 +10,8 @@ import com.aicontrolcenter.framework.registry.LoggingAiAppLauncher
 
 /**
  * Where the operator tools log what may leave the phone, at the moment they hand it over: a
- * shell or Termux command (which can use the internet), a link or address opened in another app.
+ * shell or Termux command (which can use the internet), a link or address opened in another app,
+ * and a text, a file or a draft handed to another app (share, compose, dial).
  * Web page reads are logged by the web reader itself, request by request.
  */
 fun interface OperatorEgress {
@@ -24,6 +25,9 @@ fun interface OperatorEgress {
 
         /** The destination of a command that can reach the network: not known in advance. */
         const val ANY_HOST = "any address the command connects to"
+
+        /** The destination of something handed to Android's share sheet: the owner picks the app there. */
+        const val SHARE_SHEET = "the app you choose in Android's share sheet"
 
         /** [egress] for a hand-over to the app [packageName]. */
         fun toApp(packageName: String, purpose: String) =

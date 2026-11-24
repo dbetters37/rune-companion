@@ -2,6 +2,8 @@ package com.aicontrolcenter.app.ui.tools
 
 import com.aicontrolcenter.app.ui.agents.firstSentence
 import com.aicontrolcenter.core.ToolId
+import com.aicontrolcenter.core.operator.OperatorCapabilities
+import com.aicontrolcenter.core.operator.OperatorTools
 import com.aicontrolcenter.core.tools.ToolCategory
 import com.aicontrolcenter.core.tools.ToolSpec
 
@@ -59,7 +61,8 @@ internal val PLAIN_WORDS: Map<String, String> = mapOf(
     "workspace.trash" to "Moves workspace files to the workspace trash, from where they can be restored.",
     "workspace.restore" to "Puts an item from the workspace trash back where it was.",
     "workspace.empty_trash" to "Deletes items in the workspace trash for good. You approve it every time.",
-    "workspace.export" to "Opens the share screen for a workspace file. You pick the app; nothing is sent by itself.",
+    "workspace.export" to "Opens the share screen for a workspace file. You pick the app; nothing is sent by itself. " +
+        "The app gets the file, so local-only mode blocks it.",
     "folders.list" to "Lists the files in a folder you shared.",
     "folders.read" to "Reads a text file in a folder you shared.",
     "folders.copy_to_workspace" to "Copies a file from a folder you shared into the workspace.",
@@ -73,10 +76,10 @@ internal val PLAIN_WORDS: Map<String, String> = mapOf(
     "apps.list" to "Lists the apps on this phone that can be opened.",
     "apps.open" to "Opens an installed app.",
     "apps.open_link" to "Opens a web address or map link in the app that handles it. Other app links (payments, calls, chats) ask you every time.",
-    "apps.share_text" to "Opens the share screen with a text. You pick the app and send it.",
-    "apps.compose_email" to "Opens your email app with an email filled in. You send it, or not.",
-    "apps.compose_sms" to "Opens your messaging app with a text message filled in. You send it, or not.",
-    "apps.dial" to "Opens the dialer with a number filled in. You place the call, or not.",
+    "apps.share_text" to "Opens the share screen with a text. You pick the app and send it. The app gets the text, so local-only mode blocks it.",
+    "apps.compose_email" to "Opens your email app with an email filled in. You send it, or not. Local-only mode blocks it.",
+    "apps.compose_sms" to "Opens your messaging app with a text message filled in. You send it, or not. Local-only mode blocks it.",
+    "apps.dial" to "Opens the dialer with a number filled in. You place the call, or not. Local-only mode blocks it.",
     "apps.install" to "Asks Android to install an app from the workspace. You approve it here, then Android asks too.",
     "apps.uninstall" to "Asks Android to remove an app. You approve it here, then Android asks too.",
     "web.read_page" to "Downloads a web page and reads its text. The website learns the address.",
@@ -94,8 +97,16 @@ internal val PLAIN_WORDS: Map<String, String> = mapOf(
         "It can use the internet, so local-only mode blocks it.",
     "termux.run" to "Runs a command in the Termux app. You approve each command. It can use the internet, so local-only mode blocks it.",
     "permissions.request" to "Asks you for a permission it does not have, with its reason. It can never grant itself anything, and after you " +
-        "refuse it cannot ask you for the same permission again for 10 minutes.",
+        "refuse it cannot ask you for the same permission again for 10 minutes, unless you let it on the refused request in Tools › History.",
 )
+
+/**
+ * The mark of a tool that local-only mode blocks, in the owner's words: the tool sends data off
+ * this phone itself, or (sharing, preparing a message or a call) hands it to another app, which
+ * may send it on.
+ */
+fun offPhoneMark(id: ToolId): String =
+    if (OperatorTools.info(id)?.capability == OperatorCapabilities.APPS_COMPOSE) "Hands data to another app" else "Sends data off this phone"
 
 /** Whether [id] is one of the phone operator's tools. */
 fun isOperatorTool(id: ToolId): Boolean = id.value in PLAIN_WORDS

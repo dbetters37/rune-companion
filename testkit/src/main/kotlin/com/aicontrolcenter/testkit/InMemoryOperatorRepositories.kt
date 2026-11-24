@@ -190,13 +190,24 @@ class InMemoryOwnerRequestRepository(
         state.value.values
             .filter {
                 it.kind == OwnerRequestKind.PERMISSION && it.status == OwnerRequestStatus.DENIED && it.agentId == agentId &&
-                    it.capability == capability && it.constraint == constraint && (it.decidedAt ?: Long.MIN_VALUE) >= since
+                    it.capability == capability && it.constraint == constraint && (it.decidedAt ?: Long.MIN_VALUE) >= since &&
+                    it.askAgainAt == null
             }
             .maxWithOrNull(compareBy<OwnerRequest>({ it.decidedAt }, { it.id.value }))
 
     override suspend fun countAskedAgain(id: RequestId): OwnerRequest? = synchronized(lock) {
         state.value[id]?.takeIf { it.status == OwnerRequestStatus.DENIED }?.let { it.copy(askedAgain = it.askedAgain + 1) }
             ?.also { state.value += id to it }
+    }
+
+    override suspend fun letAskAgain(id: RequestId, at: Long): OwnerRequest? = synchronized(lock) {
+        val refusal = state.value[id]?.takeIf { it.kind == OwnerRequestKind.PERMISSION && it.status == OwnerRequestStatus.DENIED } ?: return null
+        val opened = state.value.values.filter {
+            it.kind == OwnerRequestKind.PERMISSION && it.status == OwnerRequestStatus.DENIED && it.askAgainAt == null &&
+                it.agentId == refusal.agentId && it.capability == refusal.capability && it.constraint == refusal.constraint
+        }.map { it.copy(askAgainAt = at) }
+        if (opened.isNotEmpty()) state.value += opened.associateBy { it.id }
+        state.value[id]
     }
 
     private fun closeWhere(status: OwnerRequestStatus, at: Long, note: String?, predicate: (OwnerRequest) -> Boolean): List<OwnerRequest> =
