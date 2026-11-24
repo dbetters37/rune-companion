@@ -164,7 +164,8 @@ do it.
   when the app starts, for a command the app died under.
   (4) A shell the command starts reads no start-up file from the workspace, unless the command
   itself points `HOME` or `ENV` there: `HOME` is an empty
-  folder outside the workspace, emptied before each command, and `ENV` is not set.
+  folder outside the workspace, a new one whenever an earlier command left something in it, and
+  `ENV` is not set.
   So a profile an agent wrote into the workspace does not run on its own. A command can still
   set `HOME` or `ENV` itself; the app refuses the usual spellings of that before you are asked,
   not every possible one, and the "Command:" line you approve always shows it.
@@ -212,12 +213,17 @@ do it.
   that user id at that moment; Android repeats such work. Where a phone does not show the app
   its own processes, shell commands are not available.
 
-  The `HOME` folder of (4) lies in the app's cache and is emptied before every command. A
-  command cannot keep it from being emptied by taking its own rights to it away (`chmod`): the
-  app gives itself the rights back first. If the folder still cannot be emptied, it is put
-  aside and the next command gets a new empty one; what was put aside is deleted before a
-  later command or when the app starts. A command is refused for this reason only if no empty
-  folder can be made in the app's cache at all.
+  The `HOME` folder of (4) lies in the app's cache. When an earlier command left anything in
+  it, or took its own rights to it away (`chmod`), the folder is put aside by renaming it and
+  the next command gets a new empty one; `TMPDIR`, beside it, is treated the same way. That
+  takes the same short time whatever was left, so it does not hold up the next command.
+  What was put aside is deleted afterwards, a few seconds at a time after a command and when
+  the app starts, while no command runs; the app gives itself the rights back first. What
+  still cannot be deleted (a path too deep to be named, a name the phone cannot pass on) stays
+  in the app's cache until Android or you clear the cache. If a command put a link or a file
+  in place of the app's cache folder, that is removed and the folder made anew. A command is
+  refused for this reason only if no empty folder can be made in the app's cache at all, or if
+  `HOME` would lie inside the workspace.
 - **Termux commands** keep running in Termux after the time limit; this app only stops
   waiting for them.
 - **The JavaScript sandbox** checks every array built-in that would walk a huge array in one
