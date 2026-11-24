@@ -217,8 +217,9 @@ fun timingOf(request: OwnerRequest, now: Long, zone: ZoneId): String = when {
 
 /**
  * Builds what the screens show for [request]. [grants] are the permissions in force
- * (`OwnerGrants.observeAll`), for the screens that show a refused request: its line about the
- * agent being held is only true while none of them covers what was refused ([askAgainOf]).
+ * (`OwnerGrants.observeAll`), which the screens that show a refused request pass: its line about
+ * the agent being held is only true while none of them covers what was refused ([askAgainOf]).
+ * Without them (null) nothing is said about the agent being held, and nothing is offered.
  */
 fun requestUi(
     request: OwnerRequest,
@@ -226,7 +227,7 @@ fun requestUi(
     capabilityInfo: (Capability) -> CapabilityInfo?,
     now: Long,
     zone: ZoneId,
-    grants: List<PermissionGrant> = emptyList(),
+    grants: List<PermissionGrant>? = null,
 ): RequestUi {
     val profile = snapshot?.agentsById?.get(request.agentId)?.profile
     val agent = AgentFaceUi(request.agentId, shown(profile?.name ?: request.agentName ?: "Removed agent"), profile?.colorIndex ?: 0)
@@ -310,7 +311,7 @@ fun requestUi(
         hiddenWarning = hiddenCharacterWarning(marked),
         note = request.decisionNote?.let { inWords(PreviewText.exact(it)) },
         askedAgain = askedAgainText(request.askedAgain),
-        askAgain = askAgainOf(request, agent.name, now, zone, covered = request.isCoveredBy(grants, now)),
+        askAgain = askAgainOf(request, agent.name, now, zone, covered = grants?.let { request.isCoveredBy(it, now) }),
         taskId = request.taskId,
         rootId = request.rootId,
         conversationId = request.conversationId,
@@ -350,15 +351,17 @@ fun OwnerRequest.isCoveredBy(grants: List<PermissionGrant>, now: Long): Boolean 
  * request, once the cool-down is over by itself, and while the refusal holds nothing back because
  * the owner has since given that permission directly ([covered]: a grant in force covers the
  * same agent, permission and target, so its calls run and there is nothing to let it ask for).
+ * [covered] is null when the caller does not know the grants; then the line is left out too,
+ * since it could be untrue.
  */
-fun askAgainOf(request: OwnerRequest, agentName: String, now: Long, zone: ZoneId, covered: Boolean = false): AskAgainUi? {
+fun askAgainOf(request: OwnerRequest, agentName: String, now: Long, zone: ZoneId, covered: Boolean?): AskAgainUi? {
     if (request.kind != OwnerRequestKind.PERMISSION || request.status != OwnerRequestStatus.DENIED) return null
     val opened = request.askAgainAt
     val decided = request.decidedAt
     return when {
         // What happened, and no more: whether a later call was put to the owner depends on what was granted since.
         opened != null -> AskAgainUi("You let $agentName ask again (${formatCompactTimestamp(opened, now, zone)}).", canLetAskAgain = false)
-        covered -> null
+        covered != false -> null
         decided != null && request.holdsBackAt(now) -> AskAgainUi(
             "$agentName cannot ask you for this permission again until ${formatTimeOfDay(decided + OwnerRequest.REFUSAL_COOLDOWN_MS, zone)}: " +
                 "its calls that need it are refused without asking you.",

@@ -49,7 +49,8 @@ class ApprovalPresentationTest {
     private val info = OperatorCapabilities.all.associateBy { it.capability }
     private val now = TestApp.START_TIME + 6 * 60_000L
 
-    private fun ui(request: com.aicontrolcenter.core.operator.OwnerRequest, at: Long = now) = requestUi(request, snapshot, info::get, at, ZoneOffset.UTC)
+    /** As a screen that knows what is granted shows it, with nothing granted. */
+    private fun ui(request: com.aicontrolcenter.core.operator.OwnerRequest, at: Long = now) = requestUi(request, snapshot, info::get, at, ZoneOffset.UTC, grants = emptyList())
 
     @Test
     fun `an approval shows exactly what would happen, with the hidden character written out and marked`() {
@@ -240,6 +241,8 @@ class ApprovalPresentationTest {
         ) = PermissionGrant(GrantId("grt_1"), agent, capability, constraint, scope, taskId = task, grantedAt = now - 30_000L, revokedAt = revokedAt)
         fun shown(vararg grants: PermissionGrant) = requestUi(refused, snapshot, info::get, now, ZoneOffset.UTC, grants.toList()).askAgain
         assertNotNull(shown(), "nothing granted: held, with the way to end it")
+        // A caller that does not know what is granted says nothing about the agent being held: it could be untrue.
+        assertNull(requestUi(refused, snapshot, info::get, now, ZoneOffset.UTC).askAgain)
 
         // Given directly in Tools > Folders (always), or for the task the refused call was in: its calls run.
         assertNull(shown(grant()))

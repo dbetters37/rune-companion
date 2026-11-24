@@ -152,7 +152,11 @@ interface Workspace {
      */
     suspend fun move(from: RelativePath, to: RelativePath, overwrite: Boolean): DocResult<DocumentEntry>
 
-    /** Moves a file or folder to the trash. */
+    /**
+     * Moves a file or folder to the trash. The item's record counts against the size limit like
+     * any file: when it does not fit, nothing is trashed ([DocResult.Failed]), unless the trash is
+     * empty, since trashing and then emptying the trash is the way to make room.
+     */
     suspend fun trash(path: RelativePath): DocResult<TrashItem>
 
     /** Trash items, newest first. */

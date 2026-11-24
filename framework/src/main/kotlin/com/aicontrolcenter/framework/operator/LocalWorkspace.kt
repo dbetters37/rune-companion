@@ -52,7 +52,7 @@ data class WorkspaceLimits(
     val maxSearchFiles: Int = 5_000,
     /**
      * Room that every change adding content leaves free for the trash's records. A trash item's
-     * record (`.trash/<id>.json`) takes about 115 bytes plus its path, at most about 3 KB, and
+     * record (`.trash/<id>.json`) takes about 110 bytes plus its path, at most about 3 KB, and
      * counts against [maxTotalBytes] like any file. Content therefore fills the workspace up to
      * [maxTotalBytes] minus this room, so that a full workspace can still move a file to the
      * trash, which with emptying the trash is the way to make room.
@@ -385,13 +385,14 @@ class LocalWorkspace(
             if (!Files.isDirectory(trash, NOFOLLOW)) return@withContext null
             var found = false
             var bytes = 0L
+            val listed = HashMap<String, Boolean>()
             for (entry in Files.newDirectoryStream(trash).use { it.toList() }) {
                 val name = entry.fileName.toString()
                 // The staging folder itself is no leftover, what a killed change left in it is; a listed item's holder and record are not.
                 val leftover = if (name == STAGING && Files.isDirectory(entry, NOFOLLOW)) {
                     Files.newDirectoryStream(entry).use { it.iterator().hasNext() }
                 } else {
-                    trashItem(name.removeSuffix(".json")) == null
+                    !listed.getOrPut(name.removeSuffix(".json")) { trashItem(name.removeSuffix(".json")) != null }
                 }
                 if (leftover) {
                     found = true

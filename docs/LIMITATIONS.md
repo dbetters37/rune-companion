@@ -118,8 +118,8 @@ do it.
   at the top of the workspace. Anything else in the trash that cannot be listed is shown as
   leftovers. Only you can delete those, with "Empty the trash", which is offered whenever the
   trash holds anything at all. The workspace's 2 GB count everything in it, also the trash's
-  notes (about 115 bytes per item), and the last 4 KB are kept free for those notes, so a full
-  workspace can still move files to the trash. While the trash is empty one item can always be
+  notes (100 to 200 bytes per item, more for a very long path), and the last 4 KB are kept free
+  for those notes, so a full workspace can still move files to the trash. While the trash is empty one item can always be
   moved there, even after a shell command filled the workspace completely; the workspace is
   then over its limit by that note until you empty the trash.
 - **Replacing files.** In the workspace a file that is replaced (written over, edited, moved
