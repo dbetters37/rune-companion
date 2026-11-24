@@ -24,8 +24,8 @@ import kotlin.test.assertTrue
  * the thread, left behind, ends by itself or with the test JVM.
  */
 class ShellReadingSpeedTest {
-    /** The fixed reader takes tens of milliseconds for each of these; the old one took 1.6 s to 90 s. Room for a busy machine. */
-    private val BOUND_MS = 1_500L
+    /** The fixed reader takes 5 to 60 ms for each of these; the old one took 1.5 s to 90 s. Room for a busy machine. */
+    private val BOUND_MS = 1_000L
 
     /** A fresh JVM spends a while on its first assessment (classes, compilation); that is not what is measured here. */
     @Before

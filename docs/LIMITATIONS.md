@@ -262,7 +262,8 @@ do it.
   exact text, and every character of it is either drawn as it is or named by its code, with one
   exception: when one character carries more than four combining marks, the marks after the
   fourth are only counted (⟨2 more combining marks⟩), not named, unless they are all the same
-  mark. Two values that differ only in such marks look the same there.
+  mark. Two values that differ only in such marks look the same there, and the same goes for
+  the text of a script shown with a command.
 - **Approvals of screen actions** list at most 150 texts of the window, each up to 300
   characters, and say whether a control is checked, selected or disabled. What does not fit is
   counted and still checked: if anything in the window changes before the action runs, it is
