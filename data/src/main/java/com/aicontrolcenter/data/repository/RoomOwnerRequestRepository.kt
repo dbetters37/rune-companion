@@ -9,6 +9,7 @@ import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.operator.DecideResult
 import com.aicontrolcenter.core.operator.OwnerDecision
 import com.aicontrolcenter.core.operator.OwnerRequest
+import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.OwnerRequestRepository
 import com.aicontrolcenter.core.operator.OwnerRequestStatus
 import com.aicontrolcenter.core.tools.Capability
@@ -158,6 +159,16 @@ class RoomOwnerRequestRepository internal constructor(
     override suspend fun countAskedAgain(id: RequestId): OwnerRequest? = withContext(dispatcher) {
         database.withTransaction {
             if (dao.countAskedAgain(id.value) == 1) dao.get(id.value) else null
+        }?.readableOrNull(OwnerRequestEntity::toDomain)
+    }
+
+    /** See [com.aicontrolcenter.core.operator.OwnerRequestDecisions.letAskAgain]; one write transaction. */
+    override suspend fun letAskAgain(id: RequestId, at: Long): OwnerRequest? = withContext(dispatcher) {
+        database.withTransaction {
+            val refusal = dao.get(id.value)?.takeIf { it.kind == OwnerRequestKind.PERMISSION.name && it.status == OwnerRequestStatus.DENIED.name }
+                ?: return@withTransaction null
+            dao.letAskAgain(refusal.agentId, refusal.capability, refusal.constraintKey, at)
+            dao.get(id.value)
         }?.readableOrNull(OwnerRequestEntity::toDomain)
     }
 

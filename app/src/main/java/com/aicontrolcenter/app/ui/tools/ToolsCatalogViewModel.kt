@@ -32,7 +32,7 @@ data class CatalogToolUi(
     val plainWords: String,
     val riskLevel: RiskLevel,
     val risk: StatusLabel,
-    /** Calling it sends something off this phone (blocked in local-only mode). */
+    /** Calling it sends something off this phone or hands it to another app (blocked in local-only mode); [offPhoneMark] words it. */
     val sendsDataOffPhone: Boolean,
     /** The permission it needs, by its title. */
     val permission: String,
@@ -221,7 +221,10 @@ class ToolsCatalogViewModel(
                         family == ToolFamily.SCRIPTS && settings.localOnlyMode ->
                             "Local-only mode is on, so shell and Termux commands are blocked: they can use the internet. JavaScript still runs."
                         family == ToolFamily.APPS && settings.localOnlyMode ->
-                            "Local-only mode is on, so links are not opened: the app that opens one sends it off this phone."
+                            "Local-only mode is on, so links are not opened and nothing is shared with or prepared in another app: " +
+                                "that app could send it off this phone. Opening, installing and removing apps still work."
+                        family == ToolFamily.WORKSPACE && settings.localOnlyMode ->
+                            "Local-only mode is on, so workspace files are not shared with another app. Everything else here still works."
                         else -> null
                     },
                 )

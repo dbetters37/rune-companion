@@ -110,6 +110,7 @@ class SettingsViewModel(
         refreshDeviceReport()
     }
 
+    /** The tools local-only mode blocks: those that send something off the phone or hand it to another app. */
     private fun blockedTools(): List<String> = tools.filter { it.sendsDataOffDevice }.map { it.title }
 
     /** Every enabled provider whose prompts leave the device, and the agents that would have no model left. */

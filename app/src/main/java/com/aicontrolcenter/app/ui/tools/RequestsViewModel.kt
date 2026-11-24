@@ -7,16 +7,20 @@ import com.aicontrolcenter.app.ui.approvals.RequestUi
 import com.aicontrolcenter.app.ui.approvals.everyHalfMinute
 import com.aicontrolcenter.app.ui.approvals.isOpenAt
 import com.aicontrolcenter.app.ui.approvals.requestUi
+import com.aicontrolcenter.app.ui.components.UserMessage
 import com.aicontrolcenter.app.ui.tasks.AgentFaceUi
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.Clock
+import com.aicontrolcenter.core.RequestId
 import com.aicontrolcenter.core.operator.OwnerRequest
 import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.OwnerRequestStatus
 import com.aicontrolcenter.core.operator.OwnerRequests
+import com.aicontrolcenter.core.operator.OwnerResult
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.tools.Capability
 import com.aicontrolcenter.core.tools.CapabilityInfo
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -24,6 +28,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import java.time.ZoneId
 
 /** How a request ended, as the history filters it. */
@@ -67,17 +72,19 @@ data class RequestsUiState(
     val total: Int = 0,
     /** Agents that raised a request in the history, for the agent filter. */
     val agents: List<AgentFaceUi> = emptyList(),
+    val message: UserMessage? = null,
 )
 
 /**
  * The History tab: the history of permission and approval requests, newest first, with how
  * each ended, filtered by kind, outcome and agent. Each opens its Approval screen, which also
- * answers a request that is still waiting.
+ * answers a request that is still waiting. A permission the owner refused keeps its agent from
+ * asking again for a while; the owner can end that here ([letAskAgain]).
  *
  * @param ticker moves "waiting" to "expired" as time passes; tests pass a single tick.
  */
 class RequestsViewModel(
-    requests: OwnerRequests,
+    private val requests: OwnerRequests,
     directory: RegistryDirectory,
     private val capabilityInfo: (Capability) -> CapabilityInfo?,
     private val clock: Clock,
@@ -85,8 +92,10 @@ class RequestsViewModel(
     ticker: Flow<Unit> = everyHalfMinute(),
 ) : ViewModel() {
     private val filter = MutableStateFlow(RequestFilter())
+    private val message = MutableStateFlow<UserMessage?>(null)
+    private var messageCounter = 0L
 
-    val uiState: StateFlow<RequestsUiState> = combine(requests.observeRecent(HISTORY_LIMIT), directory.observe(), filter, ticker) { recent, snapshot, filter, _ ->
+    val uiState: StateFlow<RequestsUiState> = combine(requests.observeRecent(HISTORY_LIMIT), directory.observe(), filter, ticker, message) { recent, snapshot, filter, _, message ->
         val now = clock.now()
         val newestFirst = recent.sortedWith(compareByDescending<OwnerRequest> { it.createdAt }.thenByDescending { it.id.value })
         val shown = newestFirst.filter { request ->
@@ -103,8 +112,33 @@ class RequestsViewModel(
                 val profile = snapshot.agentsById[request.agentId]?.profile
                 AgentFaceUi(request.agentId, profile?.name ?: request.agentName ?: "Removed agent", profile?.colorIndex ?: 0)
             }.sortedBy { it.name.lowercase() },
+            message = message,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), RequestsUiState())
+
+    /**
+     * After a refused permission, the owner changes their mind: its agent may ask again at once
+     * ([OwnerRequests.letAskAgain]). Nothing is allowed by it; the history shows the change.
+     */
+    fun letAskAgain(id: RequestId) {
+        viewModelScope.launch {
+            val text = try {
+                when (val result = requests.letAskAgain(id)) {
+                    is OwnerResult.Done -> "${result.value.agentName ?: "The agent"} can ask again. Its next call or request for this permission is put to you."
+                    is OwnerResult.Refused -> result.reason
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                "That could not be saved: ${failure.message ?: "storage error"}. Nothing changed."
+            }
+            message.value = UserMessage(text, ++messageCounter)
+        }
+    }
+
+    fun messageShown() {
+        message.value = null
+    }
 
     /** Tapping the selected value again clears it. */
     fun setKind(kind: OwnerRequestKind?) = filter.update { it.copy(kind = kind.takeUnless { k -> k == it.kind }) }

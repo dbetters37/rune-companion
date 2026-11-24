@@ -82,7 +82,7 @@ data class ToolOptionUi(
     val title: String,
     val description: String,
     val risk: RiskLevel,
-    /** True when calling it sends information off the device; such tools are blocked in local-only mode. */
+    /** True when calling it sends information off the device or hands it to another app; such tools are blocked in local-only mode. */
     val sendsDataOffDevice: Boolean,
     /** Where it is listed, with the other tools of its kind. */
     val family: ToolFamily = ToolFamily.INFORMATION,

@@ -55,7 +55,7 @@ do it.
 | Files in the app's own workspace | Nothing | |
 | Files and folders in shared storage | You pick each folder once (Storage Access Framework), or turn on "All files access" in settings | `Android/data` and other apps' private folders stay out of reach either way |
 | Photos and media | The media permission, or "selected photos" on Android 14+ | Allow it, or change the selection, from Tools > All tools > Photos and videos |
-| Opening apps, sharing to apps, opening links | Nothing | Web addresses and map links open at once. Any other link (payment, call, meeting or chat links) asks you every time and names the app that opens it. Local-only mode blocks links |
+| Opening apps, sharing to apps, opening links | Nothing | Web addresses and map links open at once. Any other link (payment, call, meeting or chat links) asks you every time and names the app that opens it. Local-only mode blocks links, sharing a text or a workspace file, and preparing an email, a text message or a call, because the app that receives them may send them on. Outside that mode each of these is in the activity log as data leaving this app: which agent, in which task, to which app, what kind and how much, never the content |
 | Operating other apps' screens | You enable the app's accessibility service in Android settings, and authorise each target app in the registry | See section 4 for the extra step on sideloaded apps |
 | Scripts | Nothing for the JavaScript sandbox and in-sandbox shell. Termux, with `allow-external-apps=true` in its properties and the `RUN_COMMAND` permission granted (from Tools > All tools > Scripts), for full command-line tools | Shell and Termux commands can use the internet, so local-only mode blocks them, and each run is logged as possible data leaving the phone |
 | Being told that an agent waits for your answer, or is operating an app's screen | Notification permission (Android 13+). The app explains and asks when you turn the phone operator on, or at the first start with it already on | Without it, requests still wait in Approvals and in the chat or task that asked, and are refused if nobody answers in time. Approvals and Tools then show a warning with a button to Android's notification settings; requests that are waiting get their notification once you allow them |
@@ -142,9 +142,21 @@ do it.
 - **After you refuse a permission**, the same agent cannot ask you for the same permission and
   target again for 10 minutes: its calls are refused at once and the refusal in Tools > History
   counts them. This does not apply to approvals of single actions, which are always put to you.
-  To change your mind sooner, give the permission in Tools > Allowed.
+  To change your mind sooner, tap "Let it ask again" on the refused request, in Tools > History
+  or on the request's own screen: the wait ends at once and the agent's next call or request for
+  that permission is put to you as usual. That allows nothing by itself. For a folder or an app
+  you can also give the permission directly in Tools > Folders or Tools > Screen.
 - **An answer "always" or "for this task"** also lets the other calls go on that were waiting
   for that same permission. It never answers an approval: each hard-to-undo action still asks.
+
+- **What local-only mode blocks.** Models off this phone, reading web pages, opening links,
+  shell and Termux commands, every action on another app's screen, and handing a text, a
+  workspace file or a prepared email, text message or call to another app. It does not block
+  files an agent writes into a folder you shared with it: if that folder belongs to a cloud
+  storage app, that app may upload them. Opening an app, and installing or removing one through
+  Android's own confirmation, also still work. What you share yourself is your own action, not
+  an agent's: sharing a workspace file from the Workspace screen works in local-only mode too,
+  while exporting the memory graph stays switched off until you turn that mode off.
 
 - **Memory sent to cloud models.** When an agent uses a cloud model, memories it recalls or
   finds with its search tool are sent to that provider as part of the conversation, and the

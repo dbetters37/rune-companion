@@ -2,10 +2,14 @@ package com.aicontrolcenter.framework.tools
 
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.RequestId
+import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.activity.ActivityRecorder
 import com.aicontrolcenter.core.activity.ActivityType
 import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.llm.ToolCallRequest
+import com.aicontrolcenter.core.tasks.TaskRepository
+import com.aicontrolcenter.core.tasks.WaitClock
+import com.aicontrolcenter.core.tasks.measuringPauses
 import com.aicontrolcenter.core.tasks.withPausableTimeout
 import com.aicontrolcenter.core.tools.ActionAssessment
 import com.aicontrolcenter.core.tools.Authorization
@@ -19,6 +23,7 @@ import com.aicontrolcenter.framework.llm.EchoGuard
 import com.aicontrolcenter.framework.llm.PromptedToolsFormat
 import com.aicontrolcenter.framework.llm.rethrowIfCancelled
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
@@ -91,6 +96,16 @@ data class ToolExecution(
  *
  * The tool's own time limit starts after authorisation and is pausable: time the tool spends
  * waiting for the owner ([com.aicontrolcenter.core.tasks.WaitClock.pausedWhile]) does not count.
+ *
+ * Time a call waits for the owner is also written to the stored deadline of its task, and of
+ * the delegating tasks waiting on it, so that what is stored agrees with the paused limits. It
+ * is done here, in one place for every caller: the paused time of the call is measured on a
+ * clock of its own ([measuringPauses]), and after the authorisation, after the check that
+ * follows the owner's answer ([com.aicontrolcenter.core.tools.PreparedAction.changedSinceOwnerAnswered],
+ * where a screen action waits for its app to come back) and after the tool ran (Android's own
+ * confirmation of an install), whatever of it is not in the store yet is written
+ * ([StoredDeadlines]). The permission broker writes its own wait when the answer comes and
+ * says so ([OwnerTimeAccount]), so no wait is counted twice.
  */
 class ToolExecutor(
     private val registry: ToolRegistry,
@@ -100,6 +115,11 @@ class ToolExecutor(
     private val limits: ToolLimits = ToolLimits(),
     /** Measures the tool time limit; tests pass the test scheduler's (`testTimeSource`). */
     private val timeSource: TimeSource = TimeSource.Monotonic,
+    /**
+     * Where the tasks' deadlines are stored, so that time a call waits for the owner is written
+     * to them (see the class comment). Null where calls have no tasks.
+     */
+    private val tasks: TaskRepository? = null,
 ) {
     suspend fun execute(call: ToolCallRequest, context: ToolContext): ToolExecution {
         val startedAt = clock.now()
@@ -107,19 +127,45 @@ class ToolExecutor(
         var answeredBy: List<RequestId> = emptyList()
         var finished: Pair<ToolCallEnd, ToolOutcome>? = null
         val tool = registry.byFunctionName(call.name)
-        try {
-            finished = when {
-                tool == null -> ToolCallEnd.REJECTED to ToolOutcome.failure(unknownTool(call.name, context))
-                else -> carryOut(tool, call, context, { assessment = it }, { answeredBy = it })
-            }
-        } finally {
-            // Also reached when the caller is cancelled mid-call: the attempt still belongs in the log.
-            withContext(NonCancellable) {
-                record(call, tool?.spec, context, assessment, answeredBy, finished, (clock.now() - startedAt).coerceAtLeast(0))
+        // What this call waits for the owner is measured on its own clock, and what of it is in the stored deadlines is kept with it.
+        val account = OwnerTimeAccount(context.taskId, currentCoroutineContext()[OwnerTimeAccount])
+        measuringPauses(timeSource, account) { pauses ->
+            val storeOwnerTime: suspend () -> Unit = { storeOwnerTime(context.taskId, pauses, account) }
+            try {
+                finished = when {
+                    tool == null -> ToolCallEnd.REJECTED to ToolOutcome.failure(unknownTool(call.name, context))
+                    else -> carryOut(tool, call, context, { assessment = it }, { answeredBy = it }, storeOwnerTime)
+                }
+            } finally {
+                // Also reached when the caller is cancelled mid-call: the attempt still belongs in the log.
+                withContext(NonCancellable) {
+                    storeOwnerTime()
+                    record(call, tool?.spec, context, assessment, answeredBy, finished, (clock.now() - startedAt).coerceAtLeast(0))
+                }
             }
         }
         val (end, outcome) = checkNotNull(finished)
         return ToolExecution(call, tool?.spec, outcome, end, (clock.now() - startedAt).coerceAtLeast(0))
+    }
+
+    /**
+     * Writes what this call has waited for the owner so far ([pauses]), less what is in the store
+     * already ([account]), to the stored deadline of its task and of the delegating tasks waiting
+     * on it. A remainder below [MIN_OWNER_TIME_MS] is left for the next time: it is the rounding
+     * between two clocks, not a wait. A deadline that cannot be written never fails the call.
+     */
+    private suspend fun storeOwnerTime(taskId: TaskId?, pauses: WaitClock, account: OwnerTimeAccount) {
+        val store = tasks ?: return
+        taskId ?: return
+        val unstored = pauses.pausedMs() - account.storedMs
+        if (unstored < MIN_OWNER_TIME_MS) return
+        try {
+            val moved = StoredDeadlines.moveLater(store, taskId, unstored, clock.now())
+            // Accounted for this call whether or not the rule moved its task (a finished task, an objective), and for the calls around it whose task moved.
+            OwnerTimeAccount.stored(moved + taskId, unstored)
+        } catch (e: Exception) {
+            rethrowIfCancelled(e)
+        }
     }
 
     private suspend fun carryOut(
@@ -128,6 +174,7 @@ class ToolExecutor(
         context: ToolContext,
         onAssessed: (ActionAssessment) -> Unit,
         onAnswered: (List<RequestId>) -> Unit,
+        storeOwnerTime: suspend () -> Unit,
     ): Pair<ToolCallEnd, ToolOutcome> {
         val spec = tool.spec
         if (spec.id !in context.agent.toolIds) return ToolCallEnd.DENIED to ToolOutcome.failure(toolNotSwitchedOn(spec, context.agent))
@@ -166,6 +213,8 @@ class ToolExecutor(
             // An authorizer that fails must never fail open.
             Authorization.Denied("Permission for \"${spec.title}\" could not be checked, so the call was not run.")
         }
+        // The broker wrote its own wait for the owner; anything it could not is written here.
+        storeOwnerTime()
         if (decision is Authorization.Denied) return ToolCallEnd.DENIED to ToolOutcome.failure(decision.reason)
         if (decision is Authorization.AllowedByOwner) {
             onAnswered(decision.requestIds)
@@ -177,6 +226,8 @@ class ToolExecutor(
                 rethrowIfCancelled(e)
                 "it could not be checked again (${describe(e)})"
             }
+            // A screen action waited here for its app to come back in front: the owner's time, stored before the tool runs.
+            storeOwnerTime()
             if (changed != null) return ToolCallEnd.DENIED to ToolOutcome.changedSinceApproved(changed)
         }
 
@@ -188,6 +239,8 @@ class ToolExecutor(
             rethrowIfCancelled(e)
             return ToolCallEnd.FAILED to ToolOutcome.failure("${spec.functionName} failed: ${describe(e)}")
         }
+        // The tool may have waited for the owner itself (Android's confirmation of an install or a removal).
+        storeOwnerTime()
         return when {
             outcome == null -> ToolCallEnd.TIMED_OUT to
                 ToolOutcome.failure("${spec.functionName} did not finish within ${limits.timeoutMs / 1000} seconds and was stopped.")
@@ -266,5 +319,8 @@ class ToolExecutor(
         const val MAX_NAME_ECHO = 80
         const val MAX_ERROR_ECHO = 300
         const val MAX_DETAIL_ECHO = 300
+
+        /** Less paused time than this is not a wait for the owner; it is carried over, never dropped. */
+        const val MIN_OWNER_TIME_MS = 100L
     }
 }

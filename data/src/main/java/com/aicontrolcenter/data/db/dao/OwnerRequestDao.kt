@@ -62,14 +62,24 @@ internal interface OwnerRequestDao {
 
     /**
      * The newest PERMISSION request of the agent for the capability and target that the owner
-     * refused at or after [since]. `PERMISSION` and `DENIED` are stored names pinned by
-     * `StoredNamesGoldenTest`.
+     * refused at or after [since] and has not opened for asking again. `PERMISSION` and `DENIED`
+     * are stored names pinned by `StoredNamesGoldenTest`.
      */
     @Query(
         "SELECT * FROM owner_requests WHERE agent_id = :agentId AND capability = :capability AND constraint_key = :constraintKey " +
-            "AND kind = 'PERMISSION' AND status = 'DENIED' AND decided_at >= :since ORDER BY decided_at DESC, id DESC LIMIT 1",
+            "AND $IS_REFUSAL AND ask_again_at IS NULL AND decided_at >= :since ORDER BY decided_at DESC, id DESC LIMIT 1",
     )
     suspend fun lastRefusal(agentId: String, capability: String, constraintKey: String, since: Long): OwnerRequestEntity?
+
+    /**
+     * The owner lets the agent ask again: marks every refusal of the agent for the capability
+     * and target that is not marked yet. Returns how many rows were marked.
+     */
+    @Query(
+        "UPDATE owner_requests SET ask_again_at = :at WHERE agent_id = :agentId AND capability = :capability " +
+            "AND constraint_key = :constraintKey AND $IS_REFUSAL AND ask_again_at IS NULL",
+    )
+    suspend fun letAskAgain(agentId: String, capability: String, constraintKey: String, at: Long): Int
 
     /** One more ask refused during a refusal's cool-down. Returns 1 when the refused request was counted, 0 otherwise. */
     @Query("UPDATE owner_requests SET asked_again = asked_again + 1 WHERE id = :id AND status = 'DENIED'")
@@ -82,6 +92,9 @@ internal interface OwnerRequestDao {
     companion object {
         /** `PENDING` is the stored name of `OwnerRequestStatus.PENDING`, pinned by `StoredNamesGoldenTest`. */
         const val IS_PENDING = "status = 'PENDING'"
+
+        /** A permission the owner refused; the stored names are pinned by `StoredNamesGoldenTest`. */
+        const val IS_REFUSAL = "kind = 'PERMISSION' AND status = 'DENIED'"
 
         const val PENDING = "SELECT * FROM owner_requests WHERE $IS_PENDING ORDER BY created_at ASC, id ASC"
     }

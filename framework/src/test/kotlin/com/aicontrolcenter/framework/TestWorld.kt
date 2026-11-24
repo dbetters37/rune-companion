@@ -158,7 +158,7 @@ class TestWorld(
     /** How the owner answers requests in these tests: the owner-only port, as the approval screen uses it. */
     val ownerRequests = DefaultOwnerRequests(requests, waiters, facts, activity, ids, clock)
 
-    val executor = ToolExecutor(toolRegistry, broker, activity, clock, toolLimits, time)
+    val executor = ToolExecutor(toolRegistry, broker, activity, clock, toolLimits, time, tasks)
     val monitor = DefaultAgentActivityMonitor(clock)
     /** Looks up on the caller's dispatcher, so that recall follows virtual time in coroutine tests. */
     val recall = AutoRecall(memory, activity, zone = { ZoneOffset.UTC }, lookupContext = EmptyCoroutineContext)

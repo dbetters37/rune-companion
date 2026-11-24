@@ -39,6 +39,7 @@ import androidx.compose.foundation.selection.toggleable
 import com.aicontrolcenter.app.ui.icons.ExpandLess
 import com.aicontrolcenter.app.ui.icons.ExpandMore
 import com.aicontrolcenter.app.ui.tools.icon
+import com.aicontrolcenter.app.ui.tools.offPhoneMark
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import com.aicontrolcenter.app.ui.components.AppCard
@@ -253,7 +254,7 @@ internal fun ToolsEditor(state: AgentEditorUiState, actions: AgentEditorActions)
                         tools.forEach { tool ->
                             SwitchRow(
                                 title = tool.title,
-                                description = "${tool.risk.label}. ${tool.description}" + if (tool.sendsDataOffDevice) " Sends data off this phone." else "",
+                                description = "${tool.risk.label}. ${tool.description}" + if (tool.sendsDataOffDevice) " ${offPhoneMark(tool.id)}." else "",
                                 checked = tool.id in state.draft.toolIds,
                                 onCheckedChange = { on -> actions.onSetTool(tool.id, on) },
                                 modifier = Modifier.padding(start = Spacing.xl),

@@ -71,6 +71,16 @@ interface OwnerRequests {
 
     /** No, to either kind. */
     suspend fun deny(id: RequestId, note: String? = null): DecideResult
+
+    /**
+     * The owner changes their mind after refusing the PERMISSION request [id]: ends the cool-down
+     * ([OwnerRequest.REFUSAL_COOLDOWN_MS]) for that agent, permission and target at once, so the
+     * agent's next call or `permissions.request` raises a normal request instead of being refused
+     * unasked. It gives no permission and answers nothing. Refused, with the reason, when the
+     * request is missing or is not a permission request the owner refused. Logged. Like every
+     * method here it is the owner's alone: nothing an agent can reach calls it.
+     */
+    suspend fun letAskAgain(id: RequestId): OwnerResult<OwnerRequest>
 }
 
 /**

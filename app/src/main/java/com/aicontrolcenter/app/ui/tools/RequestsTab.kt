@@ -30,6 +30,7 @@ import com.aicontrolcenter.app.ui.icons.History
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.RequestId
+import com.aicontrolcenter.core.operator.OwnerRequest
 import com.aicontrolcenter.core.operator.OwnerRequestKind
 
 /** What the Requests tab can ask for. */
@@ -39,6 +40,8 @@ class RequestsActions(
     val onAgent: (AgentId) -> Unit,
     val onClear: () -> Unit,
     val onOpenRequest: (RequestId) -> Unit,
+    /** After a refused permission: end the wait before its agent may ask again. */
+    val onLetAskAgain: (RequestId) -> Unit = {},
 )
 
 /** Every permission and approval request, newest first, with how it ended; filterable once there is something to filter. */
@@ -57,7 +60,8 @@ fun RequestsTab(state: RequestsUiState, actions: RequestsActions) {
             Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
                 Text(
                     "Every time an agent asked you for a permission or an approval, and what happened. Open one to see exactly what it " +
-                        "asked for; one that is still waiting can be answered there.",
+                        "asked for; one that is still waiting can be answered there. After you refuse a permission, its agent cannot " +
+                        "ask for it again for ${OwnerRequest.REFUSAL_COOLDOWN_MS / 60_000} minutes, unless you let it here.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -113,7 +117,7 @@ fun RequestsTab(state: RequestsUiState, actions: RequestsActions) {
             item(key = "clear") { TextButton(onClick = actions.onClear) { Text("Clear filters") } }
         }
         items(state.requests, key = { it.id.value }) { request ->
-            RequestCard(request, onOpen = { actions.onOpenRequest(request.id) })
+            RequestCard(request, onOpen = { actions.onOpenRequest(request.id) }, onLetAskAgain = { actions.onLetAskAgain(request.id) })
         }
     }
 }

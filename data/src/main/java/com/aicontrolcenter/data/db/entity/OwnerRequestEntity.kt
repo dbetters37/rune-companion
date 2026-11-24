@@ -17,6 +17,8 @@ import androidx.room.PrimaryKey
  *   the request was raised) are stored exactly as written.
  * - [askedAgain] counts, on a refused request, the asks of the same agent for the same
  *   permission that were refused during the cool-down without a new row.
+ * - [askAgainAt] is set, on a refused permission request, when the owner let the agent ask
+ *   again: the refusal then holds nothing back any more. Null otherwise.
  *
  * Indexes, one per listing, each in that listing's order: pending `(status, created_at, id)`,
  * a chat `(conversation_id, created_at, id)`, an objective `(root_id, created_at, id)`, the
@@ -58,6 +60,7 @@ internal data class OwnerRequestEntity(
     @ColumnInfo(name = "target_label") val targetLabel: String?,
     @ColumnInfo(name = "delegation_chain_json") val delegationChainJson: String,
     @ColumnInfo(name = "asked_again", defaultValue = "0") val askedAgain: Int = 0,
+    @ColumnInfo(name = "ask_again_at") val askAgainAt: Long? = null,
 ) {
     companion object {
         const val TABLE = "owner_requests"

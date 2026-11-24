@@ -44,8 +44,8 @@ object OperatorTools {
         info("workspace.restore", C.WORKSPACE_WRITE, RiskLevel.MODIFYING, ToolCategory.WORKSPACE),
         info("workspace.empty_trash", C.WORKSPACE_WRITE, RiskLevel.CONSEQUENTIAL, ToolCategory.WORKSPACE),
         info(
-            "workspace.export", C.APPS_COMPOSE, RiskLevel.MODIFYING, ToolCategory.WORKSPACE,
-            rule = "Opens the share sheet; the owner picks the app. dataGoesTo names the file and \"the app you choose\".",
+            "workspace.export", C.APPS_COMPOSE, RiskLevel.MODIFYING, ToolCategory.WORKSPACE, sendsDataOffDevice = true,
+            rule = "Opens the share sheet; the owner picks the app. dataGoesTo names the file and \"the app you choose\". $HAND_OVER",
         ),
         info("folders.list", C.FOLDERS_READ, RiskLevel.SAFE, ToolCategory.FILES),
         info("folders.read", C.FOLDERS_READ, RiskLevel.SAFE, ToolCategory.FILES),
@@ -64,10 +64,12 @@ object OperatorTools {
             rule = "LinkPolicy.check first; only LinkPolicy.PLAIN_SCHEMES stay MODIFYING, any other scheme is CONSEQUENTIAL with the app " +
                 "that opens it named. dataGoesTo is the web host, or that app for other schemes.",
         ),
-        info("apps.share_text", C.APPS_COMPOSE, RiskLevel.MODIFYING, ToolCategory.APPS),
-        info("apps.compose_email", C.APPS_COMPOSE, RiskLevel.MODIFYING, ToolCategory.APPS),
-        info("apps.compose_sms", C.APPS_COMPOSE, RiskLevel.MODIFYING, ToolCategory.APPS),
-        info("apps.dial", C.APPS_COMPOSE, RiskLevel.MODIFYING, ToolCategory.APPS),
+        // Handing text, a file or a draft to another app hands it to whatever that app does with it (a browser or a
+        // translator sends a shared text on at once), so local-only mode blocks these four and workspace.export too.
+        info("apps.share_text", C.APPS_COMPOSE, RiskLevel.MODIFYING, ToolCategory.APPS, sendsDataOffDevice = true, rule = HAND_OVER),
+        info("apps.compose_email", C.APPS_COMPOSE, RiskLevel.MODIFYING, ToolCategory.APPS, sendsDataOffDevice = true, rule = HAND_OVER),
+        info("apps.compose_sms", C.APPS_COMPOSE, RiskLevel.MODIFYING, ToolCategory.APPS, sendsDataOffDevice = true, rule = HAND_OVER),
+        info("apps.dial", C.APPS_COMPOSE, RiskLevel.MODIFYING, ToolCategory.APPS, sendsDataOffDevice = true, rule = HAND_OVER),
         info("apps.install", C.APPS_MANAGE, RiskLevel.CONSEQUENTIAL, ToolCategory.APPS),
         info("apps.uninstall", C.APPS_MANAGE, RiskLevel.CONSEQUENTIAL, ToolCategory.APPS),
         info("web.read_page", C.WEB_READ, RiskLevel.SAFE, ToolCategory.WEB, sendsDataOffDevice = true, rule = "dataGoesTo is the host."),
@@ -113,7 +115,8 @@ object OperatorTools {
         info(
             "permissions.request", Capabilities.BASIC_INFO, RiskLevel.SAFE, ToolCategory.SYSTEM,
             rule = "Its only dependency is CapabilityRequester; it never waits for the answer. Within OwnerRequest.REFUSAL_COOLDOWN_MS " +
-                "of a refusal of the same permission and target, it is refused without a request.",
+                "of a refusal of the same permission and target, it is refused without a request, unless the owner let the agent ask " +
+                "again on the refused request (OwnerRequests.letAskAgain).",
         ),
     )
 
@@ -126,4 +129,8 @@ object OperatorTools {
 
     private fun info(id: String, capability: Capability, risk: RiskLevel, category: ToolCategory, sendsDataOffDevice: Boolean = false, rule: String? = null) =
         OperatorToolInfo(ToolId(id), capability, risk, category, sendsDataOffDevice, rule)
+
+    /** The rule of the tools that hand content to another app (round 2, B1). */
+    private const val HAND_OVER = "Hands content to another app, which may send it on, so it is blocked in local-only mode. Each " +
+        "hand-over is logged as DATA_EGRESS with the agent, task, objective, the receiving app, the kind and the amount, never the content."
 }

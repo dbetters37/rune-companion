@@ -1,5 +1,6 @@
 package com.aicontrolcenter.framework.operator
 
+import com.aicontrolcenter.core.activity.EgressInfo
 import com.aicontrolcenter.core.operator.AppActionResult
 import com.aicontrolcenter.core.operator.DocResult
 import com.aicontrolcenter.core.operator.EmailDraft
@@ -25,6 +26,12 @@ import java.util.Locale
  * [com.aicontrolcenter.core.operator.AppActions]. Nothing here sends, calls or buys: messages
  * open prefilled for the owner; installs and removals go through Android's own confirmation
  * after the owner's approval here.
+ *
+ * A text, a file or a draft handed to another app is in that app's hands: what it does with it
+ * (a browser or a translator sends a shared text on at once) is outside this app's control. So
+ * the share, compose and dial tools are blocked in local-only mode like the tools that use the
+ * network, and each of their hand-overs is logged as data leaving ([AppTools.logHandOver]):
+ * who, to which app, what kind and how much, never the content.
  */
 internal object AppTools {
     fun create(d: OperatorToolDependencies): List<Tool> = listOf(
@@ -68,6 +75,29 @@ internal object AppTools {
         is AppActionResult.Refused -> ToolOutcome.failure("Refused: ${result.reason}")
         is AppActionResult.NeedsSpecialAccess -> ToolOutcome.failure("${result.reason} The owner can allow it in Android's settings.")
         is AppActionResult.Failed -> ToolOutcome.failure("Android refused: ${result.reason}" + (result.code?.let { " (status $it)" } ?: ""))
+    }
+
+    /** Where a share goes, in words: the app the agent named, or the one the owner picks in Android's share sheet. */
+    fun shareTarget(app: InstalledAppInfo?, packageName: String?): String = packageName?.let { label(app, it) } ?: OperatorEgress.SHARE_SHEET
+
+    /** The log's destination of a share: the named app, or the share sheet. */
+    fun shareEgress(packageName: String?, purpose: String, bytes: Long): EgressInfo =
+        (packageName?.let { OperatorEgress.toApp(it, purpose) } ?: OperatorEgress.toHost(OperatorEgress.SHARE_SHEET, purpose)).copy(approxBytes = bytes)
+
+    /**
+     * Logs one hand-over of content to another app as data leaving, when it happened: [what] is
+     * its kind and amount in words ("27 characters of text"), never the content itself; [to] is
+     * the receiving app in words. [result] decides: a start is logged; a start Android put off
+     * to a "Tap to open" notification is logged as such, because the content goes out when the
+     * owner taps it and nothing would record that tap; anything else handed nothing over.
+     */
+    suspend fun logHandOver(d: OperatorToolDependencies, context: ToolContext, result: AppActionResult, title: String, what: String, to: String, egress: EgressInfo) {
+        val how = when (result) {
+            AppActionResult.Started -> "handed $what to $to"
+            is AppActionResult.Deferred -> "prepared $what for $to. Android did not open it from the background, so it goes there only if you tap the notification"
+            else -> return
+        }
+        d.egress.handedOver(context, title, "${context.agent.name} $how. What that app does with it is outside this app's control.", egress)
     }
 
     /** A link the policy allows, or a rejection; [webOnly] limits it to http(s). */
@@ -205,7 +235,8 @@ internal class BrowserOpen(private val d: OperatorToolDependencies) : OperatorTo
 /** apps.share_text */
 internal class AppsShareText(private val d: OperatorToolDependencies) : OperatorTool(
     "apps.share_text", "Share text",
-    "Opens Android's share screen with a text, or one app's share screen. The owner picks the recipient and sends it; nothing is sent by itself.",
+    "Opens Android's share screen with a text, or one app's share screen. The owner picks the recipient and sends it; nothing is sent by itself. " +
+        "The receiving app gets the text, so this is blocked in local-only mode.",
     objectSchema("text") {
         stringProp("text", "The text to share.")
         stringProp("subject", "Optional subject, used by email apps.")
@@ -224,8 +255,15 @@ internal class AppsShareText(private val d: OperatorToolDependencies) : Operator
         if (pkg != null && app == null) return assessment(summary, failing("No app $pkg is installed."), details, dataGoesTo = goesTo)
         return assessment(
             summary,
-            prepared(check = { if (pkg != null && AppTools.launchable(d, pkg) == null) "the app $pkg was removed" else null }) {
-                AppTools.answer(d.apps.shareText(text, subject, pkg), "The share screen opened with the text; the owner completes it there.")
+            prepared(check = { if (pkg != null && AppTools.launchable(d, pkg) == null) "the app $pkg was removed" else null }) { ctx ->
+                val result = d.apps.shareText(text, subject, pkg)
+                AppTools.logHandOver(
+                    d, ctx, result, "Text handed to another app",
+                    OperatorText.count(text.length, "character") + " of text" + (subject?.let { " with a subject of ${OperatorText.count(it.length, "character")}" } ?: ""),
+                    AppTools.shareTarget(app, pkg),
+                    AppTools.shareEgress(pkg, "a text shared by an agent", (text.toByteArray().size + (subject?.toByteArray()?.size ?: 0)).toLong()),
+                )
+                AppTools.answer(result, "The share screen opened with the text; the owner completes it there.")
             },
             details,
             dataGoesTo = goesTo,
@@ -236,7 +274,8 @@ internal class AppsShareText(private val d: OperatorToolDependencies) : Operator
 /** apps.compose_email */
 internal class AppsComposeEmail(private val d: OperatorToolDependencies) : OperatorTool(
     "apps.compose_email", "Prepare an email",
-    "Opens the owner's email app with a prefilled email. The owner reviews and sends it; nothing is sent by itself.",
+    "Opens the owner's email app with a prefilled email. The owner reviews and sends it; nothing is sent by itself. " +
+        "The email app gets the draft, so this is blocked in local-only mode.",
     objectSchema("to") {
         stringArrayProp("to", "Recipient addresses.", 50)
         stringArrayProp("cc", "Copy addresses.", 50)
@@ -263,17 +302,35 @@ internal class AppsComposeEmail(private val d: OperatorToolDependencies) : Opera
         )
         return assessment(
             "Open an email to ${draft.to.joinToString(", ") { q(it) }} with the subject ${q(draft.subject)} in your email app, for you to send",
-            prepared { AppTools.answer(d.apps.composeEmail(draft), "The email app opened with the draft; the owner sends it, or not.") },
+            prepared { ctx ->
+                val result = d.apps.composeEmail(draft)
+                val recipients = draft.to.size + draft.cc.size + draft.bcc.size
+                AppTools.logHandOver(
+                    d, ctx, result, "Email draft handed to another app",
+                    "an email draft (${OperatorText.count(recipients, "recipient")}, a subject of ${OperatorText.count(draft.subject.length, "character")}, " +
+                        "a text of ${OperatorText.count(draft.body.length, "character")})",
+                    EMAIL_APP,
+                    OperatorEgress.toHost(EMAIL_APP, "an email draft prepared by an agent").copy(
+                        approxBytes = ((draft.to + draft.cc + draft.bcc).sumOf { it.toByteArray().size } + draft.subject.toByteArray().size + draft.body.toByteArray().size).toLong(),
+                    ),
+                )
+                AppTools.answer(result, "The email app opened with the draft; the owner sends it, or not.")
+            },
             details,
-            dataGoesTo = "your email app",
+            dataGoesTo = EMAIL_APP,
         )
+    }
+
+    private companion object {
+        const val EMAIL_APP = "your email app"
     }
 }
 
 /** apps.compose_sms */
 internal class AppsComposeSms(private val d: OperatorToolDependencies) : OperatorTool(
     "apps.compose_sms", "Prepare a text message",
-    "Opens the owner's messaging app with a prefilled text message. The owner sends it; nothing is sent by itself.",
+    "Opens the owner's messaging app with a prefilled text message. The owner sends it; nothing is sent by itself. " +
+        "The messaging app gets the draft, so this is blocked in local-only mode.",
     objectSchema("number", "body") {
         stringProp("number", "The phone number, e.g. \"+44 20 7946 0958\".")
         stringProp("body", "The message.")
@@ -285,27 +342,54 @@ internal class AppsComposeSms(private val d: OperatorToolDependencies) : Operato
         val body = args.text("body", 10_000, required = false).orEmpty()
         return assessment(
             "Open a text message to ${q(number)} in your messaging app, for you to send",
-            prepared { AppTools.answer(d.apps.composeSms(number, body), "The messaging app opened with the message; the owner sends it, or not.") },
+            prepared { ctx ->
+                val result = d.apps.composeSms(number, body)
+                AppTools.logHandOver(
+                    d, ctx, result, "Text message draft handed to another app",
+                    "a text message draft (one phone number, a message of ${OperatorText.count(body.length, "character")})",
+                    MESSAGING_APP,
+                    OperatorEgress.toHost(MESSAGING_APP, "a text message draft prepared by an agent").copy(approxBytes = (number.toByteArray().size + body.toByteArray().size).toLong()),
+                )
+                AppTools.answer(result, "The messaging app opened with the message; the owner sends it, or not.")
+            },
             listOf("To: ${q(number)}", "Message: ${q(body)}", "Nothing is sent until you send it."),
-            dataGoesTo = "your messaging app",
+            dataGoesTo = MESSAGING_APP,
         )
+    }
+
+    private companion object {
+        const val MESSAGING_APP = "your messaging app"
     }
 }
 
 /** apps.dial */
 internal class AppsDial(private val d: OperatorToolDependencies) : OperatorTool(
     "apps.dial", "Prepare a phone call",
-    "Opens the dialer with a number filled in. The owner places the call, or not; the call is never placed by itself.",
+    "Opens the dialer with a number filled in. The owner places the call, or not; the call is never placed by itself. " +
+        "The phone app gets the number, so this is blocked in local-only mode.",
     objectSchema("number") { stringProp("number", "The phone number.") },
 ) {
     override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
         val number = Args(arguments).text("number", 40)!!.trim().also(AppTools::checkPhone)
         return assessment(
             "Open the dialer with ${q(number)}, for you to call",
-            prepared { AppTools.answer(d.apps.dial(number), "The dialer opened with the number; the owner places the call, or not.") },
+            prepared { ctx ->
+                val result = d.apps.dial(number)
+                AppTools.logHandOver(
+                    d, ctx, result, "Phone number handed to the phone app",
+                    "a phone number (${OperatorText.count(number.count { it.isDigit() }, "digit")})",
+                    PHONE_APP,
+                    OperatorEgress.toHost(PHONE_APP, "a phone number prepared by an agent").copy(approxBytes = number.toByteArray().size.toLong()),
+                )
+                AppTools.answer(result, "The dialer opened with the number; the owner places the call, or not.")
+            },
             listOf("Number: ${q(number)}", "The call is placed only if you press call."),
-            dataGoesTo = "your phone app",
+            dataGoesTo = PHONE_APP,
         )
+    }
+
+    private companion object {
+        const val PHONE_APP = "your phone app"
     }
 }
 

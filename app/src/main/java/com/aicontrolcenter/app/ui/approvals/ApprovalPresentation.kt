@@ -3,6 +3,7 @@ package com.aicontrolcenter.app.ui.approvals
 import androidx.compose.runtime.Immutable
 import com.aicontrolcenter.app.ui.components.StatusLabel
 import com.aicontrolcenter.app.ui.components.formatCompactTimestamp
+import com.aicontrolcenter.app.ui.components.formatTimeOfDay
 import com.aicontrolcenter.app.ui.tasks.AgentFaceUi
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.core.ConversationId
@@ -101,6 +102,8 @@ data class RequestUi(
     val note: String?,
     /** A refused permission the agent asked for again right away: how often, in words; null otherwise. */
     val askedAgain: String? = null,
+    /** A refused permission: whether the agent is still kept from asking again, and the owner's way to end that; null otherwise. */
+    val askAgain: AskAgainUi? = null,
     /**
      * For a call on another app's screen: that the app comes back once the owner allows it, and
      * that the call acts only if the app still shows what is described. Null for other requests.
@@ -112,6 +115,17 @@ data class RequestUi(
 ) {
     val isConsequential: Boolean get() = riskLevel == RiskLevel.CONSEQUENTIAL
 }
+
+/**
+ * After the owner refused a permission: what holds now ([text]), and, while the refusal still
+ * keeps the agent from asking ([canLetAskAgain]), what the "Let it ask again" action leads to
+ * ([consequence]).
+ */
+@Immutable
+data class AskAgainUi(val text: String, val canLetAskAgain: Boolean, val consequence: String? = null)
+
+/** The owner's action on a refused permission that ends the wait before the agent may ask again. */
+const val LET_ASK_AGAIN = "Let it ask again"
 
 /** What the "Always allow…" confirmation says. */
 @Immutable
@@ -264,7 +278,8 @@ fun requestUi(
                 RequestChoice.ALLOW_FOR_TASK to "${agent.name} may $breadth$notOnly until this task ends.",
                 RequestChoice.ALLOW_ALWAYS to "${agent.name} may $breadth$notOnly in any task or chat, until you remove it in Tools › Allowed.",
                 RequestChoice.DENY to "${agent.name} is refused and told, with your note if you write one. It cannot ask you for this " +
-                    "permission again for ${OwnerRequest.REFUSAL_COOLDOWN_MS / MINUTE_MS} minutes; you can still give it in Tools › Allowed.",
+                    "permission again for ${OwnerRequest.REFUSAL_COOLDOWN_MS / MINUTE_MS} minutes, unless you open the refused request " +
+                    "in Tools › History and tap “$LET_ASK_AGAIN”.",
             ).filterKeys { it in choicesFor(request) }
         },
         approveLabel = action?.let { "Approve: " + it.replaceFirstChar(Char::lowercaseChar) } ?: RequestChoice.APPROVE.label,
@@ -288,6 +303,7 @@ fun requestUi(
         hiddenWarning = hiddenCharacterWarning(marked),
         note = request.decisionNote?.let { inWords(PreviewText.exact(it)) },
         askedAgain = askedAgainText(request.askedAgain),
+        askAgain = askAgainOf(request, agent.name, now, zone),
         taskId = request.taskId,
         rootId = request.rootId,
         conversationId = request.conversationId,
@@ -309,6 +325,28 @@ fun askedAgainText(times: Int): String? = when {
     times <= 0 -> null
     else -> "Asked again ${if (times == 1) "once" else "$times times"} within " +
         "${OwnerRequest.REFUSAL_COOLDOWN_MS / MINUTE_MS} minutes of your refusal. Not put to you: each was refused at once."
+}
+
+/**
+ * For a permission the owner refused: that [agentName] cannot ask again until the cool-down ends,
+ * with the way to end it now; or, once the owner did, that it may ask. Null for any other
+ * request and once the cool-down is over by itself.
+ */
+fun askAgainOf(request: OwnerRequest, agentName: String, now: Long, zone: ZoneId): AskAgainUi? {
+    if (request.kind != OwnerRequestKind.PERMISSION || request.status != OwnerRequestStatus.DENIED) return null
+    val opened = request.askAgainAt
+    val decided = request.decidedAt
+    return when {
+        // What happened, and no more: whether a later call was put to the owner depends on what was granted since.
+        opened != null -> AskAgainUi("You let $agentName ask again (${formatCompactTimestamp(opened, now, zone)}).", canLetAskAgain = false)
+        decided != null && request.holdsBackAt(now) -> AskAgainUi(
+            "$agentName cannot ask you for this permission again until ${formatTimeOfDay(decided + OwnerRequest.REFUSAL_COOLDOWN_MS, zone)}: " +
+                "its calls that need it are refused without asking you.",
+            canLetAskAgain = true,
+            consequence = "Changed your mind? Then its next call or request for this permission is put to you as usual. This allows nothing by itself.",
+        )
+        else -> null
+    }
 }
 
 /** Text from the request as the screens show it: hidden characters made visible ([visible]), then named ([inWords]). */

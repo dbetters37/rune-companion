@@ -81,6 +81,8 @@ class ApprovalActions(
     val onOpenRequest: (RequestId) -> Unit = {},
     /** The screen went where [ApprovalUiState.afterAnswer] said. */
     val onAfterAnswerDone: () -> Unit = {},
+    /** After a refused permission: end the wait before the agent may ask again. */
+    val onLetAskAgain: () -> Unit = {},
 )
 
 @Composable
@@ -107,6 +109,7 @@ fun ApprovalRoute(
             onReturnToApp = { activity?.moveTaskToBack(true) },
             onOpenRequest = onOpenRequest,
             onAfterAnswerDone = viewModel::afterAnswerDone,
+            onLetAskAgain = viewModel::letAskAgain,
         ),
     )
 }
@@ -173,6 +176,7 @@ fun ApprovalScreen(state: ApprovalUiState, actions: ApprovalActions) {
                         Answer(request, state, actions)
                     } else {
                         Outcome(request)
+                        request.askAgain?.let { AskAgain(it, enabled = !state.isBusy, onLetAskAgain = actions.onLetAskAgain) }
                     }
                 }
             }
@@ -432,6 +436,27 @@ private fun ApproveDialog(request: RequestUi, onApprove: () -> Unit, onBack: () 
         },
         dismissButton = { TextButton(onClick = onBack, modifier = sensitive) { Text("Back") } },
     )
+}
+
+/**
+ * Under a refused permission: how long the agent is kept from asking again, and the owner's way
+ * to end that now. It allows nothing: the agent's next call or request is put to the owner.
+ */
+@Composable
+private fun AskAgain(askAgain: AskAgainUi, enabled: Boolean, onLetAskAgain: () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+        SectionHeader("Asking again")
+        Text(askAgain.text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+        if (askAgain.canLetAskAgain) {
+            // Marked sensitive like the answers: only the owner's own taps change what an agent may ask.
+            OutlinedButton(
+                onClick = onLetAskAgain,
+                enabled = enabled,
+                modifier = Modifier.fillMaxWidth().heightIn(min = Spacing.touchTarget).semantics { isSensitiveData = true },
+            ) { Text(LET_ASK_AGAIN) }
+            askAgain.consequence?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        }
+    }
 }
 
 @Composable

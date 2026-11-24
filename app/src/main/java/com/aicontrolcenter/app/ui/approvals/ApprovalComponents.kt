@@ -16,6 +16,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.isSensitiveData
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -97,10 +99,19 @@ fun HiddenCharactersChip(modifier: Modifier = Modifier) {
  * One request in a list, a chat or a task: who asks, the exact summary, its risk, where it
  * stands, and a button to the Approval screen, where the answer is given. Nothing here answers it.
  * A closed request is labelled by its kind in a quiet tone, so it never reads as still needing the owner.
+ *
+ * In the history ([onLetAskAgain] given), a refused permission also says how long the agent is
+ * kept from asking again and offers to end that now.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun RequestCard(request: RequestUi, onOpen: () -> Unit, modifier: Modifier = Modifier, showAgent: Boolean = true) {
+fun RequestCard(
+    request: RequestUi,
+    onOpen: () -> Unit,
+    modifier: Modifier = Modifier,
+    showAgent: Boolean = true,
+    onLetAskAgain: (() -> Unit)? = null,
+) {
     AppCard(
         modifier = modifier,
         onClick = onOpen,
@@ -134,6 +145,15 @@ fun RequestCard(request: RequestUi, onOpen: () -> Unit, modifier: Modifier = Mod
             }
             PreviewTextView(request.summary, MaterialTheme.typography.bodyMedium, MaterialTheme.colorScheme.onSurface)
             request.askedAgain?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = appColors.attention) }
+            if (onLetAskAgain != null) {
+                request.askAgain?.let { askAgain ->
+                    Text(askAgain.text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    // Marked sensitive like the answers: only the owner's own taps change what an agent may ask.
+                    if (askAgain.canLetAskAgain) {
+                        TextButton(onClick = onLetAskAgain, modifier = Modifier.semantics { isSensitiveData = true }) { Text(LET_ASK_AGAIN) }
+                    }
+                }
+            }
             Row(Modifier, verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     request.dataGoesTo,

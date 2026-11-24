@@ -165,7 +165,7 @@ private fun ToolRow(tool: CatalogToolUi, onOpenAgent: (AgentId) -> Unit) {
         Text(tool.plainWords, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(Spacing.sm), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
             RiskChip(tool.riskLevel)
-            if (tool.sendsDataOffPhone) TintedChip("Sends data off this phone", appColors.cloud, icon = AppIcons.Cloud)
+            if (tool.sendsDataOffPhone) TintedChip(offPhoneMark(tool.id), appColors.cloud, icon = AppIcons.Cloud)
         }
         Caption("Permission: ${tool.permission} · ${tool.permissionNote}")
         if (tool.agents.isEmpty()) {

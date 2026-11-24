@@ -12,6 +12,7 @@ import com.aicontrolcenter.core.operator.OwnerRequest
 import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.OwnerRequestStatus
 import com.aicontrolcenter.core.operator.OwnerRequests
+import com.aicontrolcenter.core.operator.OwnerResult
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.tools.Capability
 import com.aicontrolcenter.core.tools.CapabilityConstraint
@@ -129,13 +130,16 @@ class ApprovalViewModel(
     private val local = MutableStateFlow(Local())
     private var messageCounter = 0L
 
+    /** Bumped when this screen changed a closed request (the owner let the agent ask again), so it is read again. */
+    private val reread = MutableStateFlow(0)
+
     /**
      * The request as it is now: from the pending list while a call waits for it (every change to
      * it re-emits), else from the store, closed first if nothing waits for it any more.
      */
-    private val request: Flow<OwnerRequest?> = requests.pending
-        .map { pending -> pending.firstOrNull { it.id == requestId } ?: requests.closeIfAbandoned(requestId) }
-        .distinctUntilChanged()
+    private val request: Flow<OwnerRequest?> = combine(requests.pending, reread) { pending, _ ->
+        pending.firstOrNull { it.id == requestId } ?: requests.closeIfAbandoned(requestId)
+    }.distinctUntilChanged()
 
     val uiState: StateFlow<ApprovalUiState> = combine(request, directory.observe(), local, ticker) { request, snapshot, local, _ ->
         val now = clock.now()
@@ -178,6 +182,29 @@ class ApprovalViewModel(
             }
             local.update { it.copy(isBusy = false, note = "", message = UserMessage(text, ++messageCounter)) }
             allowedOnScreen?.let { answered -> local.update { it.copy(afterAnswer = nextStep(answered)) } }
+        }
+    }
+
+    /**
+     * After a refused permission, the owner changes their mind: the agent may ask again at once
+     * ([OwnerRequests.letAskAgain]). Nothing is allowed by it. Does nothing while busy.
+     */
+    fun letAskAgain() {
+        if (local.value.isBusy) return
+        local.update { it.copy(isBusy = true) }
+        viewModelScope.launch {
+            val text = try {
+                when (val result = requests.letAskAgain(requestId)) {
+                    is OwnerResult.Done -> "${result.value.agentName ?: "The agent"} can ask again. Its next call or request for this permission is put to you."
+                    is OwnerResult.Refused -> result.reason
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                "That could not be saved: ${failure.message ?: "storage error"}. Nothing changed."
+            }
+            reread.update { it + 1 }
+            local.update { it.copy(isBusy = false, message = UserMessage(text, ++messageCounter)) }
         }
     }
 

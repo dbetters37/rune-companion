@@ -655,7 +655,8 @@ internal class WorkspaceEmptyTrash(private val d: OperatorToolDependencies) : Op
 /** workspace.export */
 internal class WorkspaceExport(private val d: OperatorToolDependencies) : OperatorTool(
     "workspace.export", "Share a workspace file",
-    "Opens Android's share screen for a workspace file, so the owner can send or save it with an app they pick. Nothing is sent by itself.",
+    "Opens Android's share screen for a workspace file, so the owner can send or save it with an app they pick. Nothing is sent by itself. " +
+        "The receiving app gets the file, so this is blocked in local-only mode.",
     objectSchema("path") {
         stringProp("path", "The file to share.")
         stringProp("app", "Optional package name of the app to share to, e.g. \"com.google.android.gm\". Omit to let the owner pick.")
@@ -674,12 +675,20 @@ internal class WorkspaceExport(private val d: OperatorToolDependencies) : Operat
         if (before.sha256 == null) return assessment(summary, failing("${q(path.value)} is larger than ${size(d.limits.maxCopyBytes)} and is not shared."), details, dataGoesTo = goesTo)
         return assessment(
             summary,
-            prepared(check = { before.changeTo(WorkspaceStates.of(d.workspace, path, hashUpTo = d.limits.maxCopyBytes), q(path.value)) }) {
+            prepared(check = { before.changeTo(WorkspaceStates.of(d.workspace, path, hashUpTo = d.limits.maxCopyBytes), q(path.value)) }) { ctx ->
                 val file = when (val r = d.workspace.resolve(path)) {
                     is DocResult.Ok -> r.value
                     else -> return@prepared ToolOutcome.failure(OperatorText.problem(r, "Sharing ${q(path.value)}"))
                 }
-                AppTools.answer(d.apps.shareFile(file, MimeTypes.of(path.name), app), "The share screen for ${q(path.value)} opened; the owner completes it there.")
+                val result = d.apps.shareFile(file, MimeTypes.of(path.name), app)
+                // The receiving app can read the file from now on: logged as data leaving, by name and size, never its content.
+                AppTools.logHandOver(
+                    d, ctx, result, "Workspace file handed to another app",
+                    "the workspace file ${q(path.value)} (${size(before.sizeBytes)})",
+                    AppTools.shareTarget(app?.let { AppTools.launchable(d, it) }, app),
+                    AppTools.shareEgress(app, "a workspace file shared by an agent", before.sizeBytes ?: 0L),
+                )
+                AppTools.answer(result, "The share screen for ${q(path.value)} opened; the owner completes it there.")
             },
             details,
             dataGoesTo = goesTo,

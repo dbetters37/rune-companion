@@ -15,12 +15,14 @@ import com.aicontrolcenter.app.testing.TestSystemScreens
 import com.aicontrolcenter.app.testing.raise
 import com.aicontrolcenter.app.testing.sampleApproval
 import com.aicontrolcenter.app.testing.samplePermission
+import com.aicontrolcenter.core.GrantId
 import com.aicontrolcenter.core.RequestId
 import com.aicontrolcenter.core.operator.DeviceAccess
 import com.aicontrolcenter.core.operator.DeviceAccessState
 import com.aicontrolcenter.core.operator.DocResult
 import com.aicontrolcenter.core.operator.GrantScope
 import com.aicontrolcenter.core.operator.OperatorCapabilities
+import com.aicontrolcenter.core.operator.OwnerDecision
 import com.aicontrolcenter.core.operator.RelativePath
 import com.aicontrolcenter.core.operator.ScreenServiceState
 import com.aicontrolcenter.core.tools.CapabilityConstraint
@@ -288,6 +290,40 @@ class ToolsJourneysTest {
         assertEquals("ab".repeat(32), runBlocking { robot.app.operatorApps.get("com.example.chatbot") }?.signingCertSha256)
 
         robot.back().openSectionViaMore("Tools").tap("Screen").scrollListTo("Example Chatbot").assertShown("Checked: this exact app")
+    }
+
+    @Test
+    fun `B2 - after a Deny the owner lets the agent ask again, from the history and from the request's own screen`() {
+        val robot = app {
+            val operator = agentNamed("Operator").profile.id
+            val researcher = agentNamed("Researcher").profile.id
+            raise(samplePermission(operator, agentName = "Operator", id = "req_operator", createdAt = clock.current, minutes = 100_000))
+            raise(samplePermission(researcher, agentName = "Researcher", id = "req_researcher", createdAt = clock.current + 1, minutes = 100_000, taskId = null, rootId = null))
+            // Refused "a day from now": this app's test clock jumps ahead on every read, and the ten minutes must not run out under the journey.
+            val refusedAt = clock.current + 24 * 60 * 60_000L
+            ownerRequestStore.decide(RequestId("req_operator"), OwnerDecision.Deny(), refusedAt, GrantId("grt_unused_1"))
+            ownerRequestStore.decide(RequestId("req_researcher"), OwnerDecision.Deny(), refusedAt, GrantId("grt_unused_2"))
+        }.openSectionViaMore("Tools").tap("History")
+        fun refusalsHeld() = runBlocking {
+            listOf("Operator", "Researcher").count { robot.app.ownerRequestStore.lastRefusal(robot.app.agentNamed(it).profile.id, OperatorCapabilities.WEB_READ, CapabilityConstraint.None, 0) != null }
+        }
+        assertEquals(2, refusalsHeld())
+
+        // In the history: narrowed to the Operator's refusal, one tap ends its wait.
+        robot.tap("Operator").assertShown("1 request of 2 match").tap("Let it ask again")
+            .waitUntilShown("Operator can ask again. Its next call or request for this permission is put to you.")
+            .assertNotShown("Let it ask again")
+        assertEquals(1, refusalsHeld())
+
+        // On the Researcher's request's own screen.
+        robot.tap("Clear filters").tap("Researcher").tapItemContaining("Read the web page")
+            .scrollTo("Changed your mind?")
+            .assertShown("Changed your mind? Then its next call or request for this permission is put to you as usual. This allows nothing by itself.")
+            .tap("Let it ask again")
+            .waitUntilShown("Researcher can ask again. Its next call or request for this permission is put to you.")
+            .assertNotShown("Let it ask again")
+        assertEquals(0, refusalsHeld())
+        assertTrue(robot.grants().isEmpty(), "letting an agent ask gives it nothing")
     }
 
     @Test

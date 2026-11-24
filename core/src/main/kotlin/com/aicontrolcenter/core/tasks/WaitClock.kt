@@ -8,9 +8,11 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 
@@ -93,6 +95,21 @@ class WaitClock internal constructor(
         /** The innermost limit's clock, or null outside any. */
         suspend fun current(): WaitClock? = currentCoroutineContext()[Key]
     }
+}
+
+/**
+ * Runs [block] under a clock of its own that sets no limit and only measures: time inside
+ * [WaitClock.pausedWhile] anywhere under [block] is counted on the clock handed to it, and still
+ * pauses every enclosing limit. For whoever must account for the owner's time of one piece of
+ * work, such as one tool call. [context] is added to the block's coroutine context with the clock.
+ */
+suspend fun <T> measuringPauses(
+    timeSource: TimeSource = TimeSource.Monotonic,
+    context: CoroutineContext = EmptyCoroutineContext,
+    block: suspend CoroutineScope.(WaitClock) -> T,
+): T {
+    val clock = WaitClock(currentCoroutineContext()[WaitClock], timeSource)
+    return withContext(context + clock) { block(clock) }
 }
 
 /** Cancels the work of a [withPausableTimeout] that ran out. */
