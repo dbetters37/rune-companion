@@ -119,6 +119,12 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
     /** No app in front and nothing authorised until a test sets [FakeScreenOperator.screen] and [FakeScreenOperator.authorised]. */
     val screen = FakeScreenOperator()
     val shell = FakeShellRunner()
+
+    /** What the start-up sweep finds and stops: processes a shell command left when the app died under it. */
+    @Volatile var shellLeftovers: Int = 0
+
+    /** How often the start-up sweep ran. */
+    val shellSweeps = java.util.concurrent.atomic.AtomicInteger()
     val termux = FakeTermuxRunner()
     val protectedPackages = ProtectedPackages(ownPackage = OWN_PACKAGE)
 
@@ -163,6 +169,10 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
             // A separate object, as the device's: nothing agent-facing holding the screen can stop or resume.
             screenControl = screen.asControl(),
             shell = shell,
+            stopShellLeftovers = {
+                shellSweeps.incrementAndGet()
+                shellLeftovers.also { shellLeftovers = 0 }
+            },
             termux = termux,
             // Captures the set, not this test app (which holds the owner's services).
             protectedPackages = protectedPackages.let { fixed -> { fixed } },

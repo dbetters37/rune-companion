@@ -120,6 +120,11 @@ class OperatorPorts(
     /** The owner's Stop and Resume. Owner-only. */
     val screenControl: ScreenControl,
     val shell: ShellRunner,
+    /**
+     * Stops what a shell command left running when the app died under it, and returns how many
+     * processes that were. Called once when the app starts.
+     */
+    val stopShellLeftovers: suspend () -> Int = { 0 },
     val termux: TermuxRunner,
     /** The apps that are never operated, resolved once at start-up and read on every check. */
     val protectedPackages: () -> ProtectedPackages,

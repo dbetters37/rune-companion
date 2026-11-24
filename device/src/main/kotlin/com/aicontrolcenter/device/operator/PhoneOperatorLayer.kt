@@ -28,7 +28,6 @@ import com.aicontrolcenter.device.operator.media.MediaStoreLibrary
 import com.aicontrolcenter.device.platform.packageInfoOrNull
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
-import java.io.File
 
 /**
  * The phone operator's Android gateways other than the screen: the workspace folder, the
@@ -67,8 +66,17 @@ class PhoneOperatorLayer(
         dispatcher = ioDispatcher,
     )
 
-    /** `/system/bin/sh` in a workspace folder. */
-    val shellRunner: ShellRunner = SystemShellRunner(tempDir = { File(appContext.cacheDir, "shell") }, dispatcher = ioDispatcher)
+    private val systemShell = SystemShellRunner.forApp(appContext, ioDispatcher)
+
+    /** `/system/bin/sh` in a workspace folder; everything a command starts is stopped when it ends. */
+    val shellRunner: ShellRunner = systemShell
+
+    /**
+     * Stops what a shell command left running when the app died under it; called once when the
+     * app starts. Returns how many processes were stopped. Does nothing where this is not an
+     * Android app process.
+     */
+    suspend fun stopShellLeftovers(): Int = systemShell.stopLeftovers()
 
     /** Termux's RUN_COMMAND. */
     val termuxRunner: TermuxRunner = TermuxCommandRunner(appContext)

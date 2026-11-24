@@ -1,6 +1,7 @@
 package com.aicontrolcenter.framework.operator
 
 import com.aicontrolcenter.core.Clock
+import com.aicontrolcenter.core.operator.CommandTurn
 import com.aicontrolcenter.core.operator.DocResult
 import com.aicontrolcenter.core.operator.DocumentEntry
 import com.aicontrolcenter.core.operator.FileContent
@@ -11,9 +12,11 @@ import com.aicontrolcenter.core.operator.WorkspaceFile
 import com.aicontrolcenter.core.operator.WorkspaceHit
 import com.aicontrolcenter.core.operator.WorkspaceRoot
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -36,6 +39,7 @@ import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.BasicFileAttributes
 import java.security.SecureRandom
 import java.util.Locale
+import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
 
 /** Size limits of the workspace. Every limit applies to every caller, the tools and the owner's file manager alike. */
@@ -81,8 +85,10 @@ data class WorkspaceLimits(
  * file itself) is cleared before the first change after a start, and by emptying the trash.
  *
  * Gateways that create workspace files themselves (media and folder copies, screenshots) do so
- * through [receive], under the same lock and limits; after a shell command, [changedOutside]
- * tells the screens and reports a workspace over its limit.
+ * through [receive], under the same lock and limits. A shell command, the one writer that does
+ * not go through this class, runs inside [runCommand]: it holds the change lock for as long as
+ * the command runs, so nothing else changes a workspace file meanwhile, and it runs only if the
+ * change counter is still what it was when the command was assessed.
  *
  * Residual risk: the sandbox checks paths when they are resolved. A process the owner approved
  * (a shell command) that swaps a folder for a link between that check and the use could
@@ -124,7 +130,40 @@ class LocalWorkspace(
     private fun trashDir(): Path = base().resolve(Workspace.TRASH_FOLDER)
 
     private fun changed() {
-        changeCounter.value = changeCounter.value + 1
+        changeCounter.update { it + 1 }
+    }
+
+    /** Marks the coroutine that runs a shell command inside [runCommand]: it holds the change lock already. */
+    private class HoldsChangeLock(val workspace: LocalWorkspace) : AbstractCoroutineContextElement(HoldsChangeLock) {
+        companion object Key : CoroutineContext.Key<HoldsChangeLock>
+    }
+
+    private suspend fun holdsChangeLock(): Boolean = currentCoroutineContext()[HoldsChangeLock]?.workspace === this
+
+    /** [block] with the change lock held. The command inside [runCommand] holds it already; its own calls do not wait for it. */
+    private suspend fun <T> locked(block: suspend () -> T): T = if (holdsChangeLock()) block() else mutex.withLock { block() }
+
+    override fun changeCount(): Long = changeCounter.value
+
+    override suspend fun <T> runCommand(unchangedSince: Long, command: suspend () -> T): CommandTurn<T> = withContext(io) {
+        check(!holdsChangeLock()) { "a shell command cannot start another one while it holds the change lock" }
+        mutex.withLock {
+            // Under the lock: every change that was made has raised the counter, and none can be made from here on.
+            if (changeCounter.value != unchangedSince) return@withLock CommandTurn.Changed
+            changed()
+            val result = try {
+                withContext(HoldsChangeLock(this@LocalWorkspace)) { command() }
+            } finally {
+                // It has ended, however it ended: whatever it changed counts as a change, and the screens look again.
+                changed()
+            }
+            val used = try {
+                treeSize(base()) ?: 0
+            } catch (e: IOException) {
+                0
+            }
+            CommandTurn.Ran(result, if (used <= limits.maxTotalBytes) null else (fullProblem(used) as DocResult.Failed).reason)
+        }
     }
 
     private fun check(path: RelativePath): DocResult<WorkspaceFile> = WorkspaceFile.resolve(root.directory(), path)
@@ -132,9 +171,17 @@ class LocalWorkspace(
     private suspend fun <T> reading(block: () -> DocResult<T>): DocResult<T> = withContext(io) { guard(block) }
 
     private suspend fun <T> changing(block: () -> DocResult<T>): DocResult<T> = withContext(io) {
-        mutex.withLock {
-            tidyOnce()
-            guard(block).also { if (it is DocResult.Ok) changed() }
+        locked {
+            val before = changeCounter.value
+            var result: DocResult<T>? = null
+            try {
+                tidyOnce()
+                guard(block).also { result = it }
+            } finally {
+                // Announced once per change (a folder made on the way has announced it already), and also when the
+                // change ended with an exception, since it may have changed something first.
+                if ((result == null || result is DocResult.Ok) && changeCounter.value == before) changed()
+            }
         }
     }
 
@@ -436,8 +483,9 @@ class LocalWorkspace(
         maxBytes: Long,
         write: suspend (target: WorkspaceFile, maxBytes: Long) -> DocResult<T>,
     ): DocResult<T> = withContext(io) {
-        mutex.withLock {
+        locked {
             var touched = false
+            var ended = false
             try {
                 guard {
                     if (path.isRoot) return@guard DocResult.NotAllowed("A file needs a name.")
@@ -469,15 +517,16 @@ class LocalWorkspace(
                         }
                     }
                     if (result is DocResult.TooLarge && limit == room && room < minOf(maxBytes, limits.maxFileBytes)) fullProblem(used) else result
-                }
+                }.also { ended = true }
             } finally {
-                if (touched) changed()
+                // Also when the gateway was cancelled or failed half way: it may have left part of a file.
+                if (touched || !ended) changed()
             }
         }
     }
 
     override suspend fun changedOutside(): String? = withContext(io) {
-        mutex.withLock {
+        locked {
             changed()
             val used = try {
                 treeSize(base()) ?: 0
@@ -554,6 +603,8 @@ class LocalWorkspace(
             if (Files.exists(dir, NOFOLLOW)) return DocResult.Failed("${OperatorText.q(current.value)} is a file, not a folder.")
             try {
                 Files.createDirectory(dir)
+                // A change of its own: it stays even if the call it was made for fails after this.
+                changed()
             } catch (e: FileAlreadyExistsException) {
                 if (!Files.isDirectory(dir, NOFOLLOW)) return DocResult.Failed("${OperatorText.q(current.value)} is a file, not a folder.")
             }

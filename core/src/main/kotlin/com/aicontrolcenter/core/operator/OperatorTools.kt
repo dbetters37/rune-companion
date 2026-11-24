@@ -107,8 +107,9 @@ object OperatorTools {
         info("scripts.run_js", C.SCRIPTS_JS, RiskLevel.MODIFYING, ToolCategory.SCRIPTS, rule = "Host functions reach the workspace only, through Workspace."),
         info(
             "scripts.run_shell", C.SCRIPTS_SHELL, RiskLevel.CONSEQUENTIAL, ToolCategory.SCRIPTS, sendsDataOffDevice = true,
-            rule = "The command can use the network, so it is blocked in local-only mode. Workspace files it names are pinned and scripts " +
-                "shown; background work is refused and the command's process group is killed when it ends.",
+            rule = "The command can use the network, so it is blocked in local-only mode. It runs only if nothing changed the workspace " +
+                "since it was assessed, and holds the workspace's change lock while it runs. Everything it starts is stopped when it ends. " +
+                "The scripts found in it are shown and pinned; a command the reader is not sure of is refused.",
         ),
         info(
             "termux.run", C.SCRIPTS_TERMUX, RiskLevel.CONSEQUENTIAL, ToolCategory.SCRIPTS, sendsDataOffDevice = true,

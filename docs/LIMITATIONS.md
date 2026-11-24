@@ -122,22 +122,48 @@ do it.
   across calls in three ways, and the largest count decides: per agent in one task, per agent
   across all its tasks, and per objective across all the agents working on it. The counts are
   kept in memory and start again when the app restarts.
-- **Shell commands.** You see the command, the text of the scripts it runs (long scripts only
-  in part, with a note to read the rest in Workspace) and the workspace files it names; if any of
-  them change before it runs, it does not run. A script is found however its name is spelled,
-  as long as the spelling is fixed (quotes, `..`, `$HOME`, `$PWD`, the workspace's full path,
-  patterns such as `t*.sh`), and so are the scripts that script runs, two levels down; scripts
-  one level further are checked but not shown. A command that runs a script whose name is only
-  put together while the command runs, that lies outside the workspace or is a link, is refused
-  before you are asked. Still not checked: a file the command only reads, through a name put
-  together while it runs (for example with `cat`), and text the command puts together itself
-  and hands to a shell. Commands that send work to the background (`&`,
-  `nohup`, `setsid`, `disown`, job control) are refused, also when the word is hidden by
-  quotes or the program's name is put together while the command runs, and so are scripts
-  that use `nohup`, `setsid` or job control. Each command runs in its own process group that
-  is killed when it ends, at its time limit or when it is stopped. A process that still leaves
-  that group (for example a program downloaded on Android 9, or a script too long to be read
-  here) could keep running until Android stops the app.
+- **Shell commands.** Four things hold for every command, however it is written.
+  (1) You are asked every time, with the exact text of the command.
+  (2) Nothing else changes the workspace between the moment you are asked and the end of the
+  command. The workspace counts every change made through this app (a file tool, a script, a
+  copy or a screenshot saved into it, your own file manager, another shell command). A command
+  runs only if that count is still what it was when you were asked, and while it runs every
+  other change waits; one shell command runs at a time. So a script cannot be swapped after you
+  approved, whether the approval showed that script or not. The price: if you or an agent
+  change any workspace file while a command waits for your answer, the command is not run and
+  the agent has to ask again.
+  (3) Everything the command starts is stopped when it ends, at its time limit or when it is
+  stopped: its process group is killed, and then every process left that runs under this app's
+  user id and is not the app itself, also work sent to the background with `&`, `nohup`,
+  `setsid` or job control (such commands are therefore no longer refused). The same sweep runs
+  when the app starts, for a command the app died under.
+  (4) A shell the command starts reads no start-up file an agent wrote: `HOME` is an empty
+  folder outside the workspace, emptied before each command, and `ENV` is not set.
+
+  Finding and showing the scripts a command runs is best effort, and every approval says so:
+  "A shell command can run any file in the workspace. Only the scripts found in the command are
+  shown here." The app reads the command for scripts named in the usual ways (`sh file`,
+  `. ./file`, `awk -f file`, a file redirected or piped into a shell) and for the scripts those
+  run in turn, two levels down; it shows their text and checks it again before running. Where
+  it is not sure what a command line means it refuses before you are asked, and tells the agent
+  why: a script that does not exist, lies outside the workspace (also through `~` or `$HOME`),
+  is a link, or whose name is only put together when the command runs; a shell option or a
+  file-name pattern it does not know; a shell fed from anything but a workspace file or fixed
+  text; text for a shell (`sh -c`, `eval`) that is only put together when the command runs; a
+  script named by a relative path in a command that also changes folder or sets `PATH`,
+  `CDPATH`, `ENV`, `HOME` or `IFS`; a command that points `HOME`, `ENV` or `PATH` into the
+  workspace; a here-document or another construct it does not read exactly as Android's shell
+  does. This refuses some harmless commands. What it cannot do is
+  find a script that is run in a way it does not know (a program that starts a shell itself, a
+  wrapper that is not on its list): such a script is not shown, but by (2) it is the file that
+  was in the workspace when you were asked.
+
+  Limits of (3): a command that keeps starting new processes faster than they can be stopped is
+  chased for about two seconds; if some are left, the answer says so, and no further command
+  runs until they are gone. The sweep stops every process of this app's user id that Android
+  did not start as part of the app, so it would also stop a helper Android itself runs under
+  that user id at that moment; Android repeats such work. Where a phone does not show the app
+  its own processes, shell commands are not available.
 - **Termux commands** keep running in Termux after the time limit; this app only stops
   waiting for them.
 - **The JavaScript sandbox** checks every array built-in that would walk a huge array in one
@@ -215,5 +241,8 @@ do it.
 - Whether Android lets the app keep a replaced workspace file as a second name for the same
   data. If it does not, the app copies the file instead; both ways are tested, the phone's
   choice is not.
+- Stopping what a shell command leaves running, against real processes. The build machine runs
+  everything as one user, so the sweep is tested there against a made-up process table only;
+  the test with real runaway processes (`ShellLeftoversDeviceTest`) runs on a phone or emulator.
 - The web page reader always connects directly, also on a network that expects a proxy.
 - On-device model speed and memory use.

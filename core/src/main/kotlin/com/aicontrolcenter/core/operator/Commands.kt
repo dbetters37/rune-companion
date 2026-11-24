@@ -15,7 +15,9 @@ data class CommandLimits(
 sealed interface CommandOutcome {
     /**
      * Ran to the end. [truncated]: some output was cut at the limit. [stoppedLeftovers]: it left
-     * processes running (in the background), and they were stopped when it ended.
+     * processes running (in the background, or after leaving its process group), and they were
+     * stopped when it ended. [leftRunning]: some of them could not be stopped (a command that
+     * kept starting new processes faster than they could be killed).
      */
     data class Finished(
         val exitCode: Int,
@@ -24,10 +26,11 @@ sealed interface CommandOutcome {
         val truncated: Boolean,
         val durationMs: Long,
         val stoppedLeftovers: Boolean = false,
+        val leftRunning: Boolean = false,
     ) : CommandOutcome
 
-    /** Stopped at the time limit; what it printed until then. */
-    data class TimedOut(val stdout: String, val stderr: String, val durationMs: Long) : CommandOutcome
+    /** Stopped at the time limit; what it printed until then. [leftRunning] as for [Finished]. */
+    data class TimedOut(val stdout: String, val stderr: String, val durationMs: Long, val leftRunning: Boolean = false) : CommandOutcome
 
     /** Could not run here; [access] names what the owner can turn on, if anything. */
     data class Unavailable(val reason: String, val access: DeviceAccess? = null) : CommandOutcome
@@ -39,11 +42,14 @@ sealed interface CommandOutcome {
 /**
  * Android's own shell (`/system/bin/sh -c <command>`) as this app's user, in a workspace
  * directory, with a stripped environment (`:device`). The command is passed as one argument,
- * never split or re-quoted. It runs in a session and process group of its own, and when it
- * ends, reaches its time limit or the caller is cancelled, the whole group is killed: nothing it
- * started outlives the call unless it left the group itself (which the tool refuses to ask for:
- * `setsid`, `nohup`, `&`, job control). Where that cannot be arranged, nothing runs
- * ([CommandOutcome.Unavailable]).
+ * never split or re-quoted. `HOME` is an empty folder of the app outside the workspace, made
+ * empty again before every command, and `ENV` is not set, so no start-up file an agent could
+ * have written is read by a shell the command starts.
+ *
+ * Everything a command starts is stopped when it ends, reaches its time limit or the caller is
+ * cancelled, whatever it did to get away: its process group is killed, and then every process
+ * left that runs under this app's user id and is not the app itself. One command runs at a
+ * time. Where that cannot be arranged, nothing runs ([CommandOutcome.Unavailable]).
  */
 fun interface ShellRunner {
     suspend fun run(command: String, workingDirectory: WorkspaceFile, limits: CommandLimits): CommandOutcome

@@ -78,6 +78,18 @@ data class TrashItem(
     val trashedAt: Long,
 )
 
+/** What [Workspace.runCommand] did. */
+sealed interface CommandTurn<out T> {
+    /**
+     * The command ran, and [result] is what it returned. [overLimit]: why the workspace is over
+     * its total size limit now, as a sentence, or null when it is within it.
+     */
+    data class Ran<T>(val result: T, val overLimit: String?) : CommandTurn<T>
+
+    /** The workspace changed after the count the caller gave, so the command was not run. */
+    data object Changed : CommandTurn<Nothing>
+}
+
 /** A [Workspace.search] hit: a name match (no line) or a line of text. */
 data class WorkspaceHit(val path: RelativePath, val line: Int? = null, val excerpt: String? = null)
 
@@ -98,6 +110,8 @@ data class WorkspaceHit(val path: RelativePath, val line: Int? = null, val excer
  *
  * Every write into the workspace goes through this service, gateways' included ([receive]), so
  * the size limits, the change signal and the serialisation of changes hold for every caller.
+ * The one writer that does not go through it, a shell command, runs inside [runCommand], which
+ * holds every other change back while it runs.
  */
 interface Workspace {
     /** Increases after every change, from any caller, so screens can refresh. */
@@ -181,6 +195,29 @@ interface Workspace {
 
     /** The checked file for a gateway call that reads (share, install) or runs in it (shell directory). */
     suspend fun resolve(path: RelativePath): DocResult<WorkspaceFile>
+
+    /**
+     * The change counter now, the latest value of [changes]. Every change made through this
+     * service raises it, whoever makes it (a file tool, a script's host function, a gateway's
+     * copy, the owner's file manager), and so does a shell command when it starts and when it
+     * ends ([runCommand]). Two equal readings mean that nothing changed the workspace through
+     * this app in between.
+     */
+    fun changeCount(): Long
+
+    /**
+     * Runs [command], a shell command the owner approved, as the only thing that changes the
+     * workspace while it runs. It runs only if the change counter still is [unchangedSince],
+     * the value read before the command was assessed; otherwise nothing runs
+     * ([CommandTurn.Changed]). From that check until [command] has ended, however it ends, this
+     * service's change lock is held: every other change, from any tool, agent or screen, waits,
+     * and so does another command, so one runs at a time. The counter is raised when the command
+     * starts and again when it has ended, which also tells the listeners of [changes], and a
+     * command that waited for another one therefore does not run. [command] must end in bounded
+     * time (a shell command has a time limit), since that is how long the others wait. Calls of
+     * this service made from inside [command] do not wait for the lock it holds.
+     */
+    suspend fun <T> runCommand(unchangedSince: Long, command: suspend () -> T): CommandTurn<T>
 
     /** Constants. */
     companion object {
