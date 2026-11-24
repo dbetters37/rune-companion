@@ -14,7 +14,9 @@ import java.util.Locale
  * This is help for the owner, on a best-effort basis: a shell language cannot be read
  * completely, and the tool's guarantees (nothing else changes the workspace while a command is
  * asked for and runs; everything it starts is stopped when it ends) do not depend on it. What
- * it does promise is that it does not guess:
+ * comes out of it is a reading, and the approval shows it as one; only the plain form
+ * `sh file` is shown as a fact, and that is decided by [ShellPlainForm], not here. It tries
+ * not to guess:
  *
  *  - a name is resolved the way the shell would for a static spelling (quotes and backslashes
  *    removed, `.` and `..` followed inside the workspace, `$PWD` and the workspace's own
@@ -27,9 +29,10 @@ import java.util.Locale
  *  - when the text changes folder or the way names are looked up ([Reading.unsettledBy]), the
  *    place a relative name points to is not certain, and the caller refuses scripts named so.
  *
- * The caller refuses a command with a problem or a doubt instead of running something the owner
- * was not shown. The lists of shells and of programs that start other programs are incomplete by
- * nature.
+ * The caller refuses a command with a problem or a doubt. That refuses many commands the reader
+ * cannot read well, not all of them: the lists of shells and of programs that start other
+ * programs are incomplete by nature, and so is what it knows about how a shell changes a
+ * variable or a folder.
  */
 internal object ShellCommands {
     private val SHELLS = setOf("sh", "ash", "bash", "dash", "ksh", "mksh", "lksh", "zsh", "rbash", "ksh93", "pdksh", "hush")
@@ -60,6 +63,16 @@ internal object ShellCommands {
 
     /** Commands after which a bare name is a variable they set or unset. */
     private val VARIABLE_COMMANDS = DECLARATIONS + setOf("read", "unset", "getopts")
+
+    /**
+     * Commands that can give any variable a value without an assignment the reader could follow: a text that is read in or
+     * evaluated, arithmetic (`let`), `read` (into `REPLY` when no name is given), `getopts` (`OPTARG`, `OPTIND`) and what a
+     * `trap` runs, at whatever moment its signal comes.
+     */
+    private val SETS_ANYTHING = SOURCE + setOf("eval", "let", "read", "getopts", "trap")
+
+    /** Every command that sets or changes variables, or passes its words on to one that does. */
+    private val ASSIGNERS = SETS_ANYTHING + DECLARATIONS + setOf("unset", "set", "nameref", "integer", "command", "builtin")
 
     /** The dynamic loader started by hand: it runs the program named after it. */
     private val LOADER = Regex("""^ld(?:64|-linux[^/]*|-musl[^/]*)?\.so(?:\.[0-9]+)*$""")
@@ -120,7 +133,9 @@ internal object ShellCommands {
     const val DOUBT_OPEN_FILE = "feeds a shell from a file the command opened earlier (<&)"
     const val DOUBT_TEXT = "hands a shell text that is only put together when the command runs (sh -c, eval, trap), so what it runs cannot be read"
     const val DOUBT_HERE_EXPANDS = "feeds a shell a here-document whose text is changed before the shell reads it (quote the end word: <<'EOF')"
-    const val DOUBT_ALIAS = "defines an alias, which changes what the words after it mean"
+    const val DOUBT_ALIAS = "uses alias with an argument; an alias changes what the words after it mean"
+    const val DOUBT_NAME_REFERENCE = "uses a name reference (typeset -n, nameref) and starts a shell; through a name reference any variable can be " +
+        "set, also HOME and ENV, which decide the start-up files a shell reads"
     fun doubtStartUp(name: String) = "sets $name to a place in the workspace, or to a value that is only known when the command runs; what is started " +
         "after that would be looked up there, or would read its start-up files from there, and could not be shown"
 
@@ -242,8 +257,11 @@ internal object ShellCommands {
      * @property names the names, at most [MAX_NAMES] that are not scripts
      * @property doubts why the text cannot be read with certainty; each completes "The command …" (or "The script … "). With one, nothing may run
      * @property unsettledBy what in this text makes the place of a relative name uncertain ([UNSETTLED_FOLDER], [UNSETTLED_LOOKUP]), or null
+     * @property nameReference the text declares a name reference (`typeset -n`, `nameref`): assigning to one name then sets another variable
+     * @property startsShell the text starts a shell. With [nameReference] in the same text that is a doubt ([DOUBT_NAME_REFERENCE]); the
+     *   caller looks at the two across the texts of one command
      */
-    class Reading(val names: List<Name>, val doubts: List<String>, val unsettledBy: String?)
+    class Reading(val names: List<Name>, val doubts: List<String>, val unsettledBy: String?, val nameReference: Boolean = false, val startsShell: Boolean = false)
 
     /**
      * Reads [text], a command line or the text of a shell script. With [everyWord], every word
@@ -254,7 +272,8 @@ internal object ShellCommands {
         val reader = Reader(places)
         reader.read(text, Variables.NONE, depth = 0)
         if (everyWord) reader.splitFurther(text)
-        return Reading(reader.names.filter { everyWord || it.asScript }, reader.doubts.distinct(), reader.unsettledBy)
+        val doubts = reader.doubts.distinct().let { if (reader.nameReference && reader.startsShell) it + DOUBT_NAME_REFERENCE else it }
+        return Reading(reader.names.filter { everyWord || it.asScript }, doubts, reader.unsettledBy, reader.nameReference, reader.startsShell)
     }
 
     // ---------------------------------------------------------------- reading commands
@@ -271,6 +290,45 @@ internal object ShellCommands {
     /** The first words of [simple] as far as they are plain names: enough to tell a declaration, `eval` or `.`. */
     private fun plainNames(simple: Simple): List<String> =
         simple.words.takeWhile { it.plain != null }.take(4).map { it.plain!!.substringAfterLast('/').lowercase(Locale.ROOT) }
+
+    /** The command [simple] runs as far as it is plain, behind `command`, `builtin` and their options: `command -p read x` is `read`. */
+    private fun commandName(simple: Simple): String? = plainNames(simple).firstOrNull { it != "command" && it != "builtin" && !it.startsWith("-") }
+
+    /** An option of a command as it gets it: quotes and backslashes removed, starting with `-` or `+`. */
+    private fun optionText(word: Word): String? = word.plain?.takeIf { it.startsWith("-") || it.startsWith("+") }
+
+    /** `typeset -n`, `declare -n`, `local -n` and mksh's `nameref`: after it, assigning to one name sets another variable. */
+    private fun isNameReference(simple: Simple): Boolean {
+        val command = commandName(simple)
+        return command == "nameref" || (command in DECLARATIONS && simple.words.any { w -> optionText(w)?.let { 'n' in it } == true })
+    }
+
+    /**
+     * `NAME=value` or `NAME+=value` as a command gets it as an argument: read off [word] once its
+     * quotes and backslashes are removed (`export "HOME=$PWD"`, `env 'HOME'=x`, `export \HOME=x`).
+     * Returns the name, and the value as a word of its own (null for `+=`: what it is added to is
+     * not known here); null when the word is no such thing.
+     */
+    private fun assignedArgument(word: Word): Pair<String, Word?>? {
+        word.assignment()?.let { return it }
+        val name = StringBuilder()
+        for ((index, piece) in word.pieces.withIndex()) {
+            if (piece.kind != Kind.LIT) return null
+            val at = piece.text.indexOf('=')
+            if (at < 0) {
+                name.append(piece.text)
+                continue
+            }
+            name.append(piece.text, 0, at)
+            val appends = name.endsWith("+")
+            val bare = if (appends) name.substring(0, name.length - 1) else name.toString()
+            if (!IDENTIFIER.matches(bare)) return null
+            if (appends) return bare to null
+            val rest = piece.text.substring(at + 1)
+            return bare to Word((if (rest.isEmpty()) emptyList() else listOf(piece.copy(text = rest))) + word.pieces.drop(index + 1), word.raw)
+        }
+        return null
+    }
 
     /** How a shell is started: with a command string (`-c`), a script file, files it reads first, or nothing (it reads its input). */
     private class ShellUse(val commandString: Word?, val script: Word?, val startFiles: List<Word>, val unknownOption: String?) {
@@ -351,13 +409,17 @@ internal object ShellCommands {
                 parent.values.forEach { (k, v) -> values[k] = v.toMutableList() }
                 val unknown = HashSet(parent.unknown)
                 var allUnknown = parent.allUnknown
+                // R2 of round 4. "((x++))": arithmetic assigns without an assignment word. Two "(" in a row are that, or a subshell in a subshell.
+                if (script.operators.zipWithNext().any { (a, b) -> a == "(" && b == "(" }) allUnknown = true
                 for (simple in script.commands) {
                     val names = plainNames(simple)
-                    val first = names.firstOrNull()
+                    val first = commandName(simple)
                     // A sourced or evaluated text can set anything, and so can changing how words are split.
                     if (names.any { it == "eval" || it in SOURCE }) allUnknown = true
+                    // let, read, getopts and trap set variables too, in ways that are not read here (R2).
+                    if (first in SETS_ANYTHING) allUnknown = true
                     // A name reference ("typeset -n ref=f", mksh's nameref): assigning to one variable then changes another.
-                    if (first == "nameref" || (first in DECLARATIONS && simple.words.drop(1).any { isOption(it) && 'n' in it.plain.orEmpty() })) allUnknown = true
+                    if (isNameReference(simple)) allUnknown = true
                     if (simple.words.isEmpty()) {
                         simple.assignments.forEach { (name, value) ->
                             if (name == "IFS") allUnknown = true
@@ -366,12 +428,18 @@ internal object ShellCommands {
                         continue
                     }
                     simple.assignments.forEach { unknown += it.first }
-                    for (arg in simple.words.drop(1)) {
+                    val arguments = simple.words.drop(1)
+                    // A declaration gives a variable the value that is written only when it has no option: "typeset -u f=run.sh"
+                    // makes it RUN.SH, -l lower case, -i a number (R2). A word that is only known when the command runs may be an option.
+                    val optioned = arguments.any { it.assignment() == null && (it.plain == null || optionText(it) != null) }
+                    if (first in DECLARATIONS && arguments.any { it.assignment() == null && it.plain == null }) allUnknown = true
+                    for (arg in arguments) {
                         val assigned = arg.assignment()
                         when {
-                            assigned != null && first in DECLARATIONS -> values.getOrPut(assigned.first) { ArrayList() } += assigned.second
+                            assigned != null && first in DECLARATIONS && !optioned -> values.getOrPut(assigned.first) { ArrayList() } += assigned.second
                             assigned != null -> unknown += assigned.first
-                            else -> arg.plain?.let { if (IDENTIFIER.matches(it)) unknown += it }
+                            // "export 'f=x'", "readonly \"f=$y\"": an assignment all the same, in a spelling whose value is not followed here.
+                            else -> assignedArgument(arg)?.let { unknown += it.first } ?: arg.plain?.let { if (IDENTIFIER.matches(it)) unknown += it }
                         }
                     }
                 }
@@ -426,6 +494,10 @@ internal object ShellCommands {
         val names = ArrayList<Name>()
         val doubts = ArrayList<String>()
         var unsettledBy: String? = null
+
+        /** See [Reading.nameReference] and [Reading.startsShell]; over this text and every text read inside it. */
+        var nameReference = false
+        var startsShell = false
         private var plain = 0
         private var scripts = 0
 
@@ -441,7 +513,9 @@ internal object ShellCommands {
             }
             val script = ShellSyntax.parse(text)
             doubts += script.doubts
-            val variables = Variables.read(script, parent)
+            var variables = Variables.read(script, parent)
+            // R2: "$d ./lib", "$r x < name.txt". A command whose own name comes from a variable may be one that sets variables.
+            if (!variables.allUnknown && script.commands.any { mayAssign(it, variables, depth) }) variables = Variables(variables.values, variables.unknown, allUnknown = true)
             if (setsLookupVariable(script)) unsettledBy = unsettledBy ?: UNSETTLED_LOOKUP
             startUpDoubts(script)
             // "cat() { … }; cat file | sh": a function named like a command this reader gives a meaning to takes that meaning away.
@@ -456,12 +530,23 @@ internal object ShellCommands {
             }
 
             for ((index, simple) in script.commands.withIndex()) {
+                // R2: find runs what follows -execdir or -okdir in the folder of each file it finds, not in the working folder.
+                if (simple.words.any { it.plain == "-execdir" || it.plain == "-okdir" }) unsettledBy = UNSETTLED_FOLDER
+                // R3: through a name reference any variable can be set, those that decide where names are looked up among them.
+                if (isNameReference(simple)) {
+                    nameReference = true
+                    unsettledBy = unsettledBy ?: UNSETTLED_LOOKUP
+                }
                 val calls = callsOf(simple.words, variables, depth)
                 // "xargs sh": the script's name is the first thing xargs reads.
                 val fedArguments = calls.firstOrNull()?.name in ARGUMENT_FEEDERS
                 for (call in calls) {
+                    // R3: env and the declarations take NAME=value as an argument, wherever they stand in a chain of commands that start
+                    // a command ("nice env HOME=…", "command export …"), and with quotes or backslashes anywhere in the word.
+                    if (call.name == "env" || call.name in DECLARATIONS) call.args.forEach { arg -> assignedArgument(arg)?.let { startUp(it.first, it.second) } }
                     when (call.name) {
                         in SHELLS -> {
+                            startsShell = true
                             val use = shellUse(call.args)
                             use.unknownOption?.let { doubt(doubtOption(it)) }
                             use.startFiles.forEach { script(it, shell = true) }
@@ -499,7 +584,8 @@ internal object ShellCommands {
                                 textFor(listOf(action), variables, depth, sameShell = true)
                             }
                         }
-                        "alias" -> if (call.args.any { it.assignment() != null || it.plain == null }) doubt(DOUBT_ALIAS)
+                        // R2: with any argument, quoted or not ("alias 'sh=sh other'"); only the bare list of aliases is let through.
+                        "alias" -> if (call.args.isNotEmpty()) doubt(DOUBT_ALIAS)
                         in FOLDER_CHANGES -> unsettledBy = UNSETTLED_FOLDER
                     }
                     // A program started by its path: when that path is a workspace file, it is what runs.
@@ -540,7 +626,7 @@ internal object ShellCommands {
                 val first = plainNames(simple).firstOrNull()
                 simple.assignments.forEach { (name, _) -> if (!(name == "IFS" && first == "read")) set += name }
                 for (arg in simple.words.drop(1)) {
-                    arg.assignment()?.let { set += it.first }
+                    assignedArgument(arg)?.let { set += it.first }
                     if (first in VARIABLE_COMMANDS || first == "env") arg.plain?.let { if (IDENTIFIER.matches(it)) set += it }
                 }
             }
@@ -553,33 +639,61 @@ internal object ShellCommands {
         }
 
         /**
-         * HOME, ENV and PATH decide which start-up files a shell reads and where a program's name
-         * is looked up. The runner sets them to places outside the workspace (G3); a text that
-         * sets one of them to a place in the workspace, or to a value that cannot be read here,
-         * takes that back, so it is a doubt. Setting them to a fixed place outside the workspace
-         * is fine, and so are `unset` and a bare `export`.
+         * "$d ./lib", "$r x < name.txt", "command $d ./lib": a command whose own name comes from a
+         * variable. True when that name is one of the commands that set variables ([ASSIGNERS]),
+         * or cannot be told. (What [callsOf] doubts here it doubts again when the command is read.)
+         */
+        private fun mayAssign(simple: Simple, variables: Variables, depth: Int): Boolean {
+            if (simple.words.all { it.plain != null }) return false
+            val first = simple.words.first()
+            if (first.plain == null && programName(first, variables, depth) == null) return true
+            return callsOf(simple.words, variables, depth).any { it.word.plain == null && it.name in ASSIGNERS }
+        }
+
+        /**
+         * [name] is given [value] (null: something that cannot be read here). HOME, ENV and PATH
+         * decide which start-up files a shell reads and where a program's name is looked up; the
+         * runner sets them to places outside the workspace (G3). A text that sets one of them to
+         * a place in the workspace, or to a value that cannot be read here, takes that back, so
+         * it is a doubt. Setting them to a fixed place outside the workspace is fine.
+         */
+        private fun startUp(name: String, value: Word?) {
+            if (name in START_UP_VARIABLES && (value == null || !outside(name, value))) doubt(doubtStartUp(name))
+        }
+
+        /**
+         * The ways of setting HOME, ENV or PATH that are read off the text as a whole ([startUp]):
+         * an assignment in front of a command or on its own, `read` and `getopts`, a loop's
+         * variable, `${NAME:=…}` and `NAME+=`. `unset` and a bare `export` are fine. The
+         * arguments of `env` and of the declarations are looked at where the commands are read,
+         * since those may stand behind other commands.
+         *
+         * This finds the usual spellings, not every one: the promise is only that a shell the
+         * command starts reads no start-up file from the workspace unless the command itself
+         * points HOME or ENV there, which the command text the owner approves always shows.
          */
         private fun startUpDoubts(script: ShellSyntax.Script) {
-            fun check(name: String, value: Word?) {
-                if (name in START_UP_VARIABLES && (value == null || !outside(name, value))) doubt(doubtStartUp(name))
-            }
             for (simple in script.commands) {
-                val first = plainNames(simple).firstOrNull()
-                simple.assignments.forEach { (name, value) -> check(name, value) }
+                val first = commandName(simple)
+                simple.assignments.forEach { (name, value) -> startUp(name, value) }
                 for (arg in simple.words.drop(1)) {
-                    if (first in DECLARATIONS || first == "env") arg.assignment()?.let { check(it.first, it.second) }
                     // "read HOME", "getopts x HOME": a value from somewhere else.
-                    if (first == "read" || first == "getopts") arg.plain?.let { check(it, null) }
+                    if (first == "read" || first == "getopts") arg.plain?.let { startUp(it, null) }
                 }
             }
-            script.loops.forEach { check(it.name, null) }
+            script.loops.forEach { startUp(it.name, null) }
             for (word in allWords(script)) {
-                word.pieces.filter { it.kind == Kind.DYN }.forEach { p -> ASSIGNING_EXPANSION.findAll(p.text).forEach { check(it.groupValues[1], null) } }
-                word.pieces.firstOrNull()?.let { p -> if (p.kind == Kind.LIT && !p.quoted) APPENDS.find(p.text)?.let { check(it.groupValues[1], null) } }
+                word.pieces.filter { it.kind == Kind.DYN }.forEach { p -> ASSIGNING_EXPANSION.findAll(p.text).forEach { startUp(it.groupValues[1], null) } }
+                word.pieces.firstOrNull()?.let { p -> if (p.kind == Kind.LIT && !p.quoted) APPENDS.find(p.text)?.let { startUp(it.groupValues[1], null) } }
             }
         }
 
-        /** True when [value], assigned to [name], is fixed text that names only places outside the workspace (or nothing). */
+        /**
+         * True when [value], assigned to [name], is fixed text that names only places outside the
+         * workspace (or nothing). A place is compared as the system resolves it: "/data/./ws",
+         * "/data//ws/" and "/data/ws" are one place (R3); with ".." in it, where it leads is not
+         * read here, so it does not count as outside.
+         */
         private fun outside(name: String, value: Word): Boolean {
             val text = StringBuilder()
             for (piece in value.pieces) {
@@ -598,10 +712,16 @@ internal object ShellCommands {
             // In PATH an empty part means the folder the shell is in.
             val parts = if (name == "PATH") text.split(':') else listOf(text.toString())
             return parts.all { part ->
-                part.startsWith("/") && !part.startsWith("/proc/") && part.split('/').none { it == ".." } &&
-                    places.roots.none { root -> part == root || part.startsWith("$root/") || root.startsWith("${part.trimEnd('/')}/") }
+                if (!part.startsWith("/") || part.split('/').any { it == ".." }) return@all false
+                val place = normal(part)
+                place != "/proc" && !place.startsWith("/proc/") && places.roots.map(::normal).none { root ->
+                    place == root || place.startsWith("$root/") || root.startsWith(if (place == "/") "/" else "$place/")
+                }
             }
         }
+
+        /** An absolute path without empty names and "." names: "/a//b/./c/" is "/a/b/c". */
+        private fun normal(path: String): String = "/" + path.split('/').filter { it.isNotEmpty() && it != "." }.joinToString("/")
 
         /**
          * The here-documents of [script]. One that is plainly data (handed to `cat` or `tee`, the
@@ -813,7 +933,7 @@ internal object ShellCommands {
                     if (j in used) continue
                     val name = words[j].plain?.let { programName(words[j], variables, depth) } ?: continue
                     // Not ".": as an argument it is the folder, far more often than the command.
-                    if (name in SHELLS || name in PROGRAM_FILE || name == "eval" || name == "source") out += Call(name, words[j], words.subList(j + 1, words.size))
+                    if (name in SHELLS || name in PROGRAM_FILE || name == "eval" || name == "source" || name == "env") out += Call(name, words[j], words.subList(j + 1, words.size))
                 }
             }
             return out
@@ -1088,7 +1208,8 @@ internal object ShellCommands {
 
     private val OPTION_NAME = Regex("""^[A-Za-z][A-Za-z0-9_-]*$""")
 
-    private val BRACES = Regex("""\{[^{}]*(,|\.\.)[^{}]*\}""")
+    /** R2: an open brace with a comma or two dots anywhere after it; nested braces and a missing end are not sorted out here. */
+    private val BRACES = Regex("""\{.*(,|\.\.)""", RegexOption.DOT_MATCHES_ALL)
 
     /** `[[:alpha:]]`, `[[.x.]]`, `[[=x=]]`: a class, a collating symbol or an equivalence class inside a set. */
     private val CHARACTER_CLASS = Regex("""\[[^\]]*\[[:.=]""")

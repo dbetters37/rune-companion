@@ -137,7 +137,8 @@ do it.
   across calls in three ways, and the largest count decides: per agent in one task, per agent
   across all its tasks, and per objective across all the agents working on it. The counts are
   kept in memory and start again when the app restarts.
-- **Shell commands.** Four things hold for every command, however it is written.
+- **Shell commands.** Three things hold for every command, however it is written, (1) to (3),
+  and two more hold in the form that is stated with them, (4) and (5).
   (1) You are asked every time, with the exact text of the command.
   (2) Nothing else changes the workspace between the moment you are asked and the end of the
   command. The workspace counts every change made through this app (a file tool, a script, a
@@ -157,26 +158,47 @@ do it.
   user id and is not the app itself, also work sent to the background with `&`, `nohup`,
   `setsid` or job control (such commands are therefore no longer refused). The same sweep runs
   when the app starts, for a command the app died under.
-  (4) A shell the command starts reads no start-up file an agent wrote: `HOME` is an empty
+  (4) A shell the command starts reads no start-up file from the workspace, unless the command
+  itself points `HOME` or `ENV` there: `HOME` is an empty
   folder outside the workspace, emptied before each command, and `ENV` is not set.
+  So a profile an agent wrote into the workspace does not run on its own. A command can still
+  set `HOME` or `ENV` itself; the app refuses the usual spellings of that before you are asked,
+  not every possible one, and the "Command:" line you approve always shows it.
+  (5) For a command of the plain form `sh file`, the approval shows that file as the script the
+  command runs ("Script …, all of it"), and it is the file the shell reads, by (2) with exactly
+  the text you were shown (of a long file the first part is shown, and the approval says so).
+  What that script starts in turn is not covered. The plain form is narrow on purpose: the
+  word `sh`, then a file in the workspace named by a plain relative path, then arguments, with
+  single blanks between them and nothing else: no quotes, `$`, `=`, `~`, `;`, `&`, `|`, `<`,
+  `>`, `*`, braces, `..`, line breaks or options of the shell, and the file is not a link.
 
-  Finding and showing the scripts a command runs is best effort, and every approval says so:
-  "A shell command can run any file in the workspace. Only the scripts found in the command are
-  shown here." The app reads the command for scripts named in the usual ways (`sh file`,
-  `. ./file`, `awk -f file`, a file redirected or piped into a shell) and for the scripts those
-  run in turn, two levels down; it shows their text and checks it again before running. Where
-  it is not sure what a command line means it refuses before you are asked, and tells the agent
-  why: a script that does not exist, lies outside the workspace (also through `~` or `$HOME`),
-  is a link, or whose name is only put together when the command runs; a shell option or a
-  file-name pattern it does not know; a shell fed from anything but a workspace file or fixed
-  text; text for a shell (`sh -c`, `eval`) that is only put together when the command runs; a
-  script named by a relative path in a command that also changes folder or sets `PATH`,
-  `CDPATH`, `ENV`, `HOME` or `IFS`; a command that points `HOME`, `ENV` or `PATH` into the
-  workspace; a here-document or another construct it does not read exactly as Android's shell
-  does. This refuses some harmless commands. What it cannot do is
-  find a script that is run in a way it does not know (a program that starts a shell itself, a
-  wrapper that is not on its list): such a script is not shown, but by (2) it is the file that
-  was in the workspace when you were asked.
+  For every other command, and for the scripts a script starts in turn, the app cannot know
+  which files will run, and the approval says so: "This is not a plain "sh file" command, so
+  the app cannot be sure which files it runs. What follows is its best reading." The app reads
+  the command for scripts named in the usual ways (`sh file` with options or among other
+  commands, `. ./file`, `awk -f file`, a file redirected or piped into a shell) and for the
+  scripts those name in turn, two levels down. It shows each as "Seems to run …" with its text
+  and checks those files again before running. A file name it only finds mentioned inside other
+  text is listed with the other names, not shown as a script. Such a reading can be wrong or
+  incomplete: a command can run a file that is not shown, and not run one that is. What holds
+  all the same is (2): whichever file runs is as it was in the workspace when you were asked.
+  Every approval also says: "A shell command can run any file in the workspace. Only the
+  scripts found in the command are shown here."
+
+  The app often refuses a command it cannot read well, before you are asked, and tells the
+  agent why: a script that does not exist, lies outside the workspace (also through `~` or
+  `$HOME`), is a link, or whose name is only put together when the command runs (also through
+  a variable the command sets in any but the plainest way, or a name with braces); a shell
+  option or a file-name pattern it does not know; a shell fed from anything but a workspace
+  file or fixed text; text for a shell (`sh -c`, `eval`) that is only put together when the
+  command runs; a script named by a relative path in a command that also changes folder (`cd`,
+  `find -execdir`) or sets `PATH`, `CDPATH`, `ENV`, `HOME` or `IFS`; the usual ways of pointing
+  `HOME`, `ENV` or `PATH` into the workspace; `alias` with an argument; a here-document or
+  another construct it does not read exactly as Android's shell does. It also refuses, without
+  asking you, a command that holds a character which cannot be handed to the shell exactly
+  (half of a character pair, a NUL), and a command an agent asks for while another shell
+  command still runs, since by (2) that one could not run anyway. These refusals are help, not
+  a promise: they refuse some harmless commands and do not catch every doubtful one.
 
   Limits of (3): a command that keeps starting new processes faster than they can be stopped is
   chased for about two seconds; if some are left, the answer says so, and no further command

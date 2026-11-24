@@ -291,7 +291,8 @@ class Round3MeetingPointsTest {
         val commandLine = assessment.details.single { it.startsWith("Command: ") }
         for (fake in fakes) assertTrue("⟨U+%04X⟩".format(fake) in commandLine, commandLine)
         assertEquals(2, commandLine.count { it == '"' }, "the only plain quotes are the two around the command: $commandLine")
-        val scriptLine = assessment.details.single { it.startsWith("Script ") }
+        // Not a plain "sh file" command, so the script is shown as a reading (R1 of round 4).
+        val scriptLine = assessment.details.single { it.startsWith("Seems to run ") }
         assertTrue("⟨U+02BA⟩done⟨U+02BA⟩ ⟨U+2019⟩⟨U+2019⟩" in scriptLine, scriptLine)
 
         // The lines that hold whatever the reader found are the tool's own words, not the command's.

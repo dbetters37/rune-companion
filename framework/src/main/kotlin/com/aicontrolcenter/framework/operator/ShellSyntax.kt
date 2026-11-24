@@ -445,6 +445,7 @@ internal object ShellSyntax {
                 }
             }
             // "{a,b}" and "{1..3}" make several words in Android's shell, whatever is quoted inside them: such a word is only known when it runs.
+            // Braces inside braces ("{a/,{x}}b") do too, so any unquoted "{" with a comma or two dots anywhere after it counts (R2 of round 4).
             val unquoted = pieces.joinToString("") { if (it.kind == Kind.LIT && !it.quoted) it.text else "\u0001" }
             if (BRACE_EXPANSION.containsMatchIn(unquoted)) pieces += Piece(Kind.DYN, "", false)
             return Word(tilde(pieces), s.substring(start, minOf(i, s.length)))
@@ -594,5 +595,5 @@ internal object ShellSyntax {
 
     private val CASE = Regex("""(?:^|[\s;&|(])case\s""")
 
-    private val BRACE_EXPANSION = Regex("""\{[^{}]*(,|\.\.)[^{}]*\}""")
+    private val BRACE_EXPANSION = Regex("""\{.*(,|\.\.)""", RegexOption.DOT_MATCHES_ALL)
 }

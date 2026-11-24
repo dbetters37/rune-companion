@@ -53,6 +53,31 @@ internal object ScriptTools {
 
     fun limits(d: OperatorToolDependencies, args: Args): CommandLimits =
         d.limits.command.copy(timeoutMs = args.long("timeout_ms", d.limits.command.timeoutMs, 1_000..d.limits.maxCommandMs))
+
+    /**
+     * R4 of round 4: what is handed to another process must arrive there as the owner is shown
+     * it. Java cannot encode half of a surrogate pair on its own and hands "?" on in its place,
+     * which a shell reads as a pattern ("rm keep?" removes files nobody named); and a NUL ends
+     * the text for the process. So an argument with either, or one that does not come back
+     * unchanged from UTF-8, is refused while the call is assessed, before anyone is asked.
+     *
+     * @throws ToolCallRejected naming the [argument] and the character
+     */
+    fun requireExact(argument: String, value: String) {
+        val bad = value.indices.firstOrNull { i ->
+            val c = value[i]
+            c == '\u0000' ||
+                (c.isHighSurrogate() && value.getOrNull(i + 1)?.isLowSurrogate() != true) ||
+                (c.isLowSurrogate() && value.getOrNull(i - 1)?.isHighSurrogate() != true)
+        }
+        val unchanged = bad == null && String(value.toByteArray(Charsets.UTF_8), Charsets.UTF_8) == value
+        if (unchanged) return
+        val which = bad?.let { " (U+%04X)".format(value[it].code) }.orEmpty()
+        throw ToolCallRejected(
+            "\"$argument\" contains a character that cannot be passed on exactly to the program that runs it$which: the program would get " +
+                "something else than the owner is shown. Nothing was asked and nothing was run. Write it without that character.",
+        )
+    }
 }
 
 /** scripts.run_js */
@@ -163,22 +188,28 @@ internal class WorkspaceJsHost(private val workspace: Workspace, override val ca
  *    command (the workspace's change counter and change lock, [Workspace.runCommand]);
  *  - everything the command starts is stopped when it ends (the runner, [com.aicontrolcenter.core.operator.ShellRunner]).
  *
- * Finding the scripts a command runs, showing their text and pinning their content is help for
- * the owner on top of that, on a best-effort basis ([ShellCommands]): a shell language cannot be
- * read completely, and the approval says so. Where the reader is not sure what a command line
- * means, the command is refused before anyone is asked.
+ * A third thing holds for one form of command only, the plain `sh file [arguments]`
+ * ([ShellPlainForm]): the approval shows that file as the script the command runs, and it is.
+ *
+ * Everything else the approval shows about scripts is help for the owner, on a best-effort
+ * basis ([ShellCommands]): a shell language cannot be read completely, so what the reader finds
+ * in any other command, and inside a script, is shown as a reading ("Seems to run …") after a
+ * line that says so, and a name it only finds mentioned is listed without its text. The reader
+ * also refuses many commands it cannot read well, before anyone is asked; that is help too, not
+ * a promise that every doubtful command is refused.
  */
 internal class ScriptsRunShell(private val d: OperatorToolDependencies) : OperatorTool(
     "scripts.run_shell", "Run a shell command",
     // Kept under 1024 characters: some providers refuse a longer tool description.
     "Runs one command with Android's shell (/system/bin/sh, toybox tools) as this app, in a workspace folder, with a time limit. " +
         "It can use the internet, so it is blocked in local-only mode. The owner approves every command. If anything in the " +
-        "workspace changes after you asked, it is not run: ask again. One command runs at a time. Everything the command starts " +
-        "is stopped when it ends, also background jobs. A script it runs (sh file, . ./file, awk -f file) must be an existing " +
-        "workspace file named by a fixed path; ~ and \$HOME are outside the workspace. Use \"directory\" rather than cd: after " +
-        "cd or a change of PATH, a script named by a relative path is refused. Give a shell fixed text or a file (sh -c '…', " +
-        "sh < file, cat file | sh, sh <<'EOF'). What the tool cannot read with certainty is refused with the reason. On Android " +
-        "10 and later it cannot run programs downloaded into the workspace.",
+        "workspace changes after you asked, it is not run: ask again. One command runs at a time; while another runs, a new one " +
+        "is refused: ask again when it has ended. Everything the command starts is stopped when it ends, also background jobs. " +
+        "To run a script, write the plain form \"sh file arguments\" and use \"directory\" instead of cd: only then is the owner " +
+        "shown the file as the script that runs. For any other command the scripts found are shown as a best reading, and many " +
+        "commands are refused with the reason: a script that is missing, outside the workspace (also ~ and \$HOME) or named only " +
+        "when the command runs; cd or PATH before a relative script; alias; HOME or ENV set to a place in the workspace. " +
+        "On Android 10+ it cannot run programs downloaded into the workspace.",
     objectSchema("command") {
         stringProp("command", "The command line, e.g. \"ls -la && wc -l notes.md\".")
         stringProp("directory", "Workspace folder to run in. Default: the top level.")
@@ -188,8 +219,12 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
     override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
         val args = Args(arguments)
         val command = args.text("command", 8_000)!!
+        ScriptTools.requireExact("command", command)
+        args.string("directory")?.let { ScriptTools.requireExact("directory", it) }
         val dir = args.path("directory", RelativePath.ROOT)
         val limits = ScriptTools.limits(d, args)
+        // R5: a command assessed while another one runs could never run (the other one's end counts as a change), so the owner is not asked for it.
+        if (d.workspace.commandRunning()) throw ToolCallRejected(COMMAND_RUNNING)
         // Read before anything of the workspace is looked at: the command runs only if nothing changed the workspace
         // through this app from here until it has ended (G1), however the command names what it runs.
         val seen = d.workspace.changeCount()
@@ -204,8 +239,10 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
         )
         val before = WorkspaceStates.of(d.workspace, dir)
         if (!dir.isRoot && (!before.exists || !before.isFolder)) return assessment(summary, failing("There is no workspace folder ${q(dir.value)}."), details, dataGoesTo = GOES_TO)
-        // A script that cannot be shown and pinned, and a command that cannot be read with certainty, are refused here, before anyone is asked.
+        // A script that cannot be shown and pinned, and a command the reader cannot read well enough, are refused here, before anyone is asked.
         val found = namedFiles(command, dir)
+        // R1: only for the plain form is a file shown as the script this command runs.
+        val plain = ShellPlainForm.script(command, dir, d.workspace)
         return assessment(
             summary,
             prepared(check = {
@@ -236,7 +273,7 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
                     is CommandTurn.Ran -> turn.overLimit?.let { turn.result.copy(content = turn.result.content + "\nNote: $it") } ?: turn.result
                 }
             },
-            details + preview(found),
+            details + preview(found, plain),
             dataGoesTo = GOES_TO,
         )
     }
@@ -246,8 +283,18 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
      *
      * @property runBy the script that names it, when the command itself does not
      * @property shown false for a script too many steps from the command to be shown: it is pinned, and the owner is told to read it
+     * @property mentioned the reader only found its name inside other text (in quotes, after `=`), never as a word of a command: it is
+     *   pinned and listed, and its text is not shown as a script's
      */
-    private class Named(val path: RelativePath, val state: EntryState, val asScript: Boolean, val text: String?, val runBy: RelativePath?, val shown: Boolean)
+    private class Named(
+        val path: RelativePath,
+        val state: EntryState,
+        val asScript: Boolean,
+        val text: String?,
+        val runBy: RelativePath?,
+        val shown: Boolean,
+        var mentioned: Boolean,
+    )
 
     /** What was found for one command: the entries, further checks that must still hold when it runs, and notes for the owner. */
     private class Found(val named: List<Named>, val pins: List<suspend () -> String?>, val notes: List<String>)
@@ -306,10 +353,11 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
      * the same way for [MAX_FOLLOWED] levels, and those one level further are pinned without
      * being shown.
      *
-     * Nothing is guessed. The command is refused when it, or a script it runs: runs a script
-     * that cannot be resolved to an existing regular file in the workspace; cannot be read with
-     * certainty (a doubt of the reader); or names a script by a relative path while the folder
-     * or the way names are looked up is not certain at that point.
+     * This is a reading, and it is shown as one ([preview]). The command is refused when it,
+     * or a script it seems to run: runs a script that cannot be resolved to an existing regular
+     * file in the workspace; has something the reader cannot read well enough (a doubt of the
+     * reader); names a script by a relative path while the folder or the way names are looked
+     * up is not settled at that point; or uses a name reference while a shell is started.
      *
      * @throws ToolCallRejected with a message the model can act on
      */
@@ -319,12 +367,17 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
         val pins = ArrayList<suspend () -> String?>()
         val notes = ArrayList<String>()
         val texts = ArrayList<Text>()
+        // R3: a name reference in one text and a shell started in another (the command and a script it runs) count together.
+        var nameReference = false
+        var startsShell = false
 
         fun reading(text: String, node: Text, everyWord: Boolean): ShellCommands.Reading {
             val reading = ShellCommands.read(text, places, everyWord)
             reading.doubts.firstOrNull()?.let { throw ToolCallRejected(doubtRefusal(it, node.file)) }
             node.changes = reading.unsettledBy != null
             texts += node
+            nameReference = nameReference || reading.nameReference
+            startsShell = startsShell || reading.startsShell
             return reading
         }
 
@@ -367,6 +420,8 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
                             if (name.must && !known.state.exists) throw ToolCallRejected(refusal(name.raw, "there is no such file in the workspace", runBy))
                             if (name.must && known.state.isFolder) throw ToolCallRejected(refusal(name.raw, "it is a folder", runBy))
                             exists = exists || known.state.exists
+                            // Found as a word of a command after all: no longer only mentioned.
+                            if (name.asScript && !name.incidental) known.mentioned = false
                             // Seen before. If a shell runs it from here too, this text is tied to it as well.
                             if (name.asScript && name.shell && known.asScript) {
                                 val read = nodes[path]
@@ -410,7 +465,7 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
                         val text = if (script && state.exists && (state.sizeBytes ?: Long.MAX_VALUE) <= MAX_SCRIPT_BYTES) {
                             (d.workspace.read(path, 0, MAX_SCRIPT_BYTES) as? DocResult.Ok)?.value?.bytes?.let { OperatorText.decodeText(it, cutAtEnd = false) }
                         } else null
-                        named[path] = Named(path, state, script, text, runBy, shown = node.level <= MAX_FOLLOWED)
+                        named[path] = Named(path, state, script, text, runBy, shown = node.level <= MAX_FOLLOWED, mentioned = name.incidental)
                         // The scripts this one runs in turn.
                         if (script && name.shell && text != null && node.level <= MAX_FOLLOWED) {
                             val child = Text(path, node.level + 1).also { it.parents += node }
@@ -430,6 +485,7 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
         for (node in texts) {
             if (node.relativeScripts.isNotEmpty() && node.unsettled()) throw ToolCallRejected(unsettledRefusal(node.relativeScripts.first(), node.file))
         }
+        if (nameReference && startsShell) throw ToolCallRejected(doubtRefusal(ShellCommands.DOUBT_NAME_REFERENCE, null))
         return Found(named.values.toList(), pins, notes)
     }
 
@@ -465,41 +521,72 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
     }
 
     private fun doubtRefusal(doubt: String, runBy: RelativePath?): String =
-        "${subject(runBy)} $doubt. This tool runs a command only when it can read with certainty which scripts it runs, so that " +
-            "the owner sees them; nothing was run. Write it more plainly."
+        "${subject(runBy)} $doubt. Nothing was run: this tool cannot read that well enough to show the owner which scripts would run. " +
+            "Write it more plainly; a script is best run as \"sh file\"."
 
+    /** The advice comes early: the executor hands the model only the first few hundred characters of a refusal. */
     private fun unsettledRefusal(raw: String, runBy: RelativePath?): String =
-        "${subject(runBy)} names the script ${q(raw)} by a relative path, but it also changes folder (cd, pushd) or sets PATH, CDPATH, ENV, " +
-            "HOME or IFS, itself or in a script it reads in or was started from, so which file that name means is only known when it " +
-            "runs. Nothing was run. Name the script from the working folder and do not change folder in the same command: use the " +
-            "\"directory\" argument instead of cd."
+        "${subject(runBy)} names the script ${q(raw)} by a relative path, but it also changes folder (cd, pushd, find -execdir) or sets PATH, " +
+            "CDPATH, ENV, HOME or IFS, itself or in a script it reads in or was started from. So use the \"directory\" argument instead of cd, " +
+            "and name the script from the working folder. Nothing was run: which file that name means is only known when the command runs."
 
-    /** Details lines: each script's text (bounded), then the other names that are checked again. */
-    private fun preview(found: Found): List<String> {
-        val named = found.named
+    /**
+     * Details lines: what the reader found, worded by how sure it is (R1 of round 4).
+     *
+     * Only the script of a plain-form command ([plain], [ShellPlainForm]) is shown as a fact:
+     * `Script "x" (n bytes), all of it: "…"`. Every other script the reader found, in a command
+     * that is not of the plain form or inside a script at any level, is a reading and worded as
+     * one (`Seems to run "x" …`), after a fixed line that says so. A name that was only found
+     * mentioned is never shown with its text: it is listed with the other names, which are all
+     * checked again before the command runs.
+     */
+    private fun preview(found: Found, plain: RelativePath?): List<String> {
+        // A script that is only named inside a file the reader found mentioned is not shown with its text either.
+        val byPath = found.named.associateBy { it.path }
+        fun mentioned(n: Named, steps: Int = 0): Boolean = n.mentioned || (steps <= MAX_FOLLOWED + 1 && n.runBy?.let { byPath[it] }?.let { mentioned(it, steps + 1) } == true)
+        val scripts = found.named.filter { it.asScript && !mentioned(it) }
+        // The plain form's script, named by the command itself. If the reader did not find it as that, nothing is called certain.
+        val certain = plain?.let { p -> scripts.firstOrNull { it.path == p && it.runBy == null && it.state.exists } }
         val lines = ArrayList<String>()
         var shown = 0
-        for ((index, n) in named.filter { it.asScript }.withIndex()) {
+
+        /** [n]'s line: [fact] for the plain form's script, a reading for every other one. */
+        fun line(n: Named, fact: Boolean, hidden: Boolean): String {
             val size = OperatorText.size(n.state.sizeBytes)
-            val by = n.runBy?.let { ", run by ${q(it.value)}" }.orEmpty()
-            lines += when {
-                !n.state.exists -> "Script ${q(n.path.value)}$by does not exist now."
-                !n.shown || index >= MAX_SHOWN ->
-                    "Script ${q(n.path.value)} ($size)$by is not shown here. Read it in Workspace before you approve."
-                n.text == null && (n.state.sizeBytes ?: 0) > MAX_SCRIPT_BYTES ->
-                    "Script ${q(n.path.value)} ($size)$by is too long to show here. Read it in Workspace before you approve."
-                n.text == null -> "Script ${q(n.path.value)} ($size)$by is not text, so it cannot be shown. Deny unless you know what it is."
-                shown + n.text.length <= MAX_SCRIPT_CHARS -> "Script ${q(n.path.value)} ($size)$by, all of it: ${q(n.text)}".also { shown += n.text.length }
+            val name = q(n.path.value)
+            val by = n.runBy?.let { ", named in ${q(it.value)}" }.orEmpty()
+            val start = if (fact) "Script $name ($size)" else "Seems to run $name ($size)$by;"
+            val that = if (fact) "" else " that file"
+            return when {
+                !n.state.exists -> "Seems to run $name$by, which does not exist now."
+                hidden -> "$start$that is not shown here. Read it in Workspace before you approve."
+                n.text == null && (n.state.sizeBytes ?: 0) > MAX_SCRIPT_BYTES -> "$start$that is too long to show here. Read it in Workspace before you approve."
+                n.text == null -> "$start$that is not text, so it cannot be shown. Deny unless you know what it is."
+                shown + n.text.length <= MAX_SCRIPT_CHARS -> {
+                    shown += n.text.length
+                    if (fact) "$start, all of it: ${q(n.text)}" else "$start all of that file: ${q(n.text)}"
+                }
                 else -> {
                     val room = (MAX_SCRIPT_CHARS - shown).coerceAtLeast(MIN_SCRIPT_CHARS)
                     shown += room
-                    "Script ${q(n.path.value)} ($size)$by, the first $room of ${n.text.length} characters: ${q(n.text.take(room))} " +
-                        "The rest is not shown here. Read the whole file in Workspace before you approve."
+                    (if (fact) "$start, the first $room of ${n.text.length} characters: " else "$start the first $room of ${n.text.length} characters of that file: ") +
+                        "${q(n.text.take(room))} The rest is not shown here. Read the whole file in Workspace before you approve."
                 }
             }
         }
+
+        val readings = scripts.filter { it !== certain }
+        if (certain == null) {
+            lines += NOT_PLAIN
+            if (readings.isEmpty()) lines += NO_SCRIPT
+        } else {
+            lines += line(certain, fact = true, hidden = false)
+            if (readings.isNotEmpty()) lines += IN_TURN
+        }
+        val before = if (certain == null) 0 else 1
+        for ((index, n) in readings.withIndex()) lines += line(n, fact = false, hidden = !n.shown || index + before >= MAX_SHOWN)
         lines += found.notes
-        val others = named.filterNot { it.asScript }
+        val others = found.named.filter { it !in scripts }
         if (others.isNotEmpty()) {
             val listed = others.take(MAX_LISTED).joinToString(", ") { "${q(it.path.value)} (${WorkspaceStates.describe(it.state)})" }
             lines += "Workspace files and folders it names: $listed" + (if (others.size > MAX_LISTED) " and ${others.size - MAX_LISTED} more" else "") + "."
@@ -515,8 +602,24 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
         /** True whatever the reader found, and said in every approval. */
         const val ANY_FILE = "A shell command can run any file in the workspace. Only the scripts found in the command are shown here."
 
-        /** What the model is told when the change counter moved; it completes "Nothing was done: … since this action was checked and approved." */
-        const val WORKSPACE_CHANGED = "something in the workspace changed (a file was written, moved or removed by a tool, an agent or the owner, or another shell command ran)"
+        /** R1: said right after [ANY_FILE] for every command that is not of the plain form ([ShellPlainForm]). */
+        const val NOT_PLAIN = "This is not a plain \"sh file\" command, so the app cannot be sure which files it runs. What follows is its best reading."
+
+        /** R1: said after [NOT_PLAIN] when the reading has nothing to show, so that "what follows" is not followed by silence. */
+        const val NO_SCRIPT = "It found no script in this command, which does not mean that none runs."
+
+        /** R1: said after the script of a plain-form command, before what that script names in turn. */
+        const val IN_TURN = "Scripts that script seems to run in turn (best reading):"
+
+        /**
+         * What the model is told when the change counter moved; it completes "Nothing was done: … since this action was checked
+         * and approved. Look again and ask anew if it is still needed." A command that was running then must have ended first (R5).
+         */
+        const val WORKSPACE_CHANGED = "something in the workspace changed (a file was written, moved or removed by a tool, an agent or the owner, or " +
+            "another shell command ran; if another shell command was running, wait until it has ended)"
+
+        /** R5: the refusal of a command asked for while another one runs. Nobody is asked for it. */
+        const val COMMAND_RUNNING = "Another shell command is running. Nothing was asked and nothing was run. Ask again when it has ended (about a minute at most)."
         const val MAX_SCRIPT_BYTES = 64L * 1024
         /** Files up to this size are pinned by their content, larger ones by size and time. */
         const val MAX_HASH_BYTES = 8L * 1024 * 1024
@@ -550,6 +653,7 @@ internal class TermuxRun(private val d: OperatorToolDependencies) : OperatorTool
     override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
         val args = Args(arguments)
         val command = args.text("command", 8_000)!!
+        ScriptTools.requireExact("command", command)
         val limits = ScriptTools.limits(d, args)
         val summary = "Run the command ${q(command)} in Termux"
         val details = listOf(

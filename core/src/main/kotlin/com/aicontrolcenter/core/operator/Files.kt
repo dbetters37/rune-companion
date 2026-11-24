@@ -251,7 +251,9 @@ interface Workspace {
 
     /**
      * True while a shell command runs inside [runCommand], so a change asked for now waits until
-     * it has ended. Only for telling the owner why a screen waits; nothing is decided on it.
+     * it has ended. For telling the owner why a screen waits, and for refusing another shell
+     * command before anyone is asked for it (it could not run: the end of the running one counts
+     * as a change). No guarantee rests on it; [runCommand] decides.
      */
     fun commandRunning(): Boolean = false
 

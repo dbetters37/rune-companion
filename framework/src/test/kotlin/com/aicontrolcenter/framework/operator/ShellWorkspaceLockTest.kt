@@ -190,7 +190,6 @@ class ShellWorkspaceLockTest {
         }
         val first = json("command" to "echo first")
         val second = json("command" to "echo second")
-        val third = json("command" to "echo third")
         // Two agents were both asked before either command ran.
         val a1 = tool.assess(first, f.context)
         val a2 = tool.assess(second, f.context)
@@ -202,16 +201,18 @@ class ShellWorkspaceLockTest {
         assertFalse(refused.ok)
         assertTrue("another shell command ran" in refused.content, refused.content)
 
-        // A third is assessed while the first runs. It waits for it, and is then refused: the workspace it was assessed on is the one the first command was changing.
-        val a3 = tool.assess(third, f.context)
-        assertNull(a3.prepared!!.changedSince())
-        val waiting = async(Dispatchers.Default) { tool.execute(third, f.context, a3) }
+        // A third is asked for while the first runs: it could never run, so it is refused in the assessment and nobody is asked (R5 of round 4).
+        assertTrue("Another shell command is running." in f.rejected("scripts.run_shell", "command" to "echo third"))
+        // At the workspace itself, a command that comes while another runs waits for it, and then does not run:
+        // the workspace it was counted on is the one the first command was changing.
+        val counted = f.workspace.changeCount()
+        val waiting = async(Dispatchers.Default) { f.workspace.runCommand(counted) { "ran" } }
         delay(400)
         assertFalse(waiting.isCompleted, "it waits while the first command runs")
         release.countDown()
 
         assertTrue(running.await().ok)
-        assertFalse(withTimeout(10_000) { waiting.await() }.ok)
+        assertEquals(CommandTurn.Changed, withTimeout(10_000) { waiting.await() })
         assertEquals(listOf("echo first"), f.shell.runs.map { it.command })
 
         // Asked again afterwards, it runs.
