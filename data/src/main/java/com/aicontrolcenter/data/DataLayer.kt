@@ -160,8 +160,12 @@ class DataLayer(
 
     private val roomModelPrices by lazy { RoomModelPrices(database, clock, ioDispatcher) }
 
-    /** The owner's prices, read (the daily limiter, the Usage tab). */
-    val modelPrices: ModelPrices get() = roomModelPrices
+    /**
+     * The owner's prices, read (the daily limiter, the Usage tab). A read-only view of the store
+     * behind [ownerModelPrices]: it implements [ModelPrices] only, so code an agent reaches cannot
+     * cast it into the owner's writer (rule 3), as `ReadOnlySettings` does for the settings.
+     */
+    val modelPrices: ModelPrices by lazy { ReadOnlyModelPrices(roomModelPrices) }
 
     /** The owner's prices, written (Settings > Models). Owner-only. Same store as [modelPrices]. */
     val ownerModelPrices: OwnerModelPrices get() = roomModelPrices
@@ -221,6 +225,9 @@ class DataLayer(
         } catch (_: NoSuchFileException) {
             false
         }
+
+    /** [ModelPrices] and nothing else, over [source]. */
+    private class ReadOnlyModelPrices(private val source: ModelPrices) : ModelPrices by source
 
     companion object {
         /** Path of the vault file, relative to `noBackupFilesDir`. */

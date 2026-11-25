@@ -9,6 +9,7 @@ import com.aicontrolcenter.core.ConversationId
 import com.aicontrolcenter.core.FolderId
 import com.aicontrolcenter.core.GrantId
 import com.aicontrolcenter.core.MemoryId
+import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.activity.ActivityFilter
 import com.aicontrolcenter.core.agents.AgentStats
@@ -26,14 +27,20 @@ import com.aicontrolcenter.core.security.SecretVaultException
 import com.aicontrolcenter.core.tasks.MessageType
 import com.aicontrolcenter.core.tasks.TaskStatus
 import com.aicontrolcenter.core.tasks.TaskUsage
+import com.aicontrolcenter.core.usage.ModelPrice
+import com.aicontrolcenter.core.usage.OwnerModelPrices
+import com.aicontrolcenter.core.usage.UsageRange
 import com.aicontrolcenter.data.repository.RoomAgentRepository
 import com.aicontrolcenter.data.security.DatabaseKeyException
 import com.aicontrolcenter.data.security.SoftwareVaultCipher
 import com.aicontrolcenter.data.security.VaultCipher
+import com.aicontrolcenter.testkit.FakeClock
 import com.aicontrolcenter.testkit.Samples
 import com.aicontrolcenter.testkit.contract.MemorySamples
 import com.aicontrolcenter.testkit.contract.OperatorSamples
+import com.aicontrolcenter.testkit.contract.RoutineSamples
 import com.aicontrolcenter.testkit.contract.TaskSamples
+import com.aicontrolcenter.testkit.contract.UsageSamples
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExecutorCoroutineDispatcher
 import kotlinx.coroutines.async
@@ -347,6 +354,31 @@ class DataLayerTest {
         // No unencrypted database was created as a fallback, and no key was left behind.
         assertFalse(context.getDatabasePath("aicc.db").exists())
         assertFalse(File(context.noBackupFilesDir, DataLayer.databaseKeyFile("aicc.db")).exists())
+    }
+
+    @Test
+    fun `the schema 6 stores share the one database, and the prices readers get cannot write them`() = runTest {
+        val clock = FakeClock(UsageSamples.at("2026-11-25T12:00"))
+        val data = DataLayer(
+            context, databaseEncryption = DatabaseEncryption.None, vaultCipher = cipher, clock = clock, zone = { UsageSamples.berlin },
+        ).also(open::add)
+        // Rule 3: what agent-facing code may hold reads prices and nothing else.
+        assertFalse(data.modelPrices is OwnerModelPrices)
+        assertSame(data.modelPrices, data.modelPrices)
+        data.ownerModelPrices.set(ModelPrice(ModelId("mdl_grok"), 3_000_000, 15_000_000))
+        assertEquals(clock.current, data.modelPrices.get(ModelId("mdl_grok"))?.updatedAt)
+
+        data.usageLedger.record(UsageSamples.call(UsageSamples.at("2026-11-24T10:00")))
+        data.usageLedger.record(UsageSamples.call(UsageSamples.at("2026-11-25T10:00")))
+        assertEquals(2, data.usageReports.totals(UsageRange.ALL).calls)
+        // "Today" is the owner's day at the layer's clock, in the layer's zone.
+        assertEquals(1, data.ownerUsage.clearHistory())
+        assertEquals(1, data.usageReports.totals(UsageRange.ALL).calls)
+
+        data.routines.upsert(RoutineSamples.routine("rtn_1"))
+        data.pickUpRules.upsert(RoutineSamples.rule("pku_1"))
+        assertEquals(1, data.routines.getAll().size)
+        assertEquals(1, data.pickUpRules.getAll().size)
     }
 
     @Test

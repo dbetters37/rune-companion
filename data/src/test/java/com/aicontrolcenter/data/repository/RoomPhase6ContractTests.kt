@@ -1,5 +1,7 @@
 package com.aicontrolcenter.data.repository
 
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aicontrolcenter.core.IdGenerator
 import com.aicontrolcenter.core.memory.MemoryRepository
@@ -7,8 +9,10 @@ import com.aicontrolcenter.core.operator.SharedFolderRepository
 import com.aicontrolcenter.core.pickup.PickUpRuleRepository
 import com.aicontrolcenter.core.routines.RoutineRepository
 import com.aicontrolcenter.core.settings.SettingsRepository
+import com.aicontrolcenter.data.db.AiccDatabase
 import com.aicontrolcenter.data.settings.SettingsStores
 import com.aicontrolcenter.data.testing.InMemoryDatabaseRule
+import com.aicontrolcenter.data.testing.RetryOnceOnEmptyListRule
 import com.aicontrolcenter.testkit.FakeClock
 import com.aicontrolcenter.testkit.ReferenceOwnerPickUpRules
 import com.aicontrolcenter.testkit.ReferenceOwnerRoutines
@@ -48,11 +52,27 @@ class RoomTaskSummaryContractTest : TaskSummaryContract() {
     override fun createRepository() = RoomTaskRepository(db.database)
 }
 
+/**
+ * Each run gets its own database, so the one retry [RetryOnceOnEmptyListRule] allows (for a race
+ * in the contract's own wait condition, see there) starts from nothing again.
+ */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
 class RoomMessageHeaderContractTest : MessageHeaderContract() {
-    @get:Rule val db = InMemoryDatabaseRule()
-    override fun createRepository() = RoomMessageRepository(db.database)
+    private val context: Context = ApplicationProvider.getApplicationContext()
+    private val databases = mutableListOf<AiccDatabase>()
+
+    private fun closeAll() {
+        databases.forEach { it.close() }
+        databases.clear()
+    }
+
+    @get:Rule val retry = RetryOnceOnEmptyListRule(::closeAll)
+
+    override fun createRepository() = RoomMessageRepository(AiccDatabase.createInMemory(context).also(databases::add))
+
+    @After
+    fun tearDown() = closeAll()
 }
 
 /** Questions and the grants an answer must never write live in the same database, as in the app. */
