@@ -25,6 +25,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -62,8 +63,6 @@ import com.aicontrolcenter.core.memory.MemoryScope
 /** What the memory editor can ask for. */
 class MemoryEditorActions(
     val onScope: (MemoryScope) -> Unit,
-    val onTitle: (String) -> Unit,
-    val onContent: (String) -> Unit,
     val onKind: (MemoryKind) -> Unit,
     val onImportance: (Double) -> Unit,
     val onAddTag: (String) -> Unit,
@@ -101,10 +100,10 @@ fun MemoryEditorRoute(
     }
     MemoryEditorScreen(
         state,
+        viewModel.title,
+        viewModel.content,
         MemoryEditorActions(
             onScope = viewModel::setScope,
-            onTitle = viewModel::setTitle,
-            onContent = viewModel::setContent,
             onKind = viewModel::setKind,
             onImportance = viewModel::setImportance,
             onAddTag = viewModel::addTag,
@@ -117,8 +116,9 @@ fun MemoryEditorRoute(
     )
 }
 
+/** The memory editor. [title] and [content] hold what is typed; everything else comes from [state]. */
 @Composable
-fun MemoryEditorScreen(state: MemoryEditorUiState, actions: MemoryEditorActions) {
+fun MemoryEditorScreen(state: MemoryEditorUiState, title: TextFieldState, content: TextFieldState, actions: MemoryEditorActions) {
     var confirmDiscard by rememberSaveable { mutableStateOf(false) }
     val requestClose = { if (state.isDirty) confirmDiscard = true else actions.onClose() }
     BackHandler(enabled = state.isDirty) { confirmDiscard = true }
@@ -155,16 +155,14 @@ fun MemoryEditorScreen(state: MemoryEditorUiState, actions: MemoryEditorActions)
                     AppCard {
                         Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                             AppTextField(
-                                value = state.form.title,
-                                onValueChange = actions.onTitle,
+                                state = title,
                                 label = "Title",
                                 placeholder = "Prefers summaries in bullet points",
                                 supportingText = "A short label for lists and the graph.",
                                 errorText = state.titleError,
                             )
                             AppTextField(
-                                value = state.form.content,
-                                onValueChange = actions.onContent,
+                                state = content,
                                 label = "What to remember",
                                 singleLine = false,
                                 minLines = 4,

@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -55,6 +57,7 @@ fun RegisterAppRoute(onBack: () -> Unit, onRegistered: (AiAppId) -> Unit) {
     }
     RegisterAppScreen(
         state = state,
+        query = viewModel.query,
         onBack = onBack,
         onQueryChange = viewModel::setQuery,
         onIncludeSystemAppsChange = viewModel::setIncludeSystemApps,
@@ -64,10 +67,11 @@ fun RegisterAppRoute(onBack: () -> Unit, onRegistered: (AiAppId) -> Unit) {
     )
 }
 
-/** Picker over the installed apps that are not registered yet. */
+/** Picker over the installed apps that are not registered yet. [query] holds the search being typed. */
 @Composable
 fun RegisterAppScreen(
     state: RegisterAppUiState,
+    query: TextFieldState,
     onBack: () -> Unit,
     onQueryChange: (String) -> Unit,
     onIncludeSystemAppsChange: (Boolean) -> Unit,
@@ -90,14 +94,13 @@ fun RegisterAppScreen(
                 modifier = Modifier.padding(horizontal = Spacing.screen),
             )
             OutlinedTextField(
-                value = state.query,
-                onValueChange = onQueryChange,
+                state = query,
                 modifier = Modifier.fillMaxWidth().padding(start = Spacing.screen, end = Spacing.screen, top = Spacing.md),
-                singleLine = true,
+                lineLimits = TextFieldLineLimits.SingleLine,
                 placeholder = { Text("Search installed apps") },
                 leadingIcon = { Icon(AppIcons.Search, contentDescription = null) },
                 trailingIcon = {
-                    if (state.query.isNotEmpty()) {
+                    if (query.text.isNotEmpty()) {
                         IconButton(onClick = { onQueryChange("") }) { Icon(AppIcons.Close, contentDescription = "Clear search") }
                     }
                 },

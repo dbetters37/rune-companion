@@ -73,6 +73,8 @@ class ProviderFormViewModelTest {
         viewModel.save()
         val state = viewModel.uiState.value
         assertEquals("", state.apiKey, "the key went to the manager and is gone from the UI")
+        assertEquals("", viewModel.fields.apiKey.text.toString(), "the key field is emptied")
+        assertFalse(viewModel.fields.apiKey.undoState.canUndo, "and undo cannot bring the key back")
         assertFalse(state.toString().contains(key))
 
         val provider = app.providers.getAll().single()

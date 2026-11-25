@@ -1,10 +1,13 @@
 package com.aicontrolcenter.app.ui.memory
 
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aicontrolcenter.app.ui.components.UserMessage
 import com.aicontrolcenter.app.ui.components.plural
+import com.aicontrolcenter.app.ui.components.putText
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.MemoryId
 import com.aicontrolcenter.core.memory.MemoryActor
@@ -102,8 +105,18 @@ class MemoryEditorViewModel(
     private var initialForm = MemoryForm()
     private var messageCounter = 0L
 
+    /**
+     * The title and the text being typed. The fields read these and the keyboard writes them
+     * directly, so every key lands in order; the form follows them and never writes back while
+     * the owner types. Filled once, when the memory being edited has loaded.
+     */
+    val title = TextFieldState()
+    val content = TextFieldState()
+
     init {
         viewModelScope.launch { load() }
+        // The form follows what is typed. (Before it has loaded, edits are ignored.)
+        viewModelScope.launch { snapshotFlow { title.text.toString() to content.text.toString() }.collect { edit { it } } }
     }
 
     private suspend fun load() {
@@ -118,6 +131,8 @@ class MemoryEditorViewModel(
                     return
                 }
                 original = record
+                title.putText(record.title)
+                content.putText(record.content)
                 initialForm = MemoryForm(
                     scope = record.scope, title = record.title, content = record.content, kind = record.kind,
                     importance = record.importance, tags = record.tags.sorted(), shortTerm = record.tier == MemoryTier.SHORT_TERM,
@@ -163,10 +178,17 @@ class MemoryEditorViewModel(
         }
     }
 
+    /**
+     * Applies a change to the form. It starts from what the title and text fields hold now (they
+     * may be a key ahead of the form); a text it changes goes into its field.
+     */
     private fun edit(transform: (MemoryForm) -> MemoryForm) {
         val current = state.value
         if (current.isLoading || current.notFound) return
-        val form = transform(current.form)
+        val typed = current.form.copy(title = title.text.toString(), content = content.text.toString())
+        val form = transform(typed)
+        if (form.title != typed.title) title.putText(form.title)
+        if (form.content != typed.content) content.putText(form.content)
         state.update {
             it.copy(
                 form = form,
@@ -181,8 +203,10 @@ class MemoryEditorViewModel(
     /** Only a new memory can choose; an existing one stays where it was saved. */
     fun setScope(scope: MemoryScope) = edit { if (editingId == null) it.copy(scope = scope) else it }
 
+    /** Replaces the title from code; typing goes into [title] directly. */
     fun setTitle(text: String) = edit { it.copy(title = text) }
 
+    /** Replaces the text from code; typing goes into [content] directly. */
     fun setContent(text: String) = edit { it.copy(content = text) }
 
     fun setKind(kind: MemoryKind) = edit { it.copy(kind = kind) }
@@ -201,6 +225,8 @@ class MemoryEditorViewModel(
     fun setShortTerm(shortTerm: Boolean) = edit { if (state.value.isTaskMemory) it else it.copy(shortTerm = shortTerm) }
 
     fun save() {
+        // Exactly what the fields hold now, even if the owner taps Save straight after the last key.
+        edit { it }
         val current = state.value
         if (current.isLoading || current.notFound || current.isSaving || current.savedId != null) return
         val form = current.form

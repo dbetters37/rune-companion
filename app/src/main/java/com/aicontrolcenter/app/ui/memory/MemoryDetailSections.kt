@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -260,10 +261,11 @@ private fun LinkComposer(
     onLink: (com.aicontrolcenter.core.MemoryId, LinkRelation) -> Unit,
     onCancel: () -> Unit,
 ) {
-    var filter by rememberSaveable { mutableStateOf("") }
+    // Kept across rotation; the field reads and writes it directly, so no key is lost.
+    val filter = rememberTextFieldState()
     var chosenId by rememberSaveable { mutableStateOf<String?>(null) }
     var relation by rememberSaveable { mutableStateOf(LinkRelation.RELATES_TO) }
-    val words = filter.lowercase(Locale.ROOT).split(' ').filter { it.isNotBlank() }
+    val words = filter.text.toString().lowercase(Locale.ROOT).split(' ').filter { it.isNotBlank() }
     val matches = candidates.filter { c -> words.all { it in c.title.lowercase(Locale.ROOT) } }.take(MAX_CANDIDATES)
     val chosen = candidates.firstOrNull { it.id.value == chosenId }
     Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
@@ -275,7 +277,7 @@ private fun LinkComposer(
             }
         }
         if (chosen == null) {
-            AppTextField(value = filter, onValueChange = { filter = it }, label = "Find a memory by title")
+            AppTextField(state = filter, label = "Find a memory by title")
             if (candidates.isEmpty()) {
                 Text("There is no other memory to link to yet.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else if (matches.isEmpty()) {

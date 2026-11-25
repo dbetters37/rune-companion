@@ -1,5 +1,6 @@
 package com.aicontrolcenter.app.ui.tasks
 
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import com.aicontrolcenter.app.testing.GatedLlmClient
 import com.aicontrolcenter.app.testing.MainDispatcherRule
 import com.aicontrolcenter.app.testing.TeamModel
@@ -221,18 +222,31 @@ class TasksViewModelsTest {
     }
 
     @Test
+    fun `Start takes the objective exactly as the field holds it, then empties the field`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.teamOnSimulator()
+        val form = newObjective(app)
+        // Typed straight into the field: nothing else in the form has seen it yet.
+        form.objective.setTextAndPlaceCursorAtEnd("  Compare three note apps, offline first.  ")
+        form.start()
+        val id = assertNotNull(form.uiState.value.startedId, form.uiState.value.message?.text)
+        assertEquals("Compare three note apps, offline first.", assertNotNull(app.tasks.get(id)).instructions)
+        assertEquals("", form.objective.text.toString(), "the form is empty for the next objective")
+    }
+
+    @Test
     fun `a new objective needs words, a sensible length and a Director that can run`() = runTest(mainRule.dispatcher) {
         val app = TestApp(backgroundScope)
         app.teamOnSimulator()
         val form = newObjective(app)
 
         form.start()
-        assertEquals("Describe what the team should achieve.", form.uiState.value.textError)
+        assertEquals("Describe what the team should achieve.", form.uiState.value.textError(form.objective.text))
         assertNull(form.uiState.value.startedId)
         form.setText("x".repeat(NewObjectiveViewModel.MAX_LENGTH + 1))
-        assertEquals("Keep it to 4,000 characters or fewer (now 4,001).", form.uiState.value.textError)
+        assertEquals("Keep it to 4,000 characters or fewer (now 4,001).", form.uiState.value.textError(form.objective.text))
         form.setText("Compare three note apps")
-        assertNull(form.uiState.value.textError)
+        assertNull(form.uiState.value.textError(form.objective.text))
 
         val director = app.director().profile.id
         app.graph.agentManager.setEnabled(director, false)

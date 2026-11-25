@@ -17,11 +17,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberUpdatedState
+import com.aicontrolcenter.app.ui.components.textChanges
+import kotlinx.coroutines.flow.drop
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
@@ -147,24 +149,26 @@ private fun AccessLine(label: String, names: List<String>, emptyText: String) {
  */
 @Composable
 private fun NewSpaceForm(isSaving: Boolean, error: String?, actions: SpacesActions) {
-    var name by rememberSaveable { mutableStateOf("") }
-    var description by rememberSaveable { mutableStateOf("") }
+    // Kept across rotation; the fields read and write these directly, so no key is lost.
+    val name = rememberTextFieldState()
+    val description = rememberTextFieldState()
+    // A complaint about the name goes as soon as the name is changed.
+    val currentError by rememberUpdatedState(error)
+    val clearError by rememberUpdatedState(actions.onClearCreateError)
+    LaunchedEffect(name) {
+        name.textChanges().drop(1).collect { if (currentError != null) clearError() }
+    }
     AppCard(borderColor = appColors.hairlineStrong) {
         Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
             Text("New shared space", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
             AppTextField(
-                value = name,
-                onValueChange = {
-                    name = it
-                    if (error != null) actions.onClearCreateError()
-                },
+                state = name,
                 label = "Space name",
                 placeholder = "Research notes",
                 errorText = error,
             )
             AppTextField(
-                value = description,
-                onValueChange = { description = it },
+                state = description,
                 label = "What belongs in it (optional)",
                 singleLine = false,
                 maxLines = 4,
@@ -176,7 +180,10 @@ private fun NewSpaceForm(isSaving: Boolean, error: String?, actions: SpacesActio
             )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Spacing.sm, Alignment.End)) {
                 TextButton(onClick = actions.onCancelCreate) { Text("Cancel") }
-                Button(onClick = { actions.onCreate(name, description) }, enabled = name.isNotBlank() && !isSaving) { Text("Create space") }
+                Button(
+                    onClick = { actions.onCreate(name.text.toString(), description.text.toString()) },
+                    enabled = name.text.isNotBlank() && !isSaving,
+                ) { Text("Create space") }
             }
         }
     }

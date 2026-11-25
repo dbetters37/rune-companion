@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -60,7 +62,6 @@ import com.aicontrolcenter.core.TaskId
 
 class NewObjectiveActions(
     val onBack: () -> Unit,
-    val onTextChange: (String) -> Unit,
     val onReviewResultsChange: (Boolean) -> Unit,
     val onSaveKnowledgeChange: (Boolean) -> Unit,
     val onStart: () -> Unit,
@@ -88,9 +89,9 @@ fun NewObjectiveRoute(onBack: () -> Unit, onStarted: (TaskId) -> Unit) {
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { viewModel.notificationsAnswered() }
     NewObjectiveScreen(
         state,
+        viewModel.objective,
         NewObjectiveActions(
             onBack = onBack,
-            onTextChange = viewModel::setText,
             onReviewResultsChange = viewModel::setReviewResults,
             onSaveKnowledgeChange = viewModel::setSaveKnowledge,
             onStart = viewModel::start,
@@ -102,9 +103,12 @@ fun NewObjectiveRoute(onBack: () -> Unit, onStarted: (TaskId) -> Unit) {
     )
 }
 
-/** Writing an objective for the Director, with its options and an honest note of where the work goes. */
+/**
+ * Writing an objective for the Director, with its options and an honest note of where the work
+ * goes. [objective] holds what is typed; the field, its counter and its error all read it.
+ */
 @Composable
-fun NewObjectiveScreen(state: NewObjectiveUiState, actions: NewObjectiveActions) {
+fun NewObjectiveScreen(state: NewObjectiveUiState, objective: TextFieldState, actions: NewObjectiveActions) {
     ScreenScaffold(title = "New objective", onBack = actions.onBack, message = state.message, onMessageShown = actions.onMessageShown) { padding ->
         if (state.isLoading) {
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -121,7 +125,7 @@ fun NewObjectiveScreen(state: NewObjectiveUiState, actions: NewObjectiveActions)
             verticalArrangement = Arrangement.spacedBy(Spacing.md),
         ) {
             DirectorLine(state.director)
-            ObjectiveField(state, actions)
+            ObjectiveField(state, objective)
             Column {
                 SectionHeader("Options")
                 AppCard(contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = Spacing.lg, vertical = Spacing.xs)) {
@@ -192,12 +196,12 @@ private fun DirectorLine(director: DirectorUi?) {
 
 /** The objective, with an example as its hint (visible until the owner types), and a counter. */
 @Composable
-private fun ObjectiveField(state: NewObjectiveUiState, actions: NewObjectiveActions) {
+private fun ObjectiveField(state: NewObjectiveUiState, objective: TextFieldState) {
+    val error = state.textError(objective.text)
     Column {
         SectionHeader("Your objective")
         OutlinedTextField(
-            value = state.text,
-            onValueChange = actions.onTextChange,
+            state = objective,
             modifier = Modifier.fillMaxWidth().heightIn(min = 160.dp).semantics { contentDescription = OBJECTIVE_FIELD },
             placeholder = {
                 Text(
@@ -205,15 +209,14 @@ private fun ObjectiveField(state: NewObjectiveUiState, actions: NewObjectiveActi
                         "recommendation with a plan to switch.",
                 )
             },
-            isError = state.textError != null,
+            isError = error != null,
             supportingText = {
                 Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
-                    Text(state.textError ?: "Say what you want and how the result should look.", modifier = Modifier.weight(1f))
-                    Text("${formatCount(state.text.length.toLong())} / ${formatCount(NewObjectiveViewModel.MAX_LENGTH.toLong())}")
+                    Text(error ?: "Say what you want and how the result should look.", modifier = Modifier.weight(1f))
+                    Text("${formatCount(objective.text.length.toLong())} / ${formatCount(NewObjectiveViewModel.MAX_LENGTH.toLong())}")
                 }
             },
-            minLines = 5,
-            maxLines = 12,
+            lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = 5, maxHeightInLines = 12),
             shape = MaterialTheme.shapes.large,
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
         )

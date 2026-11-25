@@ -25,7 +25,9 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,6 +44,7 @@ import com.aicontrolcenter.app.di.LocalAppGraph
 import com.aicontrolcenter.app.ui.components.AgentAvatar
 import com.aicontrolcenter.app.ui.components.AppCard
 import com.aicontrolcenter.app.ui.components.AppTextField
+import com.aicontrolcenter.app.ui.components.atMostChars
 import com.aicontrolcenter.app.ui.components.ConfirmDialog
 import com.aicontrolcenter.app.ui.components.EmptyState
 import com.aicontrolcenter.app.ui.components.InfoBanner
@@ -71,7 +74,6 @@ import com.aicontrolcenter.core.operator.OwnerRequestStatus
 class ApprovalActions(
     val onBack: () -> Unit,
     val onChoose: (RequestChoice) -> Unit,
-    val onNoteChange: (String) -> Unit,
     val onOpenTask: (TaskId) -> Unit,
     val onOpenObjective: (TaskId) -> Unit,
     val onOpenConversation: (ConversationId) -> Unit,
@@ -102,8 +104,9 @@ fun ApprovalRoute(
     val activity = LocalActivity.current
     ApprovalScreen(
         state,
+        viewModel.note,
         ApprovalActions(
-            onBack, viewModel::choose, viewModel::setNote, onOpenTask, onOpenObjective, onOpenConversation, viewModel::messageShown,
+            onBack, viewModel::choose, onOpenTask, onOpenObjective, onOpenConversation, viewModel::messageShown,
             // The whole task goes behind the app the owner came from (on every Android version this app runs on), so the
             // app an agent operates is in front again and its approved action can run.
             onReturnToApp = { activity?.moveTaskToBack(true) },
@@ -124,7 +127,7 @@ fun ApprovalRoute(
  * Touches are refused while another app's window covers this screen or its dialogs.
  */
 @Composable
-fun ApprovalScreen(state: ApprovalUiState, actions: ApprovalActions) {
+fun ApprovalScreen(state: ApprovalUiState, note: TextFieldState, actions: ApprovalActions) {
     val request = state.request
     // Allowed a call on another app's screen: open the same call's next question, or step aside so that app comes back.
     LaunchedEffect(state.afterAnswer) {
@@ -173,7 +176,7 @@ fun ApprovalScreen(state: ApprovalUiState, actions: ApprovalActions) {
                     Facts(request, actions)
                     request.reason?.let { Reason(it, request.agent.name) }
                     if (request.isOpen) {
-                        Answer(request, state, actions)
+                        Answer(request, state, note, actions)
                     } else {
                         Outcome(request)
                         request.askAgain?.let { AskAgain(it, enabled = !state.isBusy, onLetAskAgain = actions.onLetAskAgain) }
@@ -306,7 +309,7 @@ private fun Reason(reason: String, agentName: String) {
 }
 
 @Composable
-private fun Answer(request: RequestUi, state: ApprovalUiState, actions: ApprovalActions) {
+private fun Answer(request: RequestUi, state: ApprovalUiState, note: TextFieldState, actions: ApprovalActions) {
     var confirmAlways by rememberSaveable { mutableStateOf(false) }
     var confirmApprove by rememberSaveable { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(Spacing.md)) {
@@ -314,10 +317,10 @@ private fun Answer(request: RequestUi, state: ApprovalUiState, actions: Approval
         request.hardToUndo?.let { InfoBanner(title = request.risk.text, text = it, tone = StatusTone.UNAVAILABLE, icon = AppIcons.StatusAttention) }
         request.returnsToApp?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         AppTextField(
-            value = state.note,
-            onValueChange = actions.onNoteChange,
+            state = note,
             label = "Note for the agent (optional)",
             modifier = Modifier.fillMaxWidth(),
+            inputTransformation = remember { atMostChars(ApprovalViewModel.MAX_NOTE) },
         )
         // Each answer is marked sensitive: on Android 14 and later only accessibility tools that help
         // the owner use the phone can read or press it, so no automation service can answer for them.

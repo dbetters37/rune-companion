@@ -6,8 +6,10 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.clearText
+import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.InputChip
@@ -16,10 +18,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -43,12 +41,13 @@ fun ChipEditor(
     placeholder: String = "Add $itemName",
     emptyText: String? = null,
 ) {
-    var pending by rememberSaveable { mutableStateOf("") }
+    // The entry being typed; kept across rotation, and read by the field directly so no key is lost.
+    val pending = rememberTextFieldState()
     val submit = {
-        val value = pending.trim()
+        val value = pending.text.toString().trim()
         if (value.isNotEmpty()) {
             onAdd(value)
-            pending = ""
+            pending.clearText()
         }
     }
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -74,15 +73,14 @@ fun ChipEditor(
             }
         }
         OutlinedTextField(
-            value = pending,
-            onValueChange = { pending = it },
+            state = pending,
             modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
+            lineLimits = TextFieldLineLimits.SingleLine,
             placeholder = { Text(placeholder) },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-            keyboardActions = KeyboardActions(onDone = { submit() }),
+            onKeyboardAction = { submit() },
             trailingIcon = {
-                IconButton(onClick = submit, enabled = pending.isNotBlank()) {
+                IconButton(onClick = submit, enabled = pending.text.isNotBlank()) {
                     Icon(AppIcons.Add, contentDescription = placeholder)
                 }
             },

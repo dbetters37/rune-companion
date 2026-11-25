@@ -1,10 +1,13 @@
 package com.aicontrolcenter.app.ui.chat
 
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aicontrolcenter.app.ui.approvals.requestUi
 import com.aicontrolcenter.app.ui.components.UserMessage
+import com.aicontrolcenter.app.ui.components.putText
+import com.aicontrolcenter.app.ui.components.textChanges
 import com.aicontrolcenter.app.ui.models.describe
 import com.aicontrolcenter.app.ui.models.isSimulator
 import com.aicontrolcenter.app.ui.models.providerFailureText
@@ -67,7 +70,10 @@ data class ChatUiState(
     val message: UserMessage? = null,
 ) {
     val isRunning: Boolean get() = live != null
-    val canSend: Boolean get() = !isLoading && !notFound && blockedReason == null && !isRunning && draft.isNotBlank()
+    val canSend: Boolean get() = canSend(draft)
+
+    /** Whether [text], as typed in the field now, could be sent. */
+    fun canSend(text: CharSequence): Boolean = !isLoading && !notFound && blockedReason == null && !isRunning && text.isNotBlank()
 }
 
 /**
@@ -106,6 +112,16 @@ class ChatViewModel(
 
     private val local = MutableStateFlow(Local())
     private var messageCounter = 0L
+
+    /**
+     * The message being written. The field reads it and the keyboard writes it directly, so every
+     * key lands in order; [ChatUiState.draft] follows it.
+     */
+    val draft = TextFieldState()
+
+    init {
+        viewModelScope.launch { draft.textChanges().collect { text -> local.update { it.copy(draft = text) } } }
+    }
 
     private val conversation = chat.observeConversations(null).map { all -> all.firstOrNull { it.id == conversationId } }.distinctUntilChanged()
     private val live = chat.liveTurns.map { it[conversationId] }.distinctUntilChanged()
@@ -197,13 +213,18 @@ class ChatViewModel(
 
     private fun toolInfo(functionName: String): ToolInfo? = tools.byFunctionName(functionName)?.spec?.let { ToolInfo(it.title, it.risk) }
 
-    fun setDraft(text: String) = local.update { it.copy(draft = text) }
+    /** Replaces the message from code; typing goes into [draft] directly. */
+    fun setDraft(text: String) {
+        draft.putText(text)
+        local.update { it.copy(draft = text) }
+    }
 
-    /** Sends the draft. The turn runs on in the framework if this screen is left. */
+    /** Sends exactly what the field holds. The turn runs on in the framework if this screen is left. */
     fun send() {
         val state = uiState.value
-        val text = state.draft.trim()
-        if (text.isEmpty() || !state.canSend) return
+        val text = draft.text.toString().trim()
+        if (text.isEmpty() || !state.canSend(text)) return
+        draft.putText("")
         local.update { it.copy(draft = "", lastFailureRetryable = null) }
         viewModelScope.launch {
             try {

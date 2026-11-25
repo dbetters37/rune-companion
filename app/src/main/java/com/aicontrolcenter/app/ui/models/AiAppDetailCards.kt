@@ -13,12 +13,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.aicontrolcenter.app.ui.components.AppCard
@@ -67,7 +65,8 @@ internal fun UnverifiedCard(label: String, enabled: Boolean, onConfirm: () -> Un
  */
 @Composable
 internal fun HandOffComposer(appLabel: String, enabled: Boolean, onCancel: () -> Unit, onSend: (String) -> Unit) {
-    var text by rememberSaveable { mutableStateOf("") }
+    // Kept across rotation; the field reads and writes it directly, so no key is lost.
+    val text = rememberTextFieldState()
     Column(verticalArrangement = Arrangement.spacedBy(Spacing.md)) {
         Text("Send text to $appLabel", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
         InfoBanner(
@@ -78,18 +77,16 @@ internal fun HandOffComposer(appLabel: String, enabled: Boolean, onCancel: () ->
                 "The reply stays in $appLabel. AI Control Center cannot read it.",
         )
         OutlinedTextField(
-            value = text,
-            onValueChange = { text = it },
+            state = text,
             modifier = Modifier.fillMaxWidth(),
             label = { Text("Text to hand over") },
-            minLines = 3,
-            maxLines = 8,
+            lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = 3, maxHeightInLines = 8),
         )
         Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
             OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("Cancel") }
             Button(
-                onClick = { onSend(text) },
-                enabled = enabled && text.isNotBlank(),
+                onClick = { onSend(text.text.toString()) },
+                enabled = enabled && text.text.isNotBlank(),
                 modifier = Modifier.weight(1f).heightIn(min = 48.dp),
             ) {
                 Icon(AppIcons.Send, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))

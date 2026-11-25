@@ -1,9 +1,12 @@
 package com.aicontrolcenter.app.ui.approvals
 
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aicontrolcenter.app.ui.components.UserMessage
+import com.aicontrolcenter.app.ui.components.putText
+import com.aicontrolcenter.app.ui.components.textChanges
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.RequestId
 import com.aicontrolcenter.core.operator.DecideResult
@@ -158,22 +161,36 @@ class ApprovalViewModel(
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ApprovalUiState())
 
-    fun setNote(text: String) = local.update { it.copy(note = text.take(MAX_NOTE)) }
+    /**
+     * The note being typed. The field reads it and the keyboard writes it directly, so every key
+     * lands in order; [ApprovalUiState.note] follows it.
+     */
+    val note = TextFieldState()
+
+    init {
+        viewModelScope.launch { note.textChanges().collect { text -> local.update { it.copy(note = text.take(MAX_NOTE)) } } }
+    }
+
+    /** Replaces the note from code; typing goes into [note] directly. */
+    fun setNote(text: String) {
+        note.putText(text.take(MAX_NOTE))
+        local.update { it.copy(note = text.take(MAX_NOTE)) }
+    }
 
     /** Answers the request with [choice]. Does nothing while an answer is being written. */
     fun choose(choice: RequestChoice) {
         if (local.value.isBusy) return
-        val note = local.value.note.trim().takeIf { it.isNotEmpty() }
+        val sent = note.text.toString().take(MAX_NOTE).trim().takeIf { it.isNotEmpty() }
         local.update { it.copy(isBusy = true) }
         viewModelScope.launch {
             var allowedOnScreen: OwnerRequest? = null
             val text = try {
                 val result = when (choice) {
-                    RequestChoice.ALLOW_ONCE -> requests.grant(requestId, GrantScope.ONCE, note)
-                    RequestChoice.ALLOW_FOR_TASK -> requests.grant(requestId, GrantScope.TASK, note)
-                    RequestChoice.ALLOW_ALWAYS -> requests.grant(requestId, GrantScope.ALWAYS, note)
-                    RequestChoice.APPROVE -> requests.approve(requestId, note)
-                    RequestChoice.DENY -> requests.deny(requestId, note)
+                    RequestChoice.ALLOW_ONCE -> requests.grant(requestId, GrantScope.ONCE, sent)
+                    RequestChoice.ALLOW_FOR_TASK -> requests.grant(requestId, GrantScope.TASK, sent)
+                    RequestChoice.ALLOW_ALWAYS -> requests.grant(requestId, GrantScope.ALWAYS, sent)
+                    RequestChoice.APPROVE -> requests.approve(requestId, sent)
+                    RequestChoice.DENY -> requests.deny(requestId, sent)
                 }
                 if (result is DecideResult.Decided && choice != RequestChoice.DENY && result.request.constraint is CapabilityConstraint.App) {
                     allowedOnScreen = result.request
@@ -184,6 +201,7 @@ class ApprovalViewModel(
             } catch (failure: Exception) {
                 "Your answer could not be saved: ${failure.message ?: "storage error"}. The agent is still waiting."
             }
+            note.putText("")
             local.update { it.copy(isBusy = false, note = "", message = UserMessage(text, ++messageCounter)) }
             allowedOnScreen?.let { answered -> local.update { it.copy(afterAnswer = nextStep(answered)) } }
         }
@@ -255,10 +273,11 @@ class ApprovalViewModel(
         DecideResult.NotFound -> "This request no longer exists. Nothing changed."
     }
 
-    private companion object {
+    companion object {
+        /** The longest note the owner can send with an answer. */
         const val MAX_NOTE = 500
 
         /** How long to wait, after a permission for a screen call, for that call's approval before stepping aside. */
-        const val FOLLOW_UP_MS = 1_500L
+        private const val FOLLOW_UP_MS = 1_500L
     }
 }

@@ -29,6 +29,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -44,6 +45,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import com.aicontrolcenter.app.ui.components.AppCard
 import com.aicontrolcenter.app.ui.components.AppTextField
+import com.aicontrolcenter.app.ui.components.digitsOnly
 import com.aicontrolcenter.app.ui.components.InfoBanner
 import com.aicontrolcenter.app.ui.components.SIMULATOR_LABEL
 import com.aicontrolcenter.app.ui.components.icon
@@ -272,7 +274,7 @@ internal val RiskLevel.label: String
     get() = toRiskLabel().text + if (this == RiskLevel.CONSEQUENTIAL) ": asks you every time" else ""
 
 @Composable
-internal fun GenerationEditor(state: AgentEditorUiState, actions: AgentEditorActions) {
+internal fun GenerationEditor(state: AgentEditorUiState, fields: AgentTextFields, actions: AgentEditorActions) {
     val generation = state.draft.generation
     val temperature = generation.temperature
     Column {
@@ -307,14 +309,13 @@ internal fun GenerationEditor(state: AgentEditorUiState, actions: AgentEditorAct
                 }
                 RowDivider(Modifier.padding(vertical = Spacing.xs))
                 AppTextField(
-                    value = generation.maxOutputTokens?.toString().orEmpty(),
-                    onValueChange = actions.onSetMaxOutputTokens,
+                    state = fields.maxOutputTokens,
                     label = "Maximum output tokens",
                     placeholder = "Model default",
                     supportingText = "Leave empty to use the model's own limit.",
                     errorText = state.issue(AgentField.GENERATION),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    transformInput = { typed -> typed.filter(Char::isDigit).take(7) },
+                    inputTransformation = remember { digitsOnly(AgentTextFields.MAX_TOKEN_DIGITS) },
                 )
             }
         }

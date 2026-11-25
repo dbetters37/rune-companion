@@ -54,7 +54,6 @@ class AgentEditorActions(
     val onRemoveFallback: (ModelId) -> Unit,
     val onSetTool: (ToolId, Boolean) -> Unit,
     val onSetTemperature: (Double?) -> Unit,
-    val onSetMaxOutputTokens: (String) -> Unit,
     val onSave: () -> Unit,
     val onDiscard: () -> Unit,
     val onClose: () -> Unit,
@@ -114,7 +113,6 @@ fun AgentEditorRoute(
         onRemoveFallback = viewModel::removeFallback,
         onSetTool = viewModel::setTool,
         onSetTemperature = viewModel::setTemperature,
-        onSetMaxOutputTokens = viewModel::setMaxOutputTokensText,
         onSave = viewModel::save,
         onDiscard = viewModel::discard,
         onClose = onClose,
@@ -123,11 +121,12 @@ fun AgentEditorRoute(
         onSetSpaceWritable = viewModel::setSpaceWritable,
         onOpenPermissions = agentId?.let { id -> { onOpenPermissions(id) } },
     )
-    AgentEditorScreen(state, actions)
+    AgentEditorScreen(state, viewModel.fields, actions)
 }
 
+/** The agent editor. Its text fields hold what is typed in [fields]; everything else comes from [state]. */
 @Composable
-fun AgentEditorScreen(state: AgentEditorUiState, actions: AgentEditorActions) {
+fun AgentEditorScreen(state: AgentEditorUiState, fields: AgentTextFields, actions: AgentEditorActions) {
     var confirmDiscard by rememberSaveable { mutableStateOf(false) }
     val requestClose = { if (state.isDirty) confirmDiscard = true else actions.onClose() }
     BackHandler(enabled = state.isDirty) { confirmDiscard = true }
@@ -164,12 +163,12 @@ fun AgentEditorScreen(state: AgentEditorUiState, actions: AgentEditorActions) {
                     .padding(start = Spacing.screen, end = Spacing.screen, top = Spacing.xs, bottom = Spacing.xl),
                 verticalArrangement = Arrangement.spacedBy(Spacing.md),
             ) {
-                IdentityEditor(state, actions)
-                InstructionsEditor(state, actions)
+                IdentityEditor(state, fields, actions)
+                InstructionsEditor(state, fields)
                 ResponsibilitiesAndSkillsEditor(state, actions)
                 ModelEditor(state, actions)
                 ToolsEditor(state, actions)
-                GenerationEditor(state, actions)
+                GenerationEditor(state, fields, actions)
                 MemoryEditor(state, actions)
                 DelegationEditor(state, actions)
                 Button(

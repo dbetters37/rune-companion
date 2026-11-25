@@ -1,5 +1,6 @@
 package com.aicontrolcenter.app.ui.agents
 
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import com.aicontrolcenter.app.testing.MainDispatcherRule
 import com.aicontrolcenter.app.testing.TestApp
 import com.aicontrolcenter.core.AgentId
@@ -135,6 +136,34 @@ class AgentEditorViewModelTest {
         assertEquals(writer.createdAt, saved.createdAt)
         assertEquals(9, app.agents.getStats(writer.id).tasksCompleted)
         assertEquals(6, app.agents.getAll().size)
+    }
+
+    @Test
+    fun `the fields lead - an edit never overwrites keys the draft has not seen, and Save takes the fields as they are`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.graph.agentManager.ensureDefaults()
+        val writer = app.agentNamed("Writer").profile
+        val viewModel = editor(app, editing = writer.id)
+        assertEquals("Writer", viewModel.fields.name.text.toString(), "the loaded agent is put in its fields once")
+        assertEquals(writer.systemInstructions, viewModel.fields.instructions.text.toString())
+
+        // Keys the draft has not caught up with yet (no snapshot notification has gone out in this test).
+        viewModel.fields.description.setTextAndPlaceCursorAtEnd("Writes release notes, typed fast")
+        viewModel.edit { it.copy(colorIndex = 3) }
+        assertEquals("Writes release notes, typed fast", viewModel.fields.description.text.toString(), "a change from elsewhere kept the keys")
+        assertEquals("Writes release notes, typed fast", viewModel.uiState.value.draft.description)
+
+        // A text changed from code goes into its field.
+        viewModel.setName("Release Writer")
+        assertEquals("Release Writer", viewModel.fields.name.text.toString())
+
+        viewModel.fields.personality.setTextAndPlaceCursorAtEnd("Dry, exact")
+        viewModel.save()
+        val saved = assertNotNull(app.agents.get(writer.id))
+        assertEquals("Release Writer", saved.name)
+        assertEquals("Writes release notes, typed fast", saved.description)
+        assertEquals("Dry, exact", saved.personality, "the last keys before Save are saved")
+        assertEquals(3, saved.colorIndex)
     }
 
     @Test

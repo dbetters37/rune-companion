@@ -47,6 +47,8 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowLooper
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -115,7 +117,10 @@ class FastTypingTest {
         compose.onAllNodes(hasText("${OBJECTIVE.length} / 4,000", substring = true)).onFirst().assertExists()
 
         compose.onAllNodes(hasText("Start objective") and hasClickAction()).onFirst().performScrollTo().performClick()
-        compose.waitUntil(10_000) { runBlocking { app.tasks.observeObjectives().first() }.isNotEmpty() }
+        compose.waitUntil(10_000) {
+            ShadowLooper.idleMainLooper(50, TimeUnit.MILLISECONDS)
+            runBlocking { app.tasks.observeObjectives().first() }.isNotEmpty()
+        }
         assertEquals(OBJECTIVE, runBlocking { app.tasks.observeObjectives().first() }.single().instructions)
     }
 
