@@ -20,8 +20,14 @@ package com.aicontrolcenter.framework.operator
  * What the caller can rely on, whichever engine runs the script:
  *  - a script that fails, a budget it runs over, and an engine that cannot start end as a
  *    [JsOutcome], not as an exception; cancelling the calling coroutine ends the wait;
- *  - [run] returns about [run]'s time limit plus the engine's grace after the script started,
- *    also when the script does not stop;
+ *  - the script's time starts at its own code (Phase 6, D2): getting an engine ready (a thread,
+ *    Rhino's context and the sandbox's own guards, and for an engine in another process that
+ *    process too) does not count against it. Getting ready has bounds of its own
+ *    ([JsLimits.engineStartMs], and [JsLimits.bindTimeoutMs] for starting another process),
+ *    and a run that does not get ready within them ends as [JsOutcome.Stopped] with nothing of
+ *    the script run;
+ *  - [run] returns about [run]'s time limit plus the engine's grace after the script's own code
+ *    started, also when the script does not stop;
  *  - the limits that protect the app hold whatever the engine does: no host call after [run]
  *    has returned, no write unless [JsHost.canWrite], only new files, and a bounded number of
  *    them. In this process [JsSandbox] and [WorkspaceJsHost] keep them. An engine in another
@@ -36,19 +42,43 @@ interface JsEngine {
     suspend fun run(code: String, inputJson: String?, host: JsHost?, timeoutMs: Long): JsOutcome
 }
 
-/** How a script run ended. [log] is what console.log printed, within the limits. */
+/**
+ * How a script run ended. [log] is what console.log printed, within the limits. [note] is a sentence of the engine's
+ * own about where or how the script ran (Phase 6: the in-process fallback when the script process cannot be started),
+ * for the answer; null when there is nothing to say.
+ */
 sealed interface JsOutcome {
     val log: List<String>
     val logTruncated: Boolean
+    val note: String?
 
     /** The script ran to the end; [resultJson] is the JSON of its last expression (null for undefined or a function). */
-    data class Finished(val resultJson: String?, val resultTruncated: Boolean, override val log: List<String>, override val logTruncated: Boolean) : JsOutcome
+    data class Finished(
+        val resultJson: String?,
+        val resultTruncated: Boolean,
+        override val log: List<String>,
+        override val logTruncated: Boolean,
+        override val note: String? = null,
+    ) : JsOutcome
 
     /** The script threw, or did not compile; [line] when known. */
-    data class ScriptError(val message: String, val line: Int?, override val log: List<String>, override val logTruncated: Boolean) : JsOutcome
+    data class ScriptError(
+        val message: String,
+        val line: Int?,
+        override val log: List<String>,
+        override val logTruncated: Boolean,
+        override val note: String? = null,
+    ) : JsOutcome
 
     /** The sandbox stopped it: a budget (instructions, time, memory, recursion) or cancellation; [reason] says which. */
-    data class Stopped(val reason: String, override val log: List<String>, override val logTruncated: Boolean) : JsOutcome
+    data class Stopped(val reason: String, override val log: List<String>, override val logTruncated: Boolean, override val note: String? = null) : JsOutcome
+}
+
+/** This outcome with [note] as its engine's note. */
+fun JsOutcome.withNote(note: String?): JsOutcome = when (this) {
+    is JsOutcome.Finished -> copy(note = note)
+    is JsOutcome.ScriptError -> copy(note = note)
+    is JsOutcome.Stopped -> copy(note = note)
 }
 
 /**
