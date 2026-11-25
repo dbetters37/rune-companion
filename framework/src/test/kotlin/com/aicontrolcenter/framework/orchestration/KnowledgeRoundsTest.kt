@@ -43,6 +43,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -1046,6 +1047,39 @@ class KnowledgeRoundsTest {
         assertTrue(status.contains("the Director may no longer write to the shared space \"Team\". Allow it in Memory > Spaces."), status)
         assertTrue(status.contains("(memory ${summary.id.value})"), status)
         assertTrue(team.summaries().single().content.endsWith("# Final v1"), "the summary was left as it was")
+    }
+
+    @Test
+    fun `D21 - the final result knowledge is saved from is numbered by the results there are, never skipping one`() = runTest {
+        val team = TeamFixture(this) { copy(autoResumeInterruptedTasks = true) }.setUp()
+        var hold = true
+        team.script.plan = { _, _ -> if (hold) awaitCancellation() else ScriptStep.Reply(planJson(listOf(task("a", "Find apps", listOf("research"))))) }
+        // The app dies while the Director plans: the objective's run counter moves on, with no result.
+        val app = app()
+        val objective = team.orchestrator(app).startObjective("Research note apps", ObjectiveOptions(saveKnowledge = true))
+        team.settle(MINUTE_MS)
+        app.cancel()
+        hold = false
+        val after = team.orchestrator(backgroundScope)
+        after.recoverInterrupted()
+        team.settle()
+        assertEquals(1, team.objective(objective.id).attempt, "the interrupted planning counted as a run")
+        assertEquals(listOf("Done saving what the team learned from final result 1."), team.records(objective.id, ObjectiveDriver.KNOWLEDGE_DONE))
+        assertTrue(team.records(objective.id, ObjectiveDriver.KNOWLEDGE_SAVING).single().startsWith("${ObjectiveDriver.KNOWLEDGE_SAVING} from final result 1 "))
+    }
+
+    @Test
+    fun `D21 - a knowledge record names its run in its id, and one stored before by its number is still read`() {
+        val root = TaskId("tsk_1")
+        fun record(id: String, body: String) = AgentMessage(MessageId(id), root, root, Participant.System, Participant.Owner, MessageType.STATUS, body, at = 1)
+        val current = record(ObjectiveDriver.recordId(root, 4, "d", 0).value, "${ObjectiveDriver.KNOWLEDGE_DONE} from final result 2.")
+        val legacy = record("msg_7", "${ObjectiveDriver.KNOWLEDGE_DONE} from final result 2.")
+        assertEquals(4, ObjectiveDriver.roundOf(current))
+        assertEquals(1, ObjectiveDriver.roundOf(legacy))
+        assertEquals(null, ObjectiveDriver.roundOf(record("msg_8", "Limit reached: something")))
+        assertEquals(4, ObjectiveDriver.resultNumber(listOf(current, legacy, record(ObjectiveDriver.recordId(root, 2, "s", 0).value, "${ObjectiveDriver.KNOWLEDGE_SAVING} from final result 2 (attempt 1 of 2).")), 6))
+        assertTrue(ObjectiveDriver.isRecord(current, ObjectiveDriver.KNOWLEDGE_DONE, 4))
+        assertFalse(ObjectiveDriver.isRecord(current, ObjectiveDriver.KNOWLEDGE_SAVING, 4))
     }
 
     // 6. A store error never costs a finished objective its result (probe verify4e, storeErrors).

@@ -485,12 +485,15 @@ internal class ObjectiveDriver(
     private suspend fun saveKnowledge(objective: TaskRecord, outcome: Outcome, round: Int): String? {
         val document = outcome.document
         val written = outcome.written
+        // D21: the final result's number counts the results knowledge was saved from, so it never skips one.
+        var number = round + 1
         val note = try {
             val records = ctx.messages.list(objective.id).filter { it.from == Participant.System && it.type == MessageType.STATUS }
-            records.lastOrNull { isRecord(it.body, KNOWLEDGE_DONE, round) }?.let { return noteOf(it.body, round) }
+            number = resultNumber(records, round)
+            records.lastOrNull { isRecord(it, KNOWLEDGE_DONE, round) }?.let { return noteOf(it.body) }
             val limits = ctx.limits(objective, ctx.settings.get())
-            val attempts = records.filter { isRecord(it.body, KNOWLEDGE_SAVING, round) }
-            val tried = attempts.size - records.count { isRecord(it.body, KNOWLEDGE_STOPPED, round) }
+            val attempts = records.filter { isRecord(it, KNOWLEDGE_SAVING, round) }
+            val tried = attempts.size - records.count { isRecord(it, KNOWLEDGE_STOPPED, round) }
             val left = (objective.deadlineAt ?: Long.MAX_VALUE) - ctx.clock.now()
             val skipped = when {
                 left <= 0 -> "the objective had no time left"
@@ -505,12 +508,16 @@ internal class ObjectiveDriver(
                 else -> REVISION.find(attempts.first().body)?.groupValues?.get(1)?.toIntOrNull()
             }
             val revision = startRevision?.let { ", summary at revision $it" }.orEmpty()
-            ctx.journal.send(objective.id, objective, Participant.System, Participant.Owner, MessageType.STATUS, "$KNOWLEDGE_SAVING ${resultOf(round)} (attempt ${tried + 1} of ${limits.maxTaskAttempts}$revision).")
+            ctx.journal.send(
+                objective.id, objective, Participant.System, Participant.Owner, MessageType.STATUS,
+                "$KNOWLEDGE_SAVING ${resultOf(number)} (attempt ${tried + 1} of ${limits.maxTaskAttempts}$revision).",
+                id = recordId(objective.id, round, SAVING_TAG, attempts.size),
+            )
             // What the attempt did; null: the round reached its time limit.
             val saved = try {
-                withPausableTimeout(minOf(left, limits.taskTimeoutMs), ctx.timeSource) { knowledge.save(objective, document, written, finalResult(round), startRevision) }
+                withPausableTimeout(minOf(left, limits.taskTimeoutMs), ctx.timeSource) { knowledge.save(objective, document, written, finalResult(number), startRevision) }
             } catch (e: CancellationException) {
-                withContext(NonCancellable) { recordIfStoppedByOwner(objective, round) }
+                withContext(NonCancellable) { recordIfStoppedByOwner(objective, round, number, records.count { isRecord(it, KNOWLEDGE_STOPPED, round) }) }
                 throw e
             }
             when {
@@ -524,14 +531,17 @@ internal class ObjectiveDriver(
             }
         } catch (e: Exception) {
             rethrowIfCancelled(e)
-            ctx.journal.warn(objective.id, objective, "Knowledge not saved", "${failedWith(e).replaceFirstChar { it.uppercase() }} stopped saving what the team learned ${resultOf(round)}.")
+            ctx.journal.warn(objective.id, objective, "Knowledge not saved", "${failedWith(e).replaceFirstChar { it.uppercase() }} stopped saving what the team learned ${resultOf(number)}.")
             storedNote(objective, document, written, failedWith(e), errored = true)
         }
         try {
-            ctx.journal.send(objective.id, objective, Participant.System, Participant.Owner, MessageType.STATUS, "$KNOWLEDGE_DONE ${resultOf(round)}${note?.let { ": $it" } ?: "."}")
+            ctx.journal.send(
+                objective.id, objective, Participant.System, Participant.Owner, MessageType.STATUS,
+                "$KNOWLEDGE_DONE ${resultOf(number)}${note?.let { ": $it" } ?: "."}", id = recordId(objective.id, round, DONE_TAG, 0),
+            )
         } catch (e: Exception) {
             rethrowIfCancelled(e) // the round ended all the same; without its record, a later finish saves again, repeating nothing
-            ctx.journal.warn(objective.id, objective, "Knowledge record not stored", "${failedWith(e).replaceFirstChar { it.uppercase() }} kept the end of saving what the team learned ${resultOf(round)} from being recorded. What was saved is kept.")
+            ctx.journal.warn(objective.id, objective, "Knowledge record not stored", "${failedWith(e).replaceFirstChar { it.uppercase() }} kept the end of saving what the team learned ${resultOf(number)} from being recorded. What was saved is kept.")
         }
         return note
     }
@@ -552,11 +562,14 @@ internal class ObjectiveDriver(
      * cancelled, which the owner's command writes before it stops the job), records that the
      * attempt does not count. The app dying or closing leaves the objective running: that counts.
      */
-    private suspend fun recordIfStoppedByOwner(objective: TaskRecord, round: Int) {
+    private suspend fun recordIfStoppedByOwner(objective: TaskRecord, round: Int, number: Int, stoppedBefore: Int) {
         try {
             val status = ctx.tasks.get(objective.id)?.status
             if (status == TaskStatus.PAUSED || status == TaskStatus.CANCELLED) {
-                ctx.journal.send(objective.id, objective, Participant.System, Participant.Owner, MessageType.STATUS, "$KNOWLEDGE_STOPPED ${resultOf(round)} by the owner; that attempt does not count.")
+                ctx.journal.send(
+                    objective.id, objective, Participant.System, Participant.Owner, MessageType.STATUS,
+                    "$KNOWLEDGE_STOPPED ${resultOf(number)} by the owner; that attempt does not count.", id = recordId(objective.id, round, STOPPED_TAG, stoppedBefore),
+                )
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e // a store that fails here only leaves the attempt counted
@@ -650,9 +663,9 @@ internal class ObjectiveDriver(
         if (objective.options?.saveKnowledge != true) return null
         val outcome = outcomeOf(objective, tree)
         val round = outcome.round?.takeIf { outcome.completed > 0 } ?: return null
-        val done = ctx.messages.list(objective.id).lastOrNull { it.from == Participant.System && it.type == MessageType.STATUS && isRecord(it.body, KNOWLEDGE_DONE, round) }
+        val done = ctx.messages.list(objective.id).lastOrNull { it.from == Participant.System && it.type == MessageType.STATUS && isRecord(it, KNOWLEDGE_DONE, round) }
         // The warning was logged when that round ended.
-        if (done != null) return noteOf(done.body, round)?.let { Note(it, null) }
+        if (done != null) return noteOf(done.body)?.let { Note(it, null) }
         return noteOn(knowledge.stored(objective, outcome.document), null, outcome.written)
     }
 
@@ -805,21 +818,42 @@ internal class ObjectiveDriver(
         /** The summary's revision when a round began, in its [KNOWLEDGE_SAVING] records. */
         private val REVISION = Regex(", summary at revision (\\d+)\\)")
 
-        /** Names the final result of a run (the knowledge round), counted from 1. */
-        fun finalResult(round: Int) = "final result ${round + 1}"
+        /** Names a final result by its [number] among the results knowledge was saved from, counted from 1 (D21). */
+        fun finalResult(number: Int) = "final result $number"
 
         /** Names the final result a knowledge record is about. */
-        fun resultOf(round: Int) = "from ${finalResult(round)}"
+        fun resultOf(number: Int) = "from ${finalResult(number)}"
 
-        /** [body] is a knowledge record opened by [kind] (one of the openers above) about the final result of [round]. */
-        fun isRecord(body: String, kind: String, round: Int): Boolean {
-            val head = "$kind ${resultOf(round)}"
-            return body.startsWith(head) && body.getOrNull(head.length).let { it == ' ' || it == '.' || it == ':' }
+        private const val SAVING_TAG = "s"
+        private const val DONE_TAG = "d"
+        private const val STOPPED_TAG = "x"
+
+        /**
+         * The id of a knowledge record of run [round] ([tag]: saving, done, stopped; [n]: how many of that kind the round
+         * has before it). It names the round, so a record is found by its round whatever number its text shows (D21).
+         */
+        fun recordId(rootId: TaskId, round: Int, tag: String, n: Int) = MessageId("${rootId.value}_k${round}_${tag}_$n")
+
+        private val RECORD_ID = Regex("^(.+)_k(\\d+)_[$SAVING_TAG$DONE_TAG$STOPPED_TAG]_\\d+$")
+
+        /** Records stored before D21 named their run by number only: the run's index plus one. */
+        private val LEGACY_RECORD = Regex("^(?:$KNOWLEDGE_SAVING|$KNOWLEDGE_DONE|$KNOWLEDGE_STOPPED) from final result (\\d+)")
+
+        /** The run a knowledge record is about, or null when [message] is not one. */
+        fun roundOf(message: AgentMessage): Int? {
+            if (!message.body.startsWith(KNOWLEDGE_SAVING) && !message.body.startsWith(KNOWLEDGE_DONE) && !message.body.startsWith(KNOWLEDGE_STOPPED)) return null
+            RECORD_ID.matchEntire(message.id.value)?.takeIf { it.groupValues[1] == message.rootId.value }?.let { return it.groupValues[2].toIntOrNull() }
+            return LEGACY_RECORD.find(message.body)?.groupValues?.get(1)?.toIntOrNull()?.minus(1)
         }
 
-        /** The note a [KNOWLEDGE_DONE] record of [round] ended with; null when there is none (all was saved). */
-        private fun noteOf(body: String, round: Int): String? =
-            body.removePrefix("$KNOWLEDGE_DONE ${resultOf(round)}").takeIf { it.startsWith(": ") }?.substring(2)?.trim()?.takeIf { it.isNotEmpty() }
+        /** [message] is a knowledge record opened by [kind] (one of the openers above) about run [round]. */
+        fun isRecord(message: AgentMessage, kind: String, round: Int): Boolean = message.body.startsWith(kind) && roundOf(message) == round
+
+        /** D21: run [round]'s final result counted among the results knowledge was saved from: those of earlier runs, plus one. */
+        fun resultNumber(records: List<AgentMessage>, round: Int): Int = 1 + records.mapNotNull { roundOf(it) }.filter { it < round }.distinct().size
+
+        /** The note a [KNOWLEDGE_DONE] record ended with; null when there is none (all was saved). */
+        private fun noteOf(body: String): String? = body.removePrefix(KNOWLEDGE_DONE).substringAfter(": ", "").trim().takeIf { it.isNotEmpty() }
 
         /** The owner's message asking for a task to run again, stored right after the new run is. */
         fun runAgain(title: String) = "Run \"$title\" again."
