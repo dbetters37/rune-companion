@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     The launcher icon: the Director at the centre and three agents on the ring around it,
+     joined to it. Colours are the app's own (primary teal, secondary blue, tertiary amber).
+     The drawing reaches 28dp from the centre, inside the 33dp safe zone of the 108dp canvas.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:pathData="M33.60,54.00a20.40,20.40 0,1 1,40.80,0a20.40,20.40 0,1 1,-40.80,0z" android:fillColor="#00000000" android:strokeColor="#FF35E0C8" android:strokeAlpha="0.45" android:strokeWidth="2.6"/>
+    <path android:pathData="M54.00,43.80L54.00,33.60" android:strokeColor="#FF35E0C8" android:strokeAlpha="0.8" android:strokeWidth="2.8" android:strokeLineCap="round"/>
+    <path android:pathData="M62.83,59.10L71.67,64.20" android:strokeColor="#FF35E0C8" android:strokeAlpha="0.8" android:strokeWidth="2.8" android:strokeLineCap="round"/>
+    <path android:pathData="M45.17,59.10L36.33,64.20" android:strokeColor="#FF35E0C8" android:strokeAlpha="0.8" android:strokeWidth="2.8" android:strokeLineCap="round"/>
+    <path android:pathData="M48.05,33.60a5.95,5.95 0,1 1,11.90,0a5.95,5.95 0,1 1,-11.90,0z" android:fillColor="#FFFFD166" android:strokeColor="#FF0A0F14" android:strokeWidth="2.2"/>
+    <path android:pathData="M65.72,64.20a5.95,5.95 0,1 1,11.90,0a5.95,5.95 0,1 1,-11.90,0z" android:fillColor="#FF8AB4F8" android:strokeColor="#FF0A0F14" android:strokeWidth="2.2"/>
+    <path android:pathData="M30.38,64.20a5.95,5.95 0,1 1,11.90,0a5.95,5.95 0,1 1,-11.90,0z" android:fillColor="#FF35E0C8" android:strokeColor="#FF0A0F14" android:strokeWidth="2.2"/>
+    <path android:pathData="M43.80,54.00a10.20,10.20 0,1 1,20.40,0a10.20,10.20 0,1 1,-20.40,0z" android:fillColor="#FF35E0C8"/>
+    <path android:pathData="M49.75,54.00a4.25,4.25 0,1 1,8.50,0a4.25,4.25 0,1 1,-8.50,0z" android:fillColor="#FF0A0F14"/>
+</vector>

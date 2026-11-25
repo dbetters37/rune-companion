@@ -413,6 +413,12 @@ key, so it does not install over 0.4.x: uninstall the old build once, which dele
 memories and keys, then install 0.5.0 and enter your provider key again. Builds made by GitHub
 Actions still use the development key until the four signing secrets in the README are added.
 
+### 0.5.1
+
+Adds the app's launcher icon: the Director at the centre with three agents on a ring around it,
+in the app's own colours, plus a one-colour version that Android 13 and later use for themed
+icons. It installs over 0.5.0 and keeps your data.
+
 ### Still marked "(test)"
 
 Controls that do nothing yet carry "(test)" in their label. In 0.5.0 these are three fields in

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The same shapes in one colour, for themed icons (Android 13 and later): the launcher tints them. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:pathData="M33.60,54.00a20.40,20.40 0,1 1,40.80,0a20.40,20.40 0,1 1,-40.80,0z" android:fillColor="#00000000" android:strokeColor="#FFFFFFFF" android:strokeAlpha="0.5" android:strokeWidth="2.6"/>
+    <path android:pathData="M54.00,43.80L54.00,33.60" android:strokeColor="#FFFFFFFF" android:strokeWidth="2.8" android:strokeLineCap="round"/>
+    <path android:pathData="M62.83,59.10L71.67,64.20" android:strokeColor="#FFFFFFFF" android:strokeWidth="2.8" android:strokeLineCap="round"/>
+    <path android:pathData="M45.17,59.10L36.33,64.20" android:strokeColor="#FFFFFFFF" android:strokeWidth="2.8" android:strokeLineCap="round"/>
+    <path android:pathData="M48.05,33.60a5.95,5.95 0,1 1,11.90,0a5.95,5.95 0,1 1,-11.90,0z" android:fillColor="#FFFFFFFF"/>
+    <path android:pathData="M65.72,64.20a5.95,5.95 0,1 1,11.90,0a5.95,5.95 0,1 1,-11.90,0z" android:fillColor="#FFFFFFFF"/>
+    <path android:pathData="M30.38,64.20a5.95,5.95 0,1 1,11.90,0a5.95,5.95 0,1 1,-11.90,0z" android:fillColor="#FFFFFFFF"/>
+    <path android:pathData="M43.80,54.00a10.20,10.20 0,1 1,20.40,0a10.20,10.20 0,1 1,-20.40,0zM49.75,54.00a4.25,4.25 0,1 1,8.50,0a4.25,4.25 0,1 1,-8.50,0z" android:fillColor="#FFFFFFFF" android:fillType="evenOdd"/>
+</vector>
