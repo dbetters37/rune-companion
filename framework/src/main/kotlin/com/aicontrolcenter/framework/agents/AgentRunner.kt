@@ -53,7 +53,8 @@ import kotlinx.coroutines.withContext
  *  - Model failures and limits end the run with a result, never with an exception. Only
  *    cancellation of the caller propagates, after what was produced has been handed over.
  *  - Tool results go back to the model as tool messages and nowhere else: they cannot change
- *    limits, the tool list or the system prompt.
+ *    limits, the tool list or the system prompt. The tool list changes only when the model opens
+ *    one of the agent's own tool families ([ToolMenu]), and then only by appending that family.
  *  - What the owner changes about the agent takes effect within the turn: the agent is read
  *    again before every model call and every tool call. Each call is authorised against the
  *    agent as it is then, so a tool switched off mid-turn is refused; an agent switched off or
@@ -168,8 +169,10 @@ class AgentRunner(
 
     /**
      * Roughly how many tokens the first model call of [request] would send: system prompt,
-     * conversation and tool definitions. Lets a caller refuse a conversation that cannot fit
-     * the model before anything is sent.
+     * conversation and the tool definitions it offers (with a [ToolMenu], the always-on tools,
+     * `tools_open` and the families the conversation already used; a family opened later adds
+     * its definitions to the calls after it). Lets a caller refuse a conversation that cannot
+     * fit the model before anything is sent.
      */
     fun estimatePromptTokens(request: AgentRunRequest): Int {
         val offered = offeredTools(request)

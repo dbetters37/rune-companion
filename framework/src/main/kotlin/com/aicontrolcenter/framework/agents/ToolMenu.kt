@@ -62,6 +62,8 @@ class ToolMenu private constructor(
     private val alwaysOn: List<ToolSpec>,
     /** The agent's other tools by family, families by name, tools by function name. */
     private val families: Map<String, List<ToolSpec>>,
+    /** The most estimated tokens of definitions a first call may offer when families are opened from the conversation ([openUsedIn]). */
+    private val thresholdTokens: Int,
 ) {
     private val openDefinition: ToolDefinition = openDefinition(families)
 
@@ -124,20 +126,30 @@ class ToolMenu private constructor(
     /**
      * Opens, before the first call, the families the conversation so far already used: the
      * families `tools_open` opened in it and those of the tools it called, in the order they
-     * were first used. A later turn of a chat then starts with the tools the earlier turns
-     * needed, and with the same tool list the last turn ended with (which a provider's cache
-     * still holds). Only this agent's families can be opened this way.
+     * were first used, for as long as the first call's definitions stay within the menu
+     * threshold (it stops at the first family that would cross it, so what is opened is always
+     * the beginning of what the earlier turns opened). A later turn of a chat then starts with
+     * the tools the earlier turns needed first, and with the beginning of the tool list the last
+     * turn ended with, which a provider's cache may still hold. Only this agent's families can
+     * be opened this way, and never the whole catalogue of an agent over the threshold.
      */
     internal fun openUsedIn(messages: List<ChatMessage>) {
+        val used = LinkedHashSet<String>()
         for (message in messages) {
             for (call in message.toolCalls) {
-                if (answers(call)) {
-                    (call.arguments["family"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim()
-                        ?.let(::familyNamed)?.let(::openFamily)
+                val family = if (answers(call)) {
+                    (call.arguments["family"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim()?.let(::familyNamed)
                 } else {
-                    openFamilyOf(call.name)
+                    familyOfFunction[call.name]
                 }
+                family?.let(used::add)
             }
+        }
+        for (family in used) {
+            if (family in opened) continue
+            val added = families.getValue(family).map(::definition)
+            if (tokens(offered + added) > thresholdTokens) return
+            openFamily(family)
         }
     }
 
@@ -215,11 +227,12 @@ class ToolMenu private constructor(
             val (alwaysOn, others) = tools.partition { it.id in extraToolIds || it.id in ALWAYS_ON }
             if (others.isEmpty()) return null
             val families = others.groupBy { familyOf(it.id) }.toSortedMap().mapValues { (_, specs) -> specs.sortedBy { it.functionName } }
-            val menu = ToolMenu(alwaysOn, LinkedHashMap(families))
+            val menu = ToolMenu(alwaysOn, LinkedHashMap(families), thresholdTokens)
             return menu.takeIf { tokens(it.offered) < allTokens }
         }
 
-        internal fun definition(spec: ToolSpec) = ToolDefinition(spec.functionName, spec.description, spec.parameters)
+        /** [spec] as a model call offers it: function name, description, parameter schema. */
+        fun definition(spec: ToolSpec) = ToolDefinition(spec.functionName, spec.description, spec.parameters)
 
         private fun tokens(definitions: List<ToolDefinition>): Int = TokenEstimator.tokens(emptyList(), definitions)
 

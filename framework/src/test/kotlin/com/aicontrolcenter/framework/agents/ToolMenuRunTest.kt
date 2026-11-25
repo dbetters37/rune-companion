@@ -183,17 +183,21 @@ class ToolMenuRunTest {
     }
 
     @Test
-    fun `families the conversation already used are open from the first call of the next turn`() = runBlocking<Unit> {
+    fun `families the conversation already used are open from the first call of the next turn, within the threshold`() = runBlocking<Unit> {
         val agent = operator()
         val earlier = listOf(
             ChatMessage.user("Write my plan."),
-            ChatMessage.assistant("", listOf(open("c1", "folders"))),
-            ChatMessage.toolResult("c1", ToolMenu.FUNCTION_NAME, "Opened the folders tools."),
-            ChatMessage.assistant("", listOf(call("c2", "workspace_write", "path" to "p.md", "content" to "x"))),
-            ChatMessage.toolResult("c2", "workspace_write", "Written."),
             // A tool the agent does not have, in the history: it opens nothing.
-            ChatMessage.assistant("", listOf(call("c3", "admin_wipe"))),
-            ChatMessage.toolResult("c3", "admin_wipe", "There is no tool called \"admin_wipe\".", isError = true),
+            ChatMessage.assistant("", listOf(call("c0", "admin_wipe"))),
+            ChatMessage.toolResult("c0", "admin_wipe", "There is no tool called \"admin_wipe\".", isError = true),
+            ChatMessage.assistant("", listOf(open("c1", "web"))),
+            ChatMessage.toolResult("c1", ToolMenu.FUNCTION_NAME, "Opened the web tools."),
+            ChatMessage.assistant("", listOf(call("c2", "folders_list"))),
+            ChatMessage.toolResult("c2", "folders_list", "No folders."),
+            ChatMessage.assistant("", listOf(call("c3", "workspace_write", "path" to "p.md", "content" to "x"))),
+            ChatMessage.toolResult("c3", "workspace_write", "Written."),
+            ChatMessage.assistant("", listOf(call("c4", "media_list"))),
+            ChatMessage.toolResult("c4", "media_list", "No photos."),
             ChatMessage.assistant("Done."),
             ChatMessage.user("Now read it back."),
         )
@@ -202,12 +206,15 @@ class ToolMenuRunTest {
 
         world.runner.run(AgentRunRequest(agent, model.id, earlier))
 
-        val names = namesIn(client.requests.single())
+        val first = client.requests.single()
+        val names = namesIn(first)
+        val web = names.filter { it.startsWith("web_") }
         val folders = names.filter { it.startsWith("folders_") }
-        val workspace = names.filter { it.startsWith("workspace_") }
-        assertTrue(folders.isNotEmpty() && workspace.isNotEmpty(), names.toString())
-        assertEquals(listOf("clock_now", "memory_search", ToolMenu.FUNCTION_NAME) + folders + workspace, names, "in the order they were first used")
-        assertFalse(names.any { it.startsWith("screen_") || it.startsWith("apps_") })
+        assertTrue(web.isNotEmpty() && folders.isNotEmpty(), names.toString())
+        // In the order they were first used; the workspace would take the first call over the threshold, so it and
+        // everything after it wait for tools_open.
+        assertEquals(listOf("clock_now", "memory_search", ToolMenu.FUNCTION_NAME) + web + folders, names)
+        assertTrue(toolTokens(first.tools) <= ToolMenu.THRESHOLD_TOKENS, "${toolTokens(first.tools)}")
     }
 
     @Test

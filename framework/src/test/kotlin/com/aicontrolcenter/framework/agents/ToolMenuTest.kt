@@ -109,6 +109,18 @@ class ToolMenuTest {
     }
 
     @Test
+    fun `families from the conversation stop at the first that would take the first call over the threshold`() {
+        val menu = ToolMenu.of(big, emptySet(), registry)!!
+        val used = listOf("screen_tap", "files_read", "memory_save").mapIndexed { i, name ->
+            ChatMessage.assistant("", listOf(ToolCallRequest("u$i", name, JsonObject(emptyMap()))))
+        }
+        menu.openUsedIn(used)
+        assertEquals(listOf("screen"), menu.openedFamilies, "files would cross the threshold, and nothing after it is opened")
+        assertTrue(ToolMenu.estimatedTokens(menu.definitions) <= ToolMenu.THRESHOLD_TOKENS)
+        assertTrue(menu.open(open("files")).ok, "the model can still open it")
+    }
+
+    @Test
     fun `no menu when a registered tool already uses tools_open's name`() {
         val clash = object : Tool {
             override val spec = spec("tools.open").copy(functionName = ToolMenu.FUNCTION_NAME)
