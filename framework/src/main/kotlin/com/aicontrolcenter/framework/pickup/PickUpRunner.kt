@@ -42,8 +42,9 @@ import java.time.ZoneId
  *     says why it is off).
  *  2. The rule and every folder are read afresh and [PickUpSafety.runProblem] is asked: the master switch
  *     (`folderPickUpEnabled`, off after installing) is on, the folder exists, is read-only for agents, has stayed so
- *     since the rule was switched on, and overlaps no folder agents may change. On a sentence nothing is imported, the
- *     sentence becomes the rule's last result, and when the folder is the reason the rule is switched off.
+ *     since the rule was switched on, and overlaps no folder agents may change, nor may hold the same files as one
+ *     through another app. On a sentence nothing is imported, the sentence becomes the rule's last result, and when
+ *     the folder is the reason the rule is switched off ([PickUpSafety.switchesRuleOff]).
  *  3. The files directly in the folder are listed. Only `text/…` files ([PickUpLimits.accepts]) of at most
  *     [PickUpLimits.MAX_FILE_BYTES] are read; each one's content hash ([PickUpSafety.contentHash]) is looked up and a
  *     file the rule has seen or imported before (by content, whatever its name) is skipped. Text that is not UTF-8 is
@@ -168,7 +169,7 @@ class PickUpRunner(
         val folder = all.firstOrNull { it.id == rule.folderId }
         val problem = PickUpSafety.runProblem(rule, folder, all, masterOn) ?: return Check.Go(rule, folder!!)
         // Nothing is imported; the sentence becomes the rule's last result, and when the folder is the reason the rule stops.
-        val stops = problem == PickUpSafety.RUN_FOLDER_NOT_READ_ONLY || problem == PickUpSafety.RUN_FOLDER_OVERLAPS_WRITABLE
+        val stops = PickUpSafety.switchesRuleOff(problem)
         rules.update(id) { it.copy(enabled = if (stops) false else it.enabled, lastRunAt = now, lastResult = problem, updatedAt = if (stops) now else it.updatedAt) }
         if (stops) log("Folder pick-up switched off", problem, rule, folder, Severity.WARNING)
         return Check.Stop(RuleRun(id, 0, problem))

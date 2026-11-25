@@ -8,6 +8,7 @@ import android.content.ServiceConnection
 import android.os.Build
 import android.os.IBinder
 import android.os.Process
+import android.os.RemoteException
 import android.os.SystemClock
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -16,6 +17,7 @@ import com.aicontrolcenter.framework.operator.JsHost
 import com.aicontrolcenter.framework.operator.JsLimits
 import com.aicontrolcenter.framework.operator.JsOutcome
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -41,12 +43,38 @@ import kotlin.test.assertTrue
  * sandbox cannot reach (docs/LIMITATIONS.md), over a bounded array: it ends by itself after far longer than the
  * script's limit and grace on the emulator, and is run only after a first run proved that scripts run in the isolated
  * process (never in this one). The memory hogs are bounded loops that run out of memory first.
+ *
+ * Each test starts with no script process (device gate of wave 2, finding 1): engines in one app process share the
+ * `js0`/`js1` processes, so an engine a test left bound kept the next tests in the first test's process. After each
+ * test its engines let go of their processes, and the test waits until each has ended.
  */
 @RunWith(AndroidJUnit4::class)
 class ScriptProcessDeviceTest {
     private val context: Context = InstrumentationRegistry.getInstrumentation().targetContext
     private val limits = JsLimits(bindTimeoutMs = 60_000, engineStartMs = 90_000)
     private val appPid = Process.myPid()
+    private val engines = mutableListOf<IsolatedJsEngine>()
+
+    /** A new engine for this test; its processes are let go of after the test ([letGoOfTheScriptProcesses]). */
+    private fun engine(): IsolatedJsEngine = IsolatedJsEngine(context, limits).also { engines += it }
+
+    @After
+    fun letGoOfTheScriptProcesses() {
+        val binders = engines.flatMap { it.letGoOfAll() }
+        engines.clear()
+        val ended = CountDownLatch(binders.size)
+        for (binder in binders) {
+            try {
+                binder.linkToDeath({ ended.countDown() }, 0)
+            } catch (e: RemoteException) {
+                ended.countDown() // already ended
+            }
+        }
+        val start = SystemClock.elapsedRealtime()
+        val allEnded = ended.await(PROCESS_END_WAIT_S, TimeUnit.SECONDS)
+        log("after the test: ${binders.size} script process binding(s) let go of; ended: $allEnded, in ${SystemClock.elapsedRealtime() - start} ms")
+        assertTrue(allEnded, "a script process did not end within $PROCESS_END_WAIT_S s of being let go of, so the next test would not start cold")
+    }
 
     private fun log(text: String) {
         Log.i(TAG, text)
@@ -74,7 +102,7 @@ class ScriptProcessDeviceTest {
 
     @Test
     fun onePlusOneRunsInAnIsolatedProcessAndAWarmRunKeepsTheDefaultLimit() {
-        val engine = IsolatedJsEngine(context, limits)
+        val engine = engine()
         ready(engine)
         // D2: a warm run's setup (3.7-5.2 s on the emulator) is not taken from the script's 5 s.
         val warm = timed("warm 1 + 1 with the default 5 s") { engine.runBlockingJs("1 + 1", JsLimits().timeoutMs) }
@@ -86,7 +114,7 @@ class ScriptProcessDeviceTest {
 
     @Test
     fun stuckScriptThreeTimesThenOnePlusOneWithinTheRestartBackOff() {
-        val engine = IsolatedJsEngine(context, limits)
+        val engine = engine()
         ready(engine)
         // `new Set(o)` walks an iterator whose `next` is the built-in `pop`, bound to an array: no function of the script is
         // entered, so the sandbox's budget and clock never reach the loop (docs/LIMITATIONS.md). It is bounded (one million
@@ -111,7 +139,7 @@ class ScriptProcessDeviceTest {
 
     @Test
     fun aFourMegabyteReadAndALargeRoundTrip() {
-        val engine = IsolatedJsEngine(context, limits)
+        val engine = engine()
         ready(engine)
         val big = "é".repeat(4 * 1024 * 1024)
         val host = object : JsHost {
@@ -135,7 +163,7 @@ class ScriptProcessDeviceTest {
 
     @Test
     fun aScriptMemoryHogEndsOnlyTheScriptAndAddsNoExitOfTheApp() {
-        val engine = IsolatedJsEngine(context, limits)
+        val engine = engine()
         ready(engine)
         val exitsBefore = mainProcessExits()
         val hog = timed("a script that fills the memory") {
@@ -222,5 +250,8 @@ class ScriptProcessDeviceTest {
 
     private companion object {
         const val TAG = "ScriptProcessDeviceTest"
+
+        /** Android ends an isolated process nothing holds within a second (spike Q2); the software emulator is slower. */
+        const val PROCESS_END_WAIT_S = 30L
     }
 }

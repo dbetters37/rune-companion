@@ -454,7 +454,8 @@ class DefaultOwnerGrants(
  * Folder pick-up (security review of wave 1, F1): switching read-only on stores the time
  * ([SharedFolder.readOnlySince]); switching it off clears it and, in the same locked step, switches
  * off every pick-up rule of that folder and of any folder that is the same place, inside it or
- * around it ([FolderTrees.overlap]), with [PickUpSafety.RUN_FOLDER_NOT_READ_ONLY] as its last result.
+ * around it ([FolderTrees.overlap]), or may hold the same files through another app
+ * ([FolderTrees.mayShareFiles]), with the reason as its last result ([PickUpSafety.runProblemBeside]).
  * Sharing a new folder (writable at first) switches those rules off the same way.
  */
 class DefaultOwnerFolders(
@@ -520,7 +521,10 @@ class DefaultOwnerFolders(
         updated
     }
 
-    /** Switches off every pick-up rule whose folder is [writable] or overlaps it (or may: unknown counts), saying why. */
+    /**
+     * Switches off every pick-up rule whose folder is [writable], overlaps it (or may: unknown counts) or may hold the same
+     * files through another app ([PickUpSafety.runProblemBeside]), saying why.
+     */
     private suspend fun switchOffPickUpAround(writable: SharedFolder) {
         val rules = pickUpRules ?: return
         val all = folders.getAll().associateBy { it.id }
@@ -528,8 +532,7 @@ class DefaultOwnerFolders(
         for (rule in rules.getAll()) {
             if (!rule.enabled) continue
             val folder = all[rule.folderId] ?: continue
-            if (folder.id != writable.id && FolderTrees.overlap(folder.treeUri, writable.treeUri) == false) continue
-            val reason = if (folder.id == writable.id) PickUpSafety.RUN_FOLDER_NOT_READ_ONLY else PickUpSafety.RUN_FOLDER_OVERLAPS_WRITABLE
+            val reason = PickUpSafety.runProblemBeside(folder, writable) ?: continue
             rules.update(rule.id) { it.copy(enabled = false, updatedAt = now, lastResult = reason) }
             log("Folder pick-up switched off: ${folder.displayName}", folder, reason)
         }

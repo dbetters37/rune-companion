@@ -193,21 +193,15 @@ internal class SafSharedFolders(
         }
         // A read-only folder can also be shared a second time from around or inside it ("Documents" and "Documents/Inbox"):
         // a change through the other one would land in it (security review of wave 1, F1). No change in either then.
-        // Where that cannot be told (a folder picked through the Downloads entry is named by a number, not by its place),
-        // it counts as overlapping (SEC-W2B-2).
+        // Where that cannot be told (a folder picked through the Downloads entry is named by a number, not by its place; a
+        // folder of another profile or of the media list), it counts as overlapping (SEC-W2B-2), and the sentence says which
+        // folder to share again through the phone's storage entry when that would let the app tell (B1).
         if (forWriting) {
             for (other in folders.getAll()) {
                 if (other.id == folder.id || !other.readOnly) continue
                 val overlap = FolderTrees.overlap(folder.treeUri, other.treeUri)
                 if (overlap == false) continue
-                return@withContext DocResult.NotAllowed(
-                    if (overlap == true) {
-                        "${folder.displayName} holds, or is inside, the read-only folder ${other.displayName}, so nothing can be changed in it."
-                    } else {
-                        "Android does not tell this app where ${folder.displayName} is, and it may hold, or be inside, the read-only folder " +
-                            "${other.displayName}, so nothing can be changed in it. Sharing it through the phone's storage instead of Downloads lets the app tell."
-                    },
-                )
+                return@withContext DocResult.NotAllowed(if (overlap == true) holds(folder, other) else mayHold(folder, other))
             }
         }
         val uri = parseTree(folder.treeUri) ?: return@withContext DocResult.NotAllowed(lost(folder))
@@ -236,6 +230,19 @@ internal class SafSharedFolders(
             // reported: a provider's message is not ours to repeat.
             DocResult.Failed("The app that provides ${folder.displayName} reported an error (${e.javaClass.simpleName}).")
         }
+    }
+
+    private fun holds(folder: SharedFolder, readOnly: SharedFolder): String =
+        "${folder.displayName} holds, or is inside, the read-only folder ${readOnly.displayName}, so nothing can be changed in it."
+
+    /** Why nothing changes in [folder] when it may hold, or be inside, [readOnly]: which folder Android does not place, and what helps. */
+    private fun mayHold(folder: SharedFolder, readOnly: SharedFolder): String {
+        val unplaced = listOf(folder, readOnly).firstOrNull { FolderTrees.fromDownloadsEntryUnplaced(it.treeUri) }
+            ?: return "This app cannot tell whether ${folder.displayName} holds, or is inside, the read-only folder ${readOnly.displayName} " +
+                "(one of them comes from another profile on this phone, the media list or another app), so nothing can be changed in it."
+        return "Android does not tell this app where ${unplaced.displayName} is, because it was shared through the folder picker's Downloads " +
+            "entry. ${folder.displayName} may hold, or be inside, the read-only folder ${readOnly.displayName}, so nothing can be changed in it. " +
+            "Sharing ${unplaced.displayName} through the phone's storage entry instead lets the app tell."
     }
 
     private fun lost(folder: SharedFolder): String =

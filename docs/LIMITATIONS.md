@@ -327,6 +327,35 @@ do it.
   confirmation of an install or removal the task's screen still shows the earlier time-out
   moment; it moves once that confirmation ends.
 
+- **Read-only folders and other apps' folders.** The same place on the phone can be shared
+  twice, for example "Download" and "Download/Notes". When you make one of them read-only, agents
+  cannot change anything in the other one either, so nothing reaches the read-only folder
+  through it. The app can tell this for folders that come from the phone's own storage (also
+  through the folder picker's "Downloads" entry), and for folders of another app, such as a file
+  manager, that names its folders by their place on the phone. Where it cannot tell exactly
+  where such a folder is (a folder picked through "Downloads", or one of a work profile or
+  another user on the phone), it plays safe: agents cannot change it while a read-only folder
+  might be inside it or around it, and the message says why.
+- **The "Downloads" top folder on Android 9 and 10.** There the picker also lets you pick the
+  "Downloads" entry's top folder itself. It lists every file the phone downloaded, wherever it
+  was saved, so it counts as possibly holding any folder on the phone. While it is shared and
+  agents may change it, they cannot change anything in it as long as any shared folder is
+  read-only, and no folder can be picked up from.
+- **Folders from other apps that name their folders their own way**, such as a cloud drive or
+  many file managers. Android does not tell whether that app also shows your phone's own files.
+  If it does, agents could change files in a folder you made read-only, in two ways: through a
+  folder of that app that they may change, or, when the read-only folder comes from that app,
+  through a folder of the phone's storage that they may change. The app does not stop these
+  changes, because it would then have to stop every change in such folders whenever any shared
+  folder is read-only. Instead the Folders screen warns under every folder that comes from
+  another app, read-only or not. If that app shows your phone's own files, share those folders
+  from the phone's storage instead.
+- **Folder pick-up is stricter**, because it only reads a folder that no change can reach. When
+  the pick-up folder, or a shared folder agents may change, comes from another app and the other
+  folder comes from somewhere else, the app cannot tell whether they hold the same files. The
+  rule is then not made, or is switched off, and nothing is picked up until that folder agents
+  may change is read-only too or removed.
+
 - **What local-only mode blocks.** Models off this phone, reading web pages, opening links,
   shell and Termux commands, every action on another app's screen, and handing a text, a
   workspace file or a prepared email, text message or call to another app. It does not block

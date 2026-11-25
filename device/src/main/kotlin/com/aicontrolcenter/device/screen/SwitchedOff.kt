@@ -1,8 +1,10 @@
 package com.aicontrolcenter.device.screen
 
+import android.annotation.SuppressLint
 import android.app.ActivityManager
 import android.content.Context
 import android.os.Build
+import androidx.annotation.RequiresApi
 import com.aicontrolcenter.core.operator.ScreenServiceState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -45,14 +47,26 @@ internal data class StartRecord(val wasForceStopped: Boolean)
  * and `ApplicationStartInfo.wasForceStopped`); empty before 35 or when it cannot be read.
  */
 internal class AndroidStartRecords(private val context: Context, private val sdkInt: Int = Build.VERSION.SDK_INT) : () -> List<StartRecord> {
+    @SuppressLint("NewApi") // [sdkInt] is the guard
     override fun invoke(): List<StartRecord> {
         if (sdkInt < Build.VERSION_CODES.VANILLA_ICE_CREAM) return emptyList()
         return try {
             val manager = context.getSystemService(ActivityManager::class.java) ?: return emptyList()
-            manager.getHistoricalProcessStartReasons(1).map { StartRecord(it.wasForceStopped()) }
+            Api35.latestStart(manager)
         } catch (_: RuntimeException) {
             emptyList()
         }
+    }
+
+    /**
+     * The API 35 call, in a class of its own that Android 14 and older never load. The method exists there but is
+     * hidden, and linking a class that calls it logs "Accessing hidden method ... (blocked, linking, denied)" at every
+     * start, even though the call is never made (device gate of wave 2, finding 3).
+     */
+    @RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
+    private object Api35 {
+        fun latestStart(manager: ActivityManager): List<StartRecord> =
+            manager.getHistoricalProcessStartReasons(1).map { StartRecord(it.wasForceStopped()) }
     }
 }
 

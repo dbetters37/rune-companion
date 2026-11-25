@@ -120,6 +120,51 @@ class SafSharedFoldersTest {
     }
 
     @Test
+    fun `nothing changes beside a read-only folder that another app names by its path on the phone's storage (B1)`() = runTest {
+        // The verifier's mirror case: a file manager gives Download/Agents/inbox, made read-only; the phone's storage entry
+        // gave Download/Agents for agents to change. A change there would land in the read-only folder. Also the other way round.
+        fun files(path: String) = "content://com.example.files.provider/tree/" + path.replace("/", "%2F")
+        val phoneAgents = "content://com.android.externalstorage.documents/tree/primary%3ADownload%2FAgents"
+        val phoneInbox = "content://com.android.externalstorage.documents/tree/primary%3ADownload%2FAgents%2Finbox"
+        val agents = SharedFolder(FolderId("fld_agents"), phoneAgents, "Agents", addedAt = 1, readOnly = false)
+        val inbox = SharedFolder(FolderId("fld_inbox"), files("/storage/emulated/0/Download/Agents/inbox"), "inbox", addedAt = 2, readOnly = true, readOnlySince = 2)
+        repository.upsert(agents)
+        repository.upsert(inbox)
+        assertNotAllowed(folders.write(agents.id, p("inbox/note.txt"), "x".toByteArray(), "text/plain", overwrite = false), "Agents holds, or is inside, the read-only folder inbox")
+        assertNotAllowed(folders.delete(agents.id, p("inbox")), "read-only folder inbox")
+        repository.upsert(agents.copy(treeUri = files("/storage/emulated/0/Download/Agents")))
+        repository.upsert(inbox.copy(treeUri = phoneInbox))
+        assertNotAllowed(folders.write(agents.id, p("inbox/note.txt"), "x".toByteArray(), "text/plain", overwrite = false), "Agents holds, or is inside, the read-only folder inbox")
+        // A file manager's folder elsewhere does not stop it (the write then goes to the provider).
+        repository.upsert(agents.copy(treeUri = files("/storage/emulated/0/Pictures")))
+        val apart = folders.write(agents.id, p("note.txt"), "x".toByteArray(), "text/plain", overwrite = false)
+        assertFalse(apart is DocResult.NotAllowed && "read-only folder" in apart.reason, "$apart")
+    }
+
+    @Test
+    fun `a refusal names the folder Android does not place, and points to the phone's storage only where that helps (B1)`() = runTest {
+        val phoneAgents = "content://com.android.externalstorage.documents/tree/primary%3ADownload%2FAgents"
+        val phoneInbox = "content://com.android.externalstorage.documents/tree/primary%3ADownload%2FAgents%2Finbox"
+        val agents = SharedFolder(FolderId("fld_agents"), phoneAgents, "Agents", addedAt = 1, readOnly = false)
+        // The read-only folder came through the picker's Downloads entry: it is the one Android does not place.
+        val inbox = SharedFolder(FolderId("fld_inbox"), "content://com.android.providers.downloads.documents/tree/msf%3A31", "inbox", addedAt = 2, readOnly = true, readOnlySince = 2)
+        repository.upsert(agents)
+        repository.upsert(inbox)
+        val downloads = assertIs<DocResult.NotAllowed>(folders.write(agents.id, p("note.txt"), "x".toByteArray(), "text/plain", overwrite = false)).reason
+        assertTrue("Android does not tell this app where inbox is" in downloads, downloads)
+        assertTrue("Agents may hold, or be inside, the read-only folder inbox" in downloads, downloads)
+        assertTrue("Sharing inbox through the phone's storage entry" in downloads, downloads)
+        // Another profile's storage and the media list: sharing through the phone's storage entry would not help.
+        repository.upsert(inbox.copy(treeUri = phoneInbox))
+        for (uri in listOf("content://10@com.android.externalstorage.documents/tree/primary%3ADownload%2FAgents", "content://com.android.providers.media.documents/tree/documents_root")) {
+            repository.upsert(agents.copy(treeUri = uri))
+            val reason = assertIs<DocResult.NotAllowed>(folders.write(agents.id, p("note.txt"), "x".toByteArray(), "text/plain", overwrite = false)).reason
+            assertTrue("This app cannot tell whether Agents holds, or is inside, the read-only folder inbox" in reason, reason)
+            assertFalse("Downloads" in reason || "Sharing" in reason, reason)
+        }
+    }
+
+    @Test
     fun `lists folders first, then files by name, with sizes`() = runTest {
         picked()
         provider.file(rootId, "b.txt", "bee")

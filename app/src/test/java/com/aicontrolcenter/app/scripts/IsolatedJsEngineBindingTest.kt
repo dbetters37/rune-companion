@@ -123,6 +123,26 @@ class IsolatedJsEngineBindingTest {
     }
 
     @Test(timeout = 60_000)
+    fun `letting go of all processes unbinds every binding the engine holds, and the next run binds afresh`() = blocking {
+        // For the device test (its finding 1): each test lets go of its engine, so the next one starts a cold process.
+        val engine = engine()
+        coroutineScope { List(2) { async { engine.run("var t = Date.now(); while (Date.now() - t < 1000) {} 5", null, null, 5_000) } }.awaitAll() }
+        assertEquals(setOf("js0", "js1"), instances.toSet())
+        assertEquals(2, bound(), "both processes are kept warm after their runs")
+        val binders = engine.letGoOfAll()
+        assertEquals(2, binders.size, "the binders of both processes, to wait for their end")
+        assertTrue(binders.all { it === runner.asBinder() })
+        assertEquals(0, bound(), "nothing is held any more")
+        assertEquals(2, unbound())
+        assertEquals(emptyList(), engine.processIds())
+        assertEquals(emptyList(), engine.letGoOfAll(), "nothing is let go of twice")
+        assertEquals(2, unbound())
+        assertEquals("2", assertIs<JsOutcome.Finished>(engine.run("1 + 1", null, null, 5_000)).resultJson)
+        assertEquals(1, bound(), "a fresh binding")
+        assertEquals(3, instances.size)
+    }
+
+    @Test(timeout = 60_000)
     fun `the third of three runs at once waits for a free slot`() = blocking {
         val engine = engine()
         val start = System.nanoTime()

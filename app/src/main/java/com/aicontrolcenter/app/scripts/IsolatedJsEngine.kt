@@ -4,6 +4,7 @@ package com.aicontrolcenter.app.scripts
 
 import android.content.Context
 import android.os.Build
+import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import android.os.RemoteException
 import com.aicontrolcenter.framework.operator.JsEngine
@@ -42,6 +43,10 @@ import java.util.concurrent.atomic.AtomicReference
  *   waits never apply. A process that died while idle is replaced and the run goes ahead; nothing of it had run.
  * - **Fallback**: when Android refuses to start the process at all, the run goes to the Rhino sandbox in the app's
  *   own process ([fallback], with its rule on given-up threads), and the answer says so ([FALLBACK_NOTE]).
+ * - **One engine per app process.** Android keys an isolated process by its instance name, so two engines in one app
+ *   process share the same `js0` and `js1` processes: the second binds the process the first one holds, and one
+ *   engine letting go of a process does not end it while the other still holds it. The app builds one engine per
+ *   process; tests that build several let go of each one after use ([letGoOfAll]).
  */
 class IsolatedJsEngine internal constructor(
     private val limits: JsLimits,
@@ -87,6 +92,19 @@ class IsolatedJsEngine internal constructor(
     /** The script processes' ids, one per process that is up now (tests: the app's own id is never among them). */
     internal fun processIds(): List<Int> = processes.mapNotNull { process ->
         process.binding.get()?.takeIf { it.runner.isCompleted && !it.ended.isCompleted }?.let { runCatching { it.runner.getCompleted().pid() }.getOrNull() }
+    }
+
+    /**
+     * For tests on a device only (the app never calls it): lets go of every script process this engine holds now, as
+     * after a run that did not stop, so Android ends each one nothing else holds; the next run binds a fresh one. Returns
+     * the binders of the processes let go of, so a test can wait for their end. A run going on now is answered as when
+     * its process ends.
+     */
+    internal fun letGoOfAll(): List<IBinder> = processes.mapNotNull { process ->
+        val binding = process.binding.get() ?: return@mapNotNull null
+        val binder = if (binding.runner.isCompleted) runCatching { binding.runner.getCompleted().asBinder() }.getOrNull() else null
+        letGo(process, binding, culprit = null)
+        binder
     }
 
     private fun takeSlot(): Int = synchronized(slotTaken) {
