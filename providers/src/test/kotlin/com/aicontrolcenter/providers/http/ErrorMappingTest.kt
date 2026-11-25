@@ -103,6 +103,52 @@ class ErrorMappingTest : MockServerTest() {
     }
 
     @Test
+    fun `a 429 says when its provider names a daily quota, in the message or in the body`() {
+        fun google(quotaId: String) =
+            """[{"error":{"code":429,"message":"You exceeded your current quota, please check your plan and billing details.","status":"RESOURCE_EXHAUSTED",""" +
+                """"details":[{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaMetric":"generativelanguage.googleapis.com/generate_content_free_tier_requests",""" +
+                """"quotaId":"$quotaId","quotaValue":"50"}]},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"35s"}]}}]"""
+
+        // Gemini names the day only in the quota's id in the body, and asks for a short wait all the same.
+        enqueue(google("GenerateRequestsPerDayPerProjectPerModel-FreeTier"), 429)
+        val daily = failsWith<LlmException.RateLimited> { chat() }
+        assertTrue(daily.dailyQuota, daily.message)
+        assertEquals(35_000, daily.retryAfterMs)
+        enqueue(google("GenerateRequestsPerMinutePerProjectPerModel-FreeTier"), 429)
+        assertFalse(failsWith<LlmException.RateLimited> { chat() }.dailyQuota)
+
+        // OpenRouter and Groq say it in the message.
+        enqueue(openAiError("Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day"), 429)
+        assertTrue(failsWith<LlmException.RateLimited> { chat() }.dailyQuota)
+        enqueue(openAiError("Rate limit exceeded: free-models-per-min."), 429)
+        assertFalse(failsWith<LlmException.RateLimited> { chat() }.dailyQuota)
+        enqueue(openAiError("Rate limit reached in organization `o` on tokens per day (TPD): Limit 100000, Used 99649, Requested 1015. Please try again in 9m10s.", "rate_limit_exceeded"), 429, "Retry-After" to "550")
+        assertTrue(failsWith<LlmException.RateLimited> { chat() }.dailyQuota)
+        enqueue(openAiError("Rate limit reached in organization `o` on requests per minute (RPM): Limit 30, Used 30, Requested 1. Please try again in 2s.", "rate_limit_exceeded"), 429, "Retry-After" to "2")
+        assertFalse(failsWith<LlmException.RateLimited> { chat() }.dailyQuota)
+    }
+
+    @Test
+    fun `a per-minute 429 that mentions today elsewhere, as Groq's upgrade line does, is not a daily quota`() {
+        // Wave-2a residual verification, R3: only words that name a daily limit count; "today" in an advert does not.
+        val upgrade = "Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing"
+        for (limit in listOf("tokens per minute (TPM): Limit 12000, Used 11210, Requested 2450", "requests per minute (RPM): Limit 30, Used 30, Requested 1")) {
+            enqueue(
+                openAiError("Rate limit reached for model `m-1` in organization `o` service tier `on_demand` on $limit. Please try again in 8.3s. $upgrade", "rate_limit_exceeded"),
+                429, "Retry-After" to "9",
+            )
+            val error = failsWith<LlmException.RateLimited> { chat() }
+            assertFalse(error.dailyQuota, error.message)
+            assertEquals(9_000, error.retryAfterMs)
+        }
+        // The words that do name a daily limit still count, in any spelling.
+        for (daily in listOf("You have reached your daily request limit.", "Daily quota exceeded.", "Rate limit reached on tokens per day (TPD).", "Rate limit exceeded: free-models-per-day.")) {
+            enqueue(openAiError(daily, "rate_limit_exceeded"), 429)
+            assertTrue(failsWith<LlmException.RateLimited> { chat() }.dailyQuota, daily)
+        }
+    }
+
+    @Test
     fun `retry-after is read as seconds or as a date`() {
         val now = 1_800_000_000_000L
         assertEquals(12_000, ProviderHttp.retryAfterMillis(headersOf("Retry-After", "12"), now))

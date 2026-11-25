@@ -200,7 +200,17 @@ internal class ModelCallJournal(private val activity: ActivityRecorder, private 
         }
     }
 
-    suspend fun cancelled(call: ModelCall, durationMs: Long, at: Long) {
+    /**
+     * A call stopped before it ended. [afterSlowDown]: every attempt it sent was answered "slow down", and it was stopped
+     * while it waited to try again; its usage record is then that failure (RATE_LIMITED), so a restarted limiter does not
+     * count it as one of today's answers either ([DailyUse.counted]).
+     */
+    suspend fun cancelled(call: ModelCall, durationMs: Long, at: Long, afterSlowDown: Boolean = false) {
+        if (afterSlowDown) {
+            val detail = "${call.model.displayName} via ${call.provider.name}: stopped while waiting, after ${call.provider.name} asked the app to slow down"
+            record(call, "Model call cancelled", detail, Severity.INFO, durationMs, at, CallOutcome.FAILED, error = call.lastFailure) { put("outcome", "cancelled") }
+            return
+        }
         val detail = "${call.model.displayName} via ${call.provider.name}: stopped before the reply was complete"
         record(call, "Model call cancelled", detail, Severity.INFO, durationMs, at, CallOutcome.CANCELLED) { put("outcome", "cancelled") }
     }

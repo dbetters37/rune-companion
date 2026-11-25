@@ -27,14 +27,18 @@ internal data class ErrorDetail(
     val reason: String? = null,
     /** A wait the body itself asks for (google.rpc.RetryInfo). */
     val retryDelayMs: Long? = null,
+    /** The ids and metrics of the quotas the body says were exceeded (google.rpc.QuotaFailure), e.g. "GenerateRequestsPerDayPerProjectPerModel-FreeTier". */
+    val quotas: List<String> = emptyList(),
 ) {
     /** Everything the provider said, lower-cased, for phrase matching. */
     val searchable: String by lazy {
-        listOfNotNull(message, code, type, status, reason).joinToString(" ").lowercase()
+        (listOfNotNull(message, code, type, status, reason) + quotas).joinToString(" ").lowercase()
     }
 
     companion object {
         private const val MAX_MESSAGE_LENGTH = 400
+        private const val MAX_QUOTAS = 8
+        private const val MAX_QUOTA_LENGTH = 200
 
         fun parse(body: String, redactor: Redactor): ErrorDetail {
             val trimmed = body.trim()
@@ -69,6 +73,8 @@ internal data class ErrorDetail(
                 status = source.string("status"),
                 reason = details.firstNotNullOfOrNull { it.string("reason") },
                 retryDelayMs = details.firstNotNullOfOrNull { it.string("retryDelay") }?.let(::parseProtoDuration),
+                quotas = details.flatMap { it.array("violations")?.objects().orEmpty() }
+                    .flatMap { listOfNotNull(it.string("quotaId"), it.string("quotaMetric")) }.map { it.take(MAX_QUOTA_LENGTH) }.take(MAX_QUOTAS),
             )
         }
 

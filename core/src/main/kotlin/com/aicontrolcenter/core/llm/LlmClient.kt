@@ -39,8 +39,34 @@ sealed class LlmException(message: String, cause: Throwable? = null) : Exception
         override val retryable = false
     }
 
-    class RateLimited(message: String, val retryAfterMs: Long? = null, cause: Throwable? = null) : LlmException(message, cause) {
+    /**
+     * The provider asked the app to slow down (HTTP 429). [retryAfterMs] is the wait it asked for, if it named one.
+     * [dailyQuota]: it said that a daily quota is used up, so waiting minutes does not help; by default, when [message]
+     * says so ([namesDailyQuota]); an adapter that reads more of the provider's answer (a quota's id in the body) sets it.
+     */
+    class RateLimited(
+        message: String,
+        val retryAfterMs: Long? = null,
+        cause: Throwable? = null,
+        val dailyQuota: Boolean = namesDailyQuota(message),
+    ) : LlmException(message, cause) {
         override val retryable = true
+
+        companion object {
+            /**
+             * "per day", "per-day", "PerDay", "daily quota", "daily request limit", and the short forms "RPD" and "TPD"
+             * (requests and tokens per day): what providers' 429 answers say when the limit reached is a daily one. A
+             * per-minute limit ("per minute", "RPM", "per-min") says none of these. "Today" alone does not count: Groq's
+             * per-minute answers end "Upgrade to Dev Tier today".
+             */
+            private val DAILY = Regex(
+                "per[\\s_-]?day|daily(?:[\\s_-]+[a-z]+)?[\\s_-]*(?:quota|limit)|(?<![a-z])[rt]pd(?![a-z])",
+                RegexOption.IGNORE_CASE,
+            )
+
+            /** True when [text], a provider's answer to a call, names a daily quota. */
+            fun namesDailyQuota(text: String): Boolean = DAILY.containsMatchIn(text)
+        }
     }
 
     /** The provider is temporarily at capacity. */

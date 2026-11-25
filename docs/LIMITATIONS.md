@@ -91,10 +91,16 @@ do it.
   answered is recorded on every call.
 - When a provider is not answering or asks the app to slow down, a task waits and tries again
   a few times (its other tasks on that provider wait with it), then counts it as a failed
-  attempt. A provider that asks to slow down again right after the wait has most likely used up
-  its quota for the day (free tiers do this); its tasks then fail within minutes instead of
-  waiting out the objective's time limit. Such refused calls are not counted against your
-  daily limit of model answers.
+  attempt. A provider that asks to slow down without saying for how long is waited for 30
+  seconds, then 2 minutes, which outlasts the per-minute limits of free plans (Groq, OpenRouter's
+  free models, Gemini's free tier); a task does not ask it again in between. If it still asks
+  after that, it has most likely used up its quota for the day; its tasks then fail within
+  minutes instead of waiting out the objective's time limit, until a call to that provider is
+  answered again. Five tasks on such a provider end in about 4 minutes, with about 3 requests
+  each. When its answer itself says that a daily quota is used up ("per day", "daily limit"),
+  the tasks of that model fail at once, and the provider's other models keep their waits, since
+  free plans often count a day per model. Such refused calls are not counted against your daily
+  limit of model answers, also when you pause or stop the objective while it waits to try again.
 - Content an agent reads (web pages, files, other apps' screens, other agents' messages) can
   contain instructions aimed at the model. The framework passes such content as data and
   never lets it raise an agent's permissions, but a model can still be misled by it. Keep
@@ -303,7 +309,10 @@ do it.
   check that your answer does not go where it should not. This also holds after the app
   restarts. It does not follow your answer further: if an agent saves it to memory, an agent of
   another objective or a chat can find it there later and send it without this extra question
-  (its usual permissions and approvals still apply).
+  (its usual permissions and approvals still apply). The same goes for the option "Save what
+  was learned to memory" of a new objective: when the objective ends, it stores the final
+  result in the shared space that option names, and that result may contain an answer you gave
+  an agent.
 - **After you refuse a permission**, the same agent cannot ask you for the same permission and
   target again for 10 minutes: its calls are refused at once and the refusal in Tools > History
   counts them. This does not apply to approvals of single actions, which are always put to you.
@@ -335,9 +344,20 @@ do it.
 - **Agents can mislead each other.** What one agent writes reaches the next agent's prompt as
   quoted data, never as instructions, and cannot change any agent's permissions. A model can
   still be persuaded by it, so an agent that read a planted instruction can pass bad work on.
-  Reviews are done by another model and catch mistakes, not attacks. Text in a page, file or
-  screen that imitates your notes to the team ("Notes from the owner") reaches the agent's model
-  slightly altered, so it cannot pass for your notes.
+  Reviews are done by another model and catch mistakes, not attacks. Text in a page, file,
+  screen or memory that imitates your notes to the team ("Notes from the owner", or the tag
+  `owner_note`) reaches the agent's model slightly altered, so it cannot pass for your notes:
+  one character of it is written as a number. That also holds when it is written with letters of
+  other alphabets that look like ours, with invisible characters or other spaces, hyphens or dots
+  between the words, or with bold, italic or similar marks around or inside them. Invisible
+  "tag characters", which some models read as text, are left out of what the model reads. The
+  app recognises the words, not their meaning, so some disguises still get through: the words
+  written as HTML character codes (`&#78;otes`), punctuation inside a word ("N.o.t.e.s"), or
+  more than half of the letters replaced by other letters. Such text is quoted data like any
+  other page and cannot change any permission, but a model may still be misled by it. Only the
+  model's copy is altered: chats and tasks show the text as the tool returned it, and the model
+  is told how to write it back unchanged when it copies it into a file. The same words in
+  ordinary text ("SELECT owner_note") are altered too, in the model's copy only.
 - **Limits stop work, not cost already spent.** Caps on tasks, messages, model calls and time
   bound how much an objective can do. A cloud provider bills for the calls made before a limit
   was reached. Today's limits on tokens and money are checked before each call against what

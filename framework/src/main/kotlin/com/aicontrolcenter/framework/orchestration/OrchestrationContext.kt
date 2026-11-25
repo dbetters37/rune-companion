@@ -65,9 +65,9 @@ internal class OrchestrationContext(
      * Whether step [key] of [rt], whose model call to [provider] failed with [error] in a way that passes, may wait and
      * be tried again (INT-1). Not when it already waited [ProviderWaits.MAX_WAITS_AFTER_FAILURE] times in a row after
      * such failures, when the provider asked for a pause longer than [ProviderWaits.MAX_WAIT_MS], or when the provider's
-     * quota looks used up ([ProviderSlowDowns]: it asked the app to slow down again after its wait): the failure then
-     * counts as an ordinary failed attempt. When it may wait, the wait is counted; a "slow down" answer also holds the
-     * provider's other work until then.
+     * quota looks used up ([ProviderSlowDowns]: its answer names a daily quota, or it asked the app to slow down again
+     * after R4's waits): the failure then counts as an ordinary failed attempt. When it may wait, the wait is counted; a
+     * "slow down" answer also holds the provider's other work until then.
      */
     fun mayWait(rt: ObjectiveRuntime, key: TaskId, provider: Readiness.ProviderSide?, error: LlmException): Boolean {
         val earlier = rt.failedWaits[key] ?: 0

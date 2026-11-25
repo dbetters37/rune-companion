@@ -97,7 +97,8 @@ internal object PromptedToolsFormat {
     /**
      * [text] with its call and result tags and bracket markers defused, and the owner notes' tag name and label made
      * inert (rule 24: tool output, which this path puts into a user message, can never pass for a note from the owner;
-     * [DataBlock.neutralise]), and nothing else changed.
+     * [DataBlock.neutralise]), and nothing else changed. A tool result the agent runner already defused
+     * ([DataBlock.forModel]) keeps its words and its explanation as they are: neutralising again changes nothing.
      */
     fun quote(text: String): String {
         val out = CALL_TAG.replace(text) { "&lt;" + it.groupValues[1] + it.groupValues[2] }
