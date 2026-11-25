@@ -58,10 +58,24 @@ class PreparedCall internal constructor(
     internal val action: suspend (ToolContext) -> ToolOutcome,
     /** The re-check right after the owner answered ([PreparedAction.changedSinceOwnerAnswered]); null: [check]. */
     private val afterOwner: (suspend () -> String?)? = null,
+    /** What the call takes before the owner is asked ([PreparedAction.beforeOwnerAsked]); null: nothing. */
+    private val beforeAsked: (suspend () -> String?)? = null,
+    /** Gives back what [beforeAsked] took ([PreparedAction.callEnded]); quick, never throws. */
+    private val ended: (() -> Unit)? = null,
 ) : PreparedAction {
     override suspend fun changedSince(): String? = check()
 
     override suspend fun changedSinceOwnerAnswered(): String? = afterOwner?.invoke() ?: check()
+
+    override suspend fun beforeOwnerAsked(): String? = beforeAsked?.invoke()
+
+    override fun callEnded() {
+        try {
+            ended?.invoke()
+        } catch (_: Exception) {
+            // Giving back must never fail the call's end.
+        }
+    }
 
     internal companion object {
         /** A call that will fail with [reason] whatever happens (its target was missing when assessed); it changes nothing. */
@@ -134,8 +148,10 @@ abstract class OperatorTool(
     protected fun prepared(
         check: suspend () -> String? = { null },
         afterOwner: (suspend () -> String?)? = null,
+        beforeAsked: (suspend () -> String?)? = null,
+        ended: (() -> Unit)? = null,
         action: suspend (ToolContext) -> ToolOutcome,
-    ) = PreparedCall(this, check, action, afterOwner)
+    ) = PreparedCall(this, check, action, afterOwner, beforeAsked, ended)
 
     protected fun failing(reason: String) = PreparedCall.failing(this, reason)
 

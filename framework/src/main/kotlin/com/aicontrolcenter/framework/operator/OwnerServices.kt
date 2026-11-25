@@ -12,6 +12,9 @@ import com.aicontrolcenter.core.activity.ActivityType
 import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.folderId
 import com.aicontrolcenter.core.grantId
+import com.aicontrolcenter.core.llm.OwnerKeyCheck
+import com.aicontrolcenter.core.operator.AnswerCheck
+import com.aicontrolcenter.core.operator.AnswerRisk
 import com.aicontrolcenter.core.operator.DecideResult
 import com.aicontrolcenter.core.operator.FolderAccess
 import com.aicontrolcenter.core.operator.FolderTrees
@@ -90,6 +93,11 @@ class DefaultOwnerRequests(
     private val activity: ActivityRecorder,
     private val ids: IdGenerator,
     private val clock: Clock,
+    /**
+     * Whether an answer holds one of the provider keys in the vault (rule 32). Owner-only: only this
+     * port holds it (security review of wave 1, F3), never the broker or the question tool.
+     */
+    private val keyCheck: OwnerKeyCheck = OwnerKeyCheck.None,
 ) : OwnerRequests {
     private val withdrawals = RequestWithdrawals(repository, activity, clock)
     private val covered = CoveredRequests(repository, waiters, withdrawals, ids, clock)
@@ -139,6 +147,64 @@ class DefaultOwnerRequests(
         return OwnerResult.Done(opened)
     }
 
+    /**
+     * The owner answers an agent's question (Phase 6, C1, Tier B; rules 2, 32, 33): [text] in their
+     * own words, or null for "decide yourself". Refused with a sentence for the owner when the
+     * question is gone, answered, expired or closed, or nothing waits for it any more (it is then
+     * closed, as any answer to such a request closes it); when the text is blank or too long; always
+     * when it looks like a key ([AnswerCheck], [AnswerRisk.KEY]) or holds a provider key stored in
+     * the vault ([OwnerKeyCheck]); and when it looks like a code ([AnswerRisk.CODE]) unless
+     * [sendAnyway] (the owner's second tap). It goes through the request store's compare-and-set,
+     * writes no grant, approves nothing and leaves every other request as it is; it is logged
+     * without its text.
+     */
+    override suspend fun answer(id: RequestId, text: String?, sendAnyway: Boolean): OwnerResult<Unit> {
+        val current = repository.get(id) ?: return OwnerResult.Refused(QUESTION_GONE)
+        if (current.kind != OwnerRequestKind.QUESTION) return OwnerResult.Refused("Only an agent's question is answered with text.")
+        if (!current.status.isPending) return OwnerResult.Refused(closedText(current))
+        if (!waiters.isWaiting(id)) {
+            closeInstead(current, NOT_WAITING_NOTE)
+            return OwnerResult.Refused(NOT_WAITING_NOTE)
+        }
+        val words = text?.trim()
+        if (words != null) {
+            current.problemWith(OwnerDecision.Answer(words))?.let { return OwnerResult.Refused(it) }
+            when (AnswerCheck.classify(current.question.orEmpty(), words)) {
+                AnswerRisk.KEY -> return OwnerResult.Refused(KEY_REFUSED)
+                AnswerRisk.CODE -> if (!sendAnyway) return OwnerResult.Refused(CODE_ASK_AGAIN)
+                AnswerRisk.NONE -> Unit
+            }
+            // Constant time, against every key in the vault; checked even after "Send it anyway".
+            if (keyCheck.matchesStoredKey(words)) return OwnerResult.Refused(KEY_REFUSED)
+        }
+        return when (val result = repository.decide(id, OwnerDecision.Answer(words), clock.now(), ids.grantId())) {
+            is DecideResult.Decided -> {
+                record(result.request, if (words == null) "You let ${result.request.agentName ?: "the agent"} decide itself" else "You answered a question", result.request.summary, Severity.INFO) {
+                    put("status", result.request.status.name)
+                    put("answered", words != null)
+                }
+                OwnerResult.Done(Unit)
+            }
+            is DecideResult.Expired -> {
+                record(result.request, "Answered too late: ${whatItAsked(result.request)}", result.request.summary, Severity.WARNING) {
+                    put("status", result.request.status.name)
+                }
+                OwnerResult.Refused(closedText(result.request))
+            }
+            is DecideResult.AlreadyClosed -> OwnerResult.Refused(closedText(result.request))
+            is DecideResult.NotAccepted -> OwnerResult.Refused(result.problem)
+            DecideResult.NotFound -> OwnerResult.Refused(QUESTION_GONE)
+        }
+    }
+
+    /** Why a question that is no longer pending cannot be answered, for the owner. */
+    private fun closedText(request: OwnerRequest): String = when (request.status) {
+        OwnerRequestStatus.APPROVED -> "This question was already answered."
+        OwnerRequestStatus.EXPIRED -> "The time to answer this question ran out, so ${request.agentName ?: "the agent"} decided itself."
+        OwnerRequestStatus.CANCELLED -> "This question was withdrawn: ${request.decisionNote ?: "the agent stopped waiting"}"
+        OwnerRequestStatus.DENIED, OwnerRequestStatus.PENDING -> "This question can no longer be answered."
+    }
+
     private suspend fun decide(id: RequestId, decision: OwnerDecision, at: Long = clock.now()): DecideResult {
         val current = repository.get(id) ?: return DecideResult.NotFound
         if (current.status.isPending && current.problemWith(decision) == null && !current.isExpiredAt(at)) {
@@ -185,7 +251,7 @@ class DefaultOwnerRequests(
     private suspend fun record(request: OwnerRequest, title: String, detail: String, severity: Severity, extra: kotlinx.serialization.json.JsonObjectBuilder.() -> Unit) =
         logSafely {
             activity.record(
-                if (request.kind == OwnerRequestKind.APPROVAL) ActivityType.APPROVAL else ActivityType.PERMISSION,
+                activityTypeOf(request),
                 title, detail.take(MAX_LOGGED), severity = severity, agentId = request.agentId, taskId = request.taskId, rootTaskId = request.rootId,
                 data = buildJsonObject {
                     put("requestId", request.id.value)
@@ -204,6 +270,17 @@ class DefaultOwnerRequests(
 
         /** Why a request nothing waits for any more was closed instead of answered. */
         const val NOT_WAITING_NOTE = "No longer waiting: the app stopped, or the call that asked was stopped, before you answered. Nothing was done."
+
+        /** Rule 32: an answer that looks like a key or a password, or holds a stored provider key, is never sent. */
+        const val KEY_REFUSED =
+            "Not sent: this looks like a key or a password. Agents never need your keys or passwords. Write your answer without it."
+
+        /** Rule 32: an answer that looks like a code is sent only after the owner taps "Send it anyway" a second time. */
+        const val CODE_ASK_AGAIN =
+            "This looks like a code, such as one from a text message, an app or your bank. A code can let someone act as you. " +
+                "If you are sure the agent should have it, tap \"Send it anyway\"."
+
+        const val QUESTION_GONE = "This question no longer exists."
     }
 }
 

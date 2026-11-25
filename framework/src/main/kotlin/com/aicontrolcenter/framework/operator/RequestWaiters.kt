@@ -75,7 +75,7 @@ class RequestWithdrawals(
     /** Logs [request], closed by someone other than its waiter, as "[title]: <what it asked>" with [detail]. */
     suspend fun log(request: OwnerRequest, title: String, detail: String, severity: Severity = Severity.WARNING) = logSafely {
         activity.record(
-            if (request.kind == OwnerRequestKind.APPROVAL) ActivityType.APPROVAL else ActivityType.PERMISSION,
+            activityTypeOf(request),
             "$title: ${whatItAsked(request)}", detail.take(MAX_LOGGED), severity = severity,
             agentId = request.agentId, taskId = request.taskId, rootTaskId = request.rootId, data = requestData(request),
         )
@@ -86,9 +86,18 @@ class RequestWithdrawals(
     }
 }
 
-/** What [request] asked, in a few words, for log titles: the tool's title, or the agent's own ask. */
-internal fun whatItAsked(request: OwnerRequest): String =
-    request.toolTitle ?: "permission asked by ${request.agentName ?: "an agent"}"
+/** What [request] asked, in a few words, for log titles: the tool's title, the agent's own ask, or its question. */
+internal fun whatItAsked(request: OwnerRequest): String = when {
+    request.kind == OwnerRequestKind.QUESTION -> "question from ${request.agentName ?: "an agent"}"
+    else -> request.toolTitle ?: "permission asked by ${request.agentName ?: "an agent"}"
+}
+
+/** Where the log files an entry about [request]: approvals, permissions, or (a question, Phase 6) messages. */
+internal fun activityTypeOf(request: OwnerRequest): ActivityType = when (request.kind) {
+    OwnerRequestKind.APPROVAL -> ActivityType.APPROVAL
+    OwnerRequestKind.PERMISSION -> ActivityType.PERMISSION
+    OwnerRequestKind.QUESTION -> ActivityType.MESSAGE
+}
 
 /**
  * The data of an activity entry about [request], as the broker writes it: the request id (so a

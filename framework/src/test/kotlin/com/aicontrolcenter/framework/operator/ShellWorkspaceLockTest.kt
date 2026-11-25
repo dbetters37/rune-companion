@@ -201,8 +201,8 @@ class ShellWorkspaceLockTest {
         assertFalse(refused.ok)
         assertTrue("another shell command ran" in refused.content, refused.content)
 
-        // A third is asked for while the first runs: it could never run, so it is refused in the assessment and nobody is asked (R5 of round 4).
-        assertTrue("Another shell command is running." in f.rejected("scripts.run_shell", "command" to "echo third"))
+        // A third is asked for while the first runs: it could never run, so the broker refuses it before anyone is asked (R5 of round 4, D11).
+        assertEquals(ShellSlot.SLOT_TAKEN, f.assess("scripts.run_shell", "command" to "echo third").prepared!!.beforeOwnerAsked())
         // At the workspace itself, a command that comes while another runs waits for it, and then does not run:
         // the workspace it was counted on is the one the first command was changing.
         val counted = f.workspace.changeCount()

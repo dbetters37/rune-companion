@@ -514,11 +514,9 @@ class ShellRound4Test {
         runCurrent()
         assertTrue(asked.isCompleted, "it ends at once")
         val refused = asked.await()
-        assertEquals(ToolCallEnd.FAILED, refused.end)
-        assertTrue(
-            "Another shell command is running. Nothing was asked and nothing was run. Ask again when it has ended (about a minute at most)." in refused.outcome.content,
-            refused.outcome.content,
-        )
+        // Phase 6 (D11): the broker refuses it after the permission check, before the approval is asked.
+        assertEquals(ToolCallEnd.DENIED, refused.end)
+        assertEquals(ShellSlot.SLOT_TAKEN, refused.outcome.content)
         assertEquals(1, w.b.allRequests().size, "no request was put to the owner for it")
         assertTrue(w.b.requests.observePending().first().isEmpty())
         assertEquals(listOf("sleep 30"), w.shellRuns.toList())
@@ -557,8 +555,8 @@ class ShellRound4Test {
         val refused = tool.execute(second, f.context, a2)
         assertFalse(refused.ok)
         assertTrue("another shell command ran" in refused.content && "if another shell command was running, wait until it has ended" in refused.content && "ask anew" in refused.content, refused.content)
-        // And asking anew while it still runs is refused in the assessment, before anyone is asked.
-        assertTrue("Another shell command is running." in f.rejected("scripts.run_shell", "command" to "echo second"))
+        // And asking anew while it still runs is refused by the broker before anyone is asked.
+        assertEquals(ShellSlot.SLOT_TAKEN, f.assess("scripts.run_shell", "command" to "echo second").prepared!!.beforeOwnerAsked())
         release.countDown()
         assertTrue(running.await().ok)
         assertTrue(f.ok("scripts.run_shell", "command" to "echo second").ok)

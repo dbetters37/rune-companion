@@ -1,6 +1,7 @@
 package com.aicontrolcenter.framework.operator
 
 import com.aicontrolcenter.core.Clock
+import com.aicontrolcenter.core.operator.CommandSlot
 import com.aicontrolcenter.core.operator.CommandTurn
 import com.aicontrolcenter.core.operator.DocResult
 import com.aicontrolcenter.core.operator.DocumentEntry
@@ -237,6 +238,18 @@ class LocalWorkspace(
     @Volatile private var commandRuns = false
 
     override fun commandRunning(): Boolean = commandRuns
+
+    /**
+     * The one shell-command slot (Phase 6, D11, rule 15): taken from the moment a command's call is
+     * about to be put to the owner until the call has ended ([reserveCommand], [releaseReservation]),
+     * so a second command is refused before anyone is asked. It holds back only other reservations;
+     * a command that runs counts as taken too.
+     */
+    private val commandSlot = CommandSlot { commandRuns }
+
+    override fun reserveCommand(token: String): String? = commandSlot.reserve(token)
+
+    override fun releaseReservation(token: String) = commandSlot.release(token)
 
     override suspend fun <T> runCommand(unchangedSince: Long, command: suspend () -> T): CommandTurn<T> = withContext(io) {
         check(!holdsChangeLock()) { "a shell command cannot start another one while it holds the change lock" }

@@ -3,7 +3,6 @@ package com.aicontrolcenter.framework.operator
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.IdGenerator
 import com.aicontrolcenter.core.RequestId
-import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.activity.ActivityRecorder
 import com.aicontrolcenter.core.activity.ActivityType
 import com.aicontrolcenter.core.activity.Severity
@@ -19,9 +18,7 @@ import com.aicontrolcenter.core.operator.OwnerRequestStatus
 import com.aicontrolcenter.core.requestId
 import com.aicontrolcenter.core.routines.RoutineLimits
 import com.aicontrolcenter.core.tasks.ObjectiveOptions
-import com.aicontrolcenter.core.tasks.TaskKind
 import com.aicontrolcenter.core.tasks.TaskRepository
-import com.aicontrolcenter.core.tasks.TaskStatus
 import com.aicontrolcenter.core.tasks.WaitClock
 import com.aicontrolcenter.core.tools.ActionAssessment
 import com.aicontrolcenter.core.tools.Authorization
@@ -32,12 +29,7 @@ import com.aicontrolcenter.core.tools.ToolContext
 import com.aicontrolcenter.core.tools.ToolSpec
 import com.aicontrolcenter.framework.agents.currentAgentTurn
 import com.aicontrolcenter.framework.llm.rethrowIfCancelled
-import com.aicontrolcenter.framework.tools.OwnerTimeAccount
-import com.aicontrolcenter.framework.tools.StoredDeadlines
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
+import com.aicontrolcenter.framework.tools.EarlyRefusal
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -106,7 +98,20 @@ class PermissionBroker(
     private val activity: ActivityRecorder,
     private val ids: IdGenerator,
     private val clock: Clock,
-) : ToolAuthorizer {
+    /**
+     * The one lock and the caps every request to the owner is raised under (Phase 6, rules 13 and
+     * 14): shared with the capability requester and the question tool. Its own by default.
+     */
+    attention: OwnerAttentionGate = OwnerAttentionGate(requests, waiters, activity),
+    /** Where the time calls waited for the owner is noted, for the bulk rule's window (D12); null: nowhere. */
+    ownerWaits: OwnerWaitLedger? = null,
+    /**
+     * The tasks whose agent got the owner's answer to a question (rule 32): their next call that
+     * may send information off the phone asks the owner first. Shared with the question tool.
+     */
+    private val answeredQuestions: AnsweredQuestions = AnsweredQuestions(),
+) : ToolAuthorizer, EarlyRefusal {
+    private val waiting = OwnerRequestWait(requests, grants, waiters, tasks, clock, attention, ownerWaits)
 
     override suspend fun authorize(tool: ToolSpec, assessment: ActionAssessment, context: ToolContext): Authorization {
         val call = Call(tool, assessment, context, currentAgentTurn()?.extraToolIds.orEmpty(), objectiveOptions(context))
@@ -134,8 +139,15 @@ class PermissionBroker(
                 gate(call)?.let { return Authorization.Denied(it) }
             }
         }
-        if (call.risk == RiskLevel.CONSEQUENTIAL) {
-            when (val asked = ask(call, OwnerRequestKind.APPROVAL, info)) {
+        // Phase 6 (D11, rule 15): what the call must hold from the owner's question to its end (the one shell-command
+        // slot), taken after the permission is settled, so an agent without it is asked for the permission first and
+        // learns nothing of other calls. Given back by the tool executor when the call ends, however it ends.
+        call.assessment.prepared?.beforeOwnerAsked()?.let { return Authorization.Denied(it) }
+        // Phase 6 (rule 32): the first call of a task that may send information off the phone after the owner answered
+        // one of its questions asks the owner, whatever its risk, so nothing the owner wrote leaves unseen.
+        val afterAnswer = if (tool.sendsDataOffDevice) answeredQuestions.flagged(context.taskId, tasks) else null
+        if (call.risk == RiskLevel.CONSEQUENTIAL || afterAnswer != null) {
+            when (val asked = ask(call, OwnerRequestKind.APPROVAL, info, afterAnswer = afterAnswer != null)) {
                 is Asked.Refused -> return Authorization.Denied(asked.reason)
                 is Asked.Allowed -> answered += asked.requestId
             }
@@ -143,9 +155,19 @@ class PermissionBroker(
             if (reliesOnGrant && !covered(call)) {
                 return Authorization.Denied("The permission \"${info.title}\" was withdrawn while the owner was being asked to approve, so \"${tool.title}\" was not run.")
             }
+            // The owner saw this call after their answer: later calls of the task go as usual.
+            afterAnswer?.let { answeredQuestions.clear(it) }
         }
         return if (answered.isEmpty()) Authorization.Allowed else Authorization.AllowedByOwner(answered)
     }
+
+    /**
+     * A screen tool of an objective that may not use other apps' screens (a routine's without the
+     * owner's tick, or one whose record cannot be read, F12) is refused before the tool looks at
+     * anything, so not even the window in front is read for it. [authorize] refuses it again.
+     */
+    override suspend fun refusalBeforeAssess(spec: ToolSpec, context: ToolContext): String? =
+        if (spec.capability in SCREEN_CAPABILITIES && !objectiveOptions(context).screenActionsAllowed) ObjectiveOptions.SCREEN_ACTIONS_NOT_ALLOWED else null
 
     /**
      * The options of the objective [context] belongs to, read once per call: a routine's objective
@@ -209,58 +231,36 @@ class PermissionBroker(
 
     /**
      * Raises a [kind] request for [call], waits for its answer outside every time limit, and
-     * uses it. Always leaves the request closed, an unused ONCE grant of it released, and the
-     * task as it was before the wait (deadline moved by the wait), even when cancelled.
+     * uses it ([OwnerRequestWait]). Always leaves the request closed, an unused ONCE grant of it
+     * released, and the task as it was before the wait (deadline moved by the wait), even when
+     * cancelled. Refused without asking when too many requests of calls in progress wait for the
+     * owner already (rule 14, [OwnerAttentionGate]): nothing is stored and the call does not run.
      */
-    private suspend fun ask(call: Call, kind: OwnerRequestKind, info: CapabilityInfo): Asked {
-        val request = newRequest(call, kind, info)
-        val waits = OwnerWaits.current()
-        // Registered first, so the owner never sees this request pending without a live waiter.
-        waiters.register(request.id)
-        try {
-            requests.create(request)
-        } catch (e: Exception) {
-            waiters.unregister(request.id)
-            throw e
-        }
-        val startedAt = clock.now()
-        // The wait as the paused limits count it, for whoever accounts for this call's paused time (the tool executor).
-        val waitClock = WaitClock.current()
-        val pausedBefore = waitClock?.pausedMs() ?: 0L
-        var waitingTask: WaitingTask? = null
-        var ended: OwnerRequest? = null
-        var outcome: Asked? = null
-        try {
-            logRaised(request)
-            waitingTask = markWaiting(call.context.taskId, request)
-            waits?.waiting(request)
-            val answer = WaitClock.pausedWhile { answerOf(request) }
-            ended = answer
-            return use(answer, call, info).also { outcome = it }
-        } finally {
-            withContext(NonCancellable) {
-                val at = clock.now()
-                val final = ended ?: safely { requests.close(request.id, OwnerRequestStatus.CANCELLED, at, CANCELLED_NOTE) }
-                    ?: safely { requests.get(request.id) } ?: request
-                safely { grants.releaseOnceFor(request.id, at) }
-                waiters.unregister(request.id)
-                val pausedMs = ((waitClock?.pausedMs() ?: 0L) - pausedBefore).coerceAtLeast(0)
-                waitingTask?.let { safely { resume(it, (at - startedAt).coerceAtLeast(0), pausedMs, at) } }
-                logOutcome(final, outcome)
-                waits?.let { safely { it.answered(final) } }
-            }
-        }
+    private suspend fun ask(call: Call, kind: OwnerRequestKind, info: CapabilityInfo, afterAnswer: Boolean = false): Asked {
+        val request = newRequest(call, kind, info, afterAnswer)
+        return waiting.ask(
+            request, call.context, waitingDetail(request),
+            admit = { live -> waiting.attention.callRequestRefusal(call.context, live) },
+            raised = { logRaised(request) },
+            use = { answer -> use(answer, call, info) },
+            finished = { final, outcome -> logOutcome(final, outcome) },
+            refused = { reason ->
+                val what = if (kind == OwnerRequestKind.APPROVAL) "run \"${call.tool.title}\" (it needs your approval)" else "use \"${call.tool.title}\" (it needs the permission \"${info.title}\")"
+                waiting.attention.tellOwnerOnce(call.context, what, reason)
+                Asked.Refused(reason)
+            },
+        )
     }
 
-    private suspend fun newRequest(call: Call, kind: OwnerRequestKind, info: CapabilityInfo): OwnerRequest {
+    private suspend fun newRequest(call: Call, kind: OwnerRequestKind, info: CapabilityInfo, afterAnswer: Boolean = false): OwnerRequest {
         val context = call.context
         val now = clock.now()
         // A routine's objective may set its own time-out (F12); otherwise the owner's usual one.
         val minutes = call.options.approvalTimeoutMinutes?.coerceIn(1, RoutineLimits.MAX_APPROVAL_TIMEOUT_MINUTES)
             ?: facts.settings().approvalTimeoutMinutes.coerceAtLeast(1)
         val details = when (kind) {
-            // The exact preview, as the tool assessed it.
-            OwnerRequestKind.APPROVAL -> call.assessment.details
+            // The exact preview, as the tool assessed it; first, after the owner answered a question, why they are asked (rule 32).
+            OwnerRequestKind.APPROVAL -> (if (afterAnswer) listOf(AFTER_ANSWER) else emptyList()) + call.assessment.details
             OwnerRequestKind.PERMISSION -> listOf("Needs the permission \"${info.title}\": ${info.description}") + call.assessment.details
             // Phase 6 (WP1a): the broker never raises a question; questions are raised by the question tool (WP5).
             OwnerRequestKind.QUESTION -> error("The permission broker does not raise questions.")
@@ -275,24 +275,6 @@ class PermissionBroker(
             targetLabel = facts.targetLabel(call.assessment.constraint), delegationChain = context.delegationChain,
         )
     }
-
-    /**
-     * The request once it is no longer pending: as the owner answered it, or closed as EXPIRED
-     * at its expiry. When the owner answered at the last moment, so that closing it fails, the
-     * answer stands.
-     */
-    private suspend fun answerOf(request: OwnerRequest): OwnerRequest {
-        val waitMs = (request.expiresAt - clock.now()).coerceAtLeast(0)
-        val seen = withTimeoutOrNull(waitMs) { Seen(requests.observe(request.id).first { it == null || !it.status.isPending }) }
-        if (seen != null) return seen.request ?: request.closed(OwnerRequestStatus.CANCELLED, "The request no longer exists.")
-        val note = "No answer within ${minutesOf(request)} minutes."
-        val at = clock.now()
-        return requests.close(request.id, OwnerRequestStatus.EXPIRED, at, note)
-            ?: requests.get(request.id)?.takeIf { !it.status.isPending }
-            ?: request.closed(OwnerRequestStatus.EXPIRED, note)
-    }
-
-    private class Seen(val request: OwnerRequest?)
 
     /** What the closed request [answer] allows [call] to do. */
     private suspend fun use(answer: OwnerRequest, call: Call, info: CapabilityInfo): Asked {
@@ -322,50 +304,6 @@ class PermissionBroker(
     /** The owner's words, passed to the model as quoted data. */
     private fun ownersNote(note: String?): String =
         note?.trim()?.takeIf { it.isNotEmpty() }?.let { " The owner's note, quoted: \"${it.take(MAX_NOTE)}\"" }.orEmpty()
-
-    // ---- the waiting task ----
-
-    private class WaitingTask(val id: TaskId, val flipped: Boolean, val detailBefore: String?)
-
-    /** Shows the call's task as WAITING_FOR_OWNER when it is RUNNING (never an objective, whose status the orchestrator keeps). */
-    private suspend fun markWaiting(taskId: TaskId?, request: OwnerRequest): WaitingTask? {
-        val store = tasks ?: return null
-        taskId ?: return null
-        var flipped = false
-        var before: String? = null
-        return try {
-            store.update(taskId) { task ->
-                flipped = task.kind != TaskKind.OBJECTIVE && task.status == TaskStatus.RUNNING
-                before = task.statusDetail
-                if (!flipped) task else task.copy(status = TaskStatus.WAITING_FOR_OWNER, statusDetail = waitingDetail(request), updatedAt = clock.now())
-            } ?: return null
-            WaitingTask(taskId, flipped, before)
-        } catch (e: Exception) {
-            rethrowIfCancelled(e)
-            // A store that fails here costs the task its status line, never the call.
-            WaitingTask(taskId, false, null)
-        }
-    }
-
-    /**
-     * After the wait: the task is RUNNING again (unless the owner changed its status meanwhile)
-     * and its deadline, with that of every delegating task waiting on it, is [waitedMs] later
-     * ([StoredDeadlines], the rule the tool executor keeps for every other wait of a call).
-     * The executor around this call is told that the wait ([pausedMs], as the paused limits
-     * counted it) is in the store, so it does not write it again ([OwnerTimeAccount]).
-     */
-    private suspend fun resume(waiting: WaitingTask, waitedMs: Long, pausedMs: Long, at: Long) {
-        val store = tasks ?: return
-        val task = store.update(waiting.id) { task ->
-            var next = task
-            if (waiting.flipped && task.status == TaskStatus.WAITING_FOR_OWNER) next = next.copy(status = TaskStatus.RUNNING, statusDetail = waiting.detailBefore)
-            // An objective's deadline is the orchestrator's: its running limit keeps it ([ObjectiveDriver]).
-            next = StoredDeadlines.later(next, waitedMs)
-            if (next == task) task else next.copy(updatedAt = at)
-        } ?: return
-        val delegating = StoredDeadlines.moveDelegating(store, task, waitedMs, at)
-        OwnerTimeAccount.stored(delegating + waiting.id, pausedMs)
-    }
 
     private fun waitingDetail(request: OwnerRequest): String {
         val what = if (request.kind == OwnerRequestKind.APPROVAL) "approval" else "permission"
@@ -429,8 +367,6 @@ class PermissionBroker(
 
     private fun minutesOf(request: OwnerRequest): Long = ((request.expiresAt - request.createdAt) / MINUTE_MS).coerceAtLeast(1)
 
-    private fun OwnerRequest.closed(status: OwnerRequestStatus, note: String) = copy(status = status, decidedAt = clock.now(), decisionNote = note)
-
     /** Bookkeeping on the way out never changes what happened: a store or log that fails is passed over. */
     private suspend fun <T> safely(block: suspend () -> T): T? = try {
         block()
@@ -443,6 +379,14 @@ class PermissionBroker(
     companion object {
         /** Why a request was withdrawn when its call went away before the owner answered. */
         const val CANCELLED_NOTE = "the call that asked was stopped before the owner answered"
+
+        /**
+         * The first line of an approval asked because the owner answered a question of the call's task
+         * (rule 32): the call may send information off the phone, and the owner's answer may be in it.
+         */
+        const val AFTER_ANSWER =
+            "You are asked because this is the first action after you answered a question that may send information off " +
+                "this phone. Check that nothing you wrote in your answer goes where it should not."
 
         private const val MINUTE_MS = 60_000L
 

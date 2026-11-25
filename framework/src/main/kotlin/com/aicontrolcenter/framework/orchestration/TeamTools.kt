@@ -5,11 +5,13 @@ import com.aicontrolcenter.core.tools.ActionAssessment
 import com.aicontrolcenter.core.tools.Capability
 import com.aicontrolcenter.core.tools.CapabilityInfo
 import com.aicontrolcenter.core.tools.RiskLevel
+import com.aicontrolcenter.core.tools.Tool
 import com.aicontrolcenter.core.tools.ToolCategory
 import com.aicontrolcenter.core.tools.ToolContext
 import com.aicontrolcenter.core.tools.ToolOutcome
 import com.aicontrolcenter.core.tools.ToolRegistry
 import com.aicontrolcenter.core.tools.ToolSpec
+import com.aicontrolcenter.framework.operator.OwnerQuestions
 import com.aicontrolcenter.framework.tools.CapabilityRegistry
 import com.aicontrolcenter.framework.tools.SelfLimitingTool
 import kotlinx.serialization.json.JsonArray
@@ -37,7 +39,7 @@ object TeamTools {
 
     /**
      * A question to the owner (Phase 6, Tier B). Not registered by [registerAll]; where it is
-     * registered, a work task offers it while the owner allows agents' questions.
+     * registered ([registerAskOwner]), a work task offers it while the owner allows agents' questions.
      */
     val ASK_OWNER_ID = ToolId("team.ask_owner")
 
@@ -58,6 +60,64 @@ object TeamTools {
         if (capabilities.info(COMMUNICATE) == null) capabilities.register(capability)
         registry.register(AskAgentTool(orchestrator.desk))
         registry.register(DelegateTool(orchestrator.desk))
+    }
+
+    /**
+     * Registers `team.ask_owner` (Phase 6, C1, Tier B) over [questions], the agent's side of a
+     * question to the owner, under the team's capability (described here unless it already is).
+     * It is offered only in a work task while the owner allows agents' questions
+     * ([WorkSteps.teamTools]); [OwnerQuestions] checks that again on every call. Call once, after
+     * [registerAll] and before any agent runs.
+     * @throws IllegalArgumentException if it is already registered.
+     */
+    fun registerAskOwner(registry: ToolRegistry, capabilities: CapabilityRegistry, questions: OwnerQuestions) {
+        if (capabilities.info(COMMUNICATE) == null) capabilities.register(capability)
+        registry.register(AskOwnerTool(questions))
+    }
+}
+
+/**
+ * `team.ask_owner(question, options?)`: one question to the owner while working on a task
+ * (Phase 6, C1, Tier B; rules 2, 13, 32, 33). SAFE and granted by default because it can do
+ * nothing: the owner's answer is only text for the agent, framed as data; it gives no
+ * permission, approves nothing and settles no other request. Everything else is [OwnerQuestions]'s.
+ */
+internal class AskOwnerTool(private val questions: OwnerQuestions) : Tool {
+    override val spec = ToolSpec(
+        id = TeamTools.ASK_OWNER_ID,
+        functionName = "team_ask_owner",
+        title = OwnerQuestions.TITLE,
+        description = "Asks the owner one short question while you work on your task and waits for the answer (at most about 20 minutes; " +
+            "then decide yourself). Only for a choice you cannot make well without the owner. The answer is only text: it gives no " +
+            "permission and approves nothing. Never ask for passwords, keys or codes. At most two questions per task.",
+        parameters = buildJsonObject {
+            put("type", "object")
+            putJsonObject("properties") {
+                putJsonObject("question") {
+                    put("type", "string")
+                    put("description", "The question, self-contained and short (at most 1000 characters).")
+                }
+                putJsonObject("options") {
+                    put("type", "array")
+                    putJsonObject("items") { put("type", "string") }
+                    put("description", "Up to 4 short answers the owner may pick, e.g. \"Berlin\", \"Paris\". Optional.")
+                }
+            }
+            putJsonArray("required") { add("question") }
+            put("additionalProperties", false)
+        },
+        category = ToolCategory.COMMUNICATION,
+        capability = TeamTools.COMMUNICATE,
+        risk = RiskLevel.SAFE,
+    )
+
+    override suspend fun assess(arguments: JsonObject, context: ToolContext) =
+        ActionAssessment(RiskLevel.SAFE, "Ask the owner a question")
+
+    override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolOutcome {
+        val question = arguments.string("question") ?: return ToolOutcome.failure("\"question\" is required.")
+        val options = (arguments["options"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }.orEmpty()
+        return questions.ask(context, question, options)
     }
 }
 

@@ -51,6 +51,17 @@ data class ToolLimits(
  */
 interface SelfLimitingTool : Tool
 
+/**
+ * An authorizer that may refuse a call before its tool looks at anything (Phase 6): the
+ * permission broker refuses a screen tool of an objective that may not use other apps' screens
+ * (a routine's without the owner's tick) here, so not even the window in front is read for it.
+ * Its decision still runs afterwards as usual.
+ */
+interface EarlyRefusal {
+    /** Why [spec]'s call in [context] is refused before it is assessed, or null to go on. */
+    suspend fun refusalBeforeAssess(spec: ToolSpec, context: ToolContext): String?
+}
+
 /** How a tool call ended. */
 enum class ToolCallEnd {
     OK,
@@ -137,10 +148,19 @@ class ToolExecutor(
                     else -> carryOut(tool, call, context, { assessment = it }, { answeredBy = it }, storeOwnerTime)
                 }
             } finally {
+                // Phase 6 (D11, rule 15): whatever the call took before the owner was asked (the one shell-command slot) is
+                // given back now that it has ended, however it ended. Quick and never throwing, so it runs first.
+                assessment?.prepared?.let { prepared ->
+                    try {
+                        prepared.callEnded()
+                    } catch (_: Exception) {
+                        // A prepared action that fails to give back must not change how the call ended.
+                    }
+                }
                 // Also reached when the caller is cancelled mid-call: the attempt still belongs in the log.
                 withContext(NonCancellable) {
                     storeOwnerTime()
-                    record(call, tool?.spec, context, assessment, answeredBy, finished, (clock.now() - startedAt).coerceAtLeast(0))
+                    record(call, tool?.spec, context, assessment, answeredBy, finished, (clock.now() - startedAt).coerceAtLeast(0), pauses.pausedMs())
                 }
             }
         }
@@ -199,6 +219,14 @@ class ToolExecutor(
         if (problems.isNotEmpty()) {
             return ToolCallEnd.REJECTED to ToolOutcome.failure("The call to ${spec.functionName} was not run. ${problems.joinToString(" ")}")
         }
+        // A call the authorizer refuses whatever it would do is refused before the tool looks at anything.
+        val early = try {
+            (authorizer as? EarlyRefusal)?.refusalBeforeAssess(spec, context)
+        } catch (e: Exception) {
+            rethrowIfCancelled(e)
+            "Permission for \"${spec.title}\" could not be checked, so the call was not run."
+        }
+        if (early != null) return ToolCallEnd.DENIED to ToolOutcome.failure(early)
         val assessment = try {
             tool.assess(call.arguments, context)
         } catch (e: Exception) {
@@ -273,6 +301,8 @@ class ToolExecutor(
         answeredBy: List<RequestId>,
         finished: Pair<ToolCallEnd, ToolOutcome>?,
         durationMs: Long,
+        /** Of [durationMs], the time the call waited for the owner (Phase 6, D12). */
+        ownerWaitMs: Long = 0,
     ) {
         val end = finished?.first
         val outcome = finished?.second
@@ -305,6 +335,7 @@ class ToolExecutor(
                     listOfNotNull(assessment?.risk, spec?.risk).maxOrNull()?.let { put("risk", it.name) }
                     put("outcome", end?.name ?: "CANCELLED")
                     put("durationMs", durationMs)
+                    put("ownerWaitMs", ownerWaitMs.coerceAtLeast(0))
                     put("argumentNames", call.arguments.keys.joinToString(","))
                     outcome?.let { put("outputChars", it.content.length) }
                     if (answeredBy.isNotEmpty()) putJsonArray("requestIds") { answeredBy.forEach { add(it.value) } }

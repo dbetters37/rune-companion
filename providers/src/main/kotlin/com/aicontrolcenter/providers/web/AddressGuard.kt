@@ -46,9 +46,16 @@ internal class AddressGuard(private val ownAddresses: Set<InetAddress>) {
         refusal(address)?.let { throw RefusedAddressException(host, it) }
     }
 
-    /** Why the literal address in [url]'s host is refused, or null if the host is a name or a public address. */
+    /**
+     * Why [url]'s host is refused before anything is looked up, or null if it is a name to resolve
+     * or a public address. The same literal check as the `web.read_page` tool's, before it is
+     * authorised (Phase 6, D8: [WebAddressPolicy.literalRefusal], which also refuses `localhost`,
+     * local and dotless names, IPv4-mapped, IPv4-compatible, 6to4, NAT64, ISATAP and Teredo forms
+     * and numbers in unusual forms), then this device's own addresses for a literal one.
+     */
     fun literalRefusal(url: HttpUrl): String? {
         val host = url.host
+        WebAddressPolicy.literalRefusal(host)?.let { return it }
         val address = when {
             ':' in host -> try {
                 // A colon makes this an IPv6 literal, which is parsed without any lookup.

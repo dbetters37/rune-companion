@@ -52,8 +52,6 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
         args.string("directory")?.let { ScriptTools.requireExact("directory", it) }
         val dir = args.path("directory", RelativePath.ROOT)
         val limits = ScriptTools.limits(d, args)
-        // R5: a command assessed while another one runs could never run (the other one's end counts as a change), so the owner is not asked for it.
-        if (d.workspace.commandRunning()) throw ToolCallRejected(COMMAND_RUNNING)
         // Read before anything of the workspace is looked at: the command runs only if nothing changed the workspace
         // through this app from here until it has ended (G1), however the command names what it runs.
         val seen = d.workspace.changeCount()
@@ -72,9 +70,14 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
         val found = namedFiles(command, dir)
         // R1: only for the plain form is a file shown as the script this command runs.
         val plain = ShellPlainForm.script(command, dir, d.workspace)
+        // Phase 6 (D11, rule 15): one shell command at a time, from the question to the end. The broker takes the one
+        // slot after the permission is settled and before the owner is asked (an agent without the permission learns
+        // nothing of other commands); the executor gives it back when the call ends. A command assessed while another
+        // one waits or runs is refused there, before anyone is asked.
+        val slot = ShellSlot(d)
         return assessment(
             summary,
-            prepared(check = {
+            prepared(beforeAsked = { slot.take() }, ended = { slot.giveBack() }, check = {
                 val now = WorkspaceStates.of(d.workspace, dir)
                 // First the counter: any change through this app since the question was put, to a file the command names or not.
                 if (d.workspace.changeCount() != seen) WORKSPACE_CHANGED
@@ -83,19 +86,27 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
                 else found.named.firstNotNullOfOrNull { n -> n.state.changeTo(stateOrGone(n.path), q(n.path.value)) }
                     ?: found.pins.firstNotNullOfOrNull { it() }
             }) { ctx ->
+                // Taken already when the broker asked; taken here when the call was authorised without asking (it holds it).
+                val tookHere = !slot.taken
+                slot.take()?.let { return@prepared ToolOutcome.failure(it) }
                 // The last check and the run are one step: the workspace holds every other change back from the moment it
                 // has compared the counter until the command has ended, and it tells the owner's screens when it has.
-                val turn = d.workspace.runCommand(seen) {
-                    val folder = when (val r = d.workspace.resolve(dir)) {
-                        is DocResult.Ok -> r.value
-                        else -> return@runCommand ToolOutcome.failure(OperatorText.problem(r, "Running in ${OperatorText.path(dir)}"))
+                val turn = try {
+                    d.workspace.runCommand(seen) {
+                        val folder = when (val r = d.workspace.resolve(dir)) {
+                            is DocResult.Ok -> r.value
+                            else -> return@runCommand ToolOutcome.failure(OperatorText.problem(r, "Running in ${OperatorText.path(dir)}"))
+                        }
+                        d.egress.handedOver(
+                            ctx, "Shell command run (it can use the internet)",
+                            "The owner approved a shell command that can reach the internet; anything it read may have been sent: ${q(command.take(300))}",
+                            OperatorEgress.toHost(null, "a shell command, which can use the network"),
+                        )
+                        ScriptTools.answer(d.shell.run(command, folder, limits))
                     }
-                    d.egress.handedOver(
-                        ctx, "Shell command run (it can use the internet)",
-                        "The owner approved a shell command that can reach the internet; anything it read may have been sent: ${q(command.take(300))}",
-                        OperatorEgress.toHost(null, "a shell command, which can use the network"),
-                    )
-                    ScriptTools.answer(d.shell.run(command, folder, limits))
+                } finally {
+                    // Not through the executor (no callEnded will come): given back here.
+                    if (tookHere) slot.giveBack()
                 }
                 when (turn) {
                     is CommandTurn.Changed -> ToolOutcome.changedSinceApproved(WORKSPACE_CHANGED)
@@ -448,7 +459,6 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
             "another shell command ran; if another shell command was running, wait until it has ended)"
 
         /** R5: the refusal of a command asked for while another one runs. Nobody is asked for it. */
-        const val COMMAND_RUNNING = "Another shell command is running. Nothing was asked and nothing was run. Ask again when it has ended (about a minute at most)."
         const val MAX_SCRIPT_BYTES = 64L * 1024
         /** Files up to this size are pinned by their content, larger ones by size and time. */
         const val MAX_HASH_BYTES = 8L * 1024 * 1024
@@ -466,5 +476,39 @@ internal class ScriptsRunShell(private val d: OperatorToolDependencies) : Operat
         const val MAX_SCRIPTS = 60
         /** Most files one script pattern may match. */
         const val MAX_MATCHES = 50
+    }
+}
+
+/**
+ * One shell command call's hold on the workspace's one command slot (Phase 6, D11, rule 15): a
+ * token of its own, taken at most once ([take], again harmless), given back once ([giveBack]).
+ */
+internal class ShellSlot(private val d: OperatorToolDependencies) {
+    private val token = "shell-" + java.util.UUID.randomUUID().toString()
+
+    /** Whether this call holds the slot now. */
+    @Volatile var taken: Boolean = false
+        private set
+
+    /** Takes the slot; null when this call holds it now, else why not ([ScriptsRunShell.SLOT_TAKEN]). */
+    fun take(): String? {
+        val refusal = d.workspace.reserveCommand(token)
+        if (refusal != null) return SLOT_TAKEN
+        taken = true
+        return null
+    }
+
+    /** Gives the slot back if this call holds it. Quick and never throws. */
+    fun giveBack() {
+        if (!taken) return
+        taken = false
+        d.workspace.releaseReservation(token)
+    }
+
+    companion object {
+        /** Why a shell command was refused before the owner was asked: the one slot is taken (D11, rule 15). */
+        const val SLOT_TAKEN =
+            "Another shell command is running or waits for the owner's answer. Shell commands run one at a time. Nothing was asked and " +
+                "nothing was run. Ask again when it has ended."
     }
 }
