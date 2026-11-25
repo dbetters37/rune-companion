@@ -1,5 +1,6 @@
 package com.aicontrolcenter.app.di.wiring
 
+import com.aicontrolcenter.app.di.AgentFacingWalk
 import com.aicontrolcenter.app.testing.TestApp
 import com.aicontrolcenter.core.llm.ChatMessage
 import com.aicontrolcenter.core.llm.ChatRequest
@@ -132,5 +133,22 @@ class ModelsWiringTest {
         val app = TestApp(backgroundScope)
 
         assertSame(app.graph.registryDirectory.observe(), app.graph.registryDirectory.observe())
+    }
+
+    @Test
+    fun `the re-checks, the gateway and its limits reach no owner-only port`() = runTest {
+        // WP7 hands the re-checks to the orchestrator and the chat, roots of both app walks (WP8 adds them as roots).
+        val app = TestApp(backgroundScope)
+        app.cloudModel()
+        app.providers.upsert(app.providers.get(Samples.provider(id = "prv_cloud").id)!!.copy(status = ConnectionStatus.OFFLINE))
+        runCurrent()
+        val walk = AgentFacingWalk()
+        for ((root, name) in listOf(app.graph.providerRechecks to "re-checks", app.graph.modelGateway to "gateway", app.graph.modelsAssembly.dailyLimiter to "limiter")) {
+            val result = walk.walk(root, name)
+            assertEquals(emptyList(), result.violations, name)
+            assertEquals(emptyList(), result.unreadable, name)
+        }
+        // The owner's key check is owner-only: a holder of it is caught.
+        assertTrue(walk.walk(object { val held: Any = app.graph.modelsAssembly.ownerKeyCheck }, "holder").violations.isNotEmpty())
     }
 }
