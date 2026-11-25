@@ -3,6 +3,7 @@ package com.aicontrolcenter.app.di
 import com.aicontrolcenter.app.BuildConfig
 import com.aicontrolcenter.app.di.wiring.AgentsAssembly
 import com.aicontrolcenter.app.di.wiring.BackgroundScreens
+import com.aicontrolcenter.app.di.wiring.BackupWiring
 import com.aicontrolcenter.app.di.wiring.ModelsAssembly
 import com.aicontrolcenter.app.di.wiring.OperatorAssembly
 import com.aicontrolcenter.app.di.wiring.RoutinesAssembly
@@ -387,6 +388,12 @@ class AppGraph(
 
     /** Owner-only: the backup file (WP3, Tier B). Null: no backup in this build; the screen stays hidden. */
     val ownerBackup: OwnerBackup? = ports.backup
+
+    init {
+        // A saved chat names each tool it used by the title the owner knows ("Read the screen"), not by its function name
+        // (WP3). The backup gets a title look-up and nothing else of the registry; the registry never reaches the backup.
+        BackupWiring.useToolTitles(ownerBackup, toolRegistry)
+    }
 
     /**
      * Owner-only: the database check and Start over (WP2). The Recovery screen gets it from the application
