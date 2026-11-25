@@ -337,7 +337,10 @@ do it.
   still be persuaded by it, so an agent that read a planted instruction can pass bad work on.
   Reviews are done by another model and catch mistakes, not attacks. Text in a page, file or
   screen that imitates your notes to the team ("Notes from the owner") reaches the agent's model
-  slightly altered, so it cannot pass for your notes.
+  slightly altered, so it cannot pass for your notes, also when it is written with look-alike
+  letters or invisible characters. Only the model's copy is altered: chats and tasks show the
+  text as the tool returned it, and the model is told how to write it back unchanged when it
+  copies it into a file.
 - **Limits stop work, not cost already spent.** Caps on tasks, messages, model calls and time
   bound how much an objective can do. A cloud provider bills for the calls made before a limit
   was reached. Today's limits on tokens and money are checked before each call against what

@@ -35,6 +35,7 @@ import com.aicontrolcenter.framework.orchestration.DataBlock
 import com.aicontrolcenter.framework.tools.ToolCallEnd
 import com.aicontrolcenter.framework.tools.ToolExecution
 import com.aicontrolcenter.framework.tools.ToolExecutor
+import java.util.IdentityHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.time.TimeSource
 import kotlinx.coroutines.NonCancellable
@@ -47,6 +48,10 @@ import kotlinx.coroutines.withContext
  * Invariants the rest of the framework relies on:
  *  - The transcript only grows. Messages are sent back to the model exactly as they were
  *    received (including provider data), because providers validate their own earlier output.
+ *  - Tool results are stored, handed over and shown as the tool wrote them. The model reads a copy
+ *    in which the owner notes' tag name and label are defused (rule 24, [DataBlock.forModel]): made
+ *    for every request that sends the result, the conversation's earlier results included, and the
+ *    same on every call, so the request prefix does not change.
  *  - Every tool call the model made gets exactly one result message, even when the run is
  *    stopped by a limit, a time-out or cancellation; the result then says that the tool did
  *    not run, or that it was stopped half-way. A transcript with an unanswered call would be
@@ -245,6 +250,9 @@ class AgentRunner(
         /** Calls of the last assistant message that have no result message yet. */
         private val unanswered = ArrayList<ToolCallRequest>()
 
+        /** The copy of each tool result of the transcript that the model reads ([DataBlock.forModel]), made once per run. */
+        private val modelCopies = IdentityHashMap<ChatMessage, ChatMessage>()
+
         /** The call whose tool is running right now, if any. */
         private var executing: ToolCallRequest? = null
 
@@ -288,7 +296,7 @@ class AgentRunner(
             report("Waiting for the model")
             listener.onModelCall(modelCalls)
             val chatRequest = ChatRequest(
-                messages = transcript.toList(), tools = menu?.definitions ?: allDefinitions,
+                messages = transcript.map(::forModel), tools = menu?.definitions ?: allDefinitions,
                 temperature = agent.generation.temperature, maxOutputTokens = agent.generation.maxOutputTokens,
                 jsonOutput = request.jsonOutput,
             )
@@ -318,6 +326,18 @@ class AgentRunner(
             unanswered += response.message.toolCalls
             append(response.message, response.modelName.ifBlank { null }, response.usage)
             return response
+        }
+
+        /**
+         * [message] as the model reads it: a tool result with the owner notes' words defused (rule 24); any other message
+         * as it is. Every request sends every earlier result this way, also those of earlier turns.
+         */
+        private fun forModel(message: ChatMessage): ChatMessage {
+            val result = message.toolResult?.takeIf { message.role == ChatRole.TOOL } ?: return message
+            return modelCopies.getOrPut(message) {
+                val copy = DataBlock.forModel(result.content)
+                if (copy == result.content) message else message.copy(toolResult = result.copy(content = copy))
+            }
         }
 
         /**
@@ -402,10 +422,10 @@ class AgentRunner(
                 executing = null
                 if (!execution.outcome.ok) toolErrors++
                 unanswered.remove(call)
-                // Rule 24: a page, file or screen text a tool returns can never pass for the owner's notes, on any path.
-                val result = ChatMessage.toolResult(call.id, call.name, DataBlock.neutralise(execution.outcome.content), isError = !execution.outcome.ok)
+                // The tool's own text; the model reads it with the owner notes' words defused ([forModel], rule 24).
+                val result = ChatMessage.toolResult(call.id, call.name, execution.outcome.content, isError = !execution.outcome.ok)
                 // The model reads the result itself for the rest of the turn; a memory search result is stored as a reference.
-                val stored = references.storedForm(execution)?.let { ChatMessage.toolResult(call.id, call.name, DataBlock.neutralise(it), isError = false) } ?: result
+                val stored = references.storedForm(execution)?.let { ChatMessage.toolResult(call.id, call.name, it, isError = false) } ?: result
                 append(result, null, null, stored)
                 listener.onToolFinished(execution)
             }

@@ -20,8 +20,8 @@ import java.security.SecureRandom
  *    `owner_note` and the words "note from the owner" or "notes from the owner" (the notes'
  *    heading and fixed sentence) are escaped ([neutralise]) wherever they appear, also when they
  *    are spelled with look-alike characters, so only the section [OwnerNoteFrame] writes from the
- *    owner's stored notes carries them. Every tool result is neutralised as well before a model
- *    reads it ([com.aicontrolcenter.framework.agents.AgentRunner]).
+ *    owner's stored notes carries them. Every tool result is neutralised as well, in the copy a
+ *    model reads ([forModel]); the stored result is the tool's own text.
  */
 internal object DataBlock {
     const val TAG = "agent_data"
@@ -69,6 +69,23 @@ internal object DataBlock {
      * else stays as it was. Doing it again changes nothing more: a number matches nothing.
      */
     fun neutralise(text: String): String = NoteWords.defuse(text)
+
+    /**
+     * What a model reads of a tool's result [text] (rule 24): [neutralise]d, and when that changed anything, followed by
+     * [ESCAPES_EXPLAINED], so a model that copies the text (a file it edits and writes back) can write it as it was.
+     * The stored result, and what the owner sees, stay the tool's own text: the agent runner makes this copy for every
+     * request that sends the result, a later turn's replay of a stored chat included, always the same for the same
+     * text. Making it again changes nothing.
+     */
+    fun forModel(text: String): String {
+        val neutral = neutralise(text)
+        return if (neutral == text) text else neutral + ESCAPES_EXPLAINED
+    }
+
+    /** Follows a tool result in which [neutralise] changed something. Its own words are already defused, so it never changes. */
+    const val ESCAPES_EXPLAINED = "\n\n(Added by the app: so that tool output never looks like the owner's notes, one character of each " +
+        "owner&#95;note or n&#111;tes from the owner in this result is written as &#NNN;, the number of that character. " +
+        "If you copy this text, write the character itself.)"
 
     /** One block read back from a brief. */
     data class Block(val label: String, val content: String)
