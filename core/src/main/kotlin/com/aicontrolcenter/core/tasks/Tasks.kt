@@ -118,8 +118,12 @@ data class ObjectiveOptions(
      * objective copies the routine's "May use other apps' screens" ([com.aicontrolcenter.core.routines.Routine.objectiveOptions]),
      * off by default. When false, the broker refuses every screen tool of the objective's tasks
      * ([SCREEN_ACTIONS_NOT_ALLOWED]) before anything is asked.
+     *
+     * The default fails closed: options that name a routine but were built without
+     * `Routine.objectiveOptions()` (or stored without this key) allow no screens; only options
+     * without a routine (the owner's own objectives) default to allowing them.
      */
-    val screenActionsAllowed: Boolean = true,
+    val screenActionsAllowed: Boolean = routineId == null,
     /**
      * How many minutes this objective's requests wait for the owner; null: the owner's usual
      * `approvalTimeoutMinutes`. A routine's own choice (1 to 240), copied when it starts the objective;

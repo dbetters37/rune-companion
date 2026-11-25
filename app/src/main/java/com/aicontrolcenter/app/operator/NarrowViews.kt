@@ -59,6 +59,8 @@ class SharedFolderFilesView(store: SharedFolders) : SharedFolderFiles by store
 class PickUpFoldersView(private val store: SharedFolderRepository, private val files: SharedFolderFiles) : PickUpFolders {
     override suspend fun folder(id: FolderId): SharedFolder? = store.get(id)
 
+    override suspend fun all(): List<SharedFolder> = store.getAll()
+
     override suspend fun files(folder: FolderId): DocResult<List<DocumentEntry>> = files.list(folder, RelativePath.ROOT)
 
     override suspend fun read(folder: FolderId, path: RelativePath, maxBytes: Long): DocResult<FileContent> = files.read(folder, path, maxBytes)

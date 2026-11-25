@@ -6,6 +6,7 @@ import com.aicontrolcenter.core.backup.MaintenanceGate
 import com.aicontrolcenter.core.chat.AgentChat
 import com.aicontrolcenter.core.llm.ProviderRechecks
 import com.aicontrolcenter.core.memory.MemoryService
+import com.aicontrolcenter.core.registry.ReadOnlyRegistry
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.tasks.Orchestrator
@@ -70,7 +71,7 @@ class TeamAssembly(
         tasks = ports.tasks,
         messages = ports.messages,
         conversations = ports.conversations,
-        agents = ports.agents,
+        agents = ReadOnlyRegistry.agents(ports.agents),
         directory = registryDirectory,
         settings = settings,
         runner = runner,
@@ -93,9 +94,9 @@ class TeamAssembly(
 
     private val defaultAgentChat = DefaultAgentChat(
         conversations = ports.conversations,
-        agents = ports.agents,
-        models = ports.models,
-        providers = ports.providers,
+        agents = ReadOnlyRegistry.agents(ports.agents),
+        models = ReadOnlyRegistry.models(ports.models),
+        providers = ReadOnlyRegistry.providers(ports.providers),
         settings = settings,
         runner = runner,
         activity = activity,

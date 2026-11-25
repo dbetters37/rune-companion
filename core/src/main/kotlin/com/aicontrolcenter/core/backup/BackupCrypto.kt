@@ -151,9 +151,10 @@ class BackupKeys internal constructor(
 data class BackupKdf(val name: String, val iterations: Int, val salt: String)
 
 /**
- * The header of a backup file (UTF-8 JSON, at most [BackupFormat.MAX_HEADER_BYTES]). Before the key
- * check has passed only [format], [version] and [kdf] are used ([preCheckProblem]); every other
- * field only after it ([postCheckProblem]).
+ * The header of a backup file (UTF-8 JSON, at most [BackupFormat.MAX_HEADER_BYTES]). It must parse
+ * in full, every field here present and of its type, before the key check (otherwise the file is
+ * damaged); but before the key check has passed only [format], [version] and [kdf] are used
+ * ([preCheckProblem]); every other field only after it ([postCheckProblem]).
  */
 @Serializable
 data class BackupHeader(
@@ -167,9 +168,13 @@ data class BackupHeader(
     val cipher: String = BackupFormat.CIPHER_NAME,
     val chunkBytes: Int = BackupFormat.CHUNK_BYTES,
 ) {
-    /** The salt's bytes, or null when it is not base64 of [BackupFormat.SALT_BYTES] bytes. */
+    /**
+     * The salt's bytes, or null when it is not exactly the standard base64, with padding, of
+     * [BackupFormat.SALT_BYTES] bytes (24 characters ending in "=="), as a save writes it: any other
+     * spelling of the same bytes is damage (second review of the format).
+     */
     fun saltBytes(): ByteArray? = try {
-        Base64.getDecoder().decode(kdf.salt).takeIf { it.size == BackupFormat.SALT_BYTES }
+        Base64.getDecoder().decode(kdf.salt).takeIf { it.size == BackupFormat.SALT_BYTES && Base64.getEncoder().encodeToString(it) == kdf.salt }
     } catch (_: IllegalArgumentException) {
         null
     }

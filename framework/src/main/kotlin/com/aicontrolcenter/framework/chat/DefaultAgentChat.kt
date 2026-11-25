@@ -23,10 +23,10 @@ import com.aicontrolcenter.core.llm.ChatRole
 import com.aicontrolcenter.core.llm.TokenUsage
 import com.aicontrolcenter.core.llm.ToolCallRequest
 import com.aicontrolcenter.core.operator.OwnerRequest
-import com.aicontrolcenter.core.registry.AgentRepository
+import com.aicontrolcenter.core.registry.AgentDirectory
 import com.aicontrolcenter.core.registry.ModelDescriptor
-import com.aicontrolcenter.core.registry.ModelRepository
-import com.aicontrolcenter.core.registry.ProviderRepository
+import com.aicontrolcenter.core.registry.ModelDirectory
+import com.aicontrolcenter.core.registry.ProviderDirectory
 import com.aicontrolcenter.core.registry.effectiveLocality
 import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.tools.ToolSpec
@@ -91,9 +91,9 @@ import kotlinx.coroutines.withContext
  */
 class DefaultAgentChat(
     private val conversations: ConversationRepository,
-    private val agents: AgentRepository,
-    private val models: ModelRepository,
-    private val providers: ProviderRepository,
+    private val agents: AgentDirectory,
+    private val models: ModelDirectory,
+    private val providers: ProviderDirectory,
     private val settings: SettingsView,
     private val runner: AgentRunner,
     private val activity: ActivityRecorder,

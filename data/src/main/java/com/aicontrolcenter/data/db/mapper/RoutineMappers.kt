@@ -100,6 +100,7 @@ internal fun PickUpRule.toEntity(): PickUpRuleEntity = PickUpRuleEntity(
     updatedAt = updatedAt,
     lastRunAt = lastRunAt,
     lastResult = lastResult,
+    folderReadOnlySince = folderReadOnlySince,
 )
 
 internal fun PickUpRuleEntity.toDomain(): PickUpRule = PickUpRule(
@@ -111,6 +112,7 @@ internal fun PickUpRuleEntity.toDomain(): PickUpRule = PickUpRule(
     updatedAt = updatedAt,
     lastRunAt = lastRunAt,
     lastResult = lastResult,
+    folderReadOnlySince = folderReadOnlySince,
 )
 
 internal fun PickedUpFile.toEntity(): PickUpImportEntity = PickUpImportEntity(
@@ -120,6 +122,7 @@ internal fun PickedUpFile.toEntity(): PickUpImportEntity = PickUpImportEntity(
     sizeBytes = sizeBytes,
     importedAt = importedAt,
     memoryId = memoryId?.value,
+    seenOnly = seenOnly,
 )
 
 /** @throws com.aicontrolcenter.data.StoredDataException if the stored hash or size is not valid. */
@@ -131,5 +134,6 @@ internal fun PickUpImportEntity.toDomain(): PickedUpFile = RowRef(PickUpImportEn
         sizeBytes = sizeBytes,
         importedAt = importedAt,
         memoryId = memoryId?.let(::MemoryId),
+        seenOnly = seenOnly,
     )
 }

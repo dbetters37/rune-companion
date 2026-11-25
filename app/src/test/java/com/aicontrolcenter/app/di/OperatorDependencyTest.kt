@@ -187,6 +187,69 @@ class OperatorDependencyTest {
     }
 
     @Test
+    fun `an owner-only object inside a container is caught - one check per container`() {
+        // Second review of F3: AtomicReference, java.lang.ref.Reference, StateFlow, a completed Deferred and Optional.
+        val secret = com.aicontrolcenter.core.llm.OwnerKeyCheck.None
+        val holders = mapOf(
+            "plain field (control)" to object { val held: Any = secret },
+            "AtomicReference" to object { val held = java.util.concurrent.atomic.AtomicReference<Any>(secret) },
+            "WeakReference" to object { val held = java.lang.ref.WeakReference<Any>(secret) },
+            "SoftReference" to object { val held = java.lang.ref.SoftReference<Any>(secret) },
+            "MutableStateFlow" to object { val held = kotlinx.coroutines.flow.MutableStateFlow<Any>(secret) },
+            "read-only StateFlow" to object { val held: kotlinx.coroutines.flow.StateFlow<Any> = kotlinx.coroutines.flow.MutableStateFlow<Any>(secret) },
+            "CompletableDeferred" to object { val held = kotlinx.coroutines.CompletableDeferred<Any>(secret) },
+            "Optional" to object { val held = java.util.Optional.of<Any>(secret) },
+            "lazy" to object { val held: Lazy<Any> = lazyOf(secret) },
+        )
+        for ((what, holder) in holders) assertTrue(walk(holder, what).violations.isNotEmpty(), "$what is read through")
+        // An empty container, or one not done yet, holds nothing to catch.
+        val empty = object {
+            val none = java.util.Optional.empty<Any>()
+            val pending = kotlinx.coroutines.CompletableDeferred<Any>()
+            val cleared = java.util.concurrent.atomic.AtomicReference<Any>(null)
+        }
+        assertEquals(emptyList(), walk(empty, "empty").violations)
+    }
+
+    @Test
+    fun `agent-facing code holds read-only views of agents, providers, models and apps, never their stores`() {
+        // Second review of F3: a provider record could borrow the owner's key alias, be repointed or deleted; an agent's tools,
+        // spaces or model could be changed. The stores are owner-only; what is wired instead is a separate read-only object.
+        for (store in listOf<Any>(app.agents, app.providers, app.models, app.aiApps)) {
+            assertTrue(isOwnerOnly(store.javaClass), store.javaClass.simpleName)
+            assertTrue(walk(object { val held: Any = store }, "holder").violations.isNotEmpty(), store.javaClass.simpleName)
+        }
+        val views = object {
+            val agents: Any = com.aicontrolcenter.core.registry.ReadOnlyRegistry.agents(app.agents)
+            val providers: Any = com.aicontrolcenter.core.registry.ReadOnlyRegistry.providers(app.providers)
+            val models: Any = com.aicontrolcenter.core.registry.ReadOnlyRegistry.models(app.models)
+            val apps: Any = com.aicontrolcenter.core.registry.ReadOnlyRegistry.apps(app.aiApps)
+        }
+        assertEquals(emptyList(), walk(views, "views").violations)
+        for (view in listOf(views.agents, views.providers, views.models, views.apps)) {
+            assertTrue(view !is com.aicontrolcenter.core.registry.AgentRepository && view !is com.aicontrolcenter.core.registry.ProviderRepository &&
+                view !is com.aicontrolcenter.core.registry.ModelRepository && view !is com.aicontrolcenter.core.registry.AiAppRepository, view.toString())
+        }
+        // The provider store's one agent-facing holder is the connections, behind the gateway; the memory service keeps a view.
+        assertTrue(walk(app.graph.modelGateway, "gateway").violations.isEmpty())
+        assertTrue(walk(app.graph.memoryService, "memory").violations.isEmpty(), walk(app.graph.memoryService, "memory").violations.toString())
+        // A provider lease (it can tell whether a text is the key) outside the connections and the gateway is caught.
+        val lease = object { val held: Any = leaseFor(app) }
+        assertTrue(walk(lease, "holder").violations.any { "ProviderLease" in it }, walk(lease, "holder").violations.toString())
+    }
+
+    /** A real lease from the wired connections, for a provider with no key. */
+    private fun leaseFor(app: TestApp): Any = kotlinx.coroutines.runBlocking {
+        val provider = app.providers.getAll().firstOrNull() ?: com.aicontrolcenter.core.registry.ModelProvider(
+            id = com.aicontrolcenter.core.ProviderId("prv_walk"), name = "Walk", kind = com.aicontrolcenter.core.registry.ProviderKind.SIMULATOR,
+            locality = com.aicontrolcenter.core.registry.Locality.ON_DEVICE, createdAt = 1, updatedAt = 1,
+        ).also { app.providers.upsert(it) }
+        val connections = fieldsOf(app.graph.modelGateway.javaClass).first { it.type == com.aicontrolcenter.framework.llm.ProviderConnections::class.java }
+            .also { it.isAccessible = true }.get(app.graph.modelGateway) as com.aicontrolcenter.framework.llm.ProviderConnections
+        connections.acquire(provider)
+    }
+
+    @Test
     fun `answering an agent's question is the owner's alone`() {
         // Security review of wave 1, F10: `answer` taking a RequestId is an owner-only action, as letAskAgain is.
         assertTrue("answer" in ownerActionsOf(OwnerRequests::class.java))

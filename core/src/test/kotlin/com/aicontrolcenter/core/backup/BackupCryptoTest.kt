@@ -143,6 +143,9 @@ class BackupCryptoTest {
         assertEquals(BackupResult.Failed(BackupProblem.Damaged), rewritten(header().copy(kdf = header().kdf.copy(iterations = 99_999))))
         assertEquals(BackupResult.Failed(BackupProblem.Damaged), rewritten(header().copy(kdf = header().kdf.copy(name = "scrypt"))))
         assertEquals(BackupResult.Failed(BackupProblem.Damaged), rewritten(header().copy(kdf = header().kdf.copy(salt = "AAEC"))))
+        // Second review of the format: only the padded form a save writes; the same bytes spelled without padding are damage.
+        assertEquals(24, header().kdf.salt.length)
+        assertEquals(BackupResult.Failed(BackupProblem.Damaged), rewritten(header().copy(kdf = header().kdf.copy(salt = header().kdf.salt.trimEnd('=')))))
         assertEquals(BackupResult.Failed(BackupProblem.Damaged), rewritten(header().copy(version = 2)))
         // After the check: the chunk size must be exactly 1 MiB, the cipher AES-256-GCM.
         assertEquals(BackupResult.Failed(BackupProblem.Damaged), rewritten(header().copy(chunkBytes = 1_048_575)))
@@ -150,6 +153,16 @@ class BackupCryptoTest {
         assertEquals(BackupResult.Failed(BackupProblem.Damaged), rewritten(header().copy(cipher = "AES-128-GCM")))
         assertEquals(2_000_000, BackupFormat.MAX_ITERATIONS)
         assertEquals(1_048_576, BackupFormat.CHUNK_BYTES)
+    }
+
+    @Test
+    fun `one size bound - 1,024 full chunks after the largest preamble is the largest file`() {
+        // Second review of the format: "1 GB" and "1,024 chunks" were two bounds that did not agree.
+        assertEquals(1_024L, BackupFormat.MAX_CHUNKS)
+        assertEquals(33, BackupFormat.CHUNK_OVERHEAD_BYTES)
+        assertEquals(78, BackupFormat.PREAMBLE_FIXED_BYTES)
+        assertEquals(1_073_779_790L, BackupFormat.MAX_FILE_BYTES)
+        assertEquals(1_024L * (1_048_576 + 33) + 78 + 4_096, BackupFormat.MAX_FILE_BYTES)
     }
 
     @Test

@@ -3,7 +3,7 @@ package com.aicontrolcenter.framework.memory
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.ToolId
 import com.aicontrolcenter.core.memory.MemoryService
-import com.aicontrolcenter.core.registry.AgentRepository
+import com.aicontrolcenter.core.registry.AgentDirectory
 import com.aicontrolcenter.core.tools.Capability
 import com.aicontrolcenter.core.tools.CapabilityInfo
 import com.aicontrolcenter.core.tools.Tool
@@ -48,7 +48,7 @@ object MemoryTools {
      * The memory tools. [agents] is where each call reads the calling agent's current profile;
      * [zone] decides the calendar days shown for memories and is read on every call.
      */
-    fun create(memory: MemoryService, agents: AgentRepository, clock: Clock, zone: () -> ZoneId = ZoneId::systemDefault): List<Tool> {
+    fun create(memory: MemoryService, agents: AgentDirectory, clock: Clock, zone: () -> ZoneId = ZoneId::systemDefault): List<Tool> {
         val support = MemoryToolSupport(memory, agents)
         return listOf(MemorySearchTool(support, clock, zone), MemorySaveTool(support, clock), MemoryShareTool(support))
     }
@@ -62,7 +62,7 @@ object MemoryTools {
         registry: ToolRegistry,
         memory: MemoryService,
         capabilityRegistry: CapabilityRegistry,
-        agents: AgentRepository,
+        agents: AgentDirectory,
         clock: Clock,
         zone: () -> ZoneId = ZoneId::systemDefault,
     ) {

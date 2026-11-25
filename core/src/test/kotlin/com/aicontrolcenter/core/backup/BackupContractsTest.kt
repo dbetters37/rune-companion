@@ -44,9 +44,16 @@ class BackupContractsTest {
             "abc abd abe abf", "aaaa bbbb cccc dddd eeee", "the cat sat mat", "dog dog dog cat", "qwerty asdf zxcv 1234",
             "0000-0000-0000-0000-0000", "abab abab abab abab", "qwertyuiopasdfghjkl", "1q2w3e4r5t6y7u8i9o0p", "zxcvbnm zxcvbnm!!",
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "Password Password Password", "x".repeat(Passphrases.MAX_CHARS + 1),
+            // Second review: near-copies of one word, one word with different accents, keyboard columns, patterns.
+            "abca abcb abcc abce", "abcx abcy abcz abcw", "Abce Bcdf Cdeg Defh", "ghjk ghjl ghjm ghjn", "cafe caf\u00e9 caf\u00e8 caf\u00ea",
+            "1qaz2wsx3edc4rfv5tgb6yhn7ujm8ik,9ol.", "Aa1!Bb2@Cc3#Dd4\$", "Summer2024!Summer2024!",
         )) {
             assertNotNull(Passphrases.check(weak), weak)
         }
+        assertEquals(1, Passphrases.realWords("abca abcb abcc abce").size, "words one letter apart are one word")
+        assertEquals(1, Passphrases.realWords("cafe caf\u00e9 caf\u00e8 caf\u00ea").size, "accents do not make another word")
+        assertTrue(Passphrases.realWords("Abce Bcdf Cdeg Defh").size >= Passphrases.MIN_OWN_WORDS, "four words, but too weak together")
+        assertTrue(Passphrases.strengthBits("Abce Bcdf Cdeg Defh") < Passphrases.MIN_WORDS_BITS)
         // Four real words, or enough strength without them.
         for (strong in listOf("blue train under hill", "river candle orbit maple", "Vögel fliegen über Brücken", "k7#Qm2!vR9@xL4\$w", "Seventeen chars!!")) {
             assertNull(Passphrases.check(strong), strong)
@@ -68,6 +75,11 @@ class BackupContractsTest {
         assertNotNull(Passphrases.problemForSave("0000-0000-0000-0000-0000", generatedShown = shown))
         assertNull(Passphrases.problemForSave("blue train under hill", generatedShown = shown))
         assertNotNull(Passphrases.problemForSave("", generatedShown = ""))
+        // Second review, NEW-1: a screen slip that passes the typed text as the generated one does not switch the check off.
+        assertNotNull(Passphrases.problemForSave("aaaa", generatedShown = "aaaa"))
+        assertNotNull(Passphrases.problemForSave("password", generatedShown = "password"))
+        assertNotNull(Passphrases.problemForSave("0000-0000-0000-0000-0000", generatedShown = "0000 0000 0000 0000 0000"), "not the form generate() gives")
+        assertNotNull(Passphrases.problemForSave("aaaa", generatedShown = "AAAA-AAAA-AAAA-AAAA-AAAA"), "the generated one, but not what was typed")
     }
 
     @Test
@@ -80,6 +92,13 @@ class BackupContractsTest {
         assertEquals(Passphrases.normalise("7KQ2"), Passphrases.normalise("\uFF17\uFF2B\uFF31\uFF12"), "full-width forms")
         assertEquals(Passphrases.normalise("a-b"), Passphrases.normalise("a\u2212b\u2011"), "minus sign and non-breaking hyphen are dashes")
         assertEquals("STRASSE", Passphrases.normalise("stra\u00dfe"))
+        // Second review: every case variant of a letter, invisible characters and other dashes.
+        assertEquals("STRASSE", Passphrases.normalise("STRA\u1E9EE"), "capital sharp s")
+        assertEquals(Passphrases.normalise("\u0390"), Passphrases.normalise("\u03AA\u0301"), "Greek iota with dialytika and tonos, either case")
+        assertEquals(Passphrases.normalise("\u0130stanbul"), Passphrases.normalise("i\u0307stanbul"), "Turkish dotted capital I, either case")
+        for (hidden in listOf("A\u00ADB", "A\u200BB", "A\u200DB", "A\uFEFFB", "A\u2043B", "A\uFE63B", "A\uFF0DB", "A\u2E3AB")) {
+            assertEquals("AB", Passphrases.normalise(hidden), hidden.map { "%04x".format(it.code) }.toString())
+        }
     }
 
     @Test

@@ -54,8 +54,9 @@ object WebAddressPolicy {
      * Why connecting to [address] is refused, or null if it is a public address. Refused:
      * unspecified, loopback, link-local, site-local (RFC 1918), carrier-grade NAT
      * (100.64.0.0/10), unique-local IPv6 (fc00::/7), multicast, broadcast, the 0.0.0.0/8 and
-     * 240.0.0.0/4 ranges, IPv4-mapped, NAT64, IPv4-compatible (::/96) and 6to4 (2002::/16) forms of
-     * any of these, and [ownAddresses] (this device's interface addresses).
+     * 240.0.0.0/4 ranges, IPv4-mapped, IPv4-translated (::ffff:0:0/96), NAT64, IPv4-compatible
+     * (::/96), 6to4 (2002::/16), ISATAP and Teredo forms of any of these, the local-use NAT64 prefix
+     * 64:ff9b:1::/48, and [ownAddresses] (this device's interface addresses).
      */
     fun refusal(address: InetAddress, ownAddresses: Set<InetAddress> = emptySet()): String? {
         val why = when {
@@ -163,8 +164,28 @@ object WebAddressPolicy {
         val nat64 = (b[0].toInt() and 0xFF) == 0x00 && (b[1].toInt() and 0xFF) == 0x64 && (b[2].toInt() and 0xFF) == 0xFF &&
             (b[3].toInt() and 0xFF) == 0x9B && (4 until 12).all { b[it].toInt() == 0 }
         val compatible = (0 until 12).all { b[it].toInt() == 0 }
+        // Second review of F14: SIIT's IPv4-translated form ::ffff:0:a.b.c.d (RFC 6052 section 2.1, RFC 7915).
+        val translated = (0 until 8).all { b[it].toInt() == 0 } && (b[8].toInt() and 0xFF) == 0xFF && (b[9].toInt() and 0xFF) == 0xFF &&
+            b[10].toInt() == 0 && b[11].toInt() == 0
+        // The local-use NAT64 prefix 64:ff9b:1::/48 (RFC 8215) only exists inside a network that runs its own translator.
+        val localNat64 = (b[0].toInt() and 0xFF) == 0x00 && (b[1].toInt() and 0xFF) == 0x64 && (b[2].toInt() and 0xFF) == 0xFF &&
+            (b[3].toInt() and 0xFF) == 0x9B && b[4].toInt() == 0 && (b[5].toInt() and 0xFF) == 0x01
+        if (localNat64) return "an address that maps to a refused one"
+        // ISATAP (RFC 5214): an interface identifier ::0:5efe:a.b.c.d or ::200:5efe:a.b.c.d after any prefix.
+        val isatap = (b[8].toInt() and 0xFD) == 0x00 && b[9].toInt() == 0 && (b[10].toInt() and 0xFF) == 0x5E && (b[11].toInt() and 0xFF) == 0xFE
+        // Teredo (2001:0::/32, RFC 4380): the server's IPv4 address in bytes 4 to 7, the client's, inverted, in the last four.
+        val teredo = (b[0].toInt() and 0xFF) == 0x20 && (b[1].toInt() and 0xFF) == 0x01 && b[2].toInt() == 0 && b[3].toInt() == 0
+        if (teredo) {
+            val server = b.copyOfRange(4, 8)
+            val client = ByteArray(4) { (b[12 + it].toInt() xor 0xFF).toByte() }
+            return if (refusal(InetAddress.getByAddress(server)) != null || refusal(InetAddress.getByAddress(client)) != null) {
+                "an address that maps to a refused one"
+            } else {
+                null
+            }
+        }
         val embedded = when {
-            mapped || nat64 || compatible -> b.copyOfRange(12, 16)
+            mapped || nat64 || compatible || translated || isatap -> b.copyOfRange(12, 16)
             (b[0].toInt() and 0xFF) == 0x20 && (b[1].toInt() and 0xFF) == 0x02 -> b.copyOfRange(2, 6)
             else -> return null
         }

@@ -182,7 +182,7 @@ internal interface PickUpDao {
         else -> RecordImport.RECORDED
     }
 
-    @Query("SELECT COALESCE(SUM(size_bytes), 0) FROM pickup_imports WHERE imported_at >= :from")
+    @Query("SELECT COALESCE(SUM(size_bytes), 0) FROM pickup_imports WHERE imported_at >= :from AND seen_only = 0")
     suspend fun bytesImportedSince(from: Long): Long
 
     @Query(IMPORTS)

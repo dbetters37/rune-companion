@@ -1,5 +1,7 @@
 package com.aicontrolcenter.core.operator
 
+import java.text.Normalizer
+
 /*
  * Agents' questions to the owner (Phase 6, C1, Tier B): the pure rules of rules 13 and 32.
  * The owner's side (`OwnerServices.answer`, WP5) and the question tool use them; screens show
@@ -46,9 +48,13 @@ object AnswerCheck {
     /** An AWS access key id: `AKIA` (long-term) or `ASIA` (temporary) and 16 capitals or digits, case as written. */
     private val awsKeyId = Regex("(?<![A-Za-z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])")
 
-    /** Words in a question that make a short number in the answer a likely code (case ignored; a word may go on: "verif…"). */
+    /**
+     * Words in a question, or in the answer itself (a pasted text message: "Your verification code is
+     * 482913"), that make a short number in the answer a likely code (case ignored; a word may go on:
+     * "verif…", "messages").
+     */
     val CODE_WORDS: List<String> = listOf(
-        "code", "sms", "text message", "verification", "verify", "pin", "password", "passcode", "otp", "one-time", "one time",
+        "code", "sms", "text message", "message", "verification", "verify", "pin", "password", "passcode", "otp", "one-time", "one time",
         "digit", "number", "2fa", "two-factor", "two factor", "authenticat", "security", "log in", "login", "sign in", "sign-in", "bank", "confirm",
     )
 
@@ -69,6 +75,15 @@ object AnswerCheck {
     /** Digits, each next one after at most three spaces, dots, commas, dashes or underscores: "482913", "4.8.2-9 1_3". */
     private val digitRun = Regex("[0-9](?:[\\s.,_\\-]{0,3}[0-9])*")
 
+    /**
+     * Digits as a code word lets them be written: each next one after at most three characters that
+     * are not letters or digits ("4/8/2", "4 · 8"), or after one "x" ("4x8x2").
+     */
+    private val looseDigitRun = Regex("[0-9](?:(?:[^\\p{L}0-9]{1,3}|[xX])?[0-9])*")
+
+    /** A code of letters and digits under a code word: 5 to 8 of them, with at least two digits and one letter ("K7Q2M9"). */
+    private val mixedCode = Regex("(?<![\\p{L}0-9])(?=(?:[A-Za-z]*[0-9]){2})(?=[0-9]*[A-Za-z])[A-Za-z0-9]{5,8}(?![\\p{L}0-9])")
+
     /** What may surround a bare code: separators only. */
     private val separatorsOnly = Regex("[\\s.,_\\-]*")
 
@@ -87,33 +102,78 @@ object AnswerCheck {
         else -> AnswerRisk.NONE
     }
 
-    /** True when [text] holds a known key shape (prefix case ignored), or a long run of base64 or hex with letters and digits. */
+    /**
+     * True when [text] holds a known key shape (prefix case ignored), also when it was typed in
+     * groups with spaces between them ("sk-proj-abcd efgh ijkl …"), or a long run of base64 or hex
+     * with letters and digits.
+     */
     fun looksLikeKey(text: String): Boolean {
+        val compact = Normalizer.normalize(text, Normalizer.Form.NFKC)
         for (prefix in KEY_PREFIXES) {
-            var from = text.indexOf(prefix, ignoreCase = true)
+            var from = compact.indexOf(prefix, ignoreCase = true)
             while (from >= 0) {
-                val startsWord = from == 0 || !text[from - 1].isLetterOrDigit()
-                if (startsWord && keyBody.matchesAt(text, from + prefix.length)) return true
-                from = text.indexOf(prefix, from + 1, ignoreCase = true)
+                val startsWord = from == 0 || !compact[from - 1].isLetterOrDigit()
+                if (startsWord && (keyBody.matchesAt(compact, from + prefix.length) || typedInGroups(compact, from + prefix.length))) return true
+                from = compact.indexOf(prefix, from + 1, ignoreCase = true)
             }
         }
-        if (awsKeyId.containsMatchIn(text)) return true
-        return secretRun.findAll(text).any { run -> run.value.any(Char::isDigit) && run.value.any(Char::isLetter) }
+        if (awsKeyId.containsMatchIn(compact) || awsKeyId.containsMatchIn(compact.filterNot(Char::isWhitespace))) return true
+        return secretRun.findAll(compact).any { run -> run.value.any(Char::isDigit) && run.value.any(Char::isLetter) }
     }
 
     /**
+     * True when what follows a key prefix at [from] is a key typed in groups: key characters in at
+     * least four groups split by whitespace, every group but the first and the last of one length
+     * (3 or more) and neither of those longer, [MIN_KEY_BODY_CHARS] key characters in all ("abcd
+     * efgh ijkl", or "p roj- abcd efgh" after "sk-"). Words of a sentence rarely all have one length.
+     */
+    private fun typedInGroups(text: String, from: Int): Boolean {
+        val groups = ArrayList<String>()
+        var i = from
+        while (true) {
+            val group = keyChars.matchAt(text, i)?.value.orEmpty()
+            groups += group
+            i += group.length
+            val gap = spaceGap.matchAt(text, i) ?: break
+            if (keyChars.matchAt(text, i + gap.value.length) == null) break
+            i += gap.value.length
+        }
+        if (groups.size < 4) return false
+        val middle = groups.subList(1, groups.size - 1)
+        val length = middle.first().length
+        return length >= 3 && middle.all { it.length == length } && groups.first().length <= length && groups.last().length <= length &&
+            groups.sumOf { it.length } >= MIN_KEY_BODY_CHARS
+    }
+
+    private val keyChars = Regex("[A-Za-z0-9_\\-]+")
+
+    /** What may stand between the groups of a key typed in groups: one or two spaces or tabs. */
+    private val spaceGap = Regex("[ \\t]{1,2}")
+
+    /**
      * True when [answer] is a bare code (4 to 8 digits and separators only, figures or number
-     * words), whatever [question] says; or when [question] mentions a code word and [answer] holds
-     * a run of 4 to 8 digits (separators between them ignored, number words read as digits).
+     * words, digits of any script), whatever [question] says; or when [question] or [answer]
+     * mentions a code word and [answer] holds a run of 4 to 8 digits (any one to three non-letters,
+     * or an "x", between them; number words read as digits) or a code of 5 to 8 letters and digits.
      */
     fun looksLikeCode(question: String, answer: String): Boolean {
-        val digits = spelledAsDigits(answer)
+        val digits = spelledAsDigits(asciiDigits(answer))
         if (separatorsOnly.replace(digits, "").all { it in '0'..'9' } && digits.count { it in '0'..'9' } in CODE_DIGITS) return true
-        val asked = question.lowercase()
-        val mentionsCode = CODE_WORDS.any { word -> Regex("(?<![a-z])" + Regex.escape(word)).containsMatchIn(asked) }
-        if (!mentionsCode) return false
-        return digitRun.findAll(digits).any { run -> run.value.count { it in '0'..'9' } in CODE_DIGITS }
+        if (!mentionsCode(question) && !mentionsCode(answer)) return false
+        if (looseDigitRun.findAll(digits).any { run -> run.value.count { it in '0'..'9' } in CODE_DIGITS }) return true
+        return mixedCode.containsMatchIn(digits)
     }
+
+    /** True when [text] holds one of [CODE_WORDS] (case ignored). */
+    private fun mentionsCode(text: String): Boolean {
+        val lower = Normalizer.normalize(text, Normalizer.Form.NFKC).lowercase()
+        return CODE_WORDS.any { word -> Regex("(?<![a-z])" + Regex.escape(word)).containsMatchIn(lower) }
+    }
+
+    /** [text] in NFKC (full-width "４" is "4"), with every other decimal digit of any script ("٤") written as an ASCII digit. */
+    private fun asciiDigits(text: String): String =
+        Normalizer.normalize(text, Normalizer.Form.NFKC).map { c -> if (c !in '0'..'9' && Character.isDigit(c)) '0' + Character.digit(c, 10) else c }
+            .joinToString("")
 
     /** [text] with every number word ("four", "Eight") replaced by its digit. */
     private fun spelledAsDigits(text: String): String =
@@ -138,6 +198,9 @@ object QuestionRules {
     val APPROVAL_WORDS: List<String> = listOf(
         "allow", "approve", "permit", "grant", "always", "once", "deny", "confirm", "proceed", "ok", "accept", "agree", "authorise",
         "consent", "pay", "buy", "purchase", "install", "uninstall", "send", "delete", "erase",
+        // Second review of F9: the go-ahead for the owner's other consequential actions, and for carrying on.
+        "order", "transfer", "wire", "remove", "wipe", "trash", "bin", "overwrite", "submit", "post", "publish", "share", "email",
+        "reply", "message", "text", "call", "subscribe", "book", "sign", "renew", "continue",
     )
 
     private val approvalForms: Map<String, Regex> = mapOf(
@@ -163,23 +226,89 @@ object QuestionRules {
         "send" to Regex("send(s|ing)?|sent"),
         "delete" to Regex("delet(e|es|ed|ing|ion)"),
         "erase" to Regex("eras(e|es|ed|ing|ure)"),
+        "order" to Regex("order(s|ed|ing)?"),
+        "transfer" to Regex("transfer(s|red|ring)?"),
+        "wire" to Regex("wir(e|es|ed|ing)"),
+        "remove" to Regex("remov(e|es|ed|ing|al)"),
+        "wipe" to Regex("wip(e|es|ed|ing)"),
+        "trash" to Regex("trash(es|ed|ing)?"),
+        "bin" to Regex("bin(s|ned|ning)?"),
+        "overwrite" to Regex("overwrit(e|es|ing|ten)|overwrote"),
+        "submit" to Regex("submit(s|ted|ting)?|submission(s)?"),
+        "post" to Regex("post(s|ed|ing)?"),
+        "publish" to Regex("publish(es|ed|ing)?"),
+        "share" to Regex("shar(e|es|ed|ing)"),
+        "email" to Regex("e?mail(s|ed|ing)?"),
+        "reply" to Regex("repl(y|ies|ied|ying)"),
+        "message" to Regex("messag(e|es|ed|ing)"),
+        "text" to Regex("text(s|ed|ing)?"),
+        "call" to Regex("call(s|ed|ing)?"),
+        "subscribe" to Regex("subscrib(e|es|ed|ing)|subscription(s)?"),
+        "book" to Regex("book(s|ed|ing)?"),
+        "sign" to Regex("sign(s|ed|ing)?"),
+        "renew" to Regex("renew(s|ed|ing|al)?"),
+        "continue" to Regex("continu(e|es|ed|ing)"),
     )
 
     private val approvalPhrases: Map<String, Regex> = mapOf(
         "yes do it" to Regex("(?<![a-z])yes[^a-z]+do[^a-z]+it(?![a-z])"),
         "do it" to Regex("(?<![a-z])do[^a-z]+it(?![a-z])"),
         "go ahead" to Regex("(?<![a-z])(go|goes|going|went|gone)[^a-z]+ahead(?![a-z])"),
+        "go for it" to Regex("(?<![a-z])(go|goes|going|went)[^a-z]+for[^a-z]+it(?![a-z])"),
+        "go on" to Regex("(?<![a-z])(go|goes|going|went)[^a-z]+on(?![a-z])"),
+        "carry on" to Regex("(?<![a-z])carr(y|ies|ied|ying)[^a-z]+on(?![a-z])"),
+        "let's go" to Regex("(?<![a-z])let[^a-z]*s[^a-z]+go(?![a-z])"),
+        "check out" to Regex("(?<![a-z])check(s|ed|ing)?[^a-z]*out(?![a-z])"),
+        "top up" to Regex("(?<![a-z])top(s|ped|ping)?[^a-z]*up(?![a-z])"),
     )
 
-    /** The approval word [text] uses (the phrase, for "yes do it", "do it" and "go ahead"), or null when it uses none. Case is ignored. */
+    /**
+     * The approval word [text] uses (the phrase, for "yes do it", "do it", "go ahead", "go for it",
+     * "go on", "carry on", "let's go", "check out" and "top up"), or null when it uses none. Case,
+     * accents and look-alike letters of other alphabets are ignored ([skeleton]): "Cоnfirm" with a
+     * Cyrillic "о" is "confirm".
+     */
     fun approvalWordIn(text: String): String? {
-        val lower = text.lowercase()
+        val lower = skeleton(text)
         approvalPhrases.entries.firstOrNull { (_, phrase) -> phrase.containsMatchIn(lower) }?.let { return it.key }
         val words = lower.split(Regex("[^a-z]+")).filter(String::isNotEmpty)
         for (word in words) {
             approvalForms.entries.firstOrNull { (_, form) -> form.matches(word) }?.let { return it.key }
         }
         return null
+    }
+
+    /**
+     * [text] as the owner reads it, in lower-case ASCII where it looks like ASCII: NFKC, every
+     * letter that looks like a Latin one in Cyrillic or Greek written as that Latin letter, accents
+     * removed, lower case.
+     */
+    fun skeleton(text: String): String {
+        val mapped = buildString {
+            for (c in Normalizer.normalize(text, Normalizer.Form.NFKC)) append(LOOK_ALIKES[c] ?: c)
+        }
+        return Normalizer.normalize(mapped, Normalizer.Form.NFD).filterNot { Character.getType(it) == Character.NON_SPACING_MARK.toInt() }
+            .lowercase(java.util.Locale.ROOT)
+    }
+
+    /**
+     * True when one word of [text] mixes letters of different alphabets ("Cоnfirm" with a Cyrillic
+     * "о"): a suggested answer that does is refused, whatever the letters are.
+     */
+    fun mixesAlphabets(text: String): Boolean = Normalizer.normalize(text, Normalizer.Form.NFKC).split(Regex("[^\\p{L}\\p{M}]+")).any { word ->
+        word.mapNotNull { c -> if (Character.isLetter(c)) Character.UnicodeScript.of(c.code) else null }
+            .filter { it != Character.UnicodeScript.COMMON && it != Character.UnicodeScript.INHERITED }.toSet().size > 1
+    }
+
+    /** Cyrillic and Greek letters that look like Latin ones, upper and lower case, and the Latin letter each looks like. */
+    private val LOOK_ALIKES: Map<Char, Char> = buildMap {
+        // Cyrillic.
+        "аa вb еe ёe кk мm нh оo рp сc тt уy хx іi їi јj ѕs ԁd ԛq ԝw һh ӏl ьb".split(' ').forEach { put(it[0], it[1]); put(it[0].uppercaseChar(), it[1].uppercaseChar()) }
+        // Greek.
+        "αa βb εe ζz ηn ιi κk μu νv οo ρp τt υu χx ωw".split(' ').forEach { put(it[0], it[1]) }
+        "ΑA ΒB ΕE ΖZ ΗH ΙI ΚK ΜM ΝN ΟO ΡP ΤT ΥY ΧX".split(' ').forEach { put(it[0], it[1]) }
+        // Latin letters that are not ASCII but read as one.
+        "ıi ȷj ɡg ɑa ɩi ʟl ꞵb".split(' ').forEach { put(it[0], it[1]) }
     }
 
     /** Why [question] with [options] cannot be put to the owner, or null when it can. */
@@ -190,6 +319,7 @@ object QuestionRules {
         for (option in options) {
             if (option.isBlank()) return "A suggested answer cannot be empty."
             if (option.length > MAX_OPTION_CHARS) return "A suggested answer can be at most $MAX_OPTION_CHARS characters long."
+            if (mixesAlphabets(option)) return "A suggested answer cannot mix letters of different alphabets in one word."
             approvalWordIn(option)?.let { word ->
                 return "A suggested answer cannot use the word \"$word\": a question gives no permission and approves nothing."
             }

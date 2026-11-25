@@ -56,7 +56,8 @@ class ProductionGraphDependencyTest {
             graph.toolExecutor to "executor", graph.permissionBroker to "broker", graph.agentChat to "chat",
             graph.modelGateway to "model gateway", graph.registryDirectory to "registry directory",
         ) + graph.toolRegistry.all().map { it to "tool ${it.spec.id.value}" }
-        val walk = AgentFacingWalk(extraViews = productionViews, leafPackages = listOf("com.aicontrolcenter.data.db."))
+        // Room's database and DAOs are walked by their holder (second review of F4/F10): a Room store may hold them, nothing else.
+        val walk = AgentFacingWalk(extraViews = productionViews)
         var objects = 0
         val violations = ArrayList<String>()
         val unreadable = ArrayList<String>()
@@ -69,10 +70,25 @@ class ProductionGraphDependencyTest {
         assertEquals(emptyList(), violations.distinct(), "an agent-facing root reaches an owner-only port")
         assertEquals(emptyList(), unreadable.distinct(), "fields the walk could not read prove nothing")
         assertTrue(objects > 100, "the walk goes deep ($objects objects)")
-        // The walk would see the production stores where they must not be.
+        // The walk would see the production stores where they must not be: the owner's stores, the registry's stores
+        // (second review of F3), and Room's database, its open helper and a DAO outside a Room store (F4/F10).
+        val database = databaseOf(data)
         for (store in listOf<Any>(data.permissions, data.ownerRequests, data.sharedFolders, data.operatorApps, data.ownerUsage, data.ownerModelPrices,
-            data.usageHousekeeping, data.settings, data.secretVault, graph.providerManager)) {
+            data.usageHousekeeping, data.settings, data.secretVault, graph.providerManager, data.agents, data.providers, data.models, data.aiApps,
+            database, database.openHelper, database.openHelper.writableDatabase, daoOf(database, "ownerRequestDao"))) {
             assertTrue(walk.walk(object { val held: Any = store }, "holder").violations.isNotEmpty(), store.javaClass.name)
         }
+        // A Room store holds them: that is the storage engine, not a port someone wired.
+        assertEquals(emptyList(), walk.walk(data.memories, "memory store").violations)
     }
+
+    /** The data layer's database, which is internal to `:data`: read the way a wiring slip could hand it on. */
+    private fun databaseOf(data: DataLayer): androidx.room.RoomDatabase {
+        val field = DataLayer::class.java.getDeclaredField("lazyDatabase").apply { isAccessible = true }
+        return (field.get(data) as Lazy<*>).value as androidx.room.RoomDatabase
+    }
+
+    private fun daoOf(database: androidx.room.RoomDatabase, name: String): Any =
+        // Internal to `:data`: its compiled name carries the module's ("ownerRequestDao$data_debug").
+        database.javaClass.methods.first { (it.name == name || it.name.startsWith("$name$")) && it.parameterCount == 0 }.invoke(database)!!
 }

@@ -58,8 +58,18 @@ data class BackupSettings(
     }
 }
 
-/** A setting the file has that a restore does not take as it is, in plain words: shown on the inspect screen. */
-data class SettingKeptBack(val name: String, val inFile: String, val afterRestore: String)
+/**
+ * A setting the file has that a restore does not take as it is, in plain words: shown on the
+ * inspect screen. For the Director, [inFile] and [afterRestore] are agents' names (or "an agent not
+ * in this backup"), never ids; the agents themselves are [agentInFile] and [agentAfterRestore].
+ */
+data class SettingKeptBack(
+    val name: String,
+    val inFile: String,
+    val afterRestore: String,
+    val agentInFile: AgentId? = null,
+    val agentAfterRestore: AgentId? = null,
+)
 
 /** The outcome of [RestoreSettings.merge]. */
 data class RestoredSettings(
@@ -75,7 +85,8 @@ data class RestoredSettings(
 object RestoreSettings {
     /**
      * The settings after restoring [file] into an app whose settings are [current] and which will
-     * then hold the agents [agentsAfterRestore] (the file's and any starter agent kept).
+     * then hold the agents [agentsAfterRestore] (the file's and any starter agent kept: id to name;
+     * the names are what the inspect screen shows for the Director).
      *
      * - Local-only mode: on if it is on now or in the file.
      * - Daily limits: the file's values are first brought into the ranges the Settings screen
@@ -91,7 +102,7 @@ object RestoreSettings {
      *   control and resuming interrupted tasks by themselves. The owner switches them on again.
      * - Every other setting keeps its current value (agents' questions included).
      */
-    fun merge(current: FrameworkSettings, file: BackupSettings, agentsAfterRestore: Set<AgentId>): RestoredSettings {
+    fun merge(current: FrameworkSettings, file: BackupSettings, agentsAfterRestore: Map<AgentId, String>): RestoredSettings {
         val fileLimits = DailyLimits(
             maxCalls = file.maxModelCallsPerDay.coerceIn(DailyLimits.CALLS_RANGE),
             maxTokens = file.maxTokensPerDay.coerceIn(DailyLimits.TOKENS_RANGE),
@@ -100,8 +111,8 @@ object RestoreSettings {
         val limits = current.dailyLimits.stricter(fileLimits)
         val fileDirector = file.directorAgentId?.let(::AgentId)
         val director = when {
-            fileDirector != null && fileDirector in agentsAfterRestore -> fileDirector
-            current.directorAgentId != null && current.directorAgentId in agentsAfterRestore -> current.directorAgentId
+            fileDirector != null && fileDirector in agentsAfterRestore.keys -> fileDirector
+            current.directorAgentId != null && current.directorAgentId in agentsAfterRestore.keys -> current.directorAgentId
             else -> null
         }
         val merged = current.copy(
@@ -121,10 +132,22 @@ object RestoreSettings {
             routinesEnabled = false,
             folderPickUpEnabled = false,
         )
-        return RestoredSettings(merged, changes(current, merged), keptBack(file, merged))
+        val names = Names(agentsAfterRestore)
+        return RestoredSettings(merged, changes(current, merged, names), keptBack(file, merged, names))
     }
 
-    /** One setting as the owner reads it: its name and how a value is said. */
+    /** What the inspect screen says for an agent that is not among the agents after the restore. */
+    const val UNKNOWN_AGENT: String = "an agent not in this backup"
+
+    /** How an agent is named on the inspect screen: by its name, never by its id. */
+    private class Names(private val agents: Map<AgentId, String>) {
+        fun of(id: AgentId?): String = when (id) {
+            null -> "None chosen"
+            else -> agents[id]?.trim()?.takeIf { it.isNotEmpty() } ?: UNKNOWN_AGENT
+        }
+    }
+
+    /** One setting as the owner reads it: its name and how a value is said. The Director is said apart, by name. */
     private class Shown(val name: String, val value: (FrameworkSettings) -> String)
 
     private fun onOff(value: Boolean) = if (value) "On" else "Off"
@@ -141,7 +164,6 @@ object RestoreSettings {
         Shown("Daily limit of model answers") { calls(it.maxModelCallsPerDay.toLong()) },
         Shown("Daily limit of tokens") { tokens(it.maxTokensPerDay) },
         Shown("Daily spending limit") { spend(it.maxSpendPerDayMicros) },
-        Shown("Director") { it.directorAgentId?.value ?: "None chosen" },
         Shown("Notify when work ends") { onOff(it.notifyWhenWorkEnds) },
         Shown("Calm") { onOff(it.calmMotion) },
         Shown("Getting started") { if (it.onboardingCompleted) "Done" else "Not done" },
@@ -154,10 +176,21 @@ object RestoreSettings {
         Shown("Folder pick-up") { onOff(it.folderPickUpEnabled) },
     )
 
-    private fun changes(current: FrameworkSettings, merged: FrameworkSettings): List<SettingChange> =
-        shown.mapNotNull { s -> s.value(current).let { from -> s.value(merged).takeIf { it != from }?.let { to -> SettingChange(s.name, from, to) } } }
+    private fun changes(current: FrameworkSettings, merged: FrameworkSettings, names: Names): List<SettingChange> = buildList {
+        for (s in shown) {
+            val from = s.value(current)
+            val to = s.value(merged)
+            if (to != from) add(SettingChange(s.name, from, to))
+            // The Director comes after the limits, as before.
+            if (s.name == "Daily spending limit" && current.directorAgentId != merged.directorAgentId) {
+                add(SettingChange(DIRECTOR, names.of(current.directorAgentId), names.of(merged.directorAgentId), current.directorAgentId, merged.directorAgentId))
+            }
+        }
+    }
 
-    private fun keptBack(file: BackupSettings, merged: FrameworkSettings): List<SettingKeptBack> = buildList {
+    private const val DIRECTOR = "Director"
+
+    private fun keptBack(file: BackupSettings, merged: FrameworkSettings, names: Names): List<SettingKeptBack> = buildList {
         if (file.maxModelCallsPerDay.toLong() != merged.maxModelCallsPerDay.toLong()) {
             add(SettingKeptBack("Daily limit of model answers", calls(file.maxModelCallsPerDay.toLong()), calls(merged.maxModelCallsPerDay.toLong())))
         }
@@ -169,7 +202,8 @@ object RestoreSettings {
         }
         if (file.localOnlyMode != merged.localOnlyMode) add(SettingKeptBack("Local-only mode", onOff(file.localOnlyMode), onOff(merged.localOnlyMode)))
         if (file.directorAgentId != null && file.directorAgentId != merged.directorAgentId?.value) {
-            add(SettingKeptBack("Director", file.directorAgentId, merged.directorAgentId?.value ?: "None chosen"))
+            val inFile = AgentId(file.directorAgentId)
+            add(SettingKeptBack(DIRECTOR, names.of(inFile), names.of(merged.directorAgentId), inFile, merged.directorAgentId))
         }
     }
 

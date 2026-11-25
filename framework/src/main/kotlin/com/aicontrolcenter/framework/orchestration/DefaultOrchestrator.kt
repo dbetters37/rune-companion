@@ -9,7 +9,7 @@ import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.agents.AgentAvailability
 import com.aicontrolcenter.core.chat.ConversationRepository
 import com.aicontrolcenter.core.memory.MemoryService
-import com.aicontrolcenter.core.registry.AgentRepository
+import com.aicontrolcenter.core.registry.AgentStatsLog
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.taskId
@@ -29,6 +29,8 @@ import com.aicontrolcenter.framework.agents.DefaultAgentActivityMonitor
 import com.aicontrolcenter.framework.llm.rethrowIfCancelled
 import com.aicontrolcenter.framework.operator.OperatorTaskHooks
 import com.aicontrolcenter.framework.orchestration.OrchestrationContext.Companion.WORKING
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.time.TimeSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
@@ -37,8 +39,6 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
-import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.time.TimeSource
 
 /**
  * The Director at work: see [Orchestrator] for the contract. How it is built:
@@ -81,7 +81,7 @@ class DefaultOrchestrator(
     tasks: TaskRepository,
     messages: MessageRepository,
     conversations: ConversationRepository,
-    agents: AgentRepository,
+    agents: AgentStatsLog,
     private val directory: RegistryDirectory,
     private val settings: SettingsView,
     runner: AgentRunner,

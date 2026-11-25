@@ -138,6 +138,9 @@ class ProviderConnections(
 
     private suspend fun readKey(provider: ModelProvider): String? {
         val alias = provider.apiKeyAlias ?: return null
+        // A record may only use a key saved for its own id (security review of wave 1, F3, second review): a record that
+        // names another provider's alias never gets that key, so it cannot be sent to the record's own address.
+        if (!KeyAliases.belongsTo(provider.id, alias)) return null
         return try {
             vault.get(alias)?.takeIf { it.isNotEmpty() }
         } catch (e: SecretVaultException) {
@@ -171,16 +174,45 @@ class ProviderLease internal constructor(
 ) {
     private val guarded: String? = secret?.takeIf { it.length >= MIN_GUARDED_LENGTH }
 
-    /** True when [text] contains the provider's key. */
-    fun exposes(text: String?): Boolean = guarded != null && text != null && text.contains(guarded)
+    /**
+     * True when [text] contains the provider's key. Internal to this module, used only by the gateway's failure
+     * mapping (`LlmFailures`): nothing outside the framework can ask a lease whether a text is the key (F3, second review).
+     */
+    internal fun exposes(text: String?): Boolean = guarded != null && text != null && text.contains(guarded)
 
-    /** [text] with the provider's key removed, should an adapter or a server have echoed it. */
-    fun redact(text: String): String = if (exposes(text)) text.replace(guarded!!, "[key removed]") else text
+    /** [text] with the provider's key removed, should an adapter or a server have echoed it. Internal, as [exposes]. */
+    internal fun redact(text: String): String = if (exposes(text)) text.replace(guarded!!, "[key removed]") else text
 
     override fun toString(): String = "ProviderLease"
 
     private companion object {
         /** Shorter strings are not keys worth guarding and would mangle ordinary words. */
         const val MIN_GUARDED_LENGTH = 8
+    }
+}
+
+/**
+ * The names a provider's API key is saved under in the vault: `provider/<id>` (before Phase 5's
+ * versioning) or `provider/<id>/<n>`. Shared by the owner's provider manager, which saves keys, and
+ * [ProviderConnections], which reads one only under an alias of the record's own id. An id with a
+ * "/" in it has no alias (it could pass for another provider's versioned one).
+ */
+internal object KeyAliases {
+    fun base(id: ProviderId): String = "provider/${id.value}"
+
+    /** A new alias for [id]'s key, never the one the record points at ([current]). */
+    fun next(id: ProviderId, current: String?): String {
+        val base = base(id)
+        val version = current?.takeIf { belongsTo(id, it) }?.substringAfter("$base/", missingDelimiterValue = "")?.toIntOrNull() ?: 0
+        return "$base/${version + 1}"
+    }
+
+    /** True when [alias] is one of the names [id]'s key is saved under: the original form or a versioned one. */
+    fun belongsTo(id: ProviderId, alias: String): Boolean {
+        if ('/' in id.value || id.value.isEmpty()) return false
+        val base = base(id)
+        if (alias == base) return true
+        val version = alias.removePrefix("$base/")
+        return version.length < alias.length && version.isNotEmpty() && version.all { it in '0'..'9' }
     }
 }

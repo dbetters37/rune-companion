@@ -152,10 +152,11 @@ internal fun SharedFolder.toEntity(): SharedFolderEntity = SharedFolderEntity(
     displayName = displayName,
     addedAt = addedAt,
     readOnly = readOnly,
+    readOnlySince = readOnlySince,
 )
 
 internal fun SharedFolderEntity.toDomain(): SharedFolder =
-    SharedFolder(id = FolderId(id), treeUri = treeUri, displayName = displayName, addedAt = addedAt, readOnly = readOnly)
+    SharedFolder(id = FolderId(id), treeUri = treeUri, displayName = displayName, addedAt = addedAt, readOnly = readOnly, readOnlySince = readOnlySince)
 
 internal fun OperatorApp.toEntity(): OperatorAppEntity = OperatorAppEntity(
     packageName = packageName,

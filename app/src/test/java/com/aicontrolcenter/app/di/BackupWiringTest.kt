@@ -39,16 +39,28 @@ class BackupWiringTest {
         SharedFolderRepository::class.java, OperatorAppRepository::class.java,
     )
 
-    private val walk = AgentFacingWalk(ownerOnly = forbidden, checkActions = false)
+    /**
+     * Owner actions are checked too (second review of F13): letting an agent ask again is the request DAO's, so a path
+     * from the backup's stores into the database other than through a Room store or the one transaction would show it.
+     */
+    private val walk = AgentFacingWalk(ownerOnly = forbidden, checkActions = true)
 
     @Test
     fun `nothing the backup gets reaches the vault, the grants, the requests, the folders or the authorised apps`() {
-        // As production builds them: every other store of the data layer is in use too, so a path to one would be seen.
-        listOf(data.secretVault, data.permissions, data.ownerRequests, data.sharedFolders, data.operatorApps).forEach { it.hashCode() }
+        // As production builds them: every store of the data layer is in use, so the database's DAOs exist and a path to one would be seen.
+        DataLayer::class.java.methods.filter { it.parameterCount == 0 && it.name.startsWith("get") && it.returnType != Void.TYPE && "Backup" !in it.name }
+            .forEach { runCatching { it.invoke(data) } }
         val result = walk.walk(data.backupStores, "backup stores")
-        assertEquals(emptyList(), result.violations)
+        // The settings writer is the backup's own (a restore merges the settings, through RestoreSettings): its update is
+        // expected. No other owner action may be reachable, and none of the forbidden stores.
+        val ownSettings = "backup stores.settings: ${data.settings.javaClass.name} offers update"
+        assertEquals(listOf(ownSettings), result.violations)
         assertEquals(emptyList(), result.unreadable)
-        assertTrue(result.objects > 20, "the walk went into the stores (${result.objects} objects)")
+        // The stores and what they hold; the database behind them is judged by its holder, not walked into.
+        assertTrue(result.objects > 12, "the walk went into the stores (${result.objects} objects)")
+        // The one way to the database is the transaction's (and the stores' own): another holder of it is caught.
+        val database = DataLayer::class.java.getDeclaredField("lazyDatabase").apply { isAccessible = true }.get(data).let { (it as Lazy<*>).value!! }
+        assertTrue(walk.walk(object { val held: Any = database }, "holder").violations.isNotEmpty(), "a second path to the database")
         // The walk finds them where they are.
         for (store in listOf<Any>(data.secretVault, data.permissions, data.ownerRequests, data.sharedFolders, data.operatorApps)) {
             assertTrue(walk.walk(object { val held: Any = store }, "holder").violations.isNotEmpty(), store.javaClass.simpleName)

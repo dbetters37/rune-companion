@@ -99,6 +99,14 @@ class BrokerFixture(val test: TestScope, private val queue: (OwnerRequestQueue) 
         agents.upsert(agent)
         folders.upsert(folder)
         apps.upsert(app)
+        // The objective the calls belong to (context().rootTaskId): the broker reads its options, and a call whose
+        // objective cannot be read may not use other apps' screens (F12, fail closed).
+        tasks.upsert(
+            TaskRecord(
+                id = TaskId("tsk_root"), rootId = TaskId("tsk_root"), kind = TaskKind.OBJECTIVE, title = "Tidy up", instructions = "Tidy up.",
+                requestedBy = TaskRequester.Owner, status = TaskStatus.RUNNING, createdAt = START, updatedAt = START,
+            ),
+        )
         return this
     }
 

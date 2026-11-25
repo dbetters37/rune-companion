@@ -113,7 +113,12 @@ class DataLayer(
         AiccDatabase.create(appContext, databaseName, openHelperFactory(), ioDispatcher)
     }
 
-    val database: AiccDatabase by lazyDatabase
+    /**
+     * The database itself: internal to this module (security review of wave 1, F4/F10, second review). Through it every
+     * table can be read and changed, so outside `:data` only the stores below are handed out; the app's dependency
+     * walks fail on any holder of it, or of a DAO, that is not a Room store or the one transaction.
+     */
+    internal val database: AiccDatabase by lazyDatabase
 
     val agents: AgentRepository by lazy { RoomAgentRepository(database, ioDispatcher) }
     val providers: ProviderRepository by lazy { RoomProviderRepository(database, ioDispatcher) }

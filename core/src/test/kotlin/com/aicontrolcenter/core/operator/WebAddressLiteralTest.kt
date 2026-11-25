@@ -47,6 +47,24 @@ class WebAddressLiteralTest {
     }
 
     @Test
+    fun `translated, local-use NAT64, ISATAP and Teredo forms of a refused address are refused`() {
+        // Second review of F14.
+        for (host in listOf(
+            "[::ffff:0:127.0.0.1]", "::ffff:0:7f00:1", "::ffff:0:192.168.1.10", "[64:ff9b:1::7f00:1]", "64:ff9b:1:7f00:1::", "64:ff9b:1::808:808",
+            "[2001:db8::5efe:127.0.0.1]", "fe80::200:5efe:10.0.0.1", "2001:db8::200:5efe:c0a8:101",
+            "[2001:0:4136:e378:8000:63bf:80ff:fffe]", "2001:0:7f00:1:8000:63bf:f7f7:f7f7",
+        )) {
+            assertNotNull(WebAddressPolicy.literalRefusal(host), host)
+            val resolved = java.net.InetAddress.getByName(host.removePrefix("[").removeSuffix("]"))
+            assertNotNull(WebAddressPolicy.refusal(resolved), "refusal($host) after a lookup")
+        }
+        // The same forms of public addresses, and the well-known NAT64 prefix of a public one, are left to the read.
+        for (host in listOf("::ffff:0:8.8.8.8", "2001:db8::5efe:8.8.8.8", "2001:0:4136:e378:8000:63bf:f7f7:f7f7", "64:ff9b::808:808")) {
+            assertNull(WebAddressPolicy.literalRefusal(host), host)
+        }
+    }
+
+    @Test
     fun `numbers in unusual forms are refused without a lookup, whatever they point to`() {
         for (host in listOf("2130706433", "0177.0.0.1", "0x7f.0.0.1", "0x7f000001", "127.1", "010.0.0.1", "1.2.3", "1.2.3.4.5", "256.1.1.1", "0x", "08.8.8.8")) {
             assertEquals(WebAddressPolicy.NOT_A_USUAL_ADDRESS, WebAddressPolicy.literalRefusal(host), host)

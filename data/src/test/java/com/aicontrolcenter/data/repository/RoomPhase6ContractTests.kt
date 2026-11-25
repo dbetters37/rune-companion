@@ -4,6 +4,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aicontrolcenter.core.IdGenerator
 import com.aicontrolcenter.core.memory.MemoryRepository
 import com.aicontrolcenter.core.operator.SharedFolderRepository
+import com.aicontrolcenter.core.pickup.PickUpFolders
 import com.aicontrolcenter.core.pickup.PickUpRuleRepository
 import com.aicontrolcenter.core.routines.RoutineRepository
 import com.aicontrolcenter.core.settings.SettingsRepository
@@ -150,7 +151,7 @@ class RoomBackedOwnerPickUpRulesContractTest : OwnerPickUpRulesContract() {
     override fun createMemory(): MemoryRepository = RoomMemoryRepository(db.database)
     override fun createOwnerPickUpRules(
         repository: PickUpRuleRepository,
-        folders: SharedFolderRepository,
+        folders: PickUpFolders,
         memory: MemoryRepository,
         clock: FakeClock,
         ids: IdGenerator,

@@ -14,6 +14,7 @@ import com.aicontrolcenter.core.folderId
 import com.aicontrolcenter.core.grantId
 import com.aicontrolcenter.core.operator.DecideResult
 import com.aicontrolcenter.core.operator.FolderAccess
+import com.aicontrolcenter.core.operator.FolderTrees
 import com.aicontrolcenter.core.operator.GrantQuery
 import com.aicontrolcenter.core.operator.GrantScope
 import com.aicontrolcenter.core.operator.GrantStore
@@ -36,6 +37,8 @@ import com.aicontrolcenter.core.operator.ScreenActionPolicy
 import com.aicontrolcenter.core.operator.SharedFolder
 import com.aicontrolcenter.core.operator.SharedFolderRepository
 import com.aicontrolcenter.core.operator.SharedFolders
+import com.aicontrolcenter.core.pickup.PickUpRuleRepository
+import com.aicontrolcenter.core.pickup.PickUpSafety
 import com.aicontrolcenter.core.registry.AgentRepository
 import com.aicontrolcenter.core.tools.Capability
 import com.aicontrolcenter.core.tools.CapabilityConstraint
@@ -370,6 +373,12 @@ class DefaultOwnerGrants(
  * [GrantStore]. Removing narrows first: the folder's grants are revoked, then it is deleted,
  * then Android's access is released, then the questions still open about it are withdrawn
  * (and a grant a crossing answer stored meanwhile is revoked).
+ *
+ * Folder pick-up (security review of wave 1, F1): switching read-only on stores the time
+ * ([SharedFolder.readOnlySince]); switching it off clears it and, in the same locked step, switches
+ * off every pick-up rule of that folder and of any folder that is the same place, inside it or
+ * around it ([FolderTrees.overlap]), with [PickUpSafety.RUN_FOLDER_NOT_READ_ONLY] as its last result.
+ * Sharing a new folder (writable at first) switches those rules off the same way.
  */
 class DefaultOwnerFolders(
     private val gateway: SharedFolders,
@@ -380,6 +389,8 @@ class DefaultOwnerFolders(
     private val activity: ActivityRecorder,
     private val ids: IdGenerator,
     private val clock: Clock,
+    /** Folder pick-up's rules, switched off when their folder may be changed by agents; null where there are none. */
+    private val pickUpRules: PickUpRuleRepository? = null,
 ) : OwnerFolders {
     private val lock = Mutex()
     private val withdrawals = RequestWithdrawals(requests, activity, clock)
@@ -395,6 +406,8 @@ class DefaultOwnerFolders(
         val folder = SharedFolder(ids.folderId(), treeUri, name, clock.now())
         folders.upsert(folder)
         log("Folder shared with agents: ${folder.displayName}", folder)
+        // A new folder is writable: a pick-up rule on the same place, or around or inside it, stops (F1).
+        switchOffPickUpAround(folder)
         OwnerResult.Done(folder)
     }
 
@@ -420,10 +433,29 @@ class DefaultOwnerFolders(
     }
 
     override suspend fun setReadOnly(id: FolderId, readOnly: Boolean): SharedFolder? = lock.withLock {
-        val updated = folders.get(id)?.copy(readOnly = readOnly) ?: return null
+        val current = folders.get(id) ?: return null
+        if (current.readOnly == readOnly) return current
+        val updated = current.copy(readOnly = readOnly, readOnlySince = if (readOnly) clock.now() else null)
         folders.upsert(updated)
         log(if (readOnly) "Folder made read-only: ${updated.displayName}" else "Folder made writable: ${updated.displayName}", updated)
+        // Agents may change it again: folder pick-up from it, or from a folder that overlaps it, stops at once (F1).
+        if (!readOnly) switchOffPickUpAround(updated)
         updated
+    }
+
+    /** Switches off every pick-up rule whose folder is [writable] or overlaps it (or may: unknown counts), saying why. */
+    private suspend fun switchOffPickUpAround(writable: SharedFolder) {
+        val rules = pickUpRules ?: return
+        val all = folders.getAll().associateBy { it.id }
+        val now = clock.now()
+        for (rule in rules.getAll()) {
+            if (!rule.enabled) continue
+            val folder = all[rule.folderId] ?: continue
+            if (folder.id != writable.id && FolderTrees.overlap(folder.treeUri, writable.treeUri) == false) continue
+            val reason = if (folder.id == writable.id) PickUpSafety.RUN_FOLDER_NOT_READ_ONLY else PickUpSafety.RUN_FOLDER_OVERLAPS_WRITABLE
+            rules.update(rule.id) { it.copy(enabled = false, updatedAt = now, lastResult = reason) }
+            log("Folder pick-up switched off: ${folder.displayName}", folder, reason)
+        }
     }
 
     private suspend fun log(title: String, folder: SharedFolder, detail: String = "") = logSafely {

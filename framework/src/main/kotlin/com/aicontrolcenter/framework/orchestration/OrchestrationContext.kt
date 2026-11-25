@@ -4,7 +4,7 @@ import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.IdGenerator
 import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.memory.MemoryService
-import com.aicontrolcenter.core.registry.AgentRepository
+import com.aicontrolcenter.core.registry.AgentStatsLog
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.settings.FrameworkSettings
 import com.aicontrolcenter.core.settings.SettingsView
@@ -24,7 +24,7 @@ import kotlin.time.TimeSource
 internal class OrchestrationContext(
     val tasks: TaskRepository,
     val messages: MessageRepository,
-    val agents: AgentRepository,
+    val agents: AgentStatsLog,
     val directory: RegistryDirectory,
     val settings: SettingsView,
     val tools: ToolRegistry,

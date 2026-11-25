@@ -13,6 +13,7 @@ import com.aicontrolcenter.core.operator.DocResult
 import com.aicontrolcenter.core.operator.DocumentEntry
 import com.aicontrolcenter.core.operator.FileContent
 import com.aicontrolcenter.core.operator.FolderAccess
+import com.aicontrolcenter.core.operator.FolderTrees
 import com.aicontrolcenter.core.operator.RelativePath
 import com.aicontrolcenter.core.operator.SharedFolder
 import com.aicontrolcenter.core.operator.SharedFolderRepository
@@ -38,7 +39,8 @@ import java.util.Locale
  * provider. Nothing outside a picked tree is reachable, and no storage permission is used.
  *
  * Every call re-reads the folder from [folders] and Android's persisted grants: a removed
- * folder, a read-only one (for changes), or a grant that is gone (the owner revoked it, the
+ * folder, a read-only one (for changes), one that holds or is inside a read-only folder shared on
+ * its own (for changes, [FolderTrees.overlap]), or a grant that is gone (the owner revoked it, the
  * folder was moved or deleted, or the app's storage was cleared) is [DocResult.NotAllowed] with
  * a sentence that says which. Paths are walked one display name at a time from the tree's root;
  * two children with the same name (some providers allow it) are [DocResult.Ambiguous] and
@@ -188,6 +190,16 @@ internal class SafSharedFolders(
         val folder = folders.get(id) ?: return@withContext DocResult.NotAllowed("That shared folder was removed, so it cannot be used any more.")
         if (forWriting && folder.readOnly) {
             return@withContext DocResult.NotAllowed("${folder.displayName} is read-only: the owner allows no changes in it.")
+        }
+        // A read-only folder can also be shared a second time from around or inside it ("Documents" and "Documents/Inbox"):
+        // a change through the other one would land in it (security review of wave 1, F1). No change in either then.
+        if (forWriting) {
+            folders.getAll().firstOrNull { other -> other.id != folder.id && other.readOnly && FolderTrees.overlap(folder.treeUri, other.treeUri) == true }
+                ?.let { readOnly ->
+                    return@withContext DocResult.NotAllowed(
+                        "${folder.displayName} holds, or is inside, the read-only folder ${readOnly.displayName}, so nothing can be changed in it.",
+                    )
+                }
         }
         val uri = parseTree(folder.treeUri) ?: return@withContext DocResult.NotAllowed(lost(folder))
         val grant = grantFor(uri)

@@ -7,7 +7,7 @@ import com.aicontrolcenter.core.memory.MemoryAccess
 import com.aicontrolcenter.core.memory.MemoryActor
 import com.aicontrolcenter.core.memory.MemoryRepository
 import com.aicontrolcenter.core.memory.MemoryScope
-import com.aicontrolcenter.core.registry.AgentRepository
+import com.aicontrolcenter.core.registry.AgentDirectory
 
 /** An actor with its permissions worked out for one call. */
 internal class ResolvedActor(
@@ -35,7 +35,7 @@ internal class ResolvedActor(
  * happened to reuse its id.
  */
 internal class AccessResolver(
-    private val agents: AgentRepository,
+    private val agents: AgentDirectory,
     private val repository: MemoryRepository,
 ) {
     suspend fun resolve(actor: MemoryActor): ResolvedActor = when (actor) {

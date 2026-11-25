@@ -10,7 +10,7 @@ import com.aicontrolcenter.core.activity.ActivityType
 import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.agents.AgentStats
 import com.aicontrolcenter.core.messageId
-import com.aicontrolcenter.core.registry.AgentRepository
+import com.aicontrolcenter.core.registry.AgentStatsLog
 import com.aicontrolcenter.core.tasks.AgentMessage
 import com.aicontrolcenter.core.tasks.MessageRepository
 import com.aicontrolcenter.core.tasks.MessageType
@@ -36,7 +36,7 @@ import kotlinx.serialization.json.put
  */
 internal class ObjectiveJournal(
     private val messages: MessageRepository,
-    private val agents: AgentRepository,
+    private val agents: AgentStatsLog,
     private val activity: ActivityRecorder,
     private val ids: IdGenerator,
     private val clock: Clock,

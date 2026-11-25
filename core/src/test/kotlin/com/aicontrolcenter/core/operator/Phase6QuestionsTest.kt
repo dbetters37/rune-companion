@@ -162,6 +162,42 @@ class Phase6QuestionsTest {
     }
 
     @Test
+    fun `a pasted text message, digits of any script, looser separators and letter codes are CODE`() {
+        // Second review of F8: the code word may be in the answer, not the question.
+        for (question in listOf("What did the newest message on your phone say?", "What did it say?")) {
+            for (answer in listOf("Your Google verification code is 482913", "G-482913 is your Google verification code.", "482913 is your code")) {
+                assertEquals(AnswerRisk.CODE, AnswerCheck.classify(question, answer), "$question / $answer")
+            }
+        }
+        assertEquals(AnswerRisk.CODE, AnswerCheck.classify("What did the newest message on your phone say?", "It says 4 8 2 9 1 3"))
+        val q = "Please type the verification code you received."
+        for (answer in listOf("4x8x2x9x1x3", "4/8/2/9/1/3", "\uFF14\uFF18\uFF12\uFF19\uFF11\uFF13", "\u0664\u0668\u0662\u0669\u0661\u0663", "K7Q2M9", "it is K7Q2M9.")) {
+            assertEquals(AnswerRisk.CODE, AnswerCheck.classify(q, answer), answer)
+        }
+        // Bare codes in other scripts' digits, whatever the question.
+        assertEquals(AnswerRisk.CODE, AnswerCheck.classify("Anything?", "\u0664\u0668\u0662\u0669\u0661\u0663"))
+        // Still ordinary: no code word anywhere, or no code-like token.
+        assertEquals(AnswerRisk.NONE, AnswerCheck.classify("What did it say?", "Meet me at 5 tomorrow by the station entrance please"))
+        assertEquals(AnswerRisk.NONE, AnswerCheck.classify("What did it say?", "We expect 482913 visitors"))
+        assertEquals(AnswerRisk.NONE, AnswerCheck.classify(q, "Kotlin"))
+    }
+
+    @Test
+    fun `a key typed in groups with spaces is still a key, a sentence after a prefix is not`() {
+        // Second review of F8.
+        for (answer in listOf(
+            "sk-proj-abcd efgh ijkl mnop qrst uvwx", "sk-p roj- abcd efgh ijkl mnop", "my key: sk-proj-ab12 cd34 ef56 gh78", "XAI-ABCD EFGH IJKL MNOP",
+            "AKIA IOSF ODNN 7EXA MPLE",
+        )) {
+            assertTrue(AnswerCheck.looksLikeKey(answer), answer)
+            assertEquals(AnswerRisk.KEY, AnswerCheck.classify("Anything?", answer), answer)
+        }
+        for (answer in listOf("Use the sk-ip option and the risk-free plan", "sk- is how those keys start, I think", "Use the sk-ip option plan")) {
+            assertFalse(AnswerCheck.looksLikeKey(answer), answer)
+        }
+    }
+
+    @Test
     fun `key prefixes match whatever their case, and common key shapes are known`() {
         // Security review of wave 1, F8.
         for (answer in listOf(
@@ -191,6 +227,30 @@ class Phase6QuestionsTest {
         }
         for (fine in listOf("Berlin", "The shorter report", "Use the 2024 figures", "Yes", "No", "Do both", "Shallow water", "Payton Street", "Sender unknown", "Okra soup")) {
             assertNull(QuestionRules.approvalWordIn(fine), fine)
+        }
+    }
+
+    @Test
+    fun `look-alike letters and the go-ahead for other consequential actions are refused too`() {
+        // Second review of F9: Cyrillic "о", "а", "у" read as Latin letters by the owner.
+        for (option in listOf("\u043Ek", "C\u043Enfirm", "Appr\u043Eve", "Yes, g\u043E ahead", "Yes, d\u043E it", "\u0430llow", "Pa\u0443", "\u041E\u041A", "\u00D4K")) {
+            assertNotNull(QuestionRules.approvalWordIn(option), option)
+            assertFailsWith<IllegalArgumentException>(option) { question(options = listOf(option)) }
+        }
+        assertTrue(QuestionRules.mixesAlphabets("C\u043Enfirm"))
+        assertFalse(QuestionRules.mixesAlphabets("M\u00fcnchen"), "accented Latin is one alphabet")
+        assertNotNull(QuestionRules.questionProblem("Which?", listOf("Bl\u0430ue")), "a word mixing alphabets is refused whatever it says")
+        for (option in listOf(
+            "Yes, place the order", "Yes, order it", "Yes, transfer the money", "Yes, wire the funds", "Yes, remove the files", "Yes, wipe it",
+            "Yes, move it to the bin", "Yes, overwrite it", "Yes, submit it", "Yes, post it", "Yes, publish", "Yes, share it", "Yes, email them",
+            "Yes, reply to them", "Yes, text them", "Yes, call them", "Yes, subscribe", "Yes, book it", "Yes, check out", "Yes, sign it",
+            "Yes, renew", "Yes, top up", "Go for it", "Continue", "Carry on", "Go on", "Let's go", "Checkout",
+        )) {
+            assertNotNull(QuestionRules.approvalWordIn(option), option)
+            assertFailsWith<IllegalArgumentException>(option) { question(options = listOf(option)) }
+        }
+        for (fine in listOf("Berlin", "M\u00fcnchen", "\u041C\u043E\u0441\u043A\u0432\u0430", "The shorter report", "Yes", "No", "Go online later", "Topics", "Stop")) {
+            assertNull(QuestionRules.questionProblem("Which?", listOf(fine)), fine)
         }
     }
 

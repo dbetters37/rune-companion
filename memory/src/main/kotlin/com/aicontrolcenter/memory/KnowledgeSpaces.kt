@@ -15,7 +15,7 @@ import java.util.Locale
  * spaces can never look the same in an agent's memory settings.
  *
  * Deleting a space first removes it from every agent's readable and writable spaces (through
- * [com.aicontrolcenter.core.registry.AgentRepository]) and then deletes it with its memories.
+ * [com.aicontrolcenter.core.registry.SpaceAccessRevoker]) and then deletes it with its memories.
  * That order means a crash in between leaves agents without access to a space that still
  * exists (harmless, the owner can delete it again) rather than with access to one that is gone.
  */
@@ -53,19 +53,7 @@ internal class KnowledgeSpaces(private val ctx: MemoryContext) {
         ctx.requireOwner(who)
         val (space, removedFrom, deleted) = ctx.writeLock.withLock {
             val space = ctx.repository.getSpace(id) ?: return 0
-            val now = ctx.clock.now()
-            var removedFrom = 0
-            for (listed in ctx.agents.getAll()) {
-                if (id !in listed.memory.readableSpaces && id !in listed.memory.writableSpaces) continue
-                // Re-read right before writing, so an edit made since the list was read is kept.
-                val agent = ctx.agents.get(listed.id) ?: continue
-                val policy = agent.memory
-                if (id !in policy.readableSpaces && id !in policy.writableSpaces) continue
-                ctx.agents.upsert(
-                    agent.copy(memory = policy.copy(readableSpaces = policy.readableSpaces - id, writableSpaces = policy.writableSpaces - id), updatedAt = now),
-                )
-                removedFrom++
-            }
+            val removedFrom = ctx.spaceAccess.revoke(id, ctx.clock.now())
             Triple(space, removedFrom, ctx.repository.deleteSpace(id))
         }
         ctx.log.event(

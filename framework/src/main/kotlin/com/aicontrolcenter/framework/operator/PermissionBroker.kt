@@ -150,10 +150,14 @@ class PermissionBroker(
     /**
      * The options of the objective [context] belongs to, read once per call: a routine's objective
      * carries its screen choice and approval time-out (F12). Calls outside an objective (a chat)
-     * and objectives the owner started by hand get the defaults.
+     * get the defaults of an objective the owner started by hand. A call that names an objective
+     * whose record cannot be read fails closed: it may not use other apps' screens.
      */
-    private suspend fun objectiveOptions(context: ToolContext): ObjectiveOptions =
-        context.rootTaskId?.let { root -> tasks?.get(root)?.options } ?: ObjectiveOptions()
+    private suspend fun objectiveOptions(context: ToolContext): ObjectiveOptions {
+        val root = context.rootTaskId ?: return ObjectiveOptions()
+        val record = tasks?.get(root) ?: return UNREADABLE_OBJECTIVE
+        return record.options ?: ObjectiveOptions()
+    }
 
     /** One call being decided. */
     private class Call(
@@ -444,6 +448,9 @@ class PermissionBroker(
 
         /** Reading and acting on other apps' screens: what a routine's objective may do only when the owner ticked it (F12). */
         private val SCREEN_CAPABILITIES = setOf(OperatorCapabilities.SCREEN_READ, OperatorCapabilities.SCREEN_OPERATE)
+
+        /** The options of a call whose objective's record cannot be read: no screens (F12, fail closed). */
+        private val UNREADABLE_OBJECTIVE = ObjectiveOptions(screenActionsAllowed = false)
         private const val MAX_NOTE = 500
         private const val MAX_DETAIL = 300
         private const val MAX_LOGGED = 600

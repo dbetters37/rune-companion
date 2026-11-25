@@ -310,9 +310,11 @@ class StoredNamesGoldenTest {
         )
         assertEquals(request, request.toEntity().toDomain())
         assertEquals(
-            SharedFolderEntity("fld_1", "content://tree/primary%3ADocuments", "Documents", 5, readOnly = true),
-            SharedFolder(FolderId("fld_1"), "content://tree/primary%3ADocuments", "Documents", 5, readOnly = true).toEntity(),
+            SharedFolderEntity("fld_1", "content://tree/primary%3ADocuments", "Documents", 5, readOnly = true, readOnlySince = 9),
+            SharedFolder(FolderId("fld_1"), "content://tree/primary%3ADocuments", "Documents", 5, readOnly = true, readOnlySince = 9).toEntity(),
         )
+        val folder = SharedFolder(FolderId("fld_1"), "content://tree/primary%3ADocuments", "Documents", 5, readOnly = true, readOnlySince = 9)
+        assertEquals(folder, folder.toEntity().toDomain())
         assertEquals(
             OperatorAppEntity("com.example.notes", "Notes", 7, "ab".repeat(32), "ASK_EVERY_ACTION"),
             OperatorApp("com.example.notes", "Notes", 7, "ab".repeat(32)).toEntity(),
@@ -397,6 +399,11 @@ class StoredNamesGoldenTest {
         val task = stored.toDomain()
         assertEquals(TaskUsage(modelCalls = 2), task.usage)
         assertEquals(ObjectiveOptions(reviewResults = true, saveKnowledge = true, maxTasks = null), task.options)
+        assertEquals(true, task.options?.screenActionsAllowed, "an objective the owner started allows screens")
+        // F12, second review: options that name a routine but lack the screen key read as "no screens" (fail closed).
+        val routine = stored.copy(optionsJson = """{"routineId":"rtn_1"}""").toDomain()
+        assertEquals(false, routine.options?.screenActionsAllowed)
+        assertEquals(true, stored.copy(optionsJson = """{"routineId":"rtn_1","screenActionsAllowed":true}""").toDomain().options?.screenActionsAllowed)
     }
 
     @Test

@@ -1,5 +1,6 @@
 package com.aicontrolcenter.core.backup
 
+import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.operator.OwnerResult
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -21,22 +22,18 @@ import kotlin.math.ln
 /** How far a save or a restore has got, for the progress bar. [total] null while unknown. */
 data class BackupProgress(val step: String, val done: Long, val total: Long?)
 
-/** How many of each thing a backup holds (or a restore wrote). */
-data class BackupCounts(
-    val agents: Int = 0,
-    val providers: Int = 0,
-    val models: Int = 0,
-    val modelPrices: Int = 0,
-    val aiApps: Int = 0,
-    val spaces: Int = 0,
-    val memories: Int = 0,
-    val memoryLinks: Int = 0,
-    val conversations: Int = 0,
-    val conversationEntries: Int = 0,
+/**
+ * One setting a restore would change: [name] in plain words, its value now ([from]) and after
+ * ([to]), as the owner reads them. For the Director, [from] and [to] are agents' names (or "an agent
+ * not in this backup"), never ids; the agents themselves are [agentFrom] and [agentTo].
+ */
+data class SettingChange(
+    val name: String,
+    val from: String,
+    val to: String,
+    val agentFrom: AgentId? = null,
+    val agentTo: AgentId? = null,
 )
-
-/** One setting a restore would change: [name] in plain words, its value now ([from]) and after ([to]). */
-data class SettingChange(val name: String, val from: String, val to: String)
 
 /** What a backup file holds, read with the passphrase before anything is restored ([OwnerBackup.inspect]). */
 data class BackupSummary(
@@ -156,6 +153,11 @@ object Passphrases {
     /** The estimated strength an own passphrase without [MIN_OWN_WORDS] real words needs ([strengthBits]). */
     const val MIN_OWN_BITS: Int = 60
 
+    /** The estimated strength an own passphrase of [MIN_OWN_WORDS] real words still needs ([strengthBits]): near-copies of one word do not pass. */
+    const val MIN_WORDS_BITS: Int = 55
+
+    private const val TOO_EASY = "This passphrase is too easy to guess. Add words or characters that do not follow a pattern."
+
     /** The longest own passphrase, once normalised. */
     const val MAX_CHARS: Int = 256
 
@@ -166,27 +168,42 @@ object Passphrases {
     /**
      * The form the key is derived from (format v1, frozen): first Unicode NFKC normalisation (so
      * an accented letter typed precomposed or decomposed, or a full-width digit, is the same
-     * passphrase on every keyboard), then upper case by Unicode's full mapping without locale
-     * rules, then whitespace and dashes (`-` and U+2010 to U+2015, U+2212) removed and the letters
-     * people confuse read as Crockford does (O as 0, I and L as 1). Applied to every passphrase,
+     * passphrase on every keyboard), then lower case and upper case by Unicode's full mappings
+     * without locale rules and NFKC again (so every case variant of a letter is one letter), then
+     * whitespace, invisible format characters and dashes removed ([fold]) and the letters people
+     * confuse read as Crockford does (O as 0, I and L as 1). Applied to every passphrase,
      * generated or own, on save and on restore, so "7kq2 m9xd …" opens what "7KQ2-M9XD-…" saved.
      * The key is derived from the UTF-8 bytes of the result ([BackupKeys.passphraseBytes]).
      */
     fun normalise(input: CharSequence): String {
-        val composed = Normalizer.normalize(input, Normalizer.Form.NFKC)
-        val out = StringBuilder(composed.length)
-        for (c in composed.uppercase(Locale.ROOT)) {
-            when {
-                c.isWhitespace() || c in DASHES -> Unit
-                c == 'O' -> out.append('0')
-                c == 'I' || c == 'L' -> out.append('1')
+        val folded = fold(input)
+        val out = StringBuilder(folded.length)
+        for (c in folded) {
+            when (c) {
+                'O' -> out.append('0')
+                'I', 'L' -> out.append('1')
                 else -> out.append(c)
             }
         }
         return out.toString()
     }
 
-    private const val DASHES = "-\u2010\u2011\u2012\u2013\u2014\u2015\u2212"
+    /**
+     * [input] in one case and one composition, without what cannot be seen or is only a separator:
+     * NFKC, then lower case and upper case by Unicode's full mappings without locale rules (so "ß"
+     * and "ẞ" are both "SS", and a Greek or Turkish letter gives the same text however its case was
+     * typed), NFKC again (an upper-case mapping may decompose), then every whitespace character,
+     * every invisible format character (Unicode category Cf: soft hyphen, zero-width space and
+     * joiners, byte-order mark) and every dash (category Pd, and U+2043, U+2212) removed.
+     */
+    private fun fold(input: CharSequence): String {
+        val cased = Normalizer.normalize(input, Normalizer.Form.NFKC).lowercase(Locale.ROOT).uppercase(Locale.ROOT)
+        return Normalizer.normalize(cased, Normalizer.Form.NFKC).filterNot { c ->
+            c.isWhitespace() || c in DASHES || Character.getType(c).let { it == Character.FORMAT.toInt() || it == Character.DASH_PUNCTUATION.toInt() }
+        }
+    }
+
+    private const val DASHES = "-\u2010\u2011\u2012\u2013\u2014\u2015\u2043\u2212"
 
     /**
      * True when [input] has the shape of a generated passphrase (20 characters of [ALPHABET] once
@@ -197,11 +214,19 @@ object Passphrases {
 
     /**
      * Why a save must not use [input] (a sentence), or null when it may: [input] is the passphrase
-     * the app generated and showed ([generatedShown], compared after [normalise]), or the owner's
-     * own that passes [check]. The only gate of a save (WP3).
+     * the app generated and showed ([generatedShown], compared after [normalise]; it counts only
+     * when it is in exactly the grouped form [generate] gives), or the owner's own that passes
+     * [check]. The only gate of a save (WP3).
      */
-    fun problemForSave(input: CharSequence, generatedShown: String?): String? =
-        if (generatedShown != null && normalise(input).let { it.isNotEmpty() && it == normalise(generatedShown) }) null else check(input)
+    fun problemForSave(input: CharSequence, generatedShown: String?): String? {
+        // Only a passphrase in exactly the form generate() gives can stand in for the check (security review,
+        // NEW-1): a screen that passed the text field's own value as generatedShown must not turn the check off.
+        val shown = generatedShown?.takeIf { GENERATED_SHAPE.matches(it) }
+        return if (shown != null && normalise(input).let { it.isNotEmpty() && it == normalise(shown) }) null else check(input)
+    }
+
+    /** Exactly what [generate] gives: 20 characters of [ALPHABET] in five groups of four joined by "-". */
+    private val GENERATED_SHAPE = Regex("[$ALPHABET]{$GROUP_LENGTH}(?:-[$ALPHABET]{$GROUP_LENGTH}){${GENERATED_LENGTH / GROUP_LENGTH - 1}}")
 
     /** Why [input] cannot be the owner's own passphrase (a sentence), or null when it can. */
     fun check(input: CharSequence): String? {
@@ -214,8 +239,8 @@ object Passphrases {
             normalised.length < MIN_OWN_CHARS && words.size < MIN_OWN_WORDS ->
                 "Use at least $MIN_OWN_CHARS characters, or at least $MIN_OWN_WORDS different words of $MIN_WORD_CHARS letters or more."
             mostlyCommon(normalised) -> "This passphrase is too common to be safe."
-            words.size >= MIN_OWN_WORDS -> null
-            strengthBits(text) < MIN_OWN_BITS -> "This passphrase is too easy to guess. Add words or characters that do not follow a pattern."
+            words.size >= MIN_OWN_WORDS && strengthBits(text) >= MIN_WORDS_BITS -> null
+            strengthBits(text) < MIN_OWN_BITS -> TOO_EASY
             else -> null
         }
     }
@@ -223,27 +248,61 @@ object Passphrases {
     /**
      * The different real words of [text] (by their [normalise]d form): runs of 4 or more letters
      * with at least 3 different letters, that are not a common password, a keyboard walk or a run
-     * of the alphabet ("abcd").
+     * of the alphabet ("abcd"). A word counts as different only when, with its accents removed
+     * ("café" is "cafe"), it differs from every word counted before it in at least two letters
+     * (insertions, deletions or changes): "abca abcb abcc" is one word, not three.
      */
-    fun realWords(text: CharSequence): Set<String> =
+    fun realWords(text: CharSequence): Set<String> {
+        val counted = LinkedHashMap<String, String>()
         Normalizer.normalize(text, Normalizer.Form.NFKC).split(Regex("[^\\p{L}]+")).asSequence()
             .filter { it.length >= MIN_WORD_CHARS && it.lowercase(Locale.ROOT).toSet().size >= MIN_WORD_DISTINCT_LETTERS }
             .map { normalise(it) }
             .filter { it !in WEAK_PARTS && !isRun(it) }
-            .toSet()
+            .forEach { word ->
+                val bare = withoutAccents(word)
+                if (counted.keys.none { editDistanceBelow(it, bare, MIN_WORD_DIFFERENCE) }) counted[bare] = word
+            }
+        return counted.values.toSet()
+    }
+
+    /** Letters two counted words must differ in at least. */
+    private const val MIN_WORD_DIFFERENCE: Int = 2
+
+    /** [word] with every combining mark removed after canonical decomposition ("CAFÉ" becomes "CAFE"). */
+    private fun withoutAccents(word: String): String =
+        Normalizer.normalize(word, Normalizer.Form.NFD).filterNot { Character.getType(it) == Character.NON_SPACING_MARK.toInt() }
+
+    /** True when [a] can be turned into [b] with fewer than [limit] insertions, deletions or changes of one character. */
+    private fun editDistanceBelow(a: String, b: String, limit: Int): Boolean {
+        if (kotlin.math.abs(a.length - b.length) >= limit) return false
+        var previous = IntArray(b.length + 1) { it }
+        for (i in 1..a.length) {
+            val current = IntArray(b.length + 1)
+            current[0] = i
+            for (j in 1..b.length) {
+                current[j] = minOf(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + if (a[i - 1] == b[j - 1]) 0 else 1)
+            }
+            previous = current
+        }
+        return previous[b.length] < limit
+    }
 
     /**
      * A rough, deterministic estimate of how many bits a guesser needs for [text], on its
      * [normalise]d form (case does not count there): common passwords and keyboard walks count as
      * one symbol each, a repeated character as one, a run of the alphabet or of digits as its first
-     * two, and a stretch of three or more characters seen before as one; each remaining symbol is
+     * two, a year (1900 to 2099) as one, a digit and the symbol above it ("1!") as one, and a
+     * stretch of three or more characters seen before as one, all after accents are removed; each remaining symbol is
      * worth log2 of the alphabet the text draws from (digits 10, letters 23 once I, L and O are
      * folded, other ASCII 33, anything else 64).
      */
     fun strengthBits(text: CharSequence): Int {
         // Patterns are looked for before I, L and O are folded, so "HIJKL" is still a run.
-        var n = squash(text).take(MAX_CHARS)
+        // Accents add next to nothing for a guesser who knows the word ("café" is "cafe"): they are left out here.
+        var n = withoutAccents(squash(text)).take(MAX_CHARS)
         for (weak in WEAK_PARTS_UNFOLDED) n = n.replace(weak, WEAK_MARK)
+        // A year ("2024") is one guess among about two hundred, not four free digits.
+        n = YEAR.replace(n, WEAK_MARK)
         var symbols = 0
         var i = 0
         while (i < n.length) {
@@ -251,7 +310,9 @@ object Passphrases {
             val repeat = i > 0 && n[i - 1] == c && c != WEAK_MARK[0]
             val step = if (i >= 2) n[i - 1] - n[i - 2] else 0
             val run = i >= 2 && (step == 1 || step == -1) && c - n[i - 1] == step && c != WEAK_MARK[0]
-            if (repeat || run) {
+            // A digit and the symbol above it on the keyboard ("1!", "2@") are typed as one key.
+            val shifted = i > 0 && SHIFTED_DIGITS.indexOf(c).let { it >= 0 && n[i - 1] == '0' + it }
+            if (repeat || run || shifted) {
                 i++
                 continue
             }
@@ -298,7 +359,8 @@ object Passphrases {
     /** Keyboard walks (and their reverse), normalised: one symbol each in [strengthBits]. */
     private val WALK_WORDS: List<String> = listOf(
         "qwerty", "qwertz", "azerty", "qwertyuiop", "asdf", "asdfgh", "asdfghjkl", "zxcv", "zxcvbn", "zxcvbnm", "qwer", "uiop",
-        "hjkl", "qaz", "wsx", "edc", "rfv", "1qaz", "2wsx", "1qaz2wsx", "1qaz2wsx3edc", "zaq12wsx", "qazwsx", "qazwsxedc", "qweasd",
+        "hjkl", "qaz", "wsx", "edc", "rfv", "tgb", "yhn", "ujm", "1qaz", "2wsx", "3edc", "4rfv", "5tgb", "6yhn", "7ujm", "8ik", "9ol",
+        "1qaz2wsx", "1qaz2wsx3edc", "1qaz2wsx3edc4rfv", "zaq12wsx", "qazwsx", "qazwsxedc", "qweasd",
         "qweasdzxc", "1q2w3e", "1q2w3e4r", "1q2w3e4r5t", "1q2w3e4r5t6y", "1q2w3e4r5t6y7u8i9o0p", "q1w2e3", "q1w2e3r4", "zaq1", "xsw2",
         "poiu", "lkjh", "mnbv", "asdfjkl",
     )
@@ -314,11 +376,16 @@ object Passphrases {
         (COMMON_WORDS + WALK_WORDS.flatMap { listOf(it, it.reversed()) }).map { squash(it) }.filter { it.length >= 3 }.distinct().sortedByDescending { it.length }
 
     /** [text] as [normalise] makes it, but without folding I, L and O. */
-    private fun squash(text: CharSequence): String =
-        Normalizer.normalize(text, Normalizer.Form.NFKC).uppercase(Locale.ROOT).filterNot { it.isWhitespace() || it in DASHES }
+    private fun squash(text: CharSequence): String = fold(text)
 
     /** Stands for one common password or keyboard walk in [strengthBits]; not a character a passphrase holds after [normalise]. */
     private const val WEAK_MARK = "\u0000"
+
+    /** A year from 1900 to 2099, counted as one symbol in [strengthBits]. */
+    private val YEAR = Regex("(?<![0-9])(?:19|20)[0-9]{2}(?![0-9])")
+
+    /** The symbol above each digit on a US keyboard, by digit: ")" above 0, "!" above 1, and so on. */
+    private const val SHIFTED_DIGITS = ")!@#\$%^&*("
 }
 
 /**
@@ -403,10 +470,24 @@ object BackupFormat {
     const val CHUNK_BYTES: Int = 1 shl 20
     const val MAX_HEADER_BYTES: Int = 4_096
     const val MAX_RECORD_BYTES: Int = 8 shl 20
-    const val MAX_FILE_BYTES: Long = 1L shl 30
 
-    /** The most chunks a file can have at [MAX_FILE_BYTES]. */
-    const val MAX_CHUNKS: Long = MAX_FILE_BYTES / CHUNK_BYTES
+    /** The most body (plaintext) a file holds: 1 GiB. */
+    const val MAX_BODY_BYTES: Long = 1L shl 30
+
+    /** The most chunks a file can have: [MAX_BODY_BYTES] in chunks of [CHUNK_BYTES], 1,024. */
+    const val MAX_CHUNKS: Long = MAX_BODY_BYTES / CHUNK_BYTES
+
+    /** What a chunk adds to its plaintext: flags (1), length (4), nonce (12) and tag (16). */
+    const val CHUNK_OVERHEAD_BYTES: Int = 1 + 4 + NONCE_BYTES + TAG_BITS / 8
+
+    /** The preamble without its header: magic (8), version (2), header length (4), key check (32), digest (32). */
+    const val PREAMBLE_FIXED_BYTES: Int = 8 + 2 + 4 + 32 + 32
+
+    /**
+     * The largest file, one number for every bound (second review of the format): [MAX_CHUNKS] full chunks after the
+     * largest preamble, 1,073,779,790 bytes. A larger file is [BackupProblem.TooLarge] before anything is read.
+     */
+    const val MAX_FILE_BYTES: Long = MAX_CHUNKS * (CHUNK_BYTES + CHUNK_OVERHEAD_BYTES) + PREAMBLE_FIXED_BYTES + MAX_HEADER_BYTES
     const val MAX_AGENTS: Int = 500
     const val MAX_MEMORIES: Int = 200_000
     const val FLAG_LAST: Int = 1

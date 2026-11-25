@@ -6,6 +6,7 @@ import com.aicontrolcenter.core.agents.AgentActivityMonitor
 import com.aicontrolcenter.core.llm.ModelGateway
 import com.aicontrolcenter.core.memory.MemoryService
 import com.aicontrolcenter.core.operator.ScreenOperator
+import com.aicontrolcenter.core.registry.ReadOnlyRegistry
 import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.tools.ToolRegistry
 import com.aicontrolcenter.framework.agents.AgentRunner
@@ -55,7 +56,7 @@ class AgentsAssembly(
         gateway = gateway,
         tools = tools,
         executor = executor,
-        agents = ports.agents,
+        agents = ReadOnlyRegistry.agents(ports.agents),
         settings = settings,
         monitor = monitor,
         clock = ports.clock,

@@ -39,9 +39,15 @@ import java.util.IdentityHashMap
  * @param ownerOnly the types no reached object may be (another list for walks that are not agent-facing, such as the
  *   backup's stores).
  * @param checkActions whether an object offering an owner-only action fails (off where the owner's own ports are walked).
- * @param leafPackages packages whose classes are not walked into: the production walk stops at Room's database and
- *   DAOs, which every Room store shares (a store's private DAO is the storage engine, not a port someone wired; the
- *   ports above it are what the rule is about).
+ * @param leafPackages packages whose classes are not walked into.
+ *
+ * Room's database, its open helper and its DAOs ([isDatabase]) may be held only by the Room stores
+ * (`com.aicontrolcenter.data.repository.…`) and the data layer's one transaction (`DataLayer.RoomTransactions`): there
+ * they are the storage engine and are not walked into; held by anything else they are a violation, since they reach
+ * every table (security review of wave 1, F4/F10, second review). Other containers are read through: Kotlin's and
+ * Java's collections, lazies, `AtomicReference`, `java.lang.ref.Reference`, a `StateFlow`'s value, a completed
+ * `Deferred` and an `Optional` (F3, second review). A [ProviderLease] (it can tell whether a text is a provider's key)
+ * may be held only inside `ProviderConnections` and the model gateway ([CONFINED]).
  */
 internal class AgentFacingWalk(
     extraViews: List<Class<*>> = emptyList(),
@@ -65,13 +71,29 @@ internal class AgentFacingWalk(
         type.methods.filter { it.name.substringBefore('-') in OWNER_ONLY_ACTIONS || changesSettings(it) || answersARequest(it) }
             .map { it.name.substringBefore('-') }.distinct()
 
+    /** One object to visit: what reached it ([holder], the class whose field or container held it) and how. */
+    private class Step(val value: Any, val path: String, val holder: Class<*>?)
+
     /** Every object reachable from [root], checking each field's declared type and each value's class. */
     fun walk(root: Any, name: String): Result {
         val result = Result()
         val seen = IdentityHashMap<Any, Unit>()
-        val queue = ArrayDeque(listOf(root to name))
+        val queue = ArrayDeque(listOf(Step(root, name, null)))
         while (queue.isNotEmpty()) {
-            val (value, path) = queue.removeFirst()
+            val step = queue.removeFirst()
+            val value = step.value
+            val path = step.path
+            // Database internals are judged by their holder: a store may hold them, nothing else may. Before the seen
+            // check, so a second holder of an object already met through a store is still judged.
+            if (isDatabase(value)) {
+                if (!mayHoldDatabase(step.holder)) result.violations += "$path: ${value.javaClass.name} held by ${step.holder?.name}"
+                continue
+            }
+            CONFINED[value.javaClass]?.let { holders ->
+                if (holders.none { step.holder?.name?.let { h -> h == it || h.startsWith("$it$") } == true }) {
+                    result.violations += "$path: ${value.javaClass.simpleName} held by ${step.holder?.name}"
+                }
+            }
             if (seen.put(value, Unit) != null) continue
             result.objects++
             val type = value.javaClass
@@ -81,14 +103,17 @@ internal class AgentFacingWalk(
                 result.violations += "$path: ${type.name}"
                 continue
             }
+            // A container passes on the holder that put the value in it.
+            val holder = step.holder
             when {
                 value is Map<*, *> -> value.entries.forEachIndexed { i, (k, v) ->
-                    k?.let { queue += it to "$path{key $i}" }
-                    v?.let { queue += it to "$path{$i}" }
+                    k?.let { queue += Step(it, "$path{key $i}", holder) }
+                    v?.let { queue += Step(it, "$path{$i}", holder) }
                 }
-                value is Iterable<*> && !followFields(type) -> value.forEachIndexed { i, v -> v?.let { queue += it to "$path[$i]" } }
-                type.isArray && !type.componentType.isPrimitive -> (value as Array<*>).forEachIndexed { i, v -> v?.let { queue += it to "$path[$i]" } }
-                followFields(type) -> {
+                value is Iterable<*> && !followFields(type) -> value.forEachIndexed { i, v -> v?.let { queue += Step(it, "$path[$i]", holder) } }
+                type.isArray && !type.componentType.isPrimitive -> (value as Array<*>).forEachIndexed { i, v -> v?.let { queue += Step(it, "$path[$i]", holder) } }
+                !followFields(type) -> contentOf(value)?.let { queue += Step(it, "$path.value", holder) }
+                else -> {
                     if (type in views) continue
                     for (field in fieldsOf(type)) {
                         val fieldPath = "$path.${field.name}"
@@ -101,12 +126,26 @@ internal class AgentFacingWalk(
                             result.unreadable += "$fieldPath (${e.javaClass.simpleName})"
                             continue
                         } ?: continue
-                        queue += held to fieldPath
+                        queue += Step(held, fieldPath, field.declaringClass)
                     }
                 }
             }
         }
         return result
+    }
+
+    /**
+     * What a platform container holds, read through its own API (F3, second review): an `AtomicReference`'s or a
+     * `java.lang.ref.Reference`'s referent, a `StateFlow`'s value, a completed `Deferred`'s result and an `Optional`'s.
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private fun contentOf(value: Any): Any? = when (value) {
+        is java.util.concurrent.atomic.AtomicReference<*> -> value.get()
+        is java.lang.ref.Reference<*> -> value.get()
+        is kotlinx.coroutines.flow.StateFlow<*> -> value.value
+        is kotlinx.coroutines.Deferred<*> -> if (value.isCompleted && !value.isCancelled) runCatching { value.getCompleted() }.getOrNull() else null
+        is java.util.Optional<*> -> value.orElse(null)
+        else -> null
     }
 
     /**
@@ -152,6 +191,10 @@ internal class AgentFacingWalk(
             // their keys), the key vault, and the owner's check of an answer against the stored keys. F4: deleting usage.
             com.aicontrolcenter.core.llm.ProviderManager::class.java, SecretVault::class.java,
             com.aicontrolcenter.core.llm.OwnerKeyCheck::class.java, com.aicontrolcenter.core.usage.UsageHousekeeping::class.java,
+            // F3, second review: the stores that add, change and remove agents, providers, models and AI apps. Agent-facing
+            // code reads them through `ReadOnlyRegistry`'s views.
+            com.aicontrolcenter.core.registry.AgentRepository::class.java, com.aicontrolcenter.core.registry.ProviderRepository::class.java,
+            com.aicontrolcenter.core.registry.ModelRepository::class.java, com.aicontrolcenter.core.registry.AiAppRepository::class.java,
         )
 
         val VIEWS: List<Class<*>> = listOf(
@@ -159,7 +202,7 @@ internal class AgentFacingWalk(
             SharedFolderFilesView::class.java, PickUpFoldersView::class.java,
             // Phase 6 (rule 3): the settings as agents read them; its private source is the owner's writer.
             ReadOnlySettings::class.java,
-        )
+        ) + com.aicontrolcenter.core.registry.ReadOnlyRegistry.VIEW_CLASSES
 
         /**
          * Actions that are the owner's alone, by method name: an object that offers one is a
@@ -170,14 +213,36 @@ internal class AgentFacingWalk(
         val OWNER_ONLY_ACTIONS: Set<String> = setOf("letAskAgain", "startOver", "clearHistory")
 
         /**
-         * The one owner-only type an agent-facing holder may keep, where it must: the provider
-         * connections hold the vault, to put a provider's key on that provider's own requests
-         * (they offer no way to read a key: `OperatorDependencyTest` checks it). Anything else
-         * holding the vault fails.
+         * The owner-only types an agent-facing holder may keep, where it must: the provider
+         * connections hold the vault, to put a provider's key on that provider's own requests, and
+         * the provider store, to read the record a key belongs to and store a status a call learned
+         * (they offer no way to read a key or change a record: `OperatorDependencyTest` checks it).
+         * Anything else holding either fails.
          */
-        val SEALED: Map<Class<*>, Class<*>> = mapOf(ProviderConnections::class.java to SecretVault::class.java)
+        val SEALED: Map<Class<*>, Set<Class<*>>> = mapOf(
+            ProviderConnections::class.java to setOf(SecretVault::class.java, com.aicontrolcenter.core.registry.ProviderRepository::class.java),
+        )
 
-        fun sealedField(holder: Class<*>, field: Field): Boolean = SEALED[holder]?.let { it == field.type } == true
+        fun sealedField(holder: Class<*>, field: Field): Boolean = SEALED[holder]?.let { field.type in it } == true
+
+        /**
+         * Types only some classes may hold (F3, second review): a provider lease can tell whether a text is that
+         * provider's key, so only the connections that make it and the model gateway that maps a failure with it hold one.
+         */
+        val CONFINED: Map<Class<*>, List<String>> = mapOf(
+            com.aicontrolcenter.framework.llm.ProviderLease::class.java to
+                listOf(ProviderConnections::class.java.name, com.aicontrolcenter.framework.llm.DefaultModelGateway::class.java.name),
+        )
+
+        /** Room's database, its open helper and SQLite database, and the app's DAOs and other database classes (not its row classes). */
+        fun isDatabase(value: Any): Boolean = value is androidx.room.RoomDatabase || value is androidx.sqlite.db.SupportSQLiteOpenHelper ||
+            value is androidx.sqlite.db.SupportSQLiteDatabase ||
+            value.javaClass.name.let { it.startsWith("com.aicontrolcenter.data.db.") && !it.startsWith("com.aicontrolcenter.data.db.entity.") }
+
+        /** The Room stores and the data layer's one transaction: the only holders of database internals. */
+        fun mayHoldDatabase(holder: Class<*>?): Boolean = holder != null && (
+            holder.name.startsWith("com.aicontrolcenter.data.repository.") || holder.name == "com.aicontrolcenter.data.DataLayer\$RoomTransactions"
+            )
 
         /**
          * Phase 6 (rule 3): an `update` that changes the owner's settings, told by its signature, which names

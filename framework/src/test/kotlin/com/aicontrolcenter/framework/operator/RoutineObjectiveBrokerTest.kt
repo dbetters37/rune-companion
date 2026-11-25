@@ -55,6 +55,21 @@ class RoutineObjectiveBrokerTest {
     }
 
     @Test
+    fun `options that name a routine but were not built by it, and an objective whose record is gone, allow no screens`() = runTest {
+        // F12, fail closed: a wave-2 path that rebuilds options as ObjectiveOptions(routineId = ...) instead of copying them.
+        assertEquals(false, ObjectiveOptions(routineId = RoutineId("rtn_1")).screenActionsAllowed)
+        val rebuilt = fixture(ObjectiveOptions(routineId = RoutineId("rtn_1")))
+        val denied = assertIs<Authorization.Denied>(rebuilt.broker.authorize(rebuilt.tap, rebuilt.assessment(RiskLevel.MODIFYING, constraint = rebuilt.inNotes), rebuilt.context()))
+        assertEquals(ObjectiveOptions.SCREEN_ACTIONS_NOT_ALLOWED, denied.reason)
+        // The objective's record cannot be read (deleted, or never stored): the call cannot learn the owner's choice, so no screens.
+        val gone = fixture(ObjectiveOptions())
+        val context = gone.context().copy(rootTaskId = TaskId("tsk_gone"))
+        val refused = assertIs<Authorization.Denied>(gone.broker.authorize(gone.tap, gone.assessment(RiskLevel.MODIFYING, constraint = gone.inNotes), context))
+        assertEquals(ObjectiveOptions.SCREEN_ACTIONS_NOT_ALLOWED, refused.reason)
+        assertTrue(rebuilt.allRequests().isEmpty() && gone.allRequests().isEmpty(), "nothing is put to the owner")
+    }
+
+    @Test
     fun `objectives the owner starts by hand, ticked routines and chats keep screen tools`() = runTest {
         for (options in listOf(null, ObjectiveOptions(), ObjectiveOptions(routineId = RoutineId("rtn_1"), screenActionsAllowed = true))) {
             val f = fixture(options)

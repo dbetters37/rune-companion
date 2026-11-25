@@ -4,6 +4,7 @@ import com.aicontrolcenter.core.IdGenerator
 import com.aicontrolcenter.core.memory.MemoryRepository
 import com.aicontrolcenter.core.operator.FrontState
 import com.aicontrolcenter.core.operator.SharedFolderRepository
+import com.aicontrolcenter.core.pickup.PickUpFolders
 import com.aicontrolcenter.core.pickup.PickUpRuleRepository
 import com.aicontrolcenter.core.routines.RoutineRepository
 import com.aicontrolcenter.testkit.contract.ActivityPageContract
@@ -99,7 +100,7 @@ class ReferenceOwnerPickUpRulesTest : OwnerPickUpRulesContract() {
 
     override fun createOwnerPickUpRules(
         repository: PickUpRuleRepository,
-        folders: SharedFolderRepository,
+        folders: PickUpFolders,
         memory: MemoryRepository,
         clock: FakeClock,
         ids: IdGenerator,

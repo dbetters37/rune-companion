@@ -2,11 +2,11 @@ package com.aicontrolcenter.framework.registry
 
 import com.aicontrolcenter.core.agents.AgentStats
 import com.aicontrolcenter.core.agents.resolveAvailability
+import com.aicontrolcenter.core.registry.AgentDirectory
 import com.aicontrolcenter.core.registry.AgentEntry
-import com.aicontrolcenter.core.registry.AgentRepository
-import com.aicontrolcenter.core.registry.AiAppRepository
-import com.aicontrolcenter.core.registry.ModelRepository
-import com.aicontrolcenter.core.registry.ProviderRepository
+import com.aicontrolcenter.core.registry.AiAppDirectory
+import com.aicontrolcenter.core.registry.ModelDirectory
+import com.aicontrolcenter.core.registry.ProviderDirectory
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.registry.RegistrySnapshot
 import com.aicontrolcenter.core.settings.SettingsView
@@ -16,10 +16,10 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 
 class DefaultRegistryDirectory(
-    private val agents: AgentRepository,
-    private val providers: ProviderRepository,
-    private val models: ModelRepository,
-    private val apps: AiAppRepository,
+    private val agents: AgentDirectory,
+    private val providers: ProviderDirectory,
+    private val models: ModelDirectory,
+    private val apps: AiAppDirectory,
     private val settings: SettingsView,
 ) : RegistryDirectory {
 

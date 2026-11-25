@@ -174,8 +174,11 @@ class ReferenceOwnerFolders(private val world: OperatorWorld) : OwnerFolders {
         return true
     }
 
-    override suspend fun setReadOnly(id: FolderId, readOnly: Boolean): SharedFolder? =
-        world.folders.get(id)?.copy(readOnly = readOnly)?.also { world.folders.upsert(it) }
+    override suspend fun setReadOnly(id: FolderId, readOnly: Boolean): SharedFolder? {
+        val current = world.folders.get(id) ?: return null
+        if (current.readOnly == readOnly) return current
+        return current.copy(readOnly = readOnly, readOnlySince = if (readOnly) world.clock.now() else null).also { world.folders.upsert(it) }
+    }
 }
 
 /** Reference [OwnerOperatorApps] over an [OperatorWorld]. */
