@@ -16,9 +16,11 @@ package com.aicontrolcenter.core.operator
  * whose root "downloads" (a folder only on Android 9 and 10) lists the download manager's files
  * wherever they were saved, so it may hold files anywhere on the phone's storage (B1-DL). Folder
  * names on the phone's storage ignore case.
- * The media provider's folders are somewhere on the phone's storage. Trees of any other provider
- * (a cloud drive, a file manager, an app's own provider: [otherAppProvider]) count as apart from
- * another provider's: Android does not tell whether such a provider also shows the phone's own
+ * The media provider's folders are somewhere on the phone's storage. A tree of any other provider
+ * (a cloud drive, a file manager, an app's own provider: [otherAppProvider]) whose id is a path on
+ * the phone's storage ("/storage/emulated/0/Download/x", "/sdcard/x"), as many file managers give,
+ * is placed by that path like a "raw:" id (B1). Any other tree of such a provider counts as apart
+ * from another provider's: Android does not tell whether that provider also shows the phone's own
  * files, and counting them as overlapping would stop every change in them while any shared folder
  * is read-only. The Folders screen warns about them instead ([OwnerFolders.fromOtherAppStorage],
  * SEC-W2B-2-R). Folder pick-up asks [mayShareFiles], which counts them as unknown (B1).
@@ -82,11 +84,22 @@ object FolderTrees {
         if (x.authority == y.authority && (within(x.documentId, y.documentId) || within(y.documentId, x.documentId))) return true
         val px = placeOf(x)
         val py = placeOf(y)
-        // Not both on the phone's storage: the same other provider whose ids are apart, or two different providers of
-        // which one is not the phone's storage (a cloud drive, a file manager, an app's own provider). They count as
-        // apart; the Folders screen warns about another app's folder agents may change (OwnerFolders.fromOtherAppStorage).
+        // Not both on the phone's storage, as far as the ids tell: the same other provider whose ids are apart, or two
+        // different providers of which one does not name a place there (a cloud drive, a file manager with ids of its own).
+        // They count as apart; the Folders screen warns about another app's folders (OwnerFolders.fromOtherAppStorage), and
+        // folder pick-up asks mayShareFiles.
         if (px == null || py == null) return false
         return overlap(px, py)
+    }
+
+    /**
+     * True when [treeUri] is a folder the folder picker's Downloads entry gave whose place on the phone's storage its id
+     * does not tell exactly ("msf:<n>", the Downloads root, ...), so the owner can share that place again through the
+     * phone's storage entry for [overlap] to tell. False for "raw:" paths on a volume, other providers and other profiles.
+     */
+    fun fromDownloadsEntryUnplaced(treeUri: String): Boolean {
+        val tree = parse(treeUri) ?: return false
+        return tree.authority == DOWNLOADS && placeOf(tree) !is Place.At
     }
 
     /**
@@ -149,9 +162,19 @@ object FolderTrees {
         return if (within(p.path, download) || within(download, p.path)) null else false
     }
 
-    /** The place on the phone's storage a tree of the storage, downloads or media provider names, or null for any other provider. */
+    /**
+     * The place on the phone's storage a tree of the storage, downloads or media provider names, or that another app's
+     * tree names by its path there; null for any other tree of another app.
+     */
     private fun placeOf(tree: Tree): Place? = when (tree.authority) {
-        !in SYSTEM -> if (withoutProfile(tree.authority) in SYSTEM) Place.Somewhere else null
+        !in SYSTEM -> when {
+            withoutProfile(tree.authority) in SYSTEM -> Place.Somewhere
+            // Another app's provider tells nothing, unless it names its folders by their path on the phone's storage, as
+            // many file managers do (B1). Such a path of an app in another profile is that profile's: unknown.
+            !onStorage(tree.documentId) -> null
+            tree.authority != withoutProfile(tree.authority) -> Place.Somewhere
+            else -> raw(tree.documentId)
+        }
         MEDIA -> Place.Somewhere
         EXTERNAL_STORAGE -> {
             val colon = tree.documentId.indexOf(':')
@@ -204,6 +227,10 @@ object FolderTrees {
             else -> Place.Somewhere
         }
     }
+
+    /** True when [path] is a path on the phone's storage, as "raw:" ids of the downloads provider are. */
+    private fun onStorage(path: String): Boolean =
+        listOf("/storage", "/sdcard").any { path.equals(it, ignoreCase = true) || path.startsWith("$it/", ignoreCase = true) }
 
     private const val EMULATED = "/storage/emulated/"
     private const val PRIMARY = "/storage/emulated/0"

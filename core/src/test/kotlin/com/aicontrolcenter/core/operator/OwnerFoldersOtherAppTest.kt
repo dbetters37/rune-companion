@@ -33,8 +33,6 @@ class OwnerFoldersOtherAppTest {
         val files = "content://com.example.files.provider/tree/%2Fstorage%2Femulated%2F0%2FDownload%2FAgents"
         assertTrue(port.fromOtherAppStorage(folder(cloud)))
         assertTrue(port.fromOtherAppStorage(folder(files)))
-        // Read-only: agents change nothing there.
-        assertFalse(port.fromOtherAppStorage(folder(files, readOnly = true)))
         // The phone's own storage, downloads and media providers, also of another profile, are placed: no flag.
         assertFalse(port.fromOtherAppStorage(folder("content://${FolderTrees.EXTERNAL_STORAGE}/tree/primary%3ADownload%2FAgents")))
         assertFalse(port.fromOtherAppStorage(folder("content://${FolderTrees.DOWNLOADS}/tree/msf%3A31")))
@@ -44,21 +42,45 @@ class OwnerFoldersOtherAppTest {
     }
 
     @Test
+    fun `a read-only folder from another app's storage provider is flagged too, with its own sentence (B1)`() {
+        // The mirror case: that app may show the phone's own files, so a change through a folder of the phone's storage
+        // agents may change could land in this read-only folder, and this app cannot see that.
+        val files = "content://com.example.files.provider/tree/d%3A1234"
+        assertTrue(port.fromOtherAppStorage(folder(files, readOnly = true)))
+        assertTrue(port.fromOtherAppStorage(folder("content://com.example.cloud.documents/tree/root%3AAgents", readOnly = true)))
+        assertFalse(port.fromOtherAppStorage(folder("content://${FolderTrees.EXTERNAL_STORAGE}/tree/primary%3ADownload%2FAgents", readOnly = true)))
+        assertFalse(port.fromOtherAppStorage(folder("content://${FolderTrees.DOWNLOADS}/tree/msf%3A31", readOnly = true)))
+        assertEquals(
+            "This folder comes from Files Pro. If Files Pro shows your phone's own files, agents could still change files in it " +
+                "through another shared folder that they may change. If it does, share this folder from the phone's storage instead.",
+            OwnerFolders.otherAppStorageNote("Files Pro", readOnly = true),
+        )
+        assertEquals(
+            "This folder comes from another app. If that app shows your phone's own files, agents could still change files in it " +
+                "through another shared folder that they may change. If it does, share this folder from the phone's storage instead.",
+            OwnerFolders.otherAppStorageNote(" ", readOnly = true),
+        )
+        val long = OwnerFolders.otherAppStorageNote("Files\nPro‮" + "x".repeat(500), readOnly = true)
+        assertFalse(long.any { it == '\n' || it == '‮' }, long)
+        assertTrue(long.startsWith("This folder comes from Files Pro"), long)
+    }
+
+    @Test
     fun `the sentence names the app, or says another app when Android does not tell its name`() {
         assertEquals(
             "This folder comes from Files Pro. If Files Pro shows your phone's own files, agents could change files there even in " +
                 "folders you made read-only. Make this folder read-only, or share folders from the phone's storage instead.",
-            OwnerFolders.otherAppStorageNote("Files Pro"),
+            OwnerFolders.otherAppStorageNote("Files Pro", readOnly = false),
         )
-        val unnamed = OwnerFolders.otherAppStorageNote(null)
+        val unnamed = OwnerFolders.otherAppStorageNote(null, readOnly = false)
         assertEquals(
             "This folder comes from another app. If that app shows your phone's own files, agents could change files there even in " +
                 "folders you made read-only. Make this folder read-only, or share folders from the phone's storage instead.",
             unnamed,
         )
-        assertEquals(unnamed, OwnerFolders.otherAppStorageNote(" \n\t "))
+        assertEquals(unnamed, OwnerFolders.otherAppStorageNote(" \n\t ", readOnly = false))
         // Another app's label is its text: one line, cut to a bounded length.
-        val long = OwnerFolders.otherAppStorageNote("Files\nPro‮" + "x".repeat(500))
+        val long = OwnerFolders.otherAppStorageNote("Files\nPro‮" + "x".repeat(500), readOnly = false)
         assertFalse(long.any { it == '\n' || it == '‮' }, long)
         assertTrue(long.startsWith("This folder comes from Files Pro"), long)
         assertTrue(long.length < unnamed.length + 2 * OwnerFolders.MAX_APP_NAME_CHARS, "${long.length}")

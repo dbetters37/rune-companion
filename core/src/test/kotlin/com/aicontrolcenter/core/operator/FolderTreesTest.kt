@@ -113,8 +113,9 @@ class FolderTreesTest {
     fun `another app's storage provider stays apart from the phone's storage and is named for the Folders screen (SEC-W2B-2-R)`() {
         // A file manager's provider may show the phone's own files under ids of its own; Android does not tell. Counting it
         // as overlapping would stop changes in every such folder while any folder is read-only: apart, and the Folders
-        // screen warns instead (OwnerFolders.fromOtherAppStorage).
-        val files = "content://com.example.files.provider/tree/%2Fstorage%2Femulated%2F0%2FDownload%2FAgents"
+        // screen warns instead (OwnerFolders.fromOtherAppStorage). One that names folders by their path is compared by it
+        // (the next test).
+        val files = "content://com.example.files.provider/tree/d%3A1234"
         assertEquals(false, FolderTrees.overlap(files, storage("primary:Download/Agents/inbox")))
         assertEquals(false, FolderTrees.overlap(downloads("msf:31"), files))
         assertEquals("com.example.files.provider", FolderTrees.otherAppProvider(files))
@@ -130,6 +131,31 @@ class FolderTreesTest {
         assertNull(FolderTrees.overlap(media("images_bucket:123"), storage("primary:DCIM")))
         assertNull(FolderTrees.overlap(storage("primary:Documents"), media("documents_root")))
         assertEquals(false, FolderTrees.overlap(media("images_bucket:123"), cloud))
+    }
+
+    @Test
+    fun `another app's folder named by its path on the phone's storage is compared by that path (B1)`() {
+        fun files(path: String, user: String = "") = "content://${user}com.example.files.provider/tree/" + path.replace("/", "%2F")
+        val inbox = storage("primary:Download/Agents/inbox")
+        // The verifier's mirror case: a file manager gives Download/Agents/inbox read-only, the phone's storage entry gave
+        // Download/Agents for agents to change. And the other way round.
+        assertEquals(true, FolderTrees.overlap(storage("primary:Download/Agents"), files("/storage/emulated/0/Download/Agents/inbox")))
+        assertEquals(true, FolderTrees.overlap(files("/storage/emulated/0/Download/Agents"), inbox))
+        assertEquals(true, FolderTrees.overlap(files("/sdcard/Download/Agents/"), inbox))
+        assertEquals(true, FolderTrees.overlap(files("/storage/self/primary/Download"), inbox))
+        assertEquals(true, FolderTrees.overlap(files("/storage/1234-ABCD/Music"), storage("1234-ABCD:Music/Old")))
+        assertEquals(true, FolderTrees.overlap(files("/storage/emulated/0/Download"), "content://com.other.manager/tree/%2Fstorage%2Femulated%2F0%2FDownload%2FAgents"))
+        assertEquals(false, FolderTrees.overlap(files("/storage/emulated/0/Download/Other"), inbox))
+        assertEquals(false, FolderTrees.overlap(files("/storage/emulated/0/Pictures"), storage("primary:Documents")))
+        // Where the path does not tell exactly: unknown, as for the phone's own providers.
+        assertNull(FolderTrees.overlap(files("/storage/emulated/0/Download/Agents"), downloads("msf:31")))
+        assertNull(FolderTrees.overlap(files("/storage/emulated/10/Download/Agents"), inbox))
+        assertNull(FolderTrees.overlap(files("/storage/emulated/0/Download/Agents", user = "10@"), inbox), "another profile's file manager")
+        // An id that is no such path says nothing about the phone's storage: apart for changes, as before.
+        assertEquals(false, FolderTrees.overlap(files("/data/user/0/com.example.files/notes"), storage("primary:Documents")))
+        assertEquals(false, FolderTrees.overlap(files("/storage-old/x"), storage("primary:")))
+        // It is still another app's folder for the Folders screen.
+        assertEquals("com.example.files.provider", FolderTrees.otherAppProvider(files("/storage/emulated/0/Download/Agents")))
     }
 
     @Test

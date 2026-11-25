@@ -186,29 +186,37 @@ interface OwnerFolders {
     suspend fun setReadOnly(id: FolderId, readOnly: Boolean): SharedFolder?
 
     /**
-     * True when the Folders screen should warn about [folder] (SEC-W2B-2-R): agents may change it, and it comes from
-     * another app's storage provider ([FolderTrees.otherAppProvider]: a cloud drive, a file manager). Android does not
-     * tell whether that app also shows the phone's own files. If it does, a change made there can land in a folder the
-     * owner made read-only, and this app cannot see that ([FolderTrees.overlap] counts such folders as apart). Show
-     * [otherAppStorageNote] under it, with that app's name.
+     * True when the Folders screen should warn about [folder] (SEC-W2B-2-R, B1): it comes from another app's storage
+     * provider ([FolderTrees.otherAppProvider]: a cloud drive, a file manager). Android does not tell whether that app
+     * also shows the phone's own files, and unless the app names its folders by their path there, this app cannot see
+     * whether two folders hold the same files ([FolderTrees.overlap] counts them as apart). If it does show them, a change
+     * made through such a folder agents may change can land in a folder the owner made read-only; and a change made
+     * through a folder of the phone's storage agents may change can land in such a folder the owner made read-only. Show
+     * [otherAppStorageNote] under it, with that app's name and the folder's [SharedFolder.readOnly]; it changes when the
+     * owner switches read-only.
      */
-    fun fromOtherAppStorage(folder: SharedFolder): Boolean = !folder.readOnly && FolderTrees.otherAppProvider(folder.treeUri) != null
+    fun fromOtherAppStorage(folder: SharedFolder): Boolean = FolderTrees.otherAppProvider(folder.treeUri) != null
 
     companion object {
         /** Longest app name [otherAppStorageNote] keeps; a longer one is cut. */
         const val MAX_APP_NAME_CHARS: Int = 60
 
         /**
-         * The sentence under a folder [fromOtherAppStorage] flags. [appName] is the label of the app whose provider gives
-         * the folder (another app's text: kept to one line of at most [MAX_APP_NAME_CHARS] characters), or null when
-         * Android does not tell it.
+         * The sentence under a folder [fromOtherAppStorage] flags, for a folder agents may change or a [readOnly] one.
+         * [appName] is the label of the app whose provider gives the folder (another app's text: kept to one line of at
+         * most [MAX_APP_NAME_CHARS] characters), or null when Android does not tell it.
          */
-        fun otherAppStorageNote(appName: String?): String {
+        fun otherAppStorageNote(appName: String?, readOnly: Boolean): String {
             val name = appName?.let(::oneLine)?.takeIf { it.isNotEmpty() }
             val first = name ?: "another app"
             val again = name ?: "that app"
-            return "This folder comes from $first. If $again shows your phone's own files, agents could change files there even in " +
-                "folders you made read-only. Make this folder read-only, or share folders from the phone's storage instead."
+            return if (readOnly) {
+                "This folder comes from $first. If $again shows your phone's own files, agents could still change files in it " +
+                    "through another shared folder that they may change. If it does, share this folder from the phone's storage instead."
+            } else {
+                "This folder comes from $first. If $again shows your phone's own files, agents could change files there even in " +
+                    "folders you made read-only. Make this folder read-only, or share folders from the phone's storage instead."
+            }
         }
 
         /** [text] as one line: control, format (such as direction marks) and separator characters become spaces. */
