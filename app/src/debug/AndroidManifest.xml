@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     Debug builds only (Phase 6, WP6; feasibility critique F26): a probe for the device test ScriptProcessDeviceTest,
+     declared exactly as the script service is (isolated, in ":scripts", not exported), so that the test can look at an
+     isolated script process from the inside. Never in a release build.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <service
+            android:name=".scripts.ScriptProbeService"
+            android:exported="false"
+            android:isolatedProcess="true"
+            android:process=":scripts" />
+    </application>
+</manifest>
