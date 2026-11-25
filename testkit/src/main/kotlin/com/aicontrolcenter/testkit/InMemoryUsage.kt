@@ -14,6 +14,7 @@ import com.aicontrolcenter.core.usage.ModelUsage
 import com.aicontrolcenter.core.usage.OwnerModelPrices
 import com.aicontrolcenter.core.usage.OwnerUsage
 import com.aicontrolcenter.core.usage.ProviderUsage
+import com.aicontrolcenter.core.usage.UsageHousekeeping
 import com.aicontrolcenter.core.usage.UsageLedger
 import com.aicontrolcenter.core.usage.UsageRange
 import com.aicontrolcenter.core.usage.UsageReports
@@ -32,12 +33,13 @@ import java.time.ZoneId
  * Reference implementation of the usage ports (Phase 6, K11): one hour row per hour (UTC),
  * model, agent and source, and one work row per work item and model, changed together under one
  * state update, as Room does them in one transaction. [zone] is the owner's time zone, read at
- * each use (it can change); [clock] gives "today" for [clearHistory].
+ * each use (it can change); [clock] gives "today" for [clearHistory] and for the bound of
+ * [pruneHours], which never deletes today's rows.
  */
 class InMemoryUsageStore(
     private val clock: Clock,
     private val zone: () -> ZoneId = { ZoneId.systemDefault() },
-) : UsageLedger, UsageReports, OwnerUsage {
+) : UsageLedger, UsageReports, OwnerUsage, UsageHousekeeping {
     private data class HourKey(val hourStart: Long, val modelId: ModelId, val agentId: AgentId?, val source: UsageSource)
 
     private data class HourRow(
@@ -89,14 +91,19 @@ class InMemoryUsageStore(
         state.value.hours.filterKeys { it.hourStart >= fromMs }.values.fold(UsageTotals()) { sum, row -> sum + row.totals }
 
     override suspend fun pruneHours(beforeMs: Long): Int {
+        // Never one of today's rows, whatever is asked: they seed the daily limits (F4).
+        val until = minOf(beforeMs, UsageRange.day(clock.now(), zone()).fromMs)
         var removed = 0
         state.update { current ->
-            val kept = current.hours.filterKeys { it.hourStart >= beforeMs }
+            val kept = current.hours.filterKeys { it.hourStart >= until }
             removed = current.hours.size - kept.size
             current.copy(hours = kept)
         }
         return removed
     }
+
+    /** The in-memory store cannot tell which work still exists. */
+    override suspend fun pruneOrphanedWork(): Int = 0
 
     override suspend fun clearHistory(): Int {
         val today = UsageRange.day(clock.now(), zone())

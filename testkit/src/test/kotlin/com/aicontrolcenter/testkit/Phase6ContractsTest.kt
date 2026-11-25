@@ -67,7 +67,7 @@ class InMemoryOwnerQuestionTest : OwnerQuestionContract() {
 class InMemoryUsageLedgerTest : UsageLedgerContract() {
     override fun createStores(clock: FakeClock, zone: ZoneId): UsageStores {
         val store = InMemoryUsageStore(clock) { zone }
-        return UsageStores(store, store, store)
+        return UsageStores(store, store, store, store)
     }
 }
 

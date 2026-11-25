@@ -10,12 +10,15 @@ import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.operator.GrantLookup
 import com.aicontrolcenter.core.operator.GrantQuery
 import com.aicontrolcenter.core.operator.GrantScope
+import com.aicontrolcenter.core.operator.OperatorCapabilities
 import com.aicontrolcenter.core.operator.OperatorGate
 import com.aicontrolcenter.core.operator.OwnerRequest
 import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.OwnerRequestQueue
 import com.aicontrolcenter.core.operator.OwnerRequestStatus
 import com.aicontrolcenter.core.requestId
+import com.aicontrolcenter.core.routines.RoutineLimits
+import com.aicontrolcenter.core.tasks.ObjectiveOptions
 import com.aicontrolcenter.core.tasks.TaskKind
 import com.aicontrolcenter.core.tasks.TaskRepository
 import com.aicontrolcenter.core.tasks.TaskStatus
@@ -106,7 +109,11 @@ class PermissionBroker(
 ) : ToolAuthorizer {
 
     override suspend fun authorize(tool: ToolSpec, assessment: ActionAssessment, context: ToolContext): Authorization {
-        val call = Call(tool, assessment, context, currentAgentTurn()?.extraToolIds.orEmpty())
+        val call = Call(tool, assessment, context, currentAgentTurn()?.extraToolIds.orEmpty(), objectiveOptions(context))
+        // Phase 6 (security review of wave 1, F12): a routine's objective uses other apps' screens only when the owner ticked it.
+        if (!call.options.screenActionsAllowed && tool.capability in SCREEN_CAPABILITIES) {
+            return Authorization.Denied(ObjectiveOptions.SCREEN_ACTIONS_NOT_ALLOWED)
+        }
         gate(call)?.let { return Authorization.Denied(it) }
         // The gate refuses a capability it does not know, so there is one.
         val info = facts.capabilityInfo(tool.capability) ?: return Authorization.Denied("\"${tool.capability.id}\" is not a permission this app knows.")
@@ -140,8 +147,22 @@ class PermissionBroker(
         return if (answered.isEmpty()) Authorization.Allowed else Authorization.AllowedByOwner(answered)
     }
 
+    /**
+     * The options of the objective [context] belongs to, read once per call: a routine's objective
+     * carries its screen choice and approval time-out (F12). Calls outside an objective (a chat)
+     * and objectives the owner started by hand get the defaults.
+     */
+    private suspend fun objectiveOptions(context: ToolContext): ObjectiveOptions =
+        context.rootTaskId?.let { root -> tasks?.get(root)?.options } ?: ObjectiveOptions()
+
     /** One call being decided. */
-    private class Call(val tool: ToolSpec, val assessment: ActionAssessment, val context: ToolContext, val extraToolIds: Set<com.aicontrolcenter.core.ToolId>) {
+    private class Call(
+        val tool: ToolSpec,
+        val assessment: ActionAssessment,
+        val context: ToolContext,
+        val extraToolIds: Set<com.aicontrolcenter.core.ToolId>,
+        val options: ObjectiveOptions,
+    ) {
         /** An assessment can raise the risk of a call, never lower it below the tool's declared risk. */
         val risk: RiskLevel = maxOf(tool.risk, assessment.risk)
     }
@@ -230,7 +251,9 @@ class PermissionBroker(
     private suspend fun newRequest(call: Call, kind: OwnerRequestKind, info: CapabilityInfo): OwnerRequest {
         val context = call.context
         val now = clock.now()
-        val minutes = facts.settings().approvalTimeoutMinutes.coerceAtLeast(1)
+        // A routine's objective may set its own time-out (F12); otherwise the owner's usual one.
+        val minutes = call.options.approvalTimeoutMinutes?.coerceIn(1, RoutineLimits.MAX_APPROVAL_TIMEOUT_MINUTES)
+            ?: facts.settings().approvalTimeoutMinutes.coerceAtLeast(1)
         val details = when (kind) {
             // The exact preview, as the tool assessed it.
             OwnerRequestKind.APPROVAL -> call.assessment.details
@@ -418,6 +441,9 @@ class PermissionBroker(
         const val CANCELLED_NOTE = "the call that asked was stopped before the owner answered"
 
         private const val MINUTE_MS = 60_000L
+
+        /** Reading and acting on other apps' screens: what a routine's objective may do only when the owner ticked it (F12). */
+        private val SCREEN_CAPABILITIES = setOf(OperatorCapabilities.SCREEN_READ, OperatorCapabilities.SCREEN_OPERATE)
         private const val MAX_NOTE = 500
         private const val MAX_DETAIL = 300
         private const val MAX_LOGGED = 600

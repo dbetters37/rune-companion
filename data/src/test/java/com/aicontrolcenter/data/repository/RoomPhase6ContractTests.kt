@@ -84,7 +84,7 @@ class RoomMemoryCountContractTest : MemoryCountContract() {
     override fun createRepository() = RoomMemoryRepository(db.database)
 }
 
-/** The three usage ports over one database, as `DataLayer` wires them. */
+/** The four usage ports over one database, as `DataLayer` wires them. */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
 class RoomUsageLedgerContractTest : UsageLedgerContract() {
@@ -93,6 +93,7 @@ class RoomUsageLedgerContractTest : UsageLedgerContract() {
         ledger = RoomUsageLedger(db.database),
         reports = RoomUsageReports(db.database),
         owner = RoomOwnerUsage(db.database, clock, { zone }),
+        housekeeping = RoomUsageHousekeeping(db.database, clock, { zone }),
     )
 }
 

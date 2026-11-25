@@ -116,9 +116,11 @@
             android:process=":scripts" />
 
         <!--
-             Phase 6, routines (owner decision Q1, plan Appendix A, Tier B): receives a routine's alarm and the
-             owner's "Tap to start" from the app's own notification. No intent filter and not exported: only the app's
-             own PendingIntents reach it. Disabled until the owner makes a routine.
+             Phase 6, routines (owner decision Q1, plan Appendix A, Tier B): receives a routine's alarm and only
+             signals: it asks the foreground service to run the routines that are due. It never starts work from a
+             notification: "Tap to start" opens the app, where the owner confirms (security review of wave 1, F12).
+             No intent filter and not exported: only the app's own alarm PendingIntents reach it. Disabled until the
+             owner makes a routine.
         -->
         <receiver
             android:name=".routines.RoutineAlarmReceiver"

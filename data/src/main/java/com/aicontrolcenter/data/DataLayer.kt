@@ -24,6 +24,7 @@ import com.aicontrolcenter.core.tasks.TaskRepository
 import com.aicontrolcenter.core.usage.ModelPrices
 import com.aicontrolcenter.core.usage.OwnerModelPrices
 import com.aicontrolcenter.core.usage.OwnerUsage
+import com.aicontrolcenter.core.usage.UsageHousekeeping
 import com.aicontrolcenter.core.usage.UsageLedger
 import com.aicontrolcenter.core.usage.UsageReports
 import com.aicontrolcenter.data.db.AiccDatabase
@@ -46,6 +47,7 @@ import com.aicontrolcenter.data.repository.RoomProviderRepository
 import com.aicontrolcenter.data.repository.RoomRoutineRepository
 import com.aicontrolcenter.data.repository.RoomSharedFolderRepository
 import com.aicontrolcenter.data.repository.RoomTaskRepository
+import com.aicontrolcenter.data.repository.RoomUsageHousekeeping
 import com.aicontrolcenter.data.repository.RoomUsageLedger
 import com.aicontrolcenter.data.repository.RoomUsageReports
 import com.aicontrolcenter.data.security.AndroidKeystoreVaultCipher
@@ -59,6 +61,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.withContext
+import androidx.room.withTransaction
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.NoSuchFileException
@@ -148,9 +151,16 @@ class DataLayer(
 
     /**
      * Where the model gateway records every call (schema 6, rule 7: numbers, ids and labels only).
-     * Never handed to anything an agent reaches.
+     * Agent-facing code may hold it (the gateway's journal and daily limiter): it adds and sums,
+     * and deletes nothing (security review of wave 1, F4).
      */
     val usageLedger: UsageLedger by lazy { RoomUsageLedger(database, ioDispatcher) }
+
+    /**
+     * Retention pruning of usage (F4). Never handed to anything an agent reaches: only the upkeep
+     * side holds it, and it never deletes today's rows (they seed the daily limits).
+     */
+    val usageHousekeeping: UsageHousekeeping by lazy { RoomUsageHousekeeping(database, clock, zone, ioDispatcher) }
 
     /** Usage and costs for the Usage tab, the Dashboard and the daily limiter. */
     val usageReports: UsageReports by lazy { RoomUsageReports(database, ioDispatcher) }
@@ -175,6 +185,20 @@ class DataLayer(
 
     /** Folder pick-up rules and their imports (Appendix A). Owner-capable, like [routines]. */
     val pickUpRules: PickUpRuleRepository by lazy { RoomPickUpRuleRepository(database, ioDispatcher) }
+
+    /**
+     * What the backup file (WP3, Tier B) may read and write, and nothing else (security review of wave 1, F13): the
+     * stores whose records the file holds, the settings (merged on restore by `RestoreSettings`), the task store read
+     * for the "empty app" check, the activity log, and one database transaction for a restore. Never the key vault,
+     * the grants, the requests to the owner, the shared folders or the authorised screen apps (rule 8).
+     */
+    val backupStores: BackupStores by lazy {
+        BackupStores(
+            agents = agents, providers = providers, models = models, modelPrices = modelPrices, ownerModelPrices = ownerModelPrices,
+            aiApps = aiApps, memories = memories, conversations = conversations, tasks = tasks, settings = settings, activityLog = activityLog,
+            transactions = RoomTransactions(database),
+        )
+    }
 
     val settings: SettingsRepository by lazy {
         DataStoreSettingsRepository.create(appContext, CoroutineScope(settingsJob + ioDispatcher), settingsFileName)
@@ -229,6 +253,11 @@ class DataLayer(
     /** [ModelPrices] and nothing else, over [source]. */
     private class ReadOnlyModelPrices(private val source: ModelPrices) : ModelPrices by source
 
+    /** One Room transaction around a block (the database file opens on first use). Holds the database, not this layer. */
+    private class RoomTransactions(private val database: AiccDatabase) : Transactions {
+        override suspend fun <R> run(block: suspend () -> R): R = database.withTransaction { block() }
+    }
+
     companion object {
         /** Path of the vault file, relative to `noBackupFilesDir`. */
         const val VAULT_FILE = "vault/secrets.json"
@@ -237,3 +266,35 @@ class DataLayer(
         fun databaseKeyFile(databaseName: String): String = "database-keys/$databaseName.key"
     }
 }
+
+/** Runs a block in one database transaction: all of it is written, or nothing. */
+interface Transactions {
+    suspend fun <R> run(block: suspend () -> R): R
+}
+
+/**
+ * The stores a backup saves and restores (security review of wave 1, F13), built by [DataLayer.backupStores]. It
+ * holds no key vault, grant store, request store, shared-folder store or authorised-app store, so rule 8's
+ * exclusions do not rest on the backup code alone: it cannot reach them. `BackupWiringTest` (app) walks it.
+ */
+class BackupStores(
+    val agents: AgentRepository,
+    val providers: ProviderRepository,
+    val models: ModelRepository,
+    /** The owner's prices, read when saving. */
+    val modelPrices: ModelPrices,
+    /** The owner's prices, written when restoring. */
+    val ownerModelPrices: OwnerModelPrices,
+    val aiApps: AiAppRepository,
+    /** Spaces, memories and their links. */
+    val memories: MemoryRepository,
+    val conversations: ConversationRepository,
+    /** Read only for "is this app empty?" before a restore: objectives are never in the file. */
+    val tasks: TaskRepository,
+    /** Read when saving ([com.aicontrolcenter.core.backup.BackupSettings.of]); merged when restoring. */
+    val settings: SettingsRepository,
+    /** A save or a restore is logged with counts only. */
+    val activityLog: ActivityLog,
+    /** One transaction for a whole restore. */
+    val transactions: Transactions,
+)

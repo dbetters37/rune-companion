@@ -360,7 +360,7 @@ class StoredNamesGoldenTest {
     fun `keys and exact text of the task columns`() {
         assertStoredKeys(ReviewVerdict.serializer(), "reviewer", "decision", "summary", "issues", "at", "reviewTaskId")
         assertStoredKeys(TaskUsage.serializer(), "modelCalls", "toolCalls", "inputTokens", "outputTokens", "messagesSent")
-        assertStoredKeys(ObjectiveOptions.serializer(), "reviewResults", "saveKnowledge", "maxTasks", "routineId")
+        assertStoredKeys(ObjectiveOptions.serializer(), "reviewResults", "saveKnowledge", "maxTasks", "routineId", "screenActionsAllowed", "approvalTimeoutMinutes")
         assertEquals("""{"type":"owner"}""", encodeColumn(ColumnSerializers.taskRequester, TaskRequester.Owner))
         assertEquals(
             """{"type":"agent","agentId":"agt_director"}""",
@@ -383,7 +383,7 @@ class StoredNamesGoldenTest {
             encodeColumn(TaskUsage.serializer(), TaskUsage(3, 2, 1_200, 300, 4)),
         )
         assertEquals(
-            """{"reviewResults":true,"saveKnowledge":false,"maxTasks":null,"routineId":null}""",
+            """{"reviewResults":true,"saveKnowledge":false,"maxTasks":null,"routineId":null,"screenActionsAllowed":true,"approvalTimeoutMinutes":null}""",
             encodeColumn(ObjectiveOptions.serializer(), ObjectiveOptions()),
         )
         assertEquals("""["tsk_z","tsk_a"]""", encodeColumn(ColumnSerializers.taskIdList, listOf(TaskId("tsk_z"), TaskId("tsk_a"))))

@@ -12,6 +12,7 @@ import com.aicontrolcenter.core.usage.ModelUsage
 import com.aicontrolcenter.core.usage.OwnerModelPrices
 import com.aicontrolcenter.core.usage.OwnerUsage
 import com.aicontrolcenter.core.usage.ProviderUsage
+import com.aicontrolcenter.core.usage.UsageHousekeeping
 import com.aicontrolcenter.core.usage.UsageLedger
 import com.aicontrolcenter.core.usage.UsageRange
 import com.aicontrolcenter.core.usage.UsageReports
@@ -63,8 +64,32 @@ class RoomUsageLedger internal constructor(
     override suspend fun totalsSince(fromMs: Long): UsageTotals = withContext(dispatcher) {
         dao.sums(fromMs, Long.MAX_VALUE).toTotals()
     }
+}
 
-    override suspend fun pruneHours(beforeMs: Long): Int = withContext(dispatcher) { dao.deleteHoursBefore(beforeMs) }
+/**
+ * [UsageHousekeeping] on Room (security review of wave 1, F4): the retention pruning, kept apart
+ * from the ledger agent-facing code holds. [pruneHours] is clamped to the start of the owner's
+ * day ([UsageRange.day] at [clock]'s time in [zone], read at each call), so today's rows, which
+ * seed the daily limits after a restart, can never be deleted whatever time it is given.
+ * Only the upkeep side holds it.
+ */
+class RoomUsageHousekeeping internal constructor(
+    private val dao: UsageDao,
+    private val clock: Clock,
+    private val zone: () -> ZoneId,
+    private val dispatcher: CoroutineDispatcher,
+) : UsageHousekeeping {
+
+    constructor(
+        database: AiccDatabase,
+        clock: Clock,
+        zone: () -> ZoneId = { ZoneId.systemDefault() },
+        dispatcher: CoroutineDispatcher = Dispatchers.IO,
+    ) : this(database.usageDao(), clock, zone, dispatcher)
+
+    override suspend fun pruneHours(beforeMs: Long): Int = withContext(dispatcher) {
+        dao.deleteHoursBefore(minOf(beforeMs, UsageRange.day(clock.now(), zone()).fromMs))
+    }
 
     override suspend fun pruneOrphanedWork(): Int = withContext(dispatcher) { dao.deleteOrphanedWork() }
 }

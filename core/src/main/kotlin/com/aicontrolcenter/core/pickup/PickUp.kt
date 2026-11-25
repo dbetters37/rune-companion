@@ -9,7 +9,11 @@ import com.aicontrolcenter.core.memory.MemoryKind
 import com.aicontrolcenter.core.memory.MemoryScope
 import com.aicontrolcenter.core.memory.Provenance
 import com.aicontrolcenter.core.memory.ProvenanceOrigin
+import com.aicontrolcenter.core.operator.DocResult
+import com.aicontrolcenter.core.operator.DocumentEntry
+import com.aicontrolcenter.core.operator.FileContent
 import com.aicontrolcenter.core.operator.OwnerResult
+import com.aicontrolcenter.core.operator.RelativePath
 import com.aicontrolcenter.core.operator.SharedFolder
 import kotlinx.coroutines.flow.Flow
 
@@ -148,6 +152,32 @@ interface OwnerPickUpRules {
 
     /** Deletes the rule and its import records; memories it made stay. Returns false when it did not exist. */
     suspend fun delete(id: PickUpRuleId): Boolean
+}
+
+/**
+ * What folder pick-up may do with the owner's shared folders (security review of wave 1, F11):
+ * read a folder's record, list the files directly in it, and read one. It cannot write, rename,
+ * delete, add or remove a folder, or take or release Android's access. The runner (WP17) gets this
+ * and nothing wider; the app's view over the folder store and the SAF gateway implements it.
+ */
+interface PickUpFolders {
+    /** The folder as stored now (its [SharedFolder.readOnly] switch included), or null when it was removed. */
+    suspend fun folder(id: FolderId): SharedFolder?
+
+    /** The files and folders directly inside the folder's root. */
+    suspend fun files(folder: FolderId): DocResult<List<DocumentEntry>>
+
+    /** At most [maxBytes] of the file at [path]. */
+    suspend fun read(folder: FolderId, path: RelativePath, maxBytes: Long): DocResult<FileContent>
+
+    /** No folders: every pick-up finds its folder gone. */
+    object None : PickUpFolders {
+        override suspend fun folder(id: FolderId): SharedFolder? = null
+
+        override suspend fun files(folder: FolderId): DocResult<List<DocumentEntry>> = DocResult.NotFound("")
+
+        override suspend fun read(folder: FolderId, path: RelativePath, maxBytes: Long): DocResult<FileContent> = DocResult.NotFound(path.value)
+    }
 }
 
 /**

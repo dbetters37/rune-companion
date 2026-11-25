@@ -1,28 +1,16 @@
 package com.aicontrolcenter.app.di
 
 import com.aicontrolcenter.app.operator.AuthorisedAppsView
-import com.aicontrolcenter.app.operator.FolderDirectoryView
 import com.aicontrolcenter.app.operator.GrantLookupView
 import com.aicontrolcenter.app.operator.RequestQueueView
 import com.aicontrolcenter.app.operator.ScreenSessions
-import com.aicontrolcenter.app.operator.SharedFolderFilesView
 import com.aicontrolcenter.app.testing.TestApp
 import com.aicontrolcenter.core.ToolId
-import com.aicontrolcenter.core.operator.GrantStore
-import com.aicontrolcenter.core.operator.OperatorAppRepository
 import com.aicontrolcenter.core.operator.OperatorCapabilities
 import com.aicontrolcenter.core.operator.OperatorTools
-import com.aicontrolcenter.core.operator.OwnerFolders
-import com.aicontrolcenter.core.operator.OwnerGrants
-import com.aicontrolcenter.core.operator.OwnerOperatorApps
-import com.aicontrolcenter.core.operator.OwnerRequestDecisions
-import com.aicontrolcenter.core.operator.OwnerRequestRepository
 import com.aicontrolcenter.core.operator.OwnerRequests
-import com.aicontrolcenter.core.operator.PermissionRepository
 import com.aicontrolcenter.core.operator.ProtectedPackages
 import com.aicontrolcenter.core.operator.ScreenControl
-import com.aicontrolcenter.core.operator.SharedFolderRepository
-import com.aicontrolcenter.core.operator.SharedFolders
 import com.aicontrolcenter.core.settings.FrameworkSettings
 import com.aicontrolcenter.core.settings.ReadOnlySettings
 import com.aicontrolcenter.core.settings.SettingsRepository
@@ -35,10 +23,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import org.junit.After
 import org.junit.Test
-import java.lang.reflect.Field
-import java.lang.reflect.Method
-import java.lang.reflect.Modifier
-import java.util.IdentityHashMap
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -64,130 +48,27 @@ class OperatorDependencyTest {
     @After
     fun stop() = scope.cancel()
 
-    private val ownerOnly: List<Class<*>> = listOf(
-        OwnerRequests::class.java, OwnerGrants::class.java, OwnerFolders::class.java, OwnerOperatorApps::class.java, ScreenControl::class.java,
-        OwnerRequestDecisions::class.java, GrantStore::class.java, OwnerRequestRepository::class.java, PermissionRepository::class.java,
-        // Owner-capable mutators: adding and removing folders and apps, taking and releasing a folder's access, Resume after Stop.
-        SharedFolderRepository::class.java, OperatorAppRepository::class.java, SharedFolders::class.java,
-        Class.forName("com.aicontrolcenter.device.screen.StopSwitch"),
-        // Phase 6 (rule 3, WP1a): notes to the team, prices, usage history, backup, recovery, routines and folder
-        // pick-up, and the two stores that can create work or intake that starts while nobody watches.
-        com.aicontrolcenter.core.tasks.OwnerConversation::class.java, com.aicontrolcenter.core.usage.OwnerModelPrices::class.java,
-        com.aicontrolcenter.core.usage.OwnerUsage::class.java, com.aicontrolcenter.core.backup.OwnerBackup::class.java,
-        com.aicontrolcenter.core.health.OwnerRecovery::class.java, com.aicontrolcenter.core.routines.OwnerRoutines::class.java,
-        com.aicontrolcenter.core.routines.RoutineRepository::class.java, com.aicontrolcenter.core.pickup.OwnerPickUpRules::class.java,
-        com.aicontrolcenter.core.pickup.PickUpRuleRepository::class.java,
-        // Phase 6 (rule 3, WP1d): only the owner writes the settings. Agent-facing code holds the read-only view.
-        SettingsRepository::class.java,
-    )
+    private val rules = AgentFacingWalk()
+    private val ownerOnly: List<Class<*>> = rules.ownerOnly
+
+    private fun isOwnerOnly(type: Class<*>): Boolean = rules.isOwnerOnly(type)
+
+    private fun ownerActionsOf(type: Class<*>): List<String> = rules.ownerActionsOf(type)
+
+    private fun walk(root: Any, name: String): AgentFacingWalk.Result = rules.walk(root, name)
+
+    private fun fieldsOf(type: Class<*>) = rules.fieldsOf(type)
 
     /**
-     * The only objects allowed to hold a full store: each exposes the agent-side interface alone.
-     * The agents' screen view ([ScreenSessions]) is not one of them: it is walked, down to the
-     * screen operator it passes calls to.
+     * What agents run through: the executor, the broker, every registered tool, and (security review of wave 1, F10)
+     * the chat, the model gateway and the registry directory, whose held objects nothing else reaches. WP8 adds the
+     * wave-2 roots (the question port's agent side, the script host, the provider re-checks).
      */
-    private val views: List<Class<*>> = listOf(
-        RequestQueueView::class.java, GrantLookupView::class.java, FolderDirectoryView::class.java, AuthorisedAppsView::class.java,
-        SharedFolderFilesView::class.java,
-        // Phase 6 (rule 3): the settings as agents read them; its private source is the owner's writer.
-        ReadOnlySettings::class.java,
-    )
-
-    private fun isOwnerOnly(type: Class<*>): Boolean = ownerOnly.any { it.isAssignableFrom(type) }
-
-    /**
-     * Actions that are the owner's alone, by method name: an object that offers one is a
-     * violation whatever its class, also inside a view. Round 2 (B2): letting an agent ask again
-     * after a refusal ([OwnerRequests.letAskAgain], written by [OwnerRequestDecisions.letAskAgain]). Phase 6:
-     * starting over, clearing the usage history, and `update` of the settings ([changesSettings]).
-     */
-    private val ownerOnlyActions = setOf("letAskAgain", "startOver", "clearHistory")
-
-    /**
-     * Phase 6 (rule 3): an `update` that changes the owner's settings, told by its signature, which names
-     * [FrameworkSettings]. The bare name would also match the update of a task, a memory or an agent, which the
-     * orchestrator and the memory tools may do.
-     */
-    private fun changesSettings(method: Method): Boolean =
-        method.name.substringBefore('-') == "update" && method.genericParameterTypes.any { FrameworkSettings::class.java.name in it.typeName }
-
-    /** A method taking an id (a value class) is compiled as "name-hash": compared by the name in front. */
-    private fun ownerActionsOf(type: Class<*>): List<String> =
-        type.methods.filter { it.name.substringBefore('-') in ownerOnlyActions || changesSettings(it) }.map { it.name.substringBefore('-') }.distinct()
-
-    private class Walk(val violations: MutableList<String> = ArrayList(), val unreadable: MutableList<String> = ArrayList(), var objects: Int = 0)
-
-    /** Every object reachable from [root], checking each field's declared type and each value's class. */
-    private fun walk(root: Any, name: String): Walk {
-        val result = Walk()
-        val seen = IdentityHashMap<Any, Unit>()
-        val queue = ArrayDeque(listOf(root to name))
-        while (queue.isNotEmpty()) {
-            val (value, path) = queue.removeFirst()
-            if (seen.put(value, Unit) != null) continue
-            result.objects++
-            val type = value.javaClass
-            // Checked on every object reached, the narrow views too: none of them may be able to do what only the owner does.
-            ownerActionsOf(type).forEach { result.violations += "$path: ${type.name} offers $it" }
-            if (isOwnerOnly(type)) {
-                result.violations += "$path: ${type.name}"
-                continue
-            }
-            when {
-                value is Map<*, *> -> value.entries.forEachIndexed { i, (k, v) ->
-                    k?.let { queue += it to "$path{key $i}" }
-                    v?.let { queue += it to "$path{$i}" }
-                }
-                value is Iterable<*> && !followFields(type) -> value.forEachIndexed { i, v -> v?.let { queue += it to "$path[$i]" } }
-                type.isArray && !type.componentType.isPrimitive -> (value as Array<*>).forEachIndexed { i, v -> v?.let { queue += it to "$path[$i]" } }
-                followFields(type) -> {
-                    if (type in views) continue
-                    for (field in fieldsOf(type)) {
-                        val fieldPath = "$path.${field.name}"
-                        if (isOwnerOnly(field.type)) result.violations += "$fieldPath: declared ${field.type.simpleName}"
-                        val held = try {
-                            field.isAccessible = true
-                            field.get(value)
-                        } catch (e: Exception) {
-                            result.unreadable += "$fieldPath (${e.javaClass.simpleName})"
-                            continue
-                        } ?: continue
-                        queue += held to fieldPath
-                    }
-                }
-            }
-        }
-        return result
-    }
-
-    /**
-     * The app's, the framework's and the fakes' own classes, lambdas and Kotlin's holders are
-     * followed; platform classes are leaves. So is this test harness ([TestApp] and its lambdas):
-     * it stands in for the production ports and holds the graph itself, which a test is allowed to.
-     */
-    private fun followFields(type: Class<*>): Boolean = !type.name.startsWith(HARNESS) && (
-        type.name.startsWith("com.aicontrolcenter.") || type.name.startsWith("kotlin.jvm.internal.") ||
-            // Lambdas are classes named after where they are written, so the app's and the framework's are followed above.
-            type.name == "kotlin.SynchronizedLazyImpl" || type.name == "kotlin.UnsafeLazyImpl" || type.name == "kotlin.InitializedLazyImpl"
-        )
-
-    private fun fieldsOf(type: Class<*>): List<Field> {
-        val fields = ArrayList<Field>()
-        var current: Class<*>? = type
-        while (current != null && current != Any::class.java && followFields(current)) {
-            current.declaredFields.filterTo(fields) { !Modifier.isStatic(it.modifiers) && !it.type.isPrimitive }
-            current = current.superclass
-        }
-        return fields
-    }
-
-    private companion object {
-        const val HARNESS = "com.aicontrolcenter.app.testing."
-    }
-
     private fun roots(): List<Pair<Any, String>> =
-        listOf(app.graph.toolExecutor to "executor", app.graph.permissionBroker to "broker") +
-            app.graph.toolRegistry.all().map { it to "tool ${it.spec.id.value}" }
+        listOf(
+            app.graph.toolExecutor to "executor", app.graph.permissionBroker to "broker", app.graph.agentChat to "chat",
+            app.graph.modelGateway to "model gateway", app.graph.registryDirectory to "registry directory",
+        ) + app.graph.toolRegistry.all().map { it to "tool ${it.spec.id.value}" }
 
     @Test
     fun `nothing reachable from the executor, the broker or any registered tool reaches an owner-only port`() {
@@ -203,7 +84,7 @@ class OperatorDependencyTest {
     @Test
     fun `letting an agent ask again after a refusal cannot be reached from the executor, the broker or any tool`() {
         // Round 2 (B2). The owner's screens can: the port offers it, and the store's owner side writes it.
-        assertEquals(listOf("letAskAgain"), ownerActionsOf(app.graph.ownerRequests.javaClass))
+        assertEquals(setOf("letAskAgain", "answer"), ownerActionsOf(app.graph.ownerRequests.javaClass).toSet())
         assertEquals(listOf("letAskAgain"), ownerActionsOf(app.ownerRequestStore.javaClass))
         assertTrue(walk(app.graph.ownerRequests, "ownerRequests").violations.any { it.endsWith("offers letAskAgain") })
         // What the broker, the requester and the hooks are handed cannot, by type and as wired.
@@ -271,6 +152,51 @@ class OperatorDependencyTest {
         assertEquals(emptyList(), walk(object { val settings: Any = app.graph.settingsView }, "view").violations)
         // The owner's own services keep the writer: the agent manager and the memory seeder write their bookkeeping.
         assertTrue(walk(app.graph.agentManager, "agentManager").violations.any { "SettingsRepository" in it || "InMemorySettingsRepository" in it })
+    }
+
+    @Test
+    fun `the provider manager, the key vault, the owner's key check and usage pruning are owner-only, wherever they hide`() {
+        // Security review of wave 1, F3 and F4: listed, by type.
+        for (type in listOf(
+            com.aicontrolcenter.core.llm.ProviderManager::class.java, com.aicontrolcenter.core.security.SecretVault::class.java,
+            com.aicontrolcenter.core.llm.OwnerKeyCheck::class.java, com.aicontrolcenter.core.usage.UsageHousekeeping::class.java,
+        )) assertTrue(isOwnerOnly(type), type.simpleName)
+        assertTrue(isOwnerOnly(app.graph.providerManager.javaClass))
+        // What agent-facing work is given instead is not: the re-checks and the ledger.
+        assertTrue(!isOwnerOnly(com.aicontrolcenter.core.llm.ProviderRechecks::class.java))
+        assertTrue(!isOwnerOnly(com.aicontrolcenter.core.usage.UsageLedger::class.java))
+        assertTrue(!isOwnerOnly(app.graph.providerRechecks.javaClass))
+        // As wired: a chat, a gateway or a tool that held any of them would fail, also behind a lambda.
+        val graph = app.graph
+        val leaks = mapOf(
+            "provider manager" to object { val providers: Any = graph.providerManager },
+            "vault" to object { val vault: Any = app.vault },
+            "key check" to object { val check = object : com.aicontrolcenter.core.llm.OwnerKeyCheck { override suspend fun matchesStoredKey(text: String) = false } },
+            "usage pruning" to object { val usage: Any = app.usage },
+            "lambda over the provider manager" to { graph.providerManager.presets },
+        )
+        for ((what, holder) in leaks) assertTrue(walk(holder, what).violations.isNotEmpty(), "a holder of the $what is caught")
+        // The one sealed holder of the vault: the provider connections, which put a key only on its own provider's requests.
+        val connections = fieldsOf(graph.modelGateway.javaClass).first { it.type == com.aicontrolcenter.framework.llm.ProviderConnections::class.java }
+            .also { it.isAccessible = true }.get(graph.modelGateway)
+        assertTrue(fieldsOf(connections.javaClass).any { it.type == com.aicontrolcenter.core.security.SecretVault::class.java }, "the walk skips a real field")
+        val leaky = com.aicontrolcenter.framework.llm.ProviderConnections::class.java.methods.filter { m ->
+            !m.isSynthetic && (com.aicontrolcenter.core.security.SecretVault::class.java.isAssignableFrom(m.returnType) || m.name.contains("key", ignoreCase = true))
+        }
+        assertEquals(emptyList(), leaky.map { it.name }, "the provider connections offer no way to the vault or a key")
+    }
+
+    @Test
+    fun `answering an agent's question is the owner's alone`() {
+        // Security review of wave 1, F10: `answer` taking a RequestId is an owner-only action, as letAskAgain is.
+        assertTrue("answer" in ownerActionsOf(OwnerRequests::class.java))
+        assertTrue("answer" in ownerActionsOf(app.graph.ownerRequests.javaClass))
+        for (agentSide in listOf(
+            com.aicontrolcenter.core.operator.OwnerRequestQueue::class.java, com.aicontrolcenter.core.chat.AgentChat::class.java,
+            RequestQueueView::class.java, com.aicontrolcenter.core.tools.Tool::class.java,
+        )) assertTrue("answer" !in ownerActionsOf(agentSide), agentSide.simpleName)
+        val graph = app.graph
+        assertTrue(walk(object { val port: Any = graph.ownerQuestions }, "holder").violations.any { it.endsWith("offers answer") || "OwnerRequests" in it })
     }
 
     @Test

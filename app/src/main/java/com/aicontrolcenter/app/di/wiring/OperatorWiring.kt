@@ -10,7 +10,7 @@ import com.aicontrolcenter.app.operator.ScreenSessions
 import com.aicontrolcenter.app.operator.SharedFolderFilesView
 import com.aicontrolcenter.app.operator.SystemScreens
 import com.aicontrolcenter.core.activity.ActivityRecorder
-import com.aicontrolcenter.core.llm.ProviderManager
+import com.aicontrolcenter.core.llm.OwnerKeyCheck
 import com.aicontrolcenter.core.memory.MemoryService
 import com.aicontrolcenter.core.operator.GrantLookup
 import com.aicontrolcenter.core.operator.OperatorCapabilities
@@ -69,8 +69,9 @@ import kotlinx.coroutines.launch
  * @param appScope lives as long as the process.
  * @param registryDirectory the registry as agents see it (the built-in tools read it).
  * @param memory the one memory service of the process (the memory tools use it).
- * @param providerManager the provider manager (WP5: answering a question checks the answer against the stored keys,
- *   rule 32).
+ * @param ownerKeyCheck owner-only (WP5: answering a question checks the answer against the stored keys, rule 32). Only
+ *   the owner's request port (`OwnerServices.answer`) may hold it, never the broker, the tools or the question tool
+ *   (security review of wave 1, F3).
  */
 class OperatorAssembly(
     ports: Ports,
@@ -79,7 +80,7 @@ class OperatorAssembly(
     appScope: CoroutineScope,
     registryDirectory: RegistryDirectory,
     memory: MemoryService,
-    @Suppress("UNUSED_PARAMETER") providerManager: ProviderManager,
+    @Suppress("UNUSED_PARAMETER") ownerKeyCheck: OwnerKeyCheck,
 ) {
     /** The apps that are never operated: resolved once at start-up, the same set everywhere. */
     private val protectedPackages: () -> ProtectedPackages = ports.operator.protectedPackages

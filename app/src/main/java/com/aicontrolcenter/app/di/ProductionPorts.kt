@@ -58,12 +58,15 @@ fun createProductionPorts(
     val protectedPackages = ProtectedPackagesResolver.startResolving(appContext)
     // Exactly one per process: it shares the one accessibility service and the persisted Stop.
     val screen = ScreenOperatorLayer(appContext, data.operatorApps, protectedPackages)
+    // Agent-facing: the operator alone, never the layer, which also holds the owner's Stop and Resume (F10: the
+    // production walk caught the app actions reaching them through this lambda when it captured `screen`).
+    val screenOperator = screen.operator
     val phone = PhoneOperatorLayer(
         appContext,
         data.sharedFolders,
         protectedPackages = protectedPackages,
         // A bound accessibility service lets the app start activities from the background.
-        accessibilityServiceBound = { screen.operator.state.value == ScreenServiceState.READY },
+        accessibilityServiceBound = { screenOperator.state.value == ScreenServiceState.READY },
     )
     return Ports(
         agents = data.agents,
@@ -92,7 +95,7 @@ fun createProductionPorts(
             media = phone.mediaLibrary,
             appActions = phone.appActions,
             webReader = { onRequestSent -> OkHttpWebReader(onRequestSent = onRequestSent) },
-            screenOperator = screen.operator,
+            screenOperator = screenOperator,
             screenControl = screen.control,
             shell = phone.shellRunner,
             stopShellLeftovers = { phone.stopShellLeftovers() },
@@ -115,7 +118,8 @@ fun createProductionPorts(
         background = background,
         network = ModelsWiring.network(appContext),
         scripts = ScriptsWiring.production(appContext),
-        backup = BackupWiring.production(appContext, data, maintenanceGate),
+        // Only the stores a backup holds: never the vault, grants, requests, folders or authorised apps (F13).
+        backup = BackupWiring.production(data.backupStores, maintenanceGate, freeBytes = { appContext.filesDir.usableSpace }),
         routines = RoutinesWiring.production(appContext, data),
         maintenanceGate = maintenanceGate,
     )

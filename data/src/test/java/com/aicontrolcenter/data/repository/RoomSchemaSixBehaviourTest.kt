@@ -83,9 +83,10 @@ class RoomSchemaSixBehaviourTest {
         ledger.record(u.call(u.at("2026-11-25T10:00"), task = "tsk_gone", root = "tsk_gone_root"))
         ledger.record(u.call(u.at("2026-11-25T10:00"), task = null, root = null, conversation = "cnv_1", source = UsageSource.CHAT))
         ledger.record(u.call(u.at("2026-11-25T10:00"), task = null, root = null, conversation = "cnv_gone", source = UsageSource.CHAT))
-        assertEquals(3, ledger.pruneOrphanedWork())
+        val housekeeping = RoomUsageHousekeeping(db.database, com.aicontrolcenter.core.WallClock)
+        assertEquals(3, housekeeping.pruneOrphanedWork())
         assertEquals(listOf("CHAT:cnv_1", "OBJECTIVE:tsk_root", "TASK:tsk_1"), workRows())
-        assertEquals(0, ledger.pruneOrphanedWork())
+        assertEquals(0, housekeeping.pruneOrphanedWork())
     }
 
     @Test

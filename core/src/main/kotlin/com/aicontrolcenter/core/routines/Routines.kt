@@ -146,6 +146,14 @@ data class Routine(
 
     /** What the owner edits. */
     val draft: RoutineDraft get() = RoutineDraft(title, objectiveText, options, schedule, approvalTimeoutMinutes, allowScreenActions)
+
+    /**
+     * The options of the objective a run of this routine starts (security review of wave 1, F12): the
+     * routine's own options, marked as started by it, with its "May use other apps' screens" and its
+     * approval time-out, which the broker reads. The runner (WP17) starts every run with exactly these.
+     */
+    fun objectiveOptions(): ObjectiveOptions =
+        options.copy(routineId = id, screenActionsAllowed = allowScreenActions, approvalTimeoutMinutes = approvalTimeoutMinutes)
 }
 
 /** What the owner fills in to create or change a routine. */

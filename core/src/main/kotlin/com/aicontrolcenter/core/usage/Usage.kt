@@ -293,8 +293,10 @@ data class WorkUsage(
 }
 
 /**
- * Where the gateway records usage (Phase 6, K11). Implementations: Room (`RoomUsageLedger`, WP1b)
- * and in-memory (`:testkit`); both pass `UsageLedgerContract`.
+ * Where the gateway records usage (Phase 6, K11). Agent-facing code may hold it (the gateway's
+ * journal and the daily limiter, WP4): it adds and sums, and can delete nothing (security review
+ * of wave 1, F4; deleting is [UsageHousekeeping], the upkeep job's). Implementations: Room
+ * (`RoomUsageLedger`, WP1b) and in-memory (`:testkit`); both pass `UsageLedgerContract`.
  */
 interface UsageLedger {
     /**
@@ -308,25 +310,43 @@ interface UsageLedger {
     /** Totals of every sample whose hour starts at or after [fromMs]: all models, agents and sources. */
     suspend fun totalsSince(fromMs: Long): UsageTotals
 
-    /**
-     * Deletes the hour rows that started before [beforeMs] (retention, `usageRetentionDays`;
-     * never called with a time inside today). Work rows are kept. Returns how many rows went.
-     */
-    suspend fun pruneHours(beforeMs: Long): Int = 0
-
-    /**
-     * Deletes work rows whose task, objective or chat no longer exists. Room does it with one
-     * statement against `tasks` and `conversations`; deleting a task tree or a chat already
-     * deletes its rows in the same transaction (WP1b). Returns how many rows went; 0 where the
-     * store cannot know (the default, and the in-memory store).
-     */
-    suspend fun pruneOrphanedWork(): Int = 0
-
     /** Records nothing and reports nothing used. */
     object None : UsageLedger {
         override suspend fun record(sample: ModelCallSample) {}
 
         override suspend fun totalsSince(fromMs: Long): UsageTotals = UsageTotals()
+    }
+}
+
+/**
+ * Deleting old usage (Phase 6, K11, retention; security review of wave 1, F4). Held only by the
+ * upkeep side (`UpkeepGraph`, WP2; WP4's retention step), never by anything an agent reaches: both
+ * architecture tests list it. Today's rows can never go: they seed the daily limits after a
+ * restart (rule 6, S29), so every implementation clamps [pruneHours] to the start of the owner's
+ * day ([UsageRange.day]) whatever it is asked. Implementations: Room (`RoomUsageHousekeeping`) and
+ * the in-memory store (`:testkit`); both pass `UsageLedgerContract`.
+ */
+interface UsageHousekeeping {
+    /**
+     * Deletes the hour rows that started before [beforeMs] (retention, `usageRetentionDays`), but
+     * never one of today's: a time inside today (or later) deletes only the rows before today.
+     * Work rows are kept. Returns how many rows went.
+     */
+    suspend fun pruneHours(beforeMs: Long): Int
+
+    /**
+     * Deletes work rows whose task, objective or chat no longer exists. Room does it with one
+     * statement against `tasks` and `conversations`; deleting a task tree or a chat already
+     * deletes its rows in the same transaction (WP1b). Returns how many rows went; 0 where the
+     * store cannot know (the in-memory store).
+     */
+    suspend fun pruneOrphanedWork(): Int
+
+    /** Deletes nothing. */
+    object None : UsageHousekeeping {
+        override suspend fun pruneHours(beforeMs: Long): Int = 0
+
+        override suspend fun pruneOrphanedWork(): Int = 0
     }
 }
 

@@ -19,7 +19,9 @@ import com.aicontrolcenter.core.llm.DetectedServer
 import com.aicontrolcenter.core.llm.ModelSyncReport
 import com.aicontrolcenter.core.llm.ProviderDraft
 import com.aicontrolcenter.core.llm.ProviderHealth
+import com.aicontrolcenter.core.llm.OwnerKeyCheck
 import com.aicontrolcenter.core.llm.ProviderManager
+import com.aicontrolcenter.core.llm.ProviderRechecks
 import com.aicontrolcenter.core.llm.ProviderPreset
 import com.aicontrolcenter.core.llm.ProviderValidationIssue
 import com.aicontrolcenter.core.operator.ActiveWindow
@@ -184,9 +186,14 @@ class Phase6DefaultsTest {
             override suspend fun detectLocalServers(): List<DetectedServer> = emptyList()
             override suspend fun ensureBuiltIns() {}
         }
-        assertNull(providers.recheckIfStale(ProviderId("p"), 60_000))
-        assertFalse(providers.matchesStoredKey("sk-anything"))
-        assertNull(providers.timedWaits.nextDueAt.value)
+        // Security review of wave 1, F3: the re-checks and the key check are their own ports, not the owner's provider manager.
+        assertTrue(ProviderRechecks::class.java.isAssignableFrom(providers.javaClass).not())
+        assertTrue(OwnerKeyCheck::class.java.isAssignableFrom(providers.javaClass).not())
+        assertEquals(emptyList(), ProviderManager::class.java.methods.map { it.name.substringBefore('-') }.filter { it in setOf("recheckIfStale", "getTimedWaits", "matchesStoredKey") })
+        assertNull(ProviderRechecks.None.recheckIfStale(ProviderId("p"), 60_000))
+        assertNull(ProviderRechecks.None.timedWaits.nextDueAt.value)
+        assertFalse(OwnerKeyCheck.None.matchesStoredKey("sk-anything"))
+        assertEquals(emptyList(), ProviderRechecks::class.java.methods.map { it.name }.filter { it.startsWith("add") || it.startsWith("update") || it.startsWith("remove") || it.startsWith("matches") })
     }
 
     @Test
