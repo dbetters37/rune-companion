@@ -11,6 +11,7 @@ import android.database.ContentObserver
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.Settings
 import com.aicontrolcenter.core.operator.ScreenServiceState
 import com.aicontrolcenter.device.platform.INSTALL_IDENTITY_FLAGS
@@ -118,6 +119,9 @@ internal interface DeviceFacts {
     /** The lock screen is showing. */
     fun keyguardLocked(): Boolean
 
+    /** The screen is on (`PowerManager.isInteractive`, Phase 6 rule 12); unknown counts as off. */
+    fun screenOn(): Boolean
+
     /** The default home screen app; null when there is none or it cannot be seen. */
     fun launcherPackage(): String?
 }
@@ -129,6 +133,9 @@ internal class AndroidDeviceFacts(private val context: Context) : DeviceFacts {
 
     // Unknown counts as locked: nothing is operated over a lock screen.
     override fun keyguardLocked(): Boolean = context.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked ?: true
+
+    // Unknown counts as off: nothing is operated on a screen nobody looks at.
+    override fun screenOn(): Boolean = context.getSystemService(PowerManager::class.java)?.isInteractive ?: false
 
     override fun launcherPackage(): String? {
         val pm = context.packageManager

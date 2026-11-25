@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.provider.Settings
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.WallClock
@@ -17,6 +18,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -66,14 +68,26 @@ class ScreenOperatorLayer(
     /** Agent-facing: reads and drives authorised apps' windows. */
     val operator: ScreenOperator = impl
 
-    /** Owner-only: Stop and Resume, persisted across restarts. */
-    val control: ScreenControl = SwitchScreenControl(switch)
+    /** Whether Android switched screen control off after the app was stopped (Phase 6, D7). */
+    private val switchedOffWatch = SwitchedOffWatch(PreferencesReadyFlagStore(appContext), Build.VERSION.SDK_INT, AndroidStartRecords(appContext))
+
+    /** Owner-only: Stop and Resume, persisted across restarts, and whether Android switched screen control off (D7). */
+    val control: ScreenControl = SwitchScreenControl(switch, switchedOffWatch.switchedOff)
+
+    /**
+     * Owner-only, for Tools › Screen control (WP11b): the sentence that explains why screen control is off when Android
+     * switched it off after the app was stopped ("…after the app was force-stopped…" on Android 15+ when Android says
+     * so); null otherwise.
+     */
+    val switchedOffSentence: StateFlow<String?> = switchedOffWatch.sentence
 
     init {
         // The first read of Android's settings and PackageManager starts here, on [io]. A screen that looks at the state
         // before it is done (often on the main thread, for the Screen control screen) reads nothing itself: it sees
         // ScreenServiceState.CHECKING, and the state follows when the read lands.
         impl.start()
+        // D7: every state the service goes through, read on [io] (the flag lives in SharedPreferences).
+        scope.launch(io) { impl.state.collect { switchedOffWatch.onState(it) } }
     }
 
     /**

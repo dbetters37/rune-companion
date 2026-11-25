@@ -212,9 +212,17 @@ internal class StopSignal(private val switch: StopSwitch) {
     fun stop() = switch.stop()
 }
 
-/** The owner's [ScreenControl] over a [StopSwitch]. Owner-only: handed to the Screen control UI, never to tools. */
-internal class SwitchScreenControl(private val switch: StopSwitch) : ScreenControl {
+/**
+ * The owner's [ScreenControl] over a [StopSwitch]. Owner-only: handed to the Screen control UI, never to tools.
+ * [switchedOff]: whether Android switched screen control off after the app was stopped (Phase 6, D7, [SwitchedOffWatch]).
+ */
+internal class SwitchScreenControl(
+    private val switch: StopSwitch,
+    private val switchedOff: StateFlow<Boolean> = MutableStateFlow(false).asStateFlow(),
+) : ScreenControl {
     override val stopped: StateFlow<Boolean> get() = switch.stopped
+
+    override val switchedOffByAndroid: StateFlow<Boolean> get() = switchedOff
 
     override fun stop() = switch.stop()
 

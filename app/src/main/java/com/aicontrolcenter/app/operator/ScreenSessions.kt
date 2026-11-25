@@ -17,8 +17,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-/** One agent operating one app's screen. */
-data class ScreenSession(val agentName: String, val packageName: String, val appLabel: String)
+/**
+ * One agent operating one app's screen. [waitingForOwner] (Phase 6, D4): one of its screen actions
+ * waits for the owner's answer ("<agent> waits for your answer to act in <app> · Stop").
+ */
+data class ScreenSession(val agentName: String, val packageName: String, val appLabel: String, val waitingForOwner: Boolean = false)
 
 /**
  * The screen operator as agents get it. It passes every call through unchanged and also tells
@@ -28,7 +31,10 @@ data class ScreenSession(val agentName: String, val packageName: String, val app
  * A session follows the device's rule: it starts with an agent's first call that gets past the
  * checks (service ready, not stopped, not protected, authorised, the app's own window in front)
  * and ends at [endSession], when the owner presses Stop, or [ScreenOperator.SESSION_IDLE_MS]
- * after the agent's last call. A call in progress keeps its session.
+ * after the agent's last call. A call in progress keeps its session, and so does a screen action
+ * that waits for the owner (Phase 6, D4, rule 12: [holdSession] until [releaseSession], per
+ * request id, passed on to the device's operator): no [endSession] and no idle time-out ends a
+ * held session; Stop ends every hold.
  *
  * It is a separate object from the device's operator, so nothing holding it can be cast to the
  * owner's Stop and Resume, even where one implementation serves both.
@@ -42,6 +48,12 @@ class ScreenSessions(
     private val active = LinkedHashMap<String, ScreenSession>()
     private val inCall = HashMap<String, Int>()
     private val idleTimers = HashMap<String, Job>()
+
+    /** The open holds: hold id → agent. */
+    private val holds = HashMap<String, String>()
+
+    /** Agents whose run ended ([endSession]) while one of their actions was held: their session ends with the last hold. */
+    private val endingWhenReleased = HashSet<String>()
     private val shown = MutableStateFlow<List<ScreenSession>>(emptyList())
 
     /** Who operates which app now, in the order they started. Empty while nobody does. */
@@ -76,12 +88,57 @@ class ScreenSessions(
     override fun endSession(agentName: String) {
         operator.endSession(agentName)
         synchronized(lock) {
+            if (held(agentName)) {
+                // Another run of the agent ended while one of its actions waits for the owner: the session stays (D4).
+                endingWhenReleased += agentName
+                return
+            }
             idleTimers.remove(agentName)?.cancel()
             // A call still running ends the session when it returns, like the device does.
             if (inCall[agentName] == null) active.remove(agentName)
             publish()
         }
     }
+
+    override fun holdSession(holdId: String, agentName: String, packageName: String) {
+        operator.holdSession(holdId, agentName, packageName)
+        if (operator.stopped.value) return
+        var labelNeeded = false
+        synchronized(lock) {
+            if (holds.put(holdId, agentName) != null) return
+            idleTimers.remove(agentName)?.cancel()
+            val existing = active[agentName]
+            labelNeeded = existing == null
+            active[agentName] = (existing ?: ScreenSession(agentName, packageName, packageName)).copy(waitingForOwner = true)
+            publish()
+        }
+        if (labelNeeded) {
+            scope.launch {
+                val label = labelOf(packageName)
+                synchronized(lock) {
+                    active[agentName]?.takeIf { it.appLabel == packageName && it.packageName == packageName }?.let { active[agentName] = it.copy(appLabel = label) }
+                    publish()
+                }
+            }
+        }
+    }
+
+    override fun releaseSession(holdId: String) {
+        operator.releaseSession(holdId)
+        synchronized(lock) {
+            val agentName = holds.remove(holdId) ?: return
+            if (held(agentName)) return
+            active[agentName]?.let { active[agentName] = it.copy(waitingForOwner = false) }
+            if (inCall[agentName] == null) {
+                if (endingWhenReleased.remove(agentName)) active.remove(agentName)
+                else if (agentName in active) idleTimers[agentName] = idleTimer(agentName)
+            }
+            publish()
+        }
+    }
+
+    /** Called with [lock] held. */
+    private fun held(agentName: String): Boolean = agentName in holds.values
 
     private suspend fun <T> tracked(agentName: String, packageName: String, call: suspend () -> ScreenResult<T>): ScreenResult<T> {
         synchronized(lock) {
@@ -99,8 +156,8 @@ class ScreenSessions(
             synchronized(lock) {
                 val left = (inCall[agentName] ?: 1) - 1
                 if (left > 0) inCall[agentName] = left else inCall.remove(agentName)
-                if (label != null && !operator.stopped.value) active[agentName] = ScreenSession(agentName, packageName, label!!)
-                if (left == 0 && agentName in active) idleTimers[agentName] = idleTimer(agentName)
+                if (label != null && !operator.stopped.value) active[agentName] = ScreenSession(agentName, packageName, label!!, waitingForOwner = held(agentName))
+                if (left == 0 && agentName in active && !held(agentName)) idleTimers[agentName] = idleTimer(agentName)
                 publish()
             }
         }
@@ -116,7 +173,7 @@ class ScreenSessions(
     private fun idleTimer(agentName: String): Job = scope.launch {
         delay(ScreenOperator.SESSION_IDLE_MS)
         synchronized(lock) {
-            if (inCall[agentName] == null) active.remove(agentName)
+            if (inCall[agentName] == null && !held(agentName)) active.remove(agentName)
             idleTimers.remove(agentName)
             publish()
         }
@@ -126,6 +183,9 @@ class ScreenSessions(
         idleTimers.values.forEach { it.cancel() }
         idleTimers.clear()
         active.clear()
+        // Stop ends every hold too, as on the device.
+        holds.clear()
+        endingWhenReleased.clear()
         publish()
     }
 
