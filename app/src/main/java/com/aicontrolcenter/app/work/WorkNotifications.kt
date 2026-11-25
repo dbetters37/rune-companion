@@ -13,10 +13,12 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.aicontrolcenter.app.MainActivity
 import com.aicontrolcenter.app.R
+import com.aicontrolcenter.app.ui.approvals.visible
 
 /**
  * The ongoing "objectives at work" notification: its channel, how a [WorkNotice] looks, and
- * posting it only when the owner allows notifications.
+ * posting it only when the owner allows notifications. While only chat answers are being written it
+ * says so instead, with Stop ([buildChat]). Its only actions are Pause and Stop (rule 4).
  */
 internal object WorkNotifications {
     const val CHANNEL_ID = "objectives"
@@ -33,8 +35,35 @@ internal object WorkNotifications {
         manager.createNotificationChannel(channel)
     }
 
-    /** The notification for [notice]; null shows the moment before anything is known. */
-    fun build(context: Context, notice: WorkNotice?): Notification {
+    /** Shown under the title while the phone is kept awake (rule 5). */
+    const val AWAKE_LINE: String = "Keeping the phone awake while agents work"
+
+    /**
+     * The notification while chat answers are being written and no objective runs (Phase 6, A2): "Researcher is
+     * answering", or "2 agents are answering", with Stop (which stops every answer being written; what was written so
+     * far is kept). Agent names are the owner's; nothing an agent wrote is in it (rule 4).
+     */
+    fun buildChat(context: Context, chat: ChatNotice, awake: Boolean): Notification {
+        val title = if (chat.agentNames.size == 1) "${visible(chat.agentNames.single())} is answering" else "${chat.agentNames.size} agents are answering"
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_director)
+            .setContentTitle(title)
+            .setContentText("Stop ends the answer. What was written so far is kept.")
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .setAllowSystemGeneratedContextualActions(false)
+            .setContentIntent(openApp(context, null))
+            .addAction(R.drawable.ic_stat_stop, "Stop", stopChats(context))
+            .setProgress(0, 0, true)
+        if (awake) builder.setSubText(AWAKE_LINE)
+        return builder.build()
+    }
+
+    /** The notification for [notice]; null shows the moment before anything is known. [awake]: the phone is kept awake. */
+    fun build(context: Context, notice: WorkNotice?, awake: Boolean = false): Notification {
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_director)
             .setContentTitle(notice?.title ?: "Director is working")
@@ -47,6 +76,8 @@ internal object WorkNotifications {
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setContentIntent(openApp(context, notice))
             .addAction(R.drawable.ic_stat_pause, "Pause", pauseAll(context))
+            .setAllowSystemGeneratedContextualActions(false)
+        if (awake) builder.setSubText(AWAKE_LINE)
         val progress = notice?.progress
         if (progress == null || progress.isPlanning) {
             builder.setProgress(0, 0, true)
@@ -72,6 +103,11 @@ internal object WorkNotifications {
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         notice?.let { intent.putExtra(MainActivity.EXTRA_OBJECTIVE_ID, it.objectiveId.value) }
         return PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+    }
+
+    private fun stopChats(context: Context): PendingIntent {
+        val intent = Intent(context, ObjectiveWorkService::class.java).setAction(ObjectiveWorkService.ACTION_STOP_CHATS)
+        return PendingIntent.getService(context, 3, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     }
 
     private fun pauseAll(context: Context): PendingIntent {

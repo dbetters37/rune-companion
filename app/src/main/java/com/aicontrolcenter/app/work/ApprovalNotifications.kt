@@ -19,8 +19,11 @@ import com.aicontrolcenter.app.ui.approvals.visible
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.RequestId
 import com.aicontrolcenter.core.operator.OwnerRequest
+import com.aicontrolcenter.core.operator.OwnerRequestKind
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -49,26 +52,42 @@ internal object ApprovalNotifications {
         manager.createNotificationChannel(channel)
     }
 
-    /** The notification for [request], removed by Android at its expiry if nothing else removed it first. */
-    fun build(context: Context, request: OwnerRequest, now: Long): Notification {
+    /**
+     * The notification for [request], removed by Android at its expiry if nothing else removed it first. [reminder]: the
+     * one reminder [REMINDER_BEFORE_MS] before the request expires, which alerts once more.
+     *
+     * A QUESTION (Phase 6, rule 4) carries only app-written words and the agent's name: "A question from Researcher. Open
+     * the app to read it." Never the question, its suggested answers, the request's summary or the task's status text,
+     * which an agent wrote.
+     */
+    fun build(context: Context, request: OwnerRequest, now: Long, reminder: Boolean = false): Notification {
         val agent = visible(request.agentName ?: "An agent")
-        val text = "$agent: ${visible(request.summary)}"
+        val question = request.kind == OwnerRequestKind.QUESTION
+        val title = if (question) "A question from $agent" else request.kind.title
+        val text = when {
+            question && reminder -> "A question from $agent is still waiting. About 5 minutes are left; then $agent decides itself."
+            question -> questionText(agent)
+            reminder -> "$agent is still waiting for your answer. About 5 minutes are left: ${visible(request.summary)}"
+            else -> "$agent: ${visible(request.summary)}"
+        }
+        val more = if (question) text else "$text\n\nOpen the app to see exactly what it would do and answer."
         val public = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_stat_approval)
-            .setContentTitle(request.kind.title)
-            .setContentText("An agent is waiting for your answer.")
+            .setSmallIcon(if (question) R.drawable.ic_stat_question else R.drawable.ic_stat_approval)
+            .setContentTitle(if (question) "An agent has a question" else request.kind.title)
+            .setContentText(if (question) "Open the app to read it." else "An agent is waiting for your answer.")
             .build()
         return NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_stat_approval)
-            .setContentTitle(request.kind.title)
+            .setSmallIcon(if (question) R.drawable.ic_stat_question else R.drawable.ic_stat_approval)
+            .setContentTitle(title)
             .setContentText(text)
-            .setStyle(NotificationCompat.BigTextStyle().bigText("$text\n\nOpen the app to see exactly what it would do and answer."))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(more))
             .setCategory(NotificationCompat.CATEGORY_REMINDER)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             // Hidden on the lock screen: what an agent wants to do is the owner's business.
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPublicVersion(public)
-            .setOnlyAlertOnce(true)
+            // The reminder alerts once more; otherwise an update never makes a sound again.
+            .setOnlyAlertOnce(!reminder)
             .setAutoCancel(false)
             .setAllowSystemGeneratedContextualActions(false)
             .setWhen(request.createdAt)
@@ -77,6 +96,12 @@ internal object ApprovalNotifications {
             .setContentIntent(openRequest(context, request.id))
             .build()
     }
+
+    /** What a question's notification says: app-written words and the agent's name only (rule 4). */
+    fun questionText(agent: String): String = "A question from $agent. Open the app to read it."
+
+    /** The one reminder comes this long before a request expires (WP2 item 5). */
+    const val REMINDER_BEFORE_MS: Long = 5 * 60_000L
 
     /** Returns whether Android took it: false while the owner has not allowed notifications. */
     fun post(context: Context, id: RequestId, notification: Notification): Boolean {
@@ -143,18 +168,43 @@ class ApprovalNotifier(
     private val cancel: (RequestId) -> Unit = { ApprovalNotifications.cancel(context, it) },
     /** The requests whose notification is showing when this starts. */
     private val leftover: () -> Set<RequestId> = { ApprovalNotifications.showing(context) },
+    /** The one reminder before a request expires (WP2 item 5); posted only while the request is still open. */
+    private val remind: (RequestId, OwnerRequest, Long) -> Boolean = { id, request, now ->
+        ApprovalNotifications.post(context, id, ApprovalNotifications.build(context, request, now, reminder = true))
+    },
 ) {
-    fun start(): Job = scope.launch {
+    /** Starts [run] on the scope (tests; the app runs it under `SafetyCollectors`). */
+    fun start(): Job = scope.launch { run() }
+
+    /** Keeps the notifications in step with the waiting requests until cancelled. */
+    suspend fun run() = coroutineScope {
         ApprovalNotifications.ensureChannel(context)
         var shown = leftover()
-        combine(pending, enabled.distinctUntilChanged()) { requests, allowed -> requests to allowed }.collect { (requests, allowed) ->
-            val now = clock.now()
-            val open = requests.filter { it.isOpenAt(now) }
-            val (toPost, toCancel) = changes(shown, open)
-            toCancel.forEach(cancel)
-            // Only what Android took counts as shown; the rest is posted again once notifications are allowed.
-            val posted = if (allowed) toPost.filter { post(it.id, it, now) }.mapTo(HashSet()) { it.id } else emptySet()
-            shown = open.mapNotNullTo(HashSet()) { request -> request.id.takeIf { it in shown || it in posted } }
+        val reminders = HashMap<RequestId, Job>()
+        try {
+            combine(pending, enabled.distinctUntilChanged()) { requests, allowed -> requests to allowed }.collect { (requests, allowed) ->
+                val now = clock.now()
+                val open = requests.filter { it.isOpenAt(now) }
+                val (toPost, toCancel) = changes(shown, open)
+                toCancel.forEach(cancel)
+                // Only what Android took counts as shown; the rest is posted again once notifications are allowed.
+                val posted = if (allowed) toPost.filter { post(it.id, it, now) }.mapTo(HashSet()) { it.id } else emptySet()
+                shown = open.mapNotNullTo(HashSet()) { request -> request.id.takeIf { it in shown || it in posted } }
+                // One reminder per shown request, 5 minutes before it expires; none for one that goes sooner.
+                val shownNow = shown
+                reminders.keys.filter { it !in shownNow }.forEach { reminders.remove(it)?.cancel() }
+                for (request in open) {
+                    if (request.id !in shownNow || request.id in reminders) continue
+                    val at = request.expiresAt - ApprovalNotifications.REMINDER_BEFORE_MS
+                    if (at <= now) continue
+                    reminders[request.id] = launch {
+                        delay(at - now)
+                        remind(request.id, request, clock.now())
+                    }
+                }
+            }
+        } finally {
+            reminders.values.forEach { it.cancel() }
         }
     }
 

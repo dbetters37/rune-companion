@@ -1,6 +1,8 @@
 package com.aicontrolcenter.app.work
 
 import com.aicontrolcenter.core.TaskId
+import com.aicontrolcenter.core.tasks.ObjectiveRow
+import com.aicontrolcenter.core.tasks.PlanProgress
 import com.aicontrolcenter.core.tasks.TaskKind
 import com.aicontrolcenter.core.tasks.TaskRecord
 import com.aicontrolcenter.core.tasks.TaskStatus
@@ -62,5 +64,26 @@ data class WorkNotice(
             }
             return WorkNotice(first.id, "Director is working on: ${first.title}", text, progress)
         }
+
+        /**
+         * The notice from summaries only (Phase 6, P1, rule 16): the running objectives' rows (title, creation time) and
+         * their plan progress, never whole task trees. An objective whose row is not among [rows] is counted, not named.
+         */
+        fun of(running: Set<TaskId>, rows: List<ObjectiveRow>, progress: Map<TaskId, PlanProgress>): WorkNotice? {
+            if (running.isEmpty()) return null
+            val named = rows.filter { it.rootId in running }.sortedWith(compareBy({ it.createdAt }, { it.rootId.value }))
+            val first = named.firstOrNull() ?: return null
+            val plan = progress[first.rootId]
+            val shown = ObjectiveProgress(completed = plan?.done ?: first.completed, planned = plan?.total ?: first.planned)
+            val text = buildString {
+                append(if (shown.isPlanning) "Planning the work" else "${shown.completed} of ${shown.planned} tasks done")
+                val others = running.size - 1
+                if (others > 0) append(" · ").append(others).append(if (others == 1) " more objective running" else " more objectives running")
+            }
+            return WorkNotice(first.rootId, "Director is working on: ${first.title}", text, shown)
+        }
     }
 }
+
+/** What the ongoing notification says while only chat answers are being written: whose (the owner's agent names). */
+data class ChatNotice(val agentNames: List<String>)

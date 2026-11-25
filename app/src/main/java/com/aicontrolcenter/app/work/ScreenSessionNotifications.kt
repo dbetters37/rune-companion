@@ -44,18 +44,30 @@ internal object ScreenSessionNotifications {
         manager.createNotificationChannel(channel)
     }
 
-    /** "Operator is operating Notes", or "2 agents are operating apps" with one line each. */
+    /**
+     * "Operator is operating Notes", "Operator waits for your answer to act in Notes" while one of its screen actions
+     * waits for the owner (Phase 6, D4, rule 12: the session is held, and Stop still ends it), or "2 agents are operating
+     * apps" with one line each.
+     */
     fun title(sessions: List<ScreenSession>): String = when (sessions.size) {
-        1 -> sessions.single().let { "${visible(it.agentName)} is operating ${visible(it.appLabel)}" }
+        1 -> line(sessions.single())
         else -> "${sessions.size} agents are operating apps"
     }
+
+    /** One session in words. */
+    fun line(session: ScreenSession): String =
+        if (session.waitingForOwner) {
+            "${visible(session.agentName)} waits for your answer to act in ${visible(session.appLabel)}"
+        } else {
+            "${visible(session.agentName)} is operating ${visible(session.appLabel)}"
+        }
 
     /** On the lock screen: that screen control is in use, without naming the agent or the app. */
     const val PUBLIC_TITLE = "An agent is operating an app"
 
     fun build(context: Context, sessions: List<ScreenSession>, stop: PendingIntent): Notification {
         val text = "Stop ends it at once. Agents cannot use the screen again until you resume screen control in the app."
-        val lines = sessions.joinToString("\n") { "${visible(it.agentName)} is operating ${visible(it.appLabel)}" }
+        val lines = sessions.joinToString("\n") { line(it) }
         val public = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_touch)
             .setContentTitle(PUBLIC_TITLE)
@@ -116,7 +128,11 @@ class ScreenSessionNotifier(
     private val stop: () -> PendingIntent,
     private val scope: CoroutineScope,
 ) {
-    fun start(): Job = scope.launch {
+    /** Starts [run] on the scope (tests; the app runs it under `SafetyCollectors`). */
+    fun start(): Job = scope.launch { run() }
+
+    /** Keeps the notification in step with the sessions until cancelled. */
+    suspend fun run() {
         ScreenSessionNotifications.ensureChannel(context)
         sessions.distinctUntilChanged().collect { now ->
             if (now.isEmpty()) {

@@ -1,18 +1,44 @@
 package com.aicontrolcenter.app.work
 
+import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import com.aicontrolcenter.app.Phase6Stub
+import android.os.PowerManager
+import com.aicontrolcenter.app.AiControlCenterApp
 
 /**
- * Wakes waiting work while the phone sleeps (Phase 6, rule 5, F8; WP2 owns this file in wave 2): the foreground
- * service sets one `AlarmManager.setAndAllowWhileIdle` alarm to this receiver for a wait longer than two minutes. It
- * only signals a graph that already exists (rule 1): it never builds one, so it never starts work by itself.
- *
- * Wave 1: no alarm is set, and it does nothing.
+ * Wakes waiting work while the phone sleeps (Phase 6, rule 5, F8; WP2 item 1): the foreground service sets one
+ * [WakeAlarms] alarm to this (non-exported) receiver for a wait longer than two minutes. It only signals a graph that
+ * already exists (rule 1): the orchestrator's and the provider re-checks' waits look at the wall clock again, and the
+ * service decides again whether to keep the phone awake. It never builds the graph, so it never starts work by itself,
+ * and it keeps the phone awake for at most [HOLD_MS] while the waits look.
  */
-@Phase6Stub("WP2")
 class WakeReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {}
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action != ACTION_WAKE) return
+        val graph = (context.applicationContext as? AiControlCenterApp)?.graphIfBuilt() ?: return
+        holdBriefly(context)
+        graph.orchestrator.timedWaits.wake()
+        graph.providerRechecks.timedWaits.wake()
+        WakeSignals.poke()
+    }
+
+    @SuppressLint("WakelockTimeout")
+    private fun holdBriefly(context: Context) {
+        try {
+            context.getSystemService(PowerManager::class.java)?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, TAG)?.apply {
+                setReferenceCounted(false)
+                acquire(HOLD_MS)
+            }
+        } catch (_: RuntimeException) {
+            // Without it the waits still look again; the phone may just sleep sooner.
+        }
+    }
+
+    companion object {
+        const val ACTION_WAKE: String = "com.aicontrolcenter.app.action.WAKE_WAITS"
+        const val TAG: String = "aicc:wake"
+        const val HOLD_MS: Long = 30_000
+    }
 }
