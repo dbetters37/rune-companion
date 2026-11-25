@@ -46,6 +46,8 @@ import kotlinx.coroutines.withContext
  *   whoever sees the request APPROVED finds its grant.
  * - A row that cannot be decoded is treated as absent: it is never shown as pending and cannot
  *   be answered.
+ * - An agent's QUESTION (schema 6) is stored with its question and suggested answers; the
+ *   owner's answer is written by the same conditional update that closes it, and writes no grant.
  *
  * Dependency injection hands the broker [com.aicontrolcenter.core.operator.OwnerRequestQueue]
  * only; the owner's port gets this class. All work runs on [dispatcher].
@@ -117,8 +119,8 @@ class RoomOwnerRequestRepository internal constructor(
             )
             is OwnerDecision.Approve -> current.copy(status = OwnerRequestStatus.APPROVED, decidedAt = at, decisionNote = decision.note)
             is OwnerDecision.Deny -> current.copy(status = OwnerRequestStatus.DENIED, decidedAt = at, decisionNote = decision.note)
-            // Phase 6 (WP1a): a QUESTION's answer; its column arrives with schema 6 (WP1b).
-            is OwnerDecision.Answer -> current.copy(status = OwnerRequestStatus.APPROVED, decidedAt = at, answer = decision.text)
+            // A QUESTION's answer (schema 6): APPROVED with the owner's words, or none for "decide yourself"; never a grant.
+            is OwnerDecision.Answer -> current.copy(status = OwnerRequestStatus.APPROVED, decidedAt = at, decisionNote = null, answer = decision.text)
         }
         if (!closePending(decided)) return alreadyClosed(id)
         // Thrown inside the transaction, so the request goes back to PENDING with it.
@@ -128,7 +130,9 @@ class RoomOwnerRequestRepository internal constructor(
 
     /** The conditional update that moves [closed] out of PENDING; true if this call did it. */
     private suspend fun closePending(closed: OwnerRequest): Boolean =
-        dao.closePending(closed.id.value, closed.status.name, checkNotNull(closed.decidedAt), closed.decisionScope?.name, closed.decisionNote) == 1
+        dao.closePending(
+            closed.id.value, closed.status.name, checkNotNull(closed.decidedAt), closed.decisionScope?.name, closed.decisionNote, closed.answer,
+        ) == 1
 
     /** Reached only if the row changed between the read and the update, which the write transaction rules out. */
     private suspend fun alreadyClosed(id: RequestId): DecideResult =
@@ -139,7 +143,7 @@ class RoomOwnerRequestRepository internal constructor(
         requireClosing(status)
         return withContext(dispatcher) {
             database.withTransaction {
-                if (dao.closePending(id.value, status.name, at, null, note) == 1) dao.get(id.value) else null
+                if (dao.closePending(id.value, status.name, at, null, note, null) == 1) dao.get(id.value) else null
             }?.readableOrNull(OwnerRequestEntity::toDomain)
         }
     }
@@ -186,7 +190,7 @@ class RoomOwnerRequestRepository internal constructor(
     ): List<OwnerRequest> = withContext(dispatcher) {
         database.withTransaction {
             candidates()
-                .filter { dao.closePending(it.id, status.name, at, null, note) == 1 }
+                .filter { dao.closePending(it.id, status.name, at, null, note, null) == 1 }
                 .map { it.copy(status = status.name, decidedAt = at, decisionScope = null, decisionNote = note) }
         }.mapReadable(OwnerRequestEntity::toDomain)
     }

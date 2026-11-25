@@ -85,6 +85,9 @@ internal fun OwnerRequest.toEntity(): OwnerRequestEntity = OwnerRequestEntity(
     delegationChainJson = encodeColumn(ColumnSerializers.agentIdList, delegationChain),
     askedAgain = askedAgain,
     askAgainAt = askAgainAt,
+    question = question,
+    optionsJson = if (kind == OwnerRequestKind.QUESTION) encodeColumn(ColumnSerializers.stringList, options) else null,
+    answer = answer,
 )
 
 /** @throws com.aicontrolcenter.data.StoredDataException naming the column, if the row cannot be read. */
@@ -97,6 +100,7 @@ internal fun OwnerRequestEntity.toDomain(): OwnerRequest {
     val details = row.json("details_json", ColumnSerializers.stringList, detailsJson)
     val delegationChain = row.json("delegation_chain_json", ColumnSerializers.agentIdList, delegationChainJson)
     val decisionScope = decisionScope?.let { row.enum<GrantScope>("decision_scope", it) }
+    val options = optionsJson?.let { row.json("options_json", ColumnSerializers.stringList, it) } ?: emptyList()
     return row.consistent {
         OwnerRequest(
             id = RequestId(id),
@@ -125,6 +129,9 @@ internal fun OwnerRequestEntity.toDomain(): OwnerRequest {
             delegationChain = delegationChain,
             askedAgain = askedAgain,
             askAgainAt = askAgainAt,
+            question = question,
+            options = options,
+            answer = answer,
         )
     }
 }
@@ -136,7 +143,7 @@ internal fun OwnerRequestEntity.toDomain(): OwnerRequest {
 internal fun OwnerRequestEntity.storedTextBytes(): Long =
     listOf(
         id, agentId, toolId, capability, constraintKey, summary, detailsJson, dataGoesTo, reason, taskId, rootId,
-        conversationId, decisionNote, agentName, toolTitle, targetLabel, delegationChainJson,
+        conversationId, decisionNote, agentName, toolTitle, targetLabel, delegationChainJson, question, optionsJson, answer,
     ).sumOf { it?.utf8Length() ?: 0L }
 
 internal fun SharedFolder.toEntity(): SharedFolderEntity = SharedFolderEntity(

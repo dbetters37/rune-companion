@@ -13,6 +13,7 @@ import com.aicontrolcenter.data.db.entity.MemoryEntity
 import com.aicontrolcenter.data.db.entity.MemoryLinkEntity
 import com.aicontrolcenter.data.db.entity.MemoryRow
 import com.aicontrolcenter.data.db.entity.MemorySearchCandidate
+import com.aicontrolcenter.data.db.entity.SpaceCountRow
 import com.aicontrolcenter.data.db.mapper.MemoryScopeType
 import kotlinx.coroutines.flow.Flow
 
@@ -36,6 +37,13 @@ internal interface MemoryDao {
 
     @RawQuery
     suspend fun memories(query: RoomRawQuery): List<MemoryRow>
+
+    /** A `COUNT(*)` built by `MemoryQueryBuilder.count` (schema 6, rule 16): counted without reading a memory. */
+    @RawQuery(observedEntities = [MemoryEntity::class])
+    fun observeCount(query: RoomRawQuery): Flow<Int>
+
+    @Query(COUNTS_BY_SPACE)
+    fun observeCountsBySpace(): Flow<List<SpaceCountRow>>
 
     @RawQuery
     suspend fun searchCandidates(query: RoomRawQuery): List<MemorySearchCandidate>
@@ -209,5 +217,9 @@ internal interface MemoryDao {
     companion object {
         /** Ids per statement; below the 999 bound variables of the oldest SQLite this runs on. */
         const val ID_CHUNK = 500
+
+        /** Memories per shared space, expired ones included; `SHARED` is pinned by `StoredNamesGoldenTest`. */
+        const val COUNTS_BY_SPACE = "SELECT scope_space_id AS space_id, COUNT(*) AS count FROM memories " +
+            "WHERE scope_type = 'SHARED' AND scope_space_id IS NOT NULL GROUP BY scope_space_id"
     }
 }

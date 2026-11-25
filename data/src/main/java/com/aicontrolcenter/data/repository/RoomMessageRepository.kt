@@ -2,10 +2,12 @@ package com.aicontrolcenter.data.repository
 
 import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.tasks.AgentMessage
+import com.aicontrolcenter.core.tasks.MessageHeader
 import com.aicontrolcenter.core.tasks.MessageRepository
 import com.aicontrolcenter.data.db.AiccDatabase
 import com.aicontrolcenter.data.db.dao.AgentMessageDao
 import com.aicontrolcenter.data.db.entity.AgentMessageEntity
+import com.aicontrolcenter.data.db.entity.MessageHeaderRow
 import com.aicontrolcenter.data.db.mapper.mapReadable
 import com.aicontrolcenter.data.db.mapper.storedTextBytes
 import com.aicontrolcenter.data.db.mapper.toDomain
@@ -29,6 +31,9 @@ import kotlinx.coroutines.withContext
  * - [count] counts every stored message of the objective, readable or not: it is what the
  *   orchestrator's message limit is checked against, and that bound must not loosen because a
  *   row cannot be decoded. The lists leave unreadable rows out, as everywhere in this module.
+ * - Lists read headers (schema 6, rule 16): [observeHeaders] and [observeRecentHeaders] read
+ *   every column but the body, and of the body its first characters only, from the indexes.
+ * - A memory shared into a space is stored with the recipient kind `SPACE` and the space's id.
  * - No message thrown or logged here contains a message body.
  *
  * All work runs on [dispatcher].
@@ -59,6 +64,19 @@ class RoomMessageRepository internal constructor(
         require(limit >= 0) { "limit must not be negative, was $limit" }
         return dao.observeRecent(limit).map { rows -> rows.mapReadable(AgentMessageEntity::toDomain) }.distinctUntilChanged().flowOn(dispatcher)
     }
+
+    /** The newest [limit] of the objective, read newest first from the index and put back in sending order. */
+    override fun observeHeaders(rootId: TaskId, limit: Int): Flow<List<MessageHeader>> =
+        dao.observeHeaders(rootId.value, limit.coerceAtLeast(0))
+            .map { rows -> rows.asReversed().mapReadable(MessageHeaderRow::toDomain) }
+            .distinctUntilChanged()
+            .flowOn(dispatcher)
+
+    override fun observeRecentHeaders(limit: Int): Flow<List<MessageHeader>> =
+        dao.observeRecentHeaders(limit.coerceAtLeast(0))
+            .map { rows -> rows.mapReadable(MessageHeaderRow::toDomain) }
+            .distinctUntilChanged()
+            .flowOn(dispatcher)
 
     override suspend fun list(rootId: TaskId): List<AgentMessage> = withContext(dispatcher) {
         dao.list(rootId.value).mapReadable(AgentMessageEntity::toDomain)

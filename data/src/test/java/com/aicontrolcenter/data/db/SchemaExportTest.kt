@@ -47,7 +47,7 @@ class SchemaExportTest {
         }.toSet()
 
     @Test
-    fun `the current schema is exported and lists all eighteen tables`() {
+    fun `the current schema is exported and lists all twenty-five tables`() {
         val current = schema(AiccDatabase.VERSION)
         assertEquals(AiccDatabase.VERSION, current.getValue("version").jsonPrimitive.int)
         assertEquals(
@@ -57,6 +57,7 @@ class SchemaExportTest {
                 "knowledge_spaces", "memories", "memory_links", "memory_embeddings",
                 "tasks", "agent_messages",
                 "permission_grants", "owner_requests", "shared_folders", "operator_apps",
+                "usage_hours", "work_usage", "model_prices", "routines", "routine_runs", "pickup_rules", "pickup_imports",
             ),
             current.tables().keys,
         )
@@ -95,7 +96,10 @@ class SchemaExportTest {
         assertEquals(setOf(listOf("embedder_id")), tables.getValue("memory_embeddings").indexColumns())
         assertEquals(setOf(listOf("created_at", "id")), tables.getValue("knowledge_spaces").indexColumns())
         assertEquals(
-            setOf(listOf("kind", "created_at", "id"), listOf("root_id", "created_at", "id"), listOf("status", "created_at", "id")),
+            setOf(
+                listOf("kind", "created_at", "id"), listOf("root_id", "created_at", "id"), listOf("status", "created_at", "id"),
+                listOf("assignee_id", "updated_at", "id"),
+            ),
             tables.getValue("tasks").indexColumns(),
         )
         assertEquals(setOf(listOf("root_id", "at", "id"), listOf("at", "id")), tables.getValue("agent_messages").indexColumns())
@@ -112,6 +116,42 @@ class SchemaExportTest {
         )
         assertEquals(setOf(listOf("tree_uri")), tables.getValue("shared_folders").indexColumns())
         assertEquals(emptySet(), tables.getValue("operator_apps").indexColumns())
+        assertEquals(setOf(listOf("model_id", "hour_start"), listOf("agent_id", "hour_start")), tables.getValue("usage_hours").indexColumns())
+        assertEquals(emptySet(), tables.getValue("work_usage").indexColumns())
+        assertEquals(emptySet(), tables.getValue("model_prices").indexColumns())
+        assertEquals(emptySet(), tables.getValue("routines").indexColumns())
+        assertEquals(setOf(listOf("routine_id", "due_at", "id")), tables.getValue("routine_runs").indexColumns())
+        assertEquals(setOf(listOf("folder_id")), tables.getValue("pickup_rules").indexColumns())
+        assertEquals(
+            setOf(listOf("rule_id", "imported_at", "content_sha256"), listOf("imported_at")),
+            tables.getValue("pickup_imports").indexColumns(),
+        )
+    }
+
+    @Test
+    fun `an agent's recent tasks and a rule's imports are listed from an index in exactly the listing order`() {
+        val tables = schema(AiccDatabase.VERSION).tables()
+        fun orders(table: String, index: String) = tables.getValue(table).getValue("indices").jsonArray.map { it.jsonObject }
+            .single { it.getValue("name").jsonPrimitive.content == index }.getValue("orders").jsonArray.map { it.jsonPrimitive.content }
+        assertEquals(listOf("ASC", "DESC", "ASC"), orders("tasks", "index_tasks_assignee_id_updated_at_id"))
+        assertEquals(listOf("ASC", "DESC", "ASC"), orders("pickup_imports", "index_pickup_imports_rule_id_imported_at_content_sha256"))
+    }
+
+    @Test
+    fun `the tables of schema 6 stand alone, and their keys are the ones the stores rely on`() {
+        val tables = schema(AiccDatabase.VERSION).tables()
+        fun JsonObject.primaryKey() = getValue("primaryKey").jsonObject.getValue("columnNames").jsonArray.map { it.jsonPrimitive.content }
+        for (table in listOf("usage_hours", "work_usage", "model_prices", "routines", "routine_runs", "pickup_rules", "pickup_imports")) {
+            // A usage row outlives what it counts; runs and imports go with their routine or rule by the stores' own transactions.
+            assertTrue(tables.getValue(table)["foreignKeys"]?.jsonArray.isNullOrEmpty(), table)
+        }
+        assertEquals(listOf("hour_start", "model_id", "agent_id", "source"), tables.getValue("usage_hours").primaryKey())
+        assertEquals(listOf("work_kind", "work_id", "model_id"), tables.getValue("work_usage").primaryKey())
+        assertEquals(listOf("model_id"), tables.getValue("model_prices").primaryKey())
+        // One record per rule and content: the de-duplication of folder pick-up.
+        assertEquals(listOf("rule_id", "content_sha256"), tables.getValue("pickup_imports").primaryKey())
+        val folderIndex = tables.getValue("pickup_rules").getValue("indices").jsonArray.single().jsonObject
+        assertEquals(true, folderIndex.getValue("unique").jsonPrimitive.content.toBoolean(), "one rule per folder")
     }
 
     @Test
@@ -199,6 +239,57 @@ class SchemaExportTest {
     }
 
     @Test
+    fun `the migration to version 6 runs exactly the exported statements of the tables and the index it adds`() {
+        val createTasksIndex = schema(6).tables().getValue("tasks").getValue("indices").jsonArray.map { it.jsonObject }
+            .single { it.getValue("name").jsonPrimitive.content == "index_tasks_assignee_id_updated_at_id" }
+            .getValue("createSql").jsonPrimitive.content.replace("\${TABLE_NAME}", "tasks")
+        assertEquals(
+            listOf(createTasksIndex) +
+                exportedStatements(6, listOf("usage_hours", "work_usage", "model_prices", "routines", "routine_runs", "pickup_rules", "pickup_imports")),
+            Migration5To6.CREATE_TABLES,
+        )
+    }
+
+    @Test
+    fun `each column the migration to version 6 adds is defined exactly as exported, and added last`() {
+        val tables = schema(6).tables()
+        val added = Migration5To6.ADD_COLUMNS.map { statement ->
+            val match = assertNotNull(Regex("ALTER TABLE `(\\w+)` ADD COLUMN (`(\\w+)` .+)").matchEntire(statement), statement)
+            Triple(match.groupValues[1], match.groupValues[3], match.groupValues[2])
+        }
+        for ((table, column, definition) in added) {
+            // The definition in the exported CREATE TABLE, from the column's name to the next comma.
+            val createSql = tables.getValue(table).getValue("createSql").jsonPrimitive.content
+            val exported = createSql.substringAfter(", `$column` ", missingDelimiterValue = "").substringBefore(", ")
+            assertEquals(definition, "`$column` $exported", "$table.$column")
+        }
+        // SQLite appends an added column: the exported columns of each table end with the added ones, in the order added.
+        for ((table, columns) in added.groupBy({ it.first }, { it.second })) {
+            val fields = tables.getValue(table).getValue("fields").jsonArray.map { it.jsonObject.getValue("columnName").jsonPrimitive.content }
+            assertEquals(columns, fields.takeLast(columns.size), table)
+            assertEquals(fields.dropLast(columns.size), fieldsOf(5, table), "the columns of version 5 come first, unchanged: $table")
+        }
+        assertEquals(
+            setOf("tasks" to "retry_at", "tasks" to "result_chars", "agent_messages" to "to_space_id", "owner_requests" to "question",
+                "owner_requests" to "options_json", "owner_requests" to "answer", "conversations" to "turn_started_at"),
+            added.map { it.first to it.second }.toSet(),
+        )
+    }
+
+    private fun fieldsOf(version: Int, table: String): List<String> =
+        schema(version).tables().getValue(table).getValue("fields").jsonArray.map { it.jsonObject.getValue("columnName").jsonPrimitive.content }
+
+    @Test
+    fun `the tables version 6 did not change are exactly those of version 5`() {
+        val released = schema(5).tables()
+        val current = schema(6).tables()
+        for (table in released.keys - setOf("tasks", "agent_messages", "owner_requests", "conversations")) {
+            assertEquals(released.getValue(table)["createSql"], current.getValue(table)["createSql"], table)
+            assertEquals(released.getValue(table)["indices"], current.getValue(table)["indices"], table)
+        }
+    }
+
+    @Test
     fun `links and embeddings cannot outlive their memories`() {
         val tables = schema(AiccDatabase.VERSION).tables()
         fun JsonObject.cascades(): List<List<String>> = getValue("foreignKeys").jsonArray.map { it.jsonObject }.map { key ->
@@ -278,6 +369,21 @@ class SchemaExportTest {
             setOf(
                 "agents", "agent_stats", "providers", "models", "ai_apps", "activity_events", "conversations", "conversation_entries",
                 "knowledge_spaces", "memories", "memory_links", "memory_embeddings", "tasks", "agent_messages",
+            ),
+            released.tables().keys,
+        )
+    }
+
+    @Test
+    fun `the schema of the released version 5 is still the one that was released`() {
+        // Releases 0.5.0 to 0.5.2 created and migrated databases to exactly this schema.
+        val released = schema(5)
+        assertEquals("bc4e01775e3fd8bfd8c8671981c54bda", released.getValue("identityHash").jsonPrimitive.content)
+        assertEquals(
+            setOf(
+                "agents", "agent_stats", "providers", "models", "ai_apps", "activity_events", "conversations", "conversation_entries",
+                "knowledge_spaces", "memories", "memory_links", "memory_embeddings", "tasks", "agent_messages",
+                "permission_grants", "owner_requests", "shared_folders", "operator_apps",
             ),
             released.tables().keys,
         )

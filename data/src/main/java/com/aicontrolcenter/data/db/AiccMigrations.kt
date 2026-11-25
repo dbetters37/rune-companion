@@ -18,7 +18,93 @@ import androidx.sqlite.execSQL
  * happens to the entity classes later.
  */
 internal object AiccMigrations {
-    val all: Array<Migration> = arrayOf(Migration1To2, Migration2To3, Migration3To4, Migration4To5)
+    val all: Array<Migration> = arrayOf(Migration1To2, Migration2To3, Migration3To4, Migration4To5, Migration5To6)
+}
+
+/**
+ * Schema 6 (release 0.6.0, Phase 6): new columns on four tables, one new index on `tasks`, and the
+ * tables of usage, prices, routines and folder pick-up. No table is rebuilt and no row is moved:
+ * the step runs only `ALTER TABLE … ADD COLUMN`, `CREATE TABLE`, `CREATE INDEX` and one
+ * backfill `UPDATE`, inside the one transaction Room runs a migration in, so a phone either has
+ * all of it or none of it.
+ *
+ * - [ADD_COLUMNS]: `tasks.retry_at` and `tasks.result_chars` (R4, P1), `agent_messages.to_space_id`
+ *   (memory shared into a space), `owner_requests.question`, `options_json` and `answer` (an
+ *   agent's question to the owner), `conversations.turn_started_at` (R3). SQLite appends an added
+ *   column, so the entities declare these last, in this order: a new installation and an
+ *   upgraded phone have the same columns in the same order. Each definition is the exported
+ *   column's, verbatim (`SchemaExportTest`).
+ * - [BACKFILL_RESULT_CHARS]: every stored task's result length in characters, what
+ *   `SummaryText.length` and every later write give; 0 for a task without a result.
+ * - [CREATE_TABLES]: the index `tasks(assignee_id, updated_at DESC, id)` and the tables
+ *   `usage_hours`, `work_usage`, `model_prices`, `routines`, `routine_runs`, `pickup_rules`,
+ *   `pickup_imports` with their indexes: the `createSql` of the exported schema 6, verbatim
+ *   (`MigrationTest` validates the result against it and `SchemaExportTest` compares the text).
+ *   None of the new tables has a foreign key, so their order does not matter.
+ *
+ * Nothing that version 5 stored is changed, except that each task row gains its result length.
+ */
+internal object Migration5To6 : Migration(5, 6) {
+    internal val ADD_COLUMNS = listOf(
+        "ALTER TABLE `tasks` ADD COLUMN `retry_at` INTEGER",
+        "ALTER TABLE `tasks` ADD COLUMN `result_chars` INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE `agent_messages` ADD COLUMN `to_space_id` TEXT",
+        "ALTER TABLE `owner_requests` ADD COLUMN `question` TEXT",
+        "ALTER TABLE `owner_requests` ADD COLUMN `options_json` TEXT",
+        "ALTER TABLE `owner_requests` ADD COLUMN `answer` TEXT",
+        "ALTER TABLE `conversations` ADD COLUMN `turn_started_at` INTEGER",
+    )
+
+    /** Version 6's column names, which this step must keep using whatever later happens to the entity classes. */
+    internal const val BACKFILL_RESULT_CHARS = "UPDATE `tasks` SET `result_chars` = COALESCE(length(`result`), 0)"
+
+    internal val CREATE_TABLES = listOf(
+        "CREATE INDEX IF NOT EXISTS `index_tasks_assignee_id_updated_at_id` ON `tasks` (`assignee_id` ASC, `updated_at` DESC, `id` ASC)",
+        "CREATE TABLE IF NOT EXISTS `usage_hours` (`hour_start` INTEGER NOT NULL, `model_id` TEXT NOT NULL, `agent_id` TEXT NOT NULL, " +
+            "`source` TEXT NOT NULL, `model_label` TEXT NOT NULL, `provider_id` TEXT NOT NULL, `provider_label` TEXT NOT NULL, " +
+            "`locality` TEXT NOT NULL, `last_call_at` INTEGER NOT NULL, `calls` INTEGER NOT NULL, `ok` INTEGER NOT NULL, " +
+            "`failed` INTEGER NOT NULL, `cancelled` INTEGER NOT NULL, `blocked` INTEGER NOT NULL, `retries` INTEGER NOT NULL, " +
+            "`substituted` INTEGER NOT NULL, `truncated` INTEGER NOT NULL, `no_usage` INTEGER NOT NULL, " +
+            "`rate_limited_waits` INTEGER NOT NULL, `err_auth` INTEGER NOT NULL, `err_rate_limited` INTEGER NOT NULL, " +
+            "`err_overloaded` INTEGER NOT NULL, `err_timeout` INTEGER NOT NULL, `err_network` INTEGER NOT NULL, " +
+            "`err_server` INTEGER NOT NULL, `err_invalid` INTEGER NOT NULL, `err_context` INTEGER NOT NULL, " +
+            "`err_other` INTEGER NOT NULL, `input_tokens` INTEGER NOT NULL, `output_tokens` INTEGER NOT NULL, " +
+            "`cached_input_tokens` INTEGER NOT NULL, `answer_ms_sum` INTEGER NOT NULL, `ttft_ms_sum` INTEGER NOT NULL, " +
+            "`ttft_count` INTEGER NOT NULL, `bytes_sent` INTEGER NOT NULL, PRIMARY KEY(`hour_start`, `model_id`, `agent_id`, `source`))",
+        "CREATE INDEX IF NOT EXISTS `index_usage_hours_model_id_hour_start` ON `usage_hours` (`model_id`, `hour_start`)",
+        "CREATE INDEX IF NOT EXISTS `index_usage_hours_agent_id_hour_start` ON `usage_hours` (`agent_id`, `hour_start`)",
+        "CREATE TABLE IF NOT EXISTS `work_usage` (`work_kind` TEXT NOT NULL, `work_id` TEXT NOT NULL, `model_id` TEXT NOT NULL, " +
+            "`calls` INTEGER NOT NULL, `input_tokens` INTEGER NOT NULL, `output_tokens` INTEGER NOT NULL, " +
+            "`cached_input_tokens` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`work_kind`, `work_id`, `model_id`))",
+        "CREATE TABLE IF NOT EXISTS `model_prices` (`model_id` TEXT NOT NULL, `input_per_mtok_micros` INTEGER NOT NULL, " +
+            "`output_per_mtok_micros` INTEGER NOT NULL, `cached_input_per_mtok_micros` INTEGER, `currency_label` TEXT NOT NULL, " +
+            "`updated_at` INTEGER NOT NULL, PRIMARY KEY(`model_id`))",
+        "CREATE TABLE IF NOT EXISTS `routines` (`id` TEXT NOT NULL, `title` TEXT NOT NULL, `objective_text` TEXT NOT NULL, " +
+            "`options_json` TEXT NOT NULL, `schedule_json` TEXT NOT NULL, `enabled` INTEGER NOT NULL, `approval_timeout_minutes` INTEGER, " +
+            "`allow_screen_actions` INTEGER NOT NULL, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, `next_run_at` INTEGER, " +
+            "`consecutive_failures` INTEGER NOT NULL, `paused_note` TEXT, PRIMARY KEY(`id`))",
+        "CREATE TABLE IF NOT EXISTS `routine_runs` (`id` TEXT NOT NULL, `routine_id` TEXT NOT NULL, `due_at` INTEGER NOT NULL, " +
+            "`outcome` TEXT NOT NULL, `started_at` INTEGER, `objective_id` TEXT, `note` TEXT, PRIMARY KEY(`id`))",
+        "CREATE INDEX IF NOT EXISTS `index_routine_runs_routine_id_due_at_id` ON `routine_runs` (`routine_id`, `due_at`, `id`)",
+        "CREATE TABLE IF NOT EXISTS `pickup_rules` (`id` TEXT NOT NULL, `folder_id` TEXT NOT NULL, `space_id` TEXT NOT NULL, " +
+            "`enabled` INTEGER NOT NULL, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, `last_run_at` INTEGER, " +
+            "`last_result` TEXT, PRIMARY KEY(`id`))",
+        "CREATE UNIQUE INDEX IF NOT EXISTS `index_pickup_rules_folder_id` ON `pickup_rules` (`folder_id`)",
+        "CREATE TABLE IF NOT EXISTS `pickup_imports` (`rule_id` TEXT NOT NULL, `content_sha256` TEXT NOT NULL, " +
+            "`document_name` TEXT NOT NULL, `size_bytes` INTEGER NOT NULL, `imported_at` INTEGER NOT NULL, `memory_id` TEXT, " +
+            "PRIMARY KEY(`rule_id`, `content_sha256`))",
+        "CREATE INDEX IF NOT EXISTS `index_pickup_imports_rule_id_imported_at_content_sha256` ON `pickup_imports` " +
+            "(`rule_id` ASC, `imported_at` DESC, `content_sha256` ASC)",
+        "CREATE INDEX IF NOT EXISTS `index_pickup_imports_imported_at` ON `pickup_imports` (`imported_at`)",
+    )
+
+    /** Everything this step runs, in order. Internal so the tests can check what it is made of. */
+    internal val statements: List<String> = ADD_COLUMNS + BACKFILL_RESULT_CHARS + CREATE_TABLES
+
+    // Room calls one or the other depending on how the database is opened; both must work.
+    override fun migrate(db: SupportSQLiteDatabase) = statements.forEach(db::execSQL)
+
+    override fun migrate(connection: SQLiteConnection) = statements.forEach(connection::execSQL)
 }
 
 /**

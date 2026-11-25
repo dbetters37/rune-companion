@@ -50,6 +50,8 @@ import com.aicontrolcenter.core.registry.ModelCapabilities
 import com.aicontrolcenter.core.registry.ModelSource
 import com.aicontrolcenter.core.registry.ModelStatus
 import com.aicontrolcenter.core.registry.ProviderKind
+import com.aicontrolcenter.core.routines.RoutineRunOutcome
+import com.aicontrolcenter.core.routines.RoutineSchedule
 import com.aicontrolcenter.core.settings.FrameworkSettings
 import com.aicontrolcenter.core.tasks.AgentMessage
 import com.aicontrolcenter.core.tasks.MessageType
@@ -63,7 +65,10 @@ import com.aicontrolcenter.core.tasks.TaskStatus
 import com.aicontrolcenter.core.tasks.TaskUsage
 import com.aicontrolcenter.core.tools.CapabilityConstraint
 import com.aicontrolcenter.core.tools.RiskLevel
+import com.aicontrolcenter.core.usage.UsageSource
+import com.aicontrolcenter.core.usage.WorkKind
 import com.aicontrolcenter.data.db.AiccDatabase
+import com.aicontrolcenter.data.db.dao.MemoryDao
 import com.aicontrolcenter.data.db.dao.OwnerRequestDao
 import com.aicontrolcenter.data.db.dao.PermissionGrantDao
 import com.aicontrolcenter.data.db.dao.TaskDao
@@ -75,8 +80,15 @@ import com.aicontrolcenter.data.db.entity.MemoryLinkEntity
 import com.aicontrolcenter.data.db.entity.OperatorAppEntity
 import com.aicontrolcenter.data.db.entity.OwnerRequestEntity
 import com.aicontrolcenter.data.db.entity.PermissionGrantEntity
+import com.aicontrolcenter.data.db.entity.ModelPriceEntity
+import com.aicontrolcenter.data.db.entity.PickUpImportEntity
+import com.aicontrolcenter.data.db.entity.PickUpRuleEntity
+import com.aicontrolcenter.data.db.entity.RoutineEntity
+import com.aicontrolcenter.data.db.entity.RoutineRunEntity
 import com.aicontrolcenter.data.db.entity.SharedFolderEntity
 import com.aicontrolcenter.data.db.entity.TaskEntity
+import com.aicontrolcenter.data.db.entity.UsageHourEntity
+import com.aicontrolcenter.data.db.entity.WorkUsageEntity
 import com.aicontrolcenter.data.db.mapper.ColumnSerializers
 import com.aicontrolcenter.data.db.mapper.EmbeddingCodec
 import com.aicontrolcenter.data.db.mapper.MemoryScopeType
@@ -88,6 +100,7 @@ import com.aicontrolcenter.data.db.mapper.level
 import com.aicontrolcenter.data.db.mapper.memoryHistorySerializer
 import com.aicontrolcenter.data.db.mapper.memorySearchText
 import com.aicontrolcenter.data.db.mapper.memorySearchWords
+import com.aicontrolcenter.data.db.mapper.routineScheduleSerializer
 import com.aicontrolcenter.data.db.mapper.toColumns
 import com.aicontrolcenter.data.db.mapper.toDomain
 import com.aicontrolcenter.data.db.mapper.toEntity
@@ -96,6 +109,7 @@ import com.aicontrolcenter.data.security.VaultFileStore
 import com.aicontrolcenter.data.settings.DataStoreSettingsRepository
 import com.aicontrolcenter.data.settings.SettingsCodec
 import com.aicontrolcenter.testkit.contract.OperatorSamples
+import com.aicontrolcenter.testkit.contract.QuestionSamples
 import com.aicontrolcenter.testkit.contract.TaskSamples
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
@@ -105,6 +119,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.serializer
 import org.junit.Test
+import java.time.DayOfWeek
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -168,6 +183,71 @@ class StoredNamesGoldenTest {
         assertStoredNames<OwnerRequestStatus>("PENDING", "APPROVED", "DENIED", "EXPIRED", "CANCELLED")
         assertStoredNames<RiskLevel>("SAFE", "MODIFYING", "CONSEQUENTIAL")
         assertStoredNames<ScreenActionPolicy>("ASK_EVERY_ACTION", "ASK_CONSEQUENTIAL_ONLY")
+        // Schema 6.
+        assertStoredNames<UsageSource>("CHAT", "OBJECTIVE", "OTHER")
+        assertStoredNames<WorkKind>("TASK", "OBJECTIVE", "CHAT")
+        assertStoredNames<RoutineRunOutcome>(
+            "STARTED", "SKIPPED_STILL_RUNNING", "SKIPPED_DAILY_LIMIT", "SKIPPED_LOCAL_ONLY", "SKIPPED_DIRECTOR_UNAVAILABLE",
+            "WAITING_FOR_TAP", "MISSED",
+        )
+    }
+
+    @Test
+    fun `names of the schema 6 tables and the stored names their statements spell out`() {
+        assertEquals(
+            listOf("usage_hours", "work_usage", "model_prices", "routines", "routine_runs", "pickup_rules", "pickup_imports"),
+            listOf(
+                UsageHourEntity.TABLE, WorkUsageEntity.TABLE, ModelPriceEntity.TABLE, RoutineEntity.TABLE, RoutineRunEntity.TABLE,
+                PickUpRuleEntity.TABLE, PickUpImportEntity.TABLE,
+            ),
+        )
+        // A call made for no agent is stored under the empty agent id (a primary key column cannot be null).
+        assertEquals("", UsageHourEntity.NO_AGENT)
+        // The plan steps, the progress and the counts by space filter on stored names.
+        assertTrue("s.kind IN ('${TaskKind.WORK.name}', '${TaskKind.SYNTHESIS.name}')" in TaskDao.IS_STEP_OF_O, TaskDao.IS_STEP_OF_O)
+        assertTrue("o.kind = '${TaskKind.OBJECTIVE.name}'" in TaskDao.OBJECTIVE_ROWS, TaskDao.OBJECTIVE_ROWS)
+        assertTrue("s.status = '${TaskStatus.COMPLETED.name}'" in TaskDao.PROGRESS, TaskDao.PROGRESS)
+        val waiting = TaskStatus.entries.filter { it.isWaiting }.joinToString(", ") { "'${it.name}'" }
+        assertTrue("s.status IN ($waiting)" in TaskDao.PROGRESS, "waiting must be TaskStatus.isWaiting: ${TaskDao.PROGRESS}")
+        assertTrue("s.status IN ('${TaskStatus.RUNNING.name}', '${TaskStatus.IN_REVIEW.name}')" in TaskDao.PROGRESS, TaskDao.PROGRESS)
+        assertTrue("s.status IN ('${TaskStatus.FAILED.name}', '${TaskStatus.TIMED_OUT.name}')" in TaskDao.PROGRESS, TaskDao.PROGRESS)
+        assertTrue("scope_type = '${MemoryScopeType.SHARED.name}'" in MemoryDao.COUNTS_BY_SPACE, MemoryDao.COUNTS_BY_SPACE)
+    }
+
+    @Test
+    fun `keys and exact text of the routine columns`() {
+        assertStoredKeys(RoutineSchedule.Daily.serializer(), "minuteOfDay", "days")
+        assertStoredKeys(RoutineSchedule.EveryHours.serializer(), "hours", "startMinuteOfDay", "days")
+        assertEquals(
+            """{"type":"daily","minuteOfDay":420,"days":["MONDAY","FRIDAY"]}""",
+            encodeColumn(routineScheduleSerializer, RoutineSchedule.Daily(420, linkedSetOf(DayOfWeek.MONDAY, DayOfWeek.FRIDAY))),
+        )
+        assertEquals(
+            """{"type":"every_hours","hours":3,"startMinuteOfDay":30,"days":["SUNDAY"]}""",
+            encodeColumn(routineScheduleSerializer, RoutineSchedule.EveryHours(3, 30, setOf(DayOfWeek.SUNDAY))),
+        )
+        assertEquals(
+            listOf("MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"),
+            DayOfWeek.entries.map { it.name },
+        )
+        // A schedule written with the days left to their default reads back as every day.
+        assertEquals(
+            RoutineSchedule.Daily(60),
+            DataJson.decodeFromString(routineScheduleSerializer, """{"type":"daily","minuteOfDay":60}"""),
+        )
+    }
+
+    @Test
+    fun `exact columns of a question, its options and its answer`() {
+        val question = QuestionSamples.question("req_q").toEntity()
+        assertEquals("QUESTION", question.kind)
+        assertEquals("Which city should the report cover?\nOne line is enough, \"thanks\".", question.question)
+        assertEquals("""["Berlin, \"the capital\"","Paris 🗼"]""", question.optionsJson)
+        assertEquals(null, question.answer)
+        assertEquals("[]", QuestionSamples.question("req_q", options = emptyList()).toEntity().optionsJson)
+        // Every other kind of request leaves the three columns empty.
+        val permission = OperatorSamples.request("req_p").toEntity()
+        assertEquals(listOf(null, null, null), listOf(permission.question, permission.optionsJson, permission.answer))
     }
 
     @Test
@@ -251,10 +331,21 @@ class StoredNamesGoldenTest {
         assertEquals(listOf("tasks", "agent_messages"), listOf(TaskEntity.TABLE, AgentMessageEntity.TABLE))
         // The objectives listing filters on the stored name of the kind.
         assertTrue("kind = '${TaskKind.OBJECTIVE.name}'" in TaskDao.OBJECTIVES, TaskDao.OBJECTIVES)
-        assertEquals(listOf("OWNER", "AGENT", "SYSTEM"), ParticipantKind.entries.map { it.name })
+        // Schema 6 appended SPACE: a memory shared into a space; earlier shares stay SYSTEM.
+        assertEquals(listOf("OWNER", "AGENT", "SYSTEM", "SPACE"), ParticipantKind.entries.map { it.name })
         assertEquals(ParticipantColumns(ParticipantKind.OWNER, null), Participant.Owner.toColumns())
         assertEquals(ParticipantColumns(ParticipantKind.SYSTEM, null), Participant.System.toColumns())
         assertEquals(ParticipantColumns(ParticipantKind.AGENT, "agt_1"), Participant.Agent(AgentId("agt_1")).toColumns())
+        assertEquals(ParticipantColumns(ParticipantKind.SPACE, null, "spc_1"), Participant.Space(SpaceId("spc_1")).toColumns())
+        val share = AgentMessage(
+            MessageId("msg_2"), TaskId("tsk_root"), TaskId("tsk_1"), Participant.Agent(AgentId("agt_1")), Participant.Space(SpaceId("spc_1")),
+            MessageType.MEMORY_SHARE, "Saved", replyTo = null, hop = 0, at = 10,
+        )
+        assertEquals(
+            AgentMessageEntity("msg_2", "tsk_root", "tsk_1", "AGENT", "agt_1", "SPACE", null, "MEMORY_SHARE", "Saved", null, 0, 10, toSpaceId = "spc_1"),
+            share.toEntity(),
+        )
+        assertEquals(share, share.toEntity().toDomain())
         val message = AgentMessage(
             MessageId("msg_1"), TaskId("tsk_root"), TaskId("tsk_1"), Participant.Agent(AgentId("agt_1")), Participant.Owner,
             MessageType.REVIEW_RESULT, "Looks right", MessageId("msg_0"), hop = 2, at = 9,

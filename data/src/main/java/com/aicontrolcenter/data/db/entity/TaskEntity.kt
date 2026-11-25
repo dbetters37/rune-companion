@@ -25,7 +25,15 @@ import androidx.room.PrimaryKey
  * - objectives newest first: `(kind, created_at DESC, id ASC)`, the listing's exact order;
  * - a tree in creation order: `(root_id, created_at, id)`;
  * - tasks by status across objectives, oldest first (recovery after a crash, the scheduler):
- *   `(status, created_at, id)`.
+ *   `(status, created_at, id)`;
+ * - an agent's most recently updated tasks (schema 6): `(assignee_id, updated_at DESC, id ASC)`,
+ *   the exact order of `TaskDao.RECENT_BY_AGENT`.
+ *
+ * Schema 6 added [retryAt] and [resultChars] with `ALTER TABLE … ADD COLUMN`, which appends a
+ * column; they are declared last, in that order, so a new installation and an upgraded phone
+ * have the same columns in the same order. [resultChars] is the length of [result] in Unicode
+ * code points (what SQLite's `length()` counts, and `SummaryText.length`), kept in step by every
+ * write, so a list can show how long a result is without reading it.
  */
 @Entity(
     tableName = TaskEntity.TABLE,
@@ -33,6 +41,7 @@ import androidx.room.PrimaryKey
         Index(value = ["kind", "created_at", "id"], orders = [Index.Order.ASC, Index.Order.DESC, Index.Order.ASC]),
         Index(value = ["root_id", "created_at", "id"]),
         Index(value = ["status", "created_at", "id"]),
+        Index(value = ["assignee_id", "updated_at", "id"], orders = [Index.Order.ASC, Index.Order.DESC, Index.Order.ASC]),
     ],
 )
 internal data class TaskEntity(
@@ -64,6 +73,9 @@ internal data class TaskEntity(
     @ColumnInfo(name = "started_at") val startedAt: Long?,
     @ColumnInfo(name = "finished_at") val finishedAt: Long?,
     @ColumnInfo(name = "deadline_at") val deadlineAt: Long?,
+    // Schema 6: appended by Migration5To6, so declared last.
+    @ColumnInfo(name = "retry_at") val retryAt: Long? = null,
+    @ColumnInfo(name = "result_chars", defaultValue = "0") val resultChars: Int = 0,
 ) {
     companion object {
         const val TABLE = "tasks"

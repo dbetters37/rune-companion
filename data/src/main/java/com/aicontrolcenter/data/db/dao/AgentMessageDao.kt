@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import com.aicontrolcenter.data.db.entity.AgentMessageEntity
+import com.aicontrolcenter.data.db.entity.MessageHeaderRow
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -32,6 +33,14 @@ internal interface AgentMessageDao {
     @Query("SELECT COUNT(*) FROM agent_messages WHERE root_id = :rootId")
     suspend fun count(rootId: String): Int
 
+    /** The newest [limit] messages of one objective as headers, newest first (the caller reverses them). */
+    @Query(HEADERS)
+    fun observeHeaders(rootId: String, limit: Int): Flow<List<MessageHeaderRow>>
+
+    /** The newest [limit] messages across all objectives as headers, newest first. */
+    @Query(RECENT_HEADERS)
+    fun observeRecentHeaders(limit: Int): Flow<List<MessageHeaderRow>>
+
     /** One statement, so all of the objective's messages go together. */
     @Query("DELETE FROM agent_messages WHERE root_id = :rootId")
     suspend fun deleteFor(rootId: String)
@@ -40,5 +49,9 @@ internal interface AgentMessageDao {
     companion object {
         const val BY_ROOT = "SELECT * FROM agent_messages WHERE root_id = :rootId ORDER BY at ASC, id ASC"
         const val RECENT = "SELECT * FROM agent_messages ORDER BY at DESC, id DESC LIMIT :limit"
+
+        /** Headers (schema 6, rule 16): the projection reads the first characters of the body only. */
+        const val HEADERS = "SELECT ${MessageHeaderRow.COLUMNS} FROM agent_messages WHERE root_id = :rootId ORDER BY at DESC, id DESC LIMIT :limit"
+        const val RECENT_HEADERS = "SELECT ${MessageHeaderRow.COLUMNS} FROM agent_messages ORDER BY at DESC, id DESC LIMIT :limit"
     }
 }

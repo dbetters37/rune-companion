@@ -26,6 +26,10 @@ internal interface ActivityEventDao {
     @RawQuery
     suspend fun select(query: RoomRawQuery): List<ActivityEventEntity>
 
+    /** The event with [id] (unique index), to find where a page starts (schema 6). */
+    @Query("SELECT * FROM activity_events WHERE id = :id")
+    suspend fun byId(id: String): ActivityEventEntity?
+
     @Query("DELETE FROM activity_events WHERE at < :olderThan")
     suspend fun deleteOlderThan(olderThan: Long): Int
 
