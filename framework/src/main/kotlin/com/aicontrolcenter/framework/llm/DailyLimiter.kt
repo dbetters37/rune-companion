@@ -60,9 +60,13 @@ data class DailyUse(val calls: Long, val tokens: Long, val spendMicros: Long, va
  * How it holds:
  *  - **Reserve, then settle, under one lock.** The first attempt of a call reserves a place ([reserve]); the
  *    reservation counts as a call at once, so two calls that start together at 199 of 200 cannot both pass: the
- *    second sees 200. A retry of the same call checks again ([reserve] with its ticket) without counting itself
- *    twice, so a limit reached meanwhile by other calls' tokens stops the retry. When the call ends, [settle] turns
- *    the reservation into a counted call and adds the tokens the provider reported.
+ *    second sees 200. It also reserves the call's estimated tokens (the request's estimated input and the room it
+ *    leaves for the answer) and so their price: a call is checked against what has settled plus what every other
+ *    call in flight reserved, so calls started together cannot all pass at US$0.99 of US$1.00 (security review of
+ *    wave 2a, SEC-W2A-4). Like a single call, the last one let through can still take the day past the limit by its
+ *    own cost. A retry of the same call checks again ([reserve] with its ticket) without counting itself twice, so a
+ *    limit reached meanwhile by other calls stops the retry. When the call ends, [settle] turns the reservation into
+ *    a counted call and replaces the estimate with the tokens the provider reported.
  *  - **Today** is the owner's local date in [zone] (read each time, so travelling moves it): the counts start again
  *    at local midnight. At first use, and again when the date changes, they are read from the usage records for
  *    [UsageRange.day] ([UsageReports.byModel]), so a restart does not reset them; clearing the usage history never
@@ -89,7 +93,12 @@ class DailyLimiter(
      * One call's place in today's count, from its first attempt to its end. [limited] is false for a provider on this
      * phone, which is never refused and not counted here.
      */
-    class Ticket internal constructor(val limited: Boolean) {
+    class Ticket internal constructor(
+        val limited: Boolean,
+        internal val modelId: ModelId? = null,
+        /** The tokens reserved for the call until it settles; null when none were. */
+        internal val estimate: TokenCounts? = null,
+    ) {
         private val ended = java.util.concurrent.atomic.AtomicBoolean(false)
 
         /** True the first time only. */
@@ -106,14 +115,18 @@ class DailyLimiter(
     /** Calls that reserved a place and have not ended: counted as calls already. */
     private var inFlight: Int = 0
 
+    /** The estimated tokens of the calls in flight, by model: counted with today's tokens and money until they settle. */
+    private val reserved = HashMap<ModelId, TokenCounts>()
+
     /**
      * Reserves a place for the next attempt of a call to [modelId] on a provider at [locality]: the first attempt
-     * when [held] is null, a retry of the call that holds [held] otherwise. Returns the ticket the call keeps until
-     * [settle].
+     * when [held] is null, a retry of the call that holds [held] otherwise. A first attempt also reserves [estimate],
+     * the call's estimated tokens, which count for the other calls until it settles. Returns the ticket the call keeps
+     * until [settle].
      *
      * @throws LlmException.DailyLimitReached when a limit is reached (nothing may be sent), with the owner's sentence.
      */
-    suspend fun reserve(modelId: ModelId, locality: Locality, held: Ticket? = null): Ticket {
+    suspend fun reserve(modelId: ModelId, locality: Locality, held: Ticket? = null, estimate: TokenCounts? = null): Ticket {
         if (held != null && !held.limited) return held
         if (!locality.leavesDevice) return held ?: Ticket(limited = false)
         val limits = settings.get().dailyLimits
@@ -127,13 +140,17 @@ class DailyLimiter(
                 enterDay(now, seed)
                 if (day != null) {
                     val others = if (held == null) inFlight else inFlight - 1
-                    val spend = DailyUse.spend(tokens, priced)
-                    limits.reachedBy(calls + others, tokens.values.sumOf { it.total }, spend)?.let { kind ->
+                    // Today's tokens with what the other calls in flight reserved (not this call's own estimate).
+                    val counted = plus(tokens, reserved)
+                    held?.estimate?.let { own -> held.modelId?.let { counted[it] = minus(counted[it], own) } }
+                    val spend = DailyUse.spend(counted, priced)
+                    limits.reachedBy(calls + others, counted.values.sumOf { it.total }, spend)?.let { kind ->
                         throw LlmException.DailyLimitReached(limits.sentence(kind, currencyOf(priced, kind)))
                     }
                     if (held != null) return held
                     inFlight++
-                    return Ticket(limited = true)
+                    estimate?.let { reserved[modelId] = add(reserved[modelId], it) }
+                    return Ticket(limited = true, modelId = modelId, estimate = estimate)
                 }
             }
             if (seed != null && seed.rows == null) throw LlmException.DailyLimitReached(USE_UNREADABLE)
@@ -156,6 +173,12 @@ class DailyLimiter(
             }
             lock.withLock {
                 inFlight = (inFlight - 1).coerceAtLeast(0)
+                val estimate = ticket.estimate
+                val model = ticket.modelId
+                if (estimate != null && model != null) {
+                    val left = minus(reserved[model], estimate)
+                    if (left.total == 0L && left.cachedInput == 0L) reserved.remove(model) else reserved[model] = left
+                }
                 enterDay(at, seed)
                 calls++
                 if (used != null) tokens[modelId] = (tokens[modelId] ?: TokenCounts(0, 0)).let {
@@ -228,8 +251,21 @@ class DailyLimiter(
 
     private class Seed(val range: UsageRange, val rows: List<ModelUsage>?)
 
+    private fun add(a: TokenCounts?, b: TokenCounts): TokenCounts =
+        if (a == null) b else TokenCounts(a.input + b.input, a.output + b.output, a.cachedInput + b.cachedInput)
+
+    private fun minus(a: TokenCounts?, b: TokenCounts): TokenCounts =
+        if (a == null) TokenCounts(0, 0)
+        else TokenCounts((a.input - b.input).coerceAtLeast(0), (a.output - b.output).coerceAtLeast(0), (a.cachedInput - b.cachedInput).coerceAtLeast(0))
+
+    private fun plus(a: Map<ModelId, TokenCounts>, b: Map<ModelId, TokenCounts>): HashMap<ModelId, TokenCounts> =
+        HashMap(a).also { sum -> b.forEach { (model, counts) -> sum[model] = add(sum[model], counts) } }
+
     /** Sentences. */
     companion object {
+        /** The answer's tokens a call is assumed to use when its request does not bound them: for the estimate only. */
+        const val DEFAULT_ANSWER_ESTIMATE: Long = 1_000
+
         const val USE_UNREADABLE: String =
             "The app could not read today's use, so it cannot check your daily limits. Nothing was sent. Try again in a moment."
         const val PRICES_UNREADABLE: String =

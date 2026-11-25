@@ -255,7 +255,9 @@ class DefaultModelGateway(
         val call = route.call
         if (call.attempts > 0) confirmRetry(route, modelId)
         call.ticket = try {
-            limiter.reserve(call.model.id, route.lease.provider.effectiveLocality, held = call.ticket)
+            // The first attempt reserves the call's estimated tokens too, so calls in flight together count (SEC-W2A-4).
+            val estimate = if (call.ticket == null) estimate(route.request) else null
+            limiter.reserve(call.model.id, route.lease.provider.effectiveLocality, held = call.ticket, estimate = estimate)
         } catch (refused: LlmException.DailyLimitReached) {
             val sentence = refused.message.orEmpty()
             if (call.attempts == 0) {
@@ -267,6 +269,12 @@ class DefaultModelGateway(
             throw refused
         }
     }
+
+    /** What [request] is expected to use: its estimated input, and the answer's room (or [DailyLimiter.DEFAULT_ANSWER_ESTIMATE]). */
+    private fun estimate(request: ChatRequest): TokenCounts = TokenCounts(
+        TokenEstimator.tokens(request.messages, request.tools).toLong().coerceAtLeast(0),
+        (request.maxOutputTokens?.toLong() ?: DailyLimiter.DEFAULT_ANSWER_ESTIMATE).coerceAtLeast(0),
+    )
 
     /** Waits [pauseMs] before the next attempt, as the provider or the retry policy asked. */
     private suspend fun waitBeforeRetry(call: ModelCall, pauseMs: Long) {

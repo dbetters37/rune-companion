@@ -334,7 +334,10 @@ do it.
   slightly altered, so it cannot pass for your notes.
 - **Limits stop work, not cost already spent.** Caps on tasks, messages, model calls and time
   bound how much an objective can do. A cloud provider bills for the calls made before a limit
-  was reached.
+  was reached. Today's limits on tokens and money are checked before each call against what
+  has been used plus an estimate of every call still running, so the last call let through can
+  still take the day past the limit by its own cost. A model's money only counts once you have
+  entered its price.
 - **Recognising a consequential control on another app's screen is a word list.** Every
   authorised app therefore asks before every tap, typing, scroll, Back and Home by default, with
   the window's text in the approval. For an app you set to ask only before buying, sending,
