@@ -524,18 +524,55 @@ class AgentRunnerTest {
         val monitor = DefaultAgentActivityMonitor(FakeClock())
         val id = AgentId("agt_1")
 
-        monitor.runStarted(id, "Preparing")
-        monitor.runStarted(id, "Preparing")
-        monitor.report(id, AgentActivity.WORKING, "Waiting for the model")
-        monitor.runEnded(id)
+        val first = monitor.runStarted(id, "Preparing")
+        val second = monitor.runStarted(id, "Preparing")
+        monitor.report(second, AgentActivity.WORKING, "Waiting for the model")
+        monitor.runEnded(first)
         val state = monitor.states.value.getValue(id)
         assertEquals(AgentActivity.WORKING, state.activity)
         assertEquals("Waiting for the model", state.detail)
 
-        monitor.runEnded(id)
+        monitor.runEnded(second)
         assertTrue(monitor.states.value.isEmpty())
+        monitor.report(second, AgentActivity.WORKING, "late")
         monitor.report(id, AgentActivity.WORKING, "late")
-        monitor.runEnded(id)
+        monitor.runEnded(second)
+        assertTrue(monitor.states.value.isEmpty())
+    }
+
+    @Test
+    fun `each run of an agent keeps its own state, and when one ends the agent shows what the others last reported (AND-W2B-1)`() {
+        val clock = FakeClock()
+        val monitor = DefaultAgentActivityMonitor(clock)
+        val id = AgentId("agt_1")
+        val task = com.aicontrolcenter.core.TaskId("tsk_1")
+
+        // A task run waits for the owner's answer.
+        val taskRun = monitor.runStarted(id, "Task: compare apps", task)
+        monitor.report(taskRun, AgentActivity.WAITING_FOR_APPROVAL, "Waiting for your answer: Write a file")
+        assertEquals(AgentActivity.WAITING_FOR_APPROVAL, monitor.states.value.getValue(id).activity)
+
+        // The owner chats with the same agent meanwhile: it works, and shows as working while it does.
+        val chat = monitor.runStarted(id, "Chat")
+        monitor.report(chat, AgentActivity.WORKING, "Calling the model")
+        assertEquals(AgentActivity.WORKING, monitor.states.value.getValue(id).activity)
+        // The waiting run reporting again does not hide the chat that works.
+        monitor.report(taskRun, AgentActivity.WAITING_FOR_APPROVAL, "Waiting for your answer: Write another file")
+        assertEquals("Calling the model", monitor.states.value.getValue(id).detail)
+
+        // The chat ends: its only run left waits for the owner, and nothing reads as working.
+        monitor.runEnded(chat)
+        val left = monitor.states.value.getValue(id)
+        assertEquals(AgentActivity.WAITING_FOR_APPROVAL, left.activity)
+        assertEquals("Waiting for your answer: Write another file", left.detail)
+        assertEquals(task, left.currentTaskId)
+
+        // The team desk speaks for the task's run by its task.
+        monitor.report(id, AgentActivity.WAITING_FOR_AGENT, "Waiting for Writer.", task)
+        assertEquals(AgentActivity.WAITING_FOR_AGENT, monitor.states.value.getValue(id).activity)
+        monitor.report(id, AgentActivity.WORKING, "no such run", com.aicontrolcenter.core.TaskId("tsk_other"))
+        assertEquals(AgentActivity.WAITING_FOR_AGENT, monitor.states.value.getValue(id).activity)
+        monitor.runEnded(taskRun)
         assertTrue(monitor.states.value.isEmpty())
     }
 }

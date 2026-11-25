@@ -168,6 +168,44 @@ class ObjectiveWorkServiceTest {
     }
 
     @Test
+    fun `an agent whose chat ends while its task waits for the owner keeps nothing awake (AND-W2B-1)`() {
+        ShadowPowerManager.clearWakeLocks()
+        // The service is held up by a routine pass that has not returned: nothing else runs, nothing else works.
+        val holdUp = kotlinx.coroutines.CompletableDeferred<Unit>()
+        ObjectiveWorkService.runDue = { holdUp.await() }
+        try {
+            Robolectric.buildService(ObjectiveWorkService::class.java).create()
+                .withIntent(Intent(context, ObjectiveWorkService::class.java).setAction(RoutinesWiring.ACTION_RUN_DUE_ROUTINES)).startCommand(0, 1)
+            idle()
+            assertTrue(ShadowPowerManager.getLatestWakeLock()?.isHeld != true, "nothing works yet")
+            val monitor = app.graph.activityMonitor as com.aicontrolcenter.framework.agents.DefaultAgentActivityMonitor
+            val researcher = runBlocking { app.agents.getAll().first { it.name == "Researcher" }.id }
+
+            // The task run asks the owner and waits; the owner chats with the same agent meanwhile.
+            val task = monitor.runStarted(researcher, "Task: compare apps", com.aicontrolcenter.core.TaskId("tsk_wait"))
+            monitor.report(task, AgentActivity.WAITING_FOR_APPROVAL, "Waiting for your answer: Write a file")
+            idle()
+            assertTrue(ShadowPowerManager.getLatestWakeLock()?.isHeld != true, "only waiting for the owner: not held")
+            val chat = monitor.runStarted(researcher, "Chat")
+            monitor.report(chat, AgentActivity.WORKING, "Calling the model")
+            idle()
+            val lock = assertNotNull(ShadowPowerManager.getLatestWakeLock())
+            assertEquals(WakeHold.TAG, shadowOf(lock).tag)
+            assertTrue(lock.isHeld, "the chat works: held")
+
+            monitor.runEnded(chat)
+            idle()
+            assertEquals(AgentActivity.WAITING_FOR_APPROVAL, monitor.states.value[researcher]?.activity)
+            assertFalse(lock.isHeld, "the agent's only run left waits for the owner: let go")
+            monitor.runEnded(task)
+        } finally {
+            holdUp.complete(Unit)
+            idle()
+            ObjectiveWorkService.runDue = { it.routinesAssembly.runDue() }
+        }
+    }
+
+    @Test
     fun `with the owner's setting off the phone is never kept awake`() {
         ShadowPowerManager.clearWakeLocks()
         runBlocking {

@@ -138,7 +138,7 @@ class AgentRunner(
         val limits = settings.get()
         val run = Run(request, listener, limits)
         synchronized(runningPerAgent) { runningPerAgent[request.agent.id] = (runningPerAgent[request.agent.id] ?: 0) + 1 }
-        monitor.runStarted(request.agent.id, request.activityLabel ?: "Preparing", request.taskId)
+        run.activity = monitor.runStarted(request.agent.id, request.activityLabel ?: "Preparing", request.taskId)
         try {
             val timeoutMinutes = limits.taskTimeoutMinutes.coerceAtLeast(1)
             val frameworkTimeoutMs = timeoutMinutes * 60_000L
@@ -155,7 +155,7 @@ class AgentRunner(
             // Reached on every path, including cancellation: nothing produced or counted may be lost.
             withContext(NonCancellable) {
                 run.closeOpenWork("the turn was stopped")
-                monitor.runEnded(request.agent.id)
+                monitor.runEnded(run.activity)
                 run.saveStats()
                 val last = synchronized(runningPerAgent) {
                     val left = (runningPerAgent[request.agent.id] ?: 1) - 1
@@ -219,6 +219,9 @@ class AgentRunner(
     private inner class Run(val request: AgentRunRequest, val listener: AgentRunListener, val limits: FrameworkSettings) {
         /** This run called a screen tool, so it may have started the agent's "operating" indicator. */
         @Volatile var usedScreen = false
+
+        /** This run in the activity monitor: what it reports is its own, apart from the agent's other runs (AND-W2B-1). */
+        lateinit var activity: DefaultAgentActivityMonitor.Run
 
         private val agent = request.agent
         private val offered: List<ToolSpec> = offeredTools(request)
@@ -470,7 +473,7 @@ class AgentRunner(
         }
 
         private fun report(detail: String, activity: AgentActivity = AgentActivity.WORKING) =
-            monitor.report(agent.id, activity, request.activityLabel?.let { "$it · $detail" } ?: detail, request.taskId)
+            monitor.report(this.activity, activity, request.activityLabel?.let { "$it · $detail" } ?: detail, request.taskId)
 
         /**
          * Answers a `tools_open` call from the menu: the family's tools are offered from the next
