@@ -118,19 +118,22 @@ class RoomTaskRepository internal constructor(
     override fun observeSummaries(rootId: TaskId): Flow<List<TaskSummary>> =
         dao.observeSummaries(rootId.value).map { rows -> rows.mapReadable(TaskSummaryRow::toDomain) }.distinctUntilChanged().flowOn(dispatcher)
 
-    /** @throws IllegalArgumentException if [limit] is more than [TaskDao.ID_CHUNK] (a page, not the whole list). */
     override fun observeObjectiveRows(limit: Int, olderThan: ObjectiveCursor?): Flow<List<ObjectiveRow>> {
         val size = limit.coerceAtLeast(0)
-        require(size <= TaskDao.ID_CHUNK) { "At most ${TaskDao.ID_CHUNK} objectives a page, not $limit." }
         if (size == 0) return flowOf(emptyList())
         val page = if (olderThan == null) dao.observeObjectivePage(size) else dao.observeObjectivePageAfter(olderThan.createdAt, olderThan.id.value, size)
         return page.map { rows -> rows.withParticipants() }.distinctUntilChanged().flowOn(dispatcher)
     }
 
-    /** The rows of one page with their participants, read by one more query over the page's objectives only. */
+    /**
+     * The rows of one page with their participants, read by one more query over the page's
+     * objectives only (in chunks of [TaskDao.ID_CHUNK] for a page larger than that).
+     */
     private suspend fun List<ObjectivePageRow>.withParticipants(): List<ObjectiveRow> {
         if (isEmpty()) return emptyList()
-        val byObjective = dao.participants(map { it.id }).groupBy({ it.rootId }, { it.assigneeId })
+        val byObjective = map { it.id }.chunked(TaskDao.ID_CHUNK)
+            .flatMap { ids -> dao.participants(ids) }
+            .groupBy({ it.rootId }, { it.assigneeId })
         return mapReadable { row -> row.toDomain(byObjective[row.id].orEmpty()) }
     }
 

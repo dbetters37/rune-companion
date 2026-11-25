@@ -2,6 +2,7 @@ package com.aicontrolcenter.data.db
 
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ConversationId
+import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.agents.AgentStats
 import com.aicontrolcenter.core.agents.GenerationSettings
@@ -12,14 +13,27 @@ import com.aicontrolcenter.core.llm.ChatMessage
 import com.aicontrolcenter.core.llm.TokenUsage
 import com.aicontrolcenter.core.memory.MemoryKind
 import com.aicontrolcenter.core.memory.MemoryTier
+import com.aicontrolcenter.core.registry.Locality
+import com.aicontrolcenter.core.routines.RoutineRunOutcome
+import com.aicontrolcenter.core.usage.CallOutcome
+import com.aicontrolcenter.core.usage.ErrorClass
+import com.aicontrolcenter.core.usage.ModelPrice
+import com.aicontrolcenter.core.usage.UsageSource
+import com.aicontrolcenter.core.usage.WorkItem
+import com.aicontrolcenter.core.usage.WorkKind
 import com.aicontrolcenter.data.StoredDataException
 import com.aicontrolcenter.data.db.entity.MemoryEntity
 import com.aicontrolcenter.data.db.entity.MemoryRow
+import com.aicontrolcenter.data.db.entity.UsageHourEntity
+import com.aicontrolcenter.data.db.mapper.addedTo
 import com.aicontrolcenter.data.db.mapper.level
 import com.aicontrolcenter.data.db.mapper.toDomain
 import com.aicontrolcenter.data.db.mapper.toEntity
 import com.aicontrolcenter.testkit.Samples
 import com.aicontrolcenter.testkit.contract.MemorySamples
+import com.aicontrolcenter.testkit.contract.RoutineSamples
+import com.aicontrolcenter.testkit.contract.TaskSamples
+import com.aicontrolcenter.testkit.contract.UsageSamples
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -169,6 +183,70 @@ class StoredColumnsTest {
         val failure = assertFailsWith<StoredDataException> { stored.copy(messageJson = """{"role":"USER","text":"private""").toDomain() }
         assertEquals("Column conversation_entries.message_json of row 'cnv_1#4' does not hold readable JSON.", failure.message)
         assertFailsWith<StoredDataException> { stored.copy(usageJson = "[]").toDomain() }
+    }
+
+    @Test
+    fun `a task keeps its retry time and the length of its result in characters`() {
+        val task = TaskSamples.work("tsk_1").copy(result = "Résumé 📝", retryAt = 9_000)
+        val stored = task.toEntity()
+        assertEquals(9_000L, stored.retryAt)
+        assertEquals(8, stored.resultChars, "characters, not UTF-16 units: the emoji is one")
+        assertEquals(0, task.copy(result = null).toEntity().resultChars)
+        assertEquals(task, stored.toDomain())
+        // A row written before schema 6 reads with no retry time.
+        assertNull(stored.copy(retryAt = null).toDomain().retryAt)
+    }
+
+    @Test
+    fun `a call is summed into its hour row with the empty agent for none, and into its work rows`() {
+        val at = UsageSamples.at("2026-11-25T10:20")
+        val first = UsageSamples.call(at, agent = null, source = UsageSource.OTHER)
+        val row = first.addedTo(stored = null)
+        assertEquals(UsageHourEntity.NO_AGENT, row.agentId)
+        assertEquals(first.hourStart, row.hourStart)
+        assertEquals("OTHER", row.source)
+        assertEquals("CLOUD", row.locality)
+        assertEquals(at, row.lastCallAt)
+        val failed = UsageSamples.call(at - 60_000, agent = null, source = UsageSource.OTHER, outcome = CallOutcome.FAILED, error = ErrorClass.TIMEOUT,
+            input = null, output = null, cached = null, label = "Renamed", locality = Locality.LOCAL_NETWORK)
+        val summed = failed.addedTo(row)
+        assertEquals(2L, summed.counts.calls)
+        assertEquals(1L, summed.counts.errTimeout)
+        assertEquals(listOf("Renamed", "LOCAL_NETWORK"), listOf(summed.modelLabel, summed.locality), "the labels of the call recorded last")
+        assertEquals(at, summed.lastCallAt, "the newest call's time stays")
+        val work = first.addedTo(WorkItem(WorkKind.TASK, "tsk_1"), stored = null)
+        assertEquals(listOf("TASK", "tsk_1", "mdl_grok"), listOf(work.workKind, work.workId, work.modelId))
+        assertEquals(listOf(1L, 1_000L, 100L, 400L), listOf(work.calls, work.inputTokens, work.outputTokens, work.cachedInputTokens))
+    }
+
+    @Test
+    fun `a price keeps a missing cached price as missing, and an impossible stored price is unreadable`() {
+        val price = ModelPrice(ModelId("mdl_1"), 3_000_000, 15_000_000, cachedInputPerMTokMicros = null, currencyLabel = "€", updatedAt = 7)
+        assertNull(price.toEntity().cachedInputPerMTokMicros)
+        assertEquals(price, price.toEntity().toDomain())
+        val failure = assertFailsWith<StoredDataException> { price.toEntity().copy(inputPerMTokMicros = -1).toDomain() }
+        assertEquals("Row 'mdl_1' of model_prices holds values that contradict each other.", failure.message)
+    }
+
+    @Test
+    fun `a routine keeps its schedule and options as JSON, and a run or import that cannot be read is reported`() {
+        val routine = RoutineSamples.routine("rtn_1")
+        val stored = routine.toEntity()
+        assertEquals("""{"type":"daily","minuteOfDay":420,"days":["MONDAY","FRIDAY"]}""", stored.scheduleJson)
+        assertTrue(""""routineId":"rtn_1"""" in stored.optionsJson, stored.optionsJson)
+        assertEquals(routine, stored.toDomain())
+        val badSchedule = assertFailsWith<StoredDataException> { stored.copy(scheduleJson = """{"type":"monthly"}""").toDomain() }
+        assertEquals("Column routines.schedule_json of row 'rtn_1' does not hold readable JSON.", badSchedule.message)
+        val run = RoutineSamples.run("rrn_1", "rtn_1", dueAt = 5).toEntity()
+        assertEquals("STARTED", run.outcome)
+        val badOutcome = assertFailsWith<StoredDataException> { run.copy(outcome = "POSTPONED").toDomain() }
+        assertEquals("Column routine_runs.outcome of row 'rrn_1' holds the unknown value 'POSTPONED'.", badOutcome.message)
+        assertEquals(RoutineRunOutcome.MISSED, RoutineSamples.run("rrn_2", "rtn_1", 5, RoutineRunOutcome.MISSED).toEntity().toDomain().outcome)
+        val import = RoutineSamples.file("pku_1", 1).toEntity()
+        assertEquals(RoutineSamples.file("pku_1", 1), import.toDomain())
+        assertFailsWith<StoredDataException> { import.copy(contentSha256 = "NOT-A-HASH").toDomain() }
+        val rule = RoutineSamples.rule("pku_1")
+        assertEquals(rule, rule.toEntity().toDomain())
     }
 
     private fun MemoryEntity.toRow() = MemoryRow(
