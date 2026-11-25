@@ -419,6 +419,16 @@ Adds the app's launcher icon: the Director at the centre with three agents on a 
 in the app's own colours, plus a one-colour version that Android 13 and later use for themed
 icons. It installs over 0.5.0 and keeps your data.
 
+### 0.5.2
+
+The app's internal Android name changes from `com.aicontrolcenter.app` to
+`com.aicontrolcenter.hq`. Some phones refused to install anything under the old name (a test
+app with the old name and no content was refused too, while the same app under another name
+installed). Android treats the new name as a different app, so 0.5.2 does not update 0.5.0 or
+0.5.1: it installs beside them, with its own data. What the app protects from screen control
+and how it finds its own services follow the name Android reports at run time, so nothing else
+changes.
+
 ### Still marked "(test)"
 
 Controls that do nothing yet carry "(test)" in their label. In 0.5.0 these are three fields in

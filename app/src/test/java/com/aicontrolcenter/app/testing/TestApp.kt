@@ -238,7 +238,7 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
 
     companion object {
         const val START_TIME = 1_794_657_600_000L
-        const val OWN_PACKAGE = "com.aicontrolcenter.app"
+        const val OWN_PACKAGE = "com.aicontrolcenter.hq"
 
         val chatbot = DiscoveredApp(
             packageName = "com.example.chatbot", label = "Example Chatbot", versionName = "4.2.1", vendor = "Example Inc.",

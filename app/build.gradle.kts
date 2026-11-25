@@ -10,11 +10,11 @@ android {
     compileSdk { version = release(37) { minorApiLevel = 2 } }
 
     defaultConfig {
-        applicationId = "com.aicontrolcenter.app"
+        applicationId = "com.aicontrolcenter.hq"
         minSdk = 28
         targetSdk = 36
-        versionCode = 7
-        versionName = "0.5.1"
+        versionCode = 8
+        versionName = "0.5.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
