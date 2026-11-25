@@ -131,7 +131,7 @@ class OwnerQuestions(
         if (live.count { it.taskId == task.id && it.kind == OwnerRequestKind.QUESTION } >= OwnerAttention.MAX_OPEN_QUESTIONS_PER_TASK) {
             return "Your earlier question in this task still waits for the owner. $DECIDE"
         }
-        val asked = countedQuestions(messages.list(objective.id), live)
+        val asked = countedQuestions(messages.listOfTypes(objective.id, setOf(MessageType.QUESTION, MessageType.ANSWER, MessageType.STATUS)), live)
         val ofTask = asked.filter { it.taskId == task.id }
         if (ofTask.size >= OwnerAttention.MAX_QUESTIONS_PER_TASK) {
             return "This task already asked the owner ${OwnerAttention.MAX_QUESTIONS_PER_TASK} questions, the most one task may ask. $DECIDE"

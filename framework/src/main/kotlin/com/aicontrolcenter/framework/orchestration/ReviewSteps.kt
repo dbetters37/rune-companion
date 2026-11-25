@@ -117,7 +117,7 @@ internal class ReviewSteps(private val ctx: OrchestrationContext, private val wo
         val snapshot = ctx.directory.snapshot()
         val team = snapshot.agents.filter { it.profile.id != review.assignee }
         val tree = ctx.tasks.getTree(reviewed.rootId)
-        val helpers = ctx.messages.list(reviewed.rootId).filter { it.taskId == reviewed.id && it.type == MessageType.ASSISTANCE_RESPONSE }
+        val helpers = ctx.messages.listOfTypes(reviewed.rootId, setOf(MessageType.ASSISTANCE_RESPONSE), reviewed.id)
             .mapNotNull { (it.from as? Participant.Agent)?.agentId } + tree.filter { it.parentId == reviewed.id && it.kind == TaskKind.WORK }.mapNotNull { it.assignee }
         val authorModel = reviewed.assignee?.let { (ctx.steps.prepare(it) as? Readiness.Ready)?.modelId }
         val selection = ctx.selector.forReview(

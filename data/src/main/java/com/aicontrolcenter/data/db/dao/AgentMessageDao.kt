@@ -27,6 +27,14 @@ internal interface AgentMessageDao {
     @Query(BY_ROOT)
     suspend fun list(rootId: String): List<AgentMessageEntity>
 
+    /** One objective's messages of the given type names, in sending order. */
+    @Query(BY_ROOT_AND_TYPES)
+    suspend fun listOfTypes(rootId: String, types: List<String>): List<AgentMessageEntity>
+
+    /** One objective's messages about one task of the given type names, in sending order. */
+    @Query(BY_TASK_AND_TYPES)
+    suspend fun listOfTypesFor(rootId: String, taskId: String, types: List<String>): List<AgentMessageEntity>
+
     @Query(RECENT)
     fun observeRecent(limit: Int): Flow<List<AgentMessageEntity>>
 
@@ -48,6 +56,9 @@ internal interface AgentMessageDao {
     /** The listing queries, as constants so a test can check that SQLite runs them from their indexes. */
     companion object {
         const val BY_ROOT = "SELECT * FROM agent_messages WHERE root_id = :rootId ORDER BY at ASC, id ASC"
+        const val BY_ROOT_AND_TYPES = "SELECT * FROM agent_messages WHERE root_id = :rootId AND type IN (:types) ORDER BY at ASC, id ASC"
+        const val BY_TASK_AND_TYPES =
+            "SELECT * FROM agent_messages WHERE root_id = :rootId AND task_id = :taskId AND type IN (:types) ORDER BY at ASC, id ASC"
         const val RECENT = "SELECT * FROM agent_messages ORDER BY at DESC, id DESC LIMIT :limit"
 
         /** Headers (schema 6, rule 16): the projection reads the first characters of the body only. */

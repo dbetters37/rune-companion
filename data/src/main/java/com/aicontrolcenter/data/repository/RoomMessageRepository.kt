@@ -4,6 +4,7 @@ import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.tasks.AgentMessage
 import com.aicontrolcenter.core.tasks.MessageHeader
 import com.aicontrolcenter.core.tasks.MessageRepository
+import com.aicontrolcenter.core.tasks.MessageType
 import com.aicontrolcenter.data.db.AiccDatabase
 import com.aicontrolcenter.data.db.dao.AgentMessageDao
 import com.aicontrolcenter.data.db.entity.AgentMessageEntity
@@ -80,6 +81,14 @@ class RoomMessageRepository internal constructor(
 
     override suspend fun list(rootId: TaskId): List<AgentMessage> = withContext(dispatcher) {
         dao.list(rootId.value).mapReadable(AgentMessageEntity::toDomain)
+    }
+
+    /** Only the matching rows are read, from the objective's index. */
+    override suspend fun listOfTypes(rootId: TaskId, types: Set<MessageType>, taskId: TaskId?): List<AgentMessage> = withContext(dispatcher) {
+        if (types.isEmpty()) return@withContext emptyList()
+        val names = types.map { it.name }
+        val rows = if (taskId == null) dao.listOfTypes(rootId.value, names) else dao.listOfTypesFor(rootId.value, taskId.value, names)
+        rows.mapReadable(AgentMessageEntity::toDomain)
     }
 
     override suspend fun count(rootId: TaskId): Int = withContext(dispatcher) { dao.count(rootId.value) }

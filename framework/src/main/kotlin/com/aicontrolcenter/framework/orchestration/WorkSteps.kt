@@ -215,7 +215,7 @@ internal class WorkSteps(private val ctx: OrchestrationContext) {
 
     /** The agents that answered [task]'s questions (C4); the assignees of its delegated parts are read with the tree. */
     private suspend fun contributors(task: TaskRecord): Set<AgentId> =
-        ctx.messages.list(task.rootId).filter { it.taskId == task.id && it.type == MessageType.ASSISTANCE_RESPONSE }
+        ctx.messages.listOfTypes(task.rootId, setOf(MessageType.ASSISTANCE_RESPONSE), task.id)
             .mapNotNull { (it.from as? Participant.Agent)?.agentId }.toSet()
 
     private suspend fun failed(rt: ObjectiveRuntime, task: TaskRecord, agent: AgentProfile, result: StepResult, maxAttempts: Int) {

@@ -147,6 +147,20 @@ class SummaryQueriesTest {
     }
 
     @Test
+    fun `an objective's messages of some types are read from its index in sending order`() {
+        // Review of wave 2a, INT-4: the owner's notes and a task's answers, for every brief.
+        val byType = AgentMessageDao.BY_ROOT_AND_TYPES.replace("(:types)", "(?, ?)").replace(":rootId", "?")
+        val plan = explain(byType, "tsk_root", "GUIDANCE", "ASSISTANCE_RESPONSE")
+        assertIndexed(plan, "messages by type")
+        assertNoSort(plan, "messages by type")
+        assertTrue(plan.any { "index_agent_messages_root_id_at_id" in it }, "$plan")
+        val byTask = AgentMessageDao.BY_TASK_AND_TYPES.replace("(:types)", "(?)").replace(":rootId", "?").replace(":taskId", "?")
+        val taskPlan = explain(byTask, "tsk_root", "tsk_a", "ASSISTANCE_RESPONSE")
+        assertIndexed(taskPlan, "a task's messages by type")
+        assertNoSort(taskPlan, "a task's messages by type")
+    }
+
+    @Test
     fun `usage sums read the hours of their range from the primary key`() {
         val plan = explain("SELECT ${UsageDao.SUMS} FROM usage_hours WHERE hour_start >= ? AND hour_start < ?", 0L, 3_600_000L)
         assertIndexed(plan, "usage sums")

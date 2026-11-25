@@ -175,12 +175,15 @@ internal class OrchestrationContext(
     suspend fun countedMessages(rootId: TaskId, threshold: Int): Int {
         val all = messages.count(rootId)
         if (all < threshold) return all
-        return all - messages.list(rootId).count { OwnerNotes.isNote(it) }
+        return all - ownerNotes(rootId).size
     }
 
-    /** The owner's notes to objective [rootId] (C2, rule 24), in the order they were written. */
+    /**
+     * The owner's notes to objective [rootId] (C2, rule 24), in the order they were written. Only GUIDANCE messages are
+     * read (INT-4): every brief reads them, and the objective's whole message list grows with its tasks.
+     */
     suspend fun ownerNotes(rootId: TaskId): List<AgentMessage> =
-        messages.list(rootId).filter { OwnerNotes.isNote(it) }.sortedWith(compareBy({ it.at }, { it.id.value }))
+        messages.listOfTypes(rootId, OwnerNotes.TYPES).filter { OwnerNotes.isNote(it) }.sortedWith(compareBy({ it.at }, { it.id.value }))
 
     /**
      * Changes one task under the objective's lock, only when its status is one of [expected];
