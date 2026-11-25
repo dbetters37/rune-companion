@@ -95,7 +95,7 @@ class GatewayPauseDeadlineTest {
     @Test
     fun `B3 - after a gateway's own pause the teammate gets the time the task really has left`() = runTest {
         val gateway = scenario(gatewayPause = true)
-        assertEquals(listOf("Android installed it.", "Analyst answered:\nBeta is cheapest."), gateway.results, "the stored deadline had moved, so the teammate had time to answer")
+        assertEquals(listOf("Android installed it.", "Analyst answered: Beta is cheapest."), gateway.results.map(::unframed), "the stored deadline had moved, so the teammate had time to answer")
         assertEquals(TaskStatus.COMPLETED, gateway.status)
         assertEquals(100_000L, gateway.movedMs, "the owner's 100 s are in the stored deadline, once")
         assertTrue(gateway.leftSeconds in 80..120, "so the task had its two minutes less its own work left, not 20 s: ${gateway.leftSeconds} s")
@@ -104,7 +104,7 @@ class GatewayPauseDeadlineTest {
     @Test
     fun `B3 - the broker's own wait is still counted once, and both kinds of wait leave the same time`() = runTest {
         val broker = scenario(gatewayPause = false)
-        assertEquals(listOf("guarded ran", "Analyst answered:\nBeta is cheapest."), broker.results)
+        assertEquals(listOf("guarded ran", "Analyst answered: Beta is cheapest."), broker.results.map(::unframed))
         assertEquals(TaskStatus.COMPLETED, broker.status)
         // The broker wrote its wait when the answer came (100 s by the app's clock, which also ticks a little by itself);
         // the executor around the call did not write it again.
@@ -155,5 +155,11 @@ class GatewayPauseDeadlineTest {
 
     private companion object {
         const val DAY = 24 * 60 * 60_000L
+    }
+
+    /** A teammate's answer comes back framed (C7): "Analyst answered: <what it wrote>", read back out of its block. */
+    private fun unframed(result: String): String {
+        val block = DataBlock.parseAll(result).singleOrNull() ?: return result
+        return "${result.substringBefore('.')}: ${block.content}"
     }
 }

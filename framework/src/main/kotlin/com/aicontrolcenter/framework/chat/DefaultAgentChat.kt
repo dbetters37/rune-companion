@@ -10,6 +10,7 @@ import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.agents.AgentAvailability
 import com.aicontrolcenter.core.agents.AgentProfile
 import com.aicontrolcenter.core.agents.resolveAvailability
+import com.aicontrolcenter.core.backup.MaintenanceGate
 import com.aicontrolcenter.core.chat.AgentChat
 import com.aicontrolcenter.core.chat.Conversation
 import com.aicontrolcenter.core.chat.ConversationEntry
@@ -20,6 +21,8 @@ import com.aicontrolcenter.core.chat.TurnResult
 import com.aicontrolcenter.core.conversationId
 import com.aicontrolcenter.core.llm.ChatMessage
 import com.aicontrolcenter.core.llm.ChatRole
+import com.aicontrolcenter.core.llm.LlmException
+import com.aicontrolcenter.core.llm.ProviderRechecks
 import com.aicontrolcenter.core.llm.TokenUsage
 import com.aicontrolcenter.core.llm.ToolCallRequest
 import com.aicontrolcenter.core.operator.OwnerRequest
@@ -30,6 +33,7 @@ import com.aicontrolcenter.core.registry.ProviderDirectory
 import com.aicontrolcenter.core.registry.effectiveLocality
 import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.tools.ToolSpec
+import com.aicontrolcenter.core.usage.DailyLimits
 import com.aicontrolcenter.framework.agents.AgentDeletionListener
 import com.aicontrolcenter.framework.agents.AgentRunListener
 import com.aicontrolcenter.framework.agents.AgentRunRequest
@@ -88,6 +92,16 @@ import kotlinx.coroutines.withContext
  *
  * Registered as an [AgentDeletionListener], it stops the turns of a deleted agent and removes
  * its conversations.
+ *
+ * Phase 6 (WP7):
+ *  - R3: a turn is marked as started in the store when the owner's message is stored, and the
+ *    mark is removed when the turn ends, however it ends. A mark found at the next start means
+ *    the app stopped during that turn: [recoverInterruptedTurns] stores a visible note saying so,
+ *    and [sendAgain] runs the turn of the owner's last message again without storing it twice.
+ *  - D28: an agent that cannot answer only because its provider is not answering has that
+ *    provider checked again first ([ProviderRechecks]; never the owner's provider manager).
+ *  - Rule 6: a turn stopped by today's limit says the limit's sentence, nothing else.
+ *  - No turn starts while a backup is restored ([MaintenanceGate.RESTORING]).
  */
 class DefaultAgentChat(
     private val conversations: ConversationRepository,
@@ -100,6 +114,10 @@ class DefaultAgentChat(
     private val ids: IdGenerator,
     private val clock: Clock,
     private val scope: CoroutineScope,
+    /** Looks again at a provider that is not answering before the turn is refused (D28). */
+    private val rechecks: ProviderRechecks = ProviderRechecks.None,
+    /** True while a backup is restored (the maintenance gate's `busy`): no turn starts meanwhile. */
+    private val restoring: StateFlow<Boolean> = MutableStateFlow(false),
 ) : AgentChat, AgentDeletionListener {
 
     private class RunningTurn(val agentId: AgentId, val job: Job)
@@ -142,9 +160,21 @@ class DefaultAgentChat(
     override suspend fun send(id: ConversationId, text: String): TurnResult {
         val message = text.trim()
         require(message.isNotEmpty()) { "Write a message first." }
+        return start(id, message)
+    }
+
+    /** R3 ("Send again"): the turn of the owner's last message, run again; the message is not stored a second time. */
+    override suspend fun sendAgain(id: ConversationId): TurnResult = start(id, null)
+
+    /** Runs a turn for [text], or ([text] null) for the owner's last stored message again. */
+    private suspend fun start(id: ConversationId, text: String?): TurnResult {
+        if (restoring.value) return TurnResult.Failed(MaintenanceGate.RESTORING, retryable = true)
         val conversation = conversations.getConversation(id) ?: throw IllegalArgumentException(CONVERSATION_GONE)
+        if (text == null && conversations.getEntries(id).none { it.error == null && it.message.role == ChatRole.USER }) {
+            return TurnResult.Failed(NOTHING_TO_SEND_AGAIN, retryable = false)
+        }
         val result = CompletableDeferred<TurnResult>()
-        val job = scope.launch(start = CoroutineStart.LAZY) { result.complete(turn(conversation, message)) }
+        val job = scope.launch(start = CoroutineStart.LAZY) { result.complete(turn(conversation, text)) }
         synchronized(turnsLock) {
             if (id in running) {
                 job.cancel()
@@ -169,6 +199,34 @@ class DefaultAgentChat(
         turn.job.join()
     }
 
+    /**
+     * R3: for every turn the app stopped in the middle of (its mark is still in the store), a visible note that the
+     * reply was cut off, then the mark is removed. A turn of this process that is running is left alone. Called once
+     * at start, before any turn runs. Returns how many notes were stored.
+     */
+    override suspend fun recoverInterruptedTurns(): Int {
+        var stored = 0
+        for (turn in conversations.interruptedTurns()) {
+            val id = turn.conversationId
+            if (synchronized(turnsLock) { id in running }) continue
+            val conversation = conversations.getConversation(id)
+            if (conversation != null) {
+                val name = agents.get(conversation.agentId)?.name ?: "the agent"
+                val notice = cutOff(name)
+                // Stored before the mark goes: an app that dies in between says it twice rather than not at all.
+                storeError(id, notice)
+                try {
+                    activity.record(ActivityType.TASK, "Chat reply cut off", notice, severity = Severity.WARNING, agentId = conversation.agentId)
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e // the note is stored; only the log entry is missing
+                }
+                stored++
+            }
+            conversations.markTurnEnded(id)
+        }
+        return stored
+    }
+
     override suspend fun onAgentDeleted(agent: AgentProfile) {
         val turns = synchronized(turnsLock) { running.values.filter { it.agentId == agent.id }.map { it.job } }
         turns.forEach { it.cancel() }
@@ -178,8 +236,11 @@ class DefaultAgentChat(
 
     // ---- one turn ----
 
-    /** Runs the turn to its end and never throws: every way a turn can end is a [TurnResult]. */
-    private suspend fun turn(conversation: Conversation, text: String): TurnResult {
+    /**
+     * Runs the turn to its end and never throws: every way a turn can end is a [TurnResult]. The turn is marked as
+     * started in the store from the moment the owner's message is stored until it ends (R3).
+     */
+    private suspend fun turn(conversation: Conversation, text: String?): TurnResult {
         val id = conversation.id
         val result = try {
             answer(conversation, text)
@@ -196,35 +257,58 @@ class DefaultAgentChat(
             } catch (e: Exception) {
                 // Only the ordering of the conversation list depends on this.
             }
+            try {
+                conversations.markTurnEnded(id)
+            } catch (e: Exception) {
+                // A mark left behind only makes the next start say the reply was cut off.
+            }
         }
         currentCoroutineContext()[Job]?.let { release(id, it) }
         return result
     }
 
-    private suspend fun answer(conversation: Conversation, text: String): TurnResult {
+    /** [text]: the owner's new message; null runs the turn of the last one again ([sendAgain]). */
+    private suspend fun answer(conversation: Conversation, text: String?): TurnResult {
         val id = conversation.id
-        val isFirstMessage = conversations.getEntries(id).isEmpty()
         withContext(NonCancellable) {
-            store(id, ChatMessage.user(text))
-            if (isFirstMessage) changeRecord(id) { if (it.title == DEFAULT_TITLE) it.copy(title = titleFrom(text)) else it }
+            if (text != null) {
+                val isFirstMessage = conversations.getEntries(id).isEmpty()
+                store(id, ChatMessage.user(text))
+                if (isFirstMessage) changeRecord(id) { if (it.title == DEFAULT_TITLE) it.copy(title = titleFrom(text)) else it }
+            }
+            conversations.markTurnStarted(id, clock.now())
         }
 
         val agent = agents.get(conversation.agentId)
             ?: return failed(id, conversation.agentId, "This agent no longer exists.", retryable = false, log = true)
         val modelsById = models.getAll().associateBy { it.id }
-        val providersById = providers.getAll().associateBy { it.id }
-        val modelId = when (val availability = resolveAvailability(agent, modelsById, providersById, settings.get())) {
+        var providersById = providers.getAll().associateBy { it.id }
+        var availability = resolveAvailability(agent, modelsById, providersById, settings.get())
+        // D28: a provider that is only not answering is looked at again before the turn is refused.
+        val stale = (availability as? AgentAvailability.Unavailable)?.takeIf { it.reason.isTransient }
+            ?.let { agent.modelId?.let { primary -> modelsById[primary]?.providerId } }
+        if (stale != null) {
+            try {
+                rechecks.recheckIfStale(stale, RECHECK_OLDER_THAN_MS)
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e // a failed check only leaves the provider as it was
+            }
+            providersById = providers.getAll().associateBy { it.id }
+            availability = resolveAvailability(agent, modelsById, providersById, settings.get())
+        }
+        val modelId = when (availability) {
             is AgentAvailability.Ready -> availability.modelId
             is AgentAvailability.Disabled ->
                 return failed(id, agent.id, "${agent.name} is switched off. Switch it on to talk to it.", retryable = false, log = true)
             is AgentAvailability.Unavailable ->
-                return failed(id, agent.id, "${agent.name} cannot answer right now. ${availability.detail}", retryable = false, log = true)
+                return failed(id, agent.id, "${agent.name} cannot answer right now. ${availability.detail}", retryable = availability.reason.isTransient, log = true)
         }
         val model = modelsById.getValue(modelId)
         val locality = providersById[model.providerId]?.effectiveLocality
         live.update { turns -> turns.change(id) { it.copy(modelName = model.displayName, locality = locality) } }
 
-        val request = AgentRunRequest(agent, modelId, ConversationHistory.toMessages(conversations.getEntries(id)), conversationId = id)
+        val history = if (text != null) ConversationHistory.toMessages(conversations.getEntries(id)) else ConversationHistory.forSendAgain(conversations.getEntries(id))
+        val request = AgentRunRequest(agent, modelId, history, conversationId = id)
         tooLongFor(model, agent, request)?.let { return failed(id, agent.id, it, retryable = false, log = true) }
 
         val run = coroutineScope {
@@ -242,8 +326,13 @@ class DefaultAgentChat(
                 storeError(id, run.notice ?: "The reply is incomplete.")
                 completed(run)
             }
-            // The gateway has already logged the failed model call.
-            RunEnd.FAILED -> failed(id, agent.id, "${agent.name} could not answer. ${run.notice}", run.error?.retryable ?: false, log = false)
+            // Rule 6: today's limit is said in its own sentence (the gateway logged the refused call).
+            RunEnd.FAILED -> if (run.error is LlmException.DailyLimitReached) {
+                failed(id, agent.id, run.notice?.takeIf { it.isNotBlank() } ?: DailyLimits.PAUSED_TEXT, retryable = false, log = false)
+            } else {
+                // The gateway has already logged the failed model call.
+                failed(id, agent.id, "${agent.name} could not answer. ${run.notice}", run.error?.retryable ?: false, log = false)
+            }
             RunEnd.REFUSED, RunEnd.MODEL_CALL_LIMIT, RunEnd.TOOL_CALL_LIMIT, RunEnd.TIMED_OUT ->
                 failed(id, agent.id, run.notice ?: "The turn was stopped.", retryable = false, log = true)
             // The owner switched the agent off or deleted it: their decision, not a failure, and the note says so.
@@ -444,6 +533,15 @@ class DefaultAgentChat(
         private const val AUTO_TITLE_LENGTH = 48
         private const val DEFAULT_REPLY_ROOM = 512
         private const val CONVERSATION_GONE = "That conversation no longer exists."
+
+        /** Said when there is no message of the owner's to send again. */
+        const val NOTHING_TO_SEND_AGAIN = "There is no message of yours to send again."
+
+        /** A provider whose status is older than this is checked again before a turn is refused for it (D28). */
+        const val RECHECK_OLDER_THAN_MS = 60_000L
+
+        /** R3: the note for a reply the app stopped in the middle of. */
+        fun cutOff(agentName: String) = "The app stopped before $agentName finished answering. Send your message again to try again."
         private val WHITESPACE = Regex("\\s+")
     }
 }

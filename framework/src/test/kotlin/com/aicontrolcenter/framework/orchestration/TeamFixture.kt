@@ -1,7 +1,11 @@
 package com.aicontrolcenter.framework.orchestration
 
 import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.ProviderId
 import com.aicontrolcenter.core.TaskId
+import com.aicontrolcenter.core.health.TimedWaits
+import com.aicontrolcenter.core.llm.ProviderRechecks
+import com.aicontrolcenter.core.registry.ConnectionStatus
 import com.aicontrolcenter.core.agents.AgentKind
 import com.aicontrolcenter.core.agents.AgentProfile
 import com.aicontrolcenter.core.agents.DelegationPolicy
@@ -31,6 +35,7 @@ import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.time.ZoneOffset
 import java.util.concurrent.CopyOnWriteArrayList
 
 /** One request the scripted model received, with the agent that sent it and the brief's marker. */
@@ -114,6 +119,22 @@ class TeamScript {
 }
 
 /**
+ * The agent side of the providers' re-checks (D28) as a test sees it: every call is recorded, and [answer] decides what
+ * a re-check does (by default nothing: the provider stays as it is stored). Never a provider manager.
+ */
+class FakeRechecks : ProviderRechecks {
+    val calls = CopyOnWriteArrayList<Pair<ProviderId, Long>>()
+    var answer: suspend (ProviderId) -> ConnectionStatus? = { null }
+
+    override suspend fun recheckIfStale(providerId: ProviderId, olderThanMs: Long): ConnectionStatus? {
+        calls += providerId to olderThanMs
+        return answer(providerId)
+    }
+
+    override val timedWaits: TimedWaits get() = TimedWaits.None
+}
+
+/**
  * A team ready for objectives, over in-memory stores, with the orchestrator running in the
  * test's background scope (virtual time). The Director and three specialists share one
  * scripted model, unless a test gives an agent another one.
@@ -132,12 +153,19 @@ class TeamFixture(val test: TestScope, settings: FrameworkSettings.() -> Framewo
     lateinit var reviewer: AgentProfile
     private val settingsChange = settings
 
+    /** The providers' re-checks the orchestrator asks (D28). */
+    val rechecks = FakeRechecks()
+
+    /** True while a backup is restored, as the maintenance gate says. */
+    val restoring = kotlinx.coroutines.flow.MutableStateFlow(false)
+
     val orchestrator = newOrchestrator()
 
     /** Another orchestrator over the same stores, as after a restart of the app; [scope] stands for the app's scope. */
     fun newOrchestrator(scope: CoroutineScope = test.backgroundScope) = DefaultOrchestrator(
         tasks, messages, world.conversations, world.agents, world.directory, world.settings, world.runner, world.toolRegistry,
         world.monitor, world.activity, world.ids, world.clock, scope, world.memory, timeSource = world.time, operatorHooks = world.operatorHooks,
+        rechecks = rechecks, activityLog = world.log, zone = { ZoneOffset.UTC }, restoring = restoring,
     )
 
     init {
@@ -185,6 +213,12 @@ class TeamFixture(val test: TestScope, settings: FrameworkSettings.() -> Framewo
     fun settle(ms: Long = DAY_MS) {
         test.advanceTimeBy(ms)
         test.runCurrent()
+    }
+
+    /** Lets [ms] pass by the app's clock and in virtual time together, as on a phone (timed waits read the clock). */
+    fun pass(ms: Long) {
+        world.clock.advance(ms)
+        settle(ms)
     }
 
     companion object {

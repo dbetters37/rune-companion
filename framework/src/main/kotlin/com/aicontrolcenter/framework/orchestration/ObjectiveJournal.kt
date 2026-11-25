@@ -2,9 +2,13 @@ package com.aicontrolcenter.framework.orchestration
 
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.Clock
+import com.aicontrolcenter.core.EventId
 import com.aicontrolcenter.core.IdGenerator
 import com.aicontrolcenter.core.MessageId
+import com.aicontrolcenter.core.SpaceId
 import com.aicontrolcenter.core.TaskId
+import com.aicontrolcenter.core.activity.ActivityEvent
+import com.aicontrolcenter.core.activity.ActivityLog
 import com.aicontrolcenter.core.activity.ActivityRecorder
 import com.aicontrolcenter.core.activity.ActivityType
 import com.aicontrolcenter.core.activity.Severity
@@ -29,7 +33,8 @@ import kotlinx.serialization.json.put
  *
  * The log carries what the owner needs to follow a run, never whole bodies: a message event
  * names its type, sender, recipient and task, with at most a short first line of the body.
- * Bodies stay in the message store, where the objective's own view shows them.
+ * Bodies stay in the message store, where the objective's own view shows them. The owner's own
+ * words (a note to the team, an answer to a question) are logged without any of their text (S28).
  *
  * Writes here run non-cancellable: a record of something that happened must not be lost
  * because the work that caused it was stopped the moment after.
@@ -40,6 +45,14 @@ internal class ObjectiveJournal(
     private val activity: ActivityRecorder,
     private val ids: IdGenerator,
     private val clock: Clock,
+    /** The space a memory was shared into, by name; null names none ("a shared memory space"). */
+    private val spaceName: suspend (SpaceId) -> String? = { null },
+    /**
+     * The log itself, for an entry that must be written at most once however often the app dies around it: such an entry
+     * gets an id of its own ([taskChanged] with `once`), and the log keeps one entry per id (D20). Null: every entry gets
+     * a fresh id, as before.
+     */
+    private val log: ActivityLog? = null,
 ) {
     /** Stores a message and logs it. Returns the stored message. [id]: the message's own id, when it must be known before (the store keeps one message per id). */
     suspend fun send(
@@ -63,7 +76,7 @@ internal class ObjectiveJournal(
             activity.record(
                 ActivityType.MESSAGE,
                 "${label(type)}: ${name(from)} → ${name(to)}",
-                firstLine(message.body) + about,
+                loggedBody(message) + about,
                 agentId = (from as? Participant.Agent)?.agentId,
                 taskId = task?.id, rootTaskId = rootId,
                 data = buildJsonObject {
@@ -76,20 +89,33 @@ internal class ObjectiveJournal(
         message
     }
 
-    /** Logs a task's state change: [title] says what happened, the detail is the task's status sentence. */
-    suspend fun taskChanged(task: TaskRecord, title: String, severity: Severity = Severity.INFO, data: JsonObject? = null) =
+    /**
+     * Logs a task's state change: [title] says what happened, the detail is the task's status sentence. [once]: the
+     * entry's own id; the log keeps one entry per id, so writing it again (after the app died around it) adds nothing.
+     */
+    suspend fun taskChanged(task: TaskRecord, title: String, severity: Severity = Severity.INFO, data: JsonObject? = null, once: EventId? = null) =
         withContext(NonCancellable) {
             safely {
-                activity.record(
-                    ActivityType.TASK, "$title: ${task.title}", StoredText.capChars(task.statusDetail ?: task.error.orEmpty(), StoredText.MAX_REASON_CHARS),
-                    severity = severity, agentId = task.assignee, taskId = task.id, rootTaskId = task.rootId,
-                    data = data ?: buildJsonObject {
-                        put("kind", task.kind.name)
-                        put("status", task.status.name)
-                        put("attempt", task.attempt)
-                        put("revisionRound", task.revisionRound)
-                    },
-                )
+                val detail = StoredText.capChars(task.statusDetail ?: task.error.orEmpty(), StoredText.MAX_REASON_CHARS)
+                val extras = data ?: buildJsonObject {
+                    put("kind", task.kind.name)
+                    put("status", task.status.name)
+                    put("attempt", task.attempt)
+                    put("revisionRound", task.revisionRound)
+                }
+                if (once != null && log != null) {
+                    log.record(
+                        ActivityEvent(
+                            id = once, at = clock.now(), type = ActivityType.TASK, severity = severity, agentId = task.assignee,
+                            taskId = task.id, rootTaskId = task.rootId, title = "$title: ${task.title}", detail = detail, data = extras,
+                        ),
+                    )
+                } else {
+                    activity.record(
+                        ActivityType.TASK, "$title: ${task.title}", detail,
+                        severity = severity, agentId = task.assignee, taskId = task.id, rootTaskId = task.rootId, data = extras,
+                    )
+                }
             }
         }
 
@@ -143,8 +169,13 @@ internal class ObjectiveJournal(
         Participant.Owner -> "Owner"
         Participant.System -> "System"
         is Participant.Agent -> agents.get(participant.agentId)?.name ?: "A deleted agent"
-        // Phase 6 (WP1a): memory shared into a space (WP7 names the space).
-        is Participant.Space -> "A shared memory space"
+        // A memory shared into a space (K2): named when the space is still there.
+        is Participant.Space -> try {
+            spaceName(participant.spaceId)?.let { "The shared space \"$it\"" }
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            null
+        } ?: "A shared memory space"
     }
 
     /** The log is a record, not a dependency: a failure to write it never changes what happens. */
@@ -154,6 +185,13 @@ internal class ObjectiveJournal(
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
         }
+    }
+
+    /** What the log shows of [message]'s body: a first line, but nothing of the owner's own words (a note, an answer). */
+    private fun loggedBody(message: AgentMessage): String = when {
+        message.type == MessageType.GUIDANCE -> OwnerNotes.NOTE_LOGGED
+        message.type == MessageType.ANSWER && message.from == Participant.Owner -> ANSWER_LOGGED
+        else -> firstLine(message.body)
     }
 
     private fun firstLine(body: String): String {
@@ -176,13 +214,16 @@ internal class ObjectiveJournal(
         MessageType.ANSWER -> "Answer"
         MessageType.CANCEL -> "Cancelled"
         MessageType.STATUS -> "Status"
-        // Phase 6 (WP1a): a note from the owner (WP7 logs it without its text).
+        // A note from the owner (C2): logged without its text.
         MessageType.GUIDANCE -> "Note from the owner"
     }
 
-    private companion object {
+    companion object {
+        /** What the log says when the owner answered an agent's question; never what the answer says. */
+        const val ANSWER_LOGGED = "You answered a question"
+
         /** A message body is plain text for people to read; a body larger than this is cut, with a note (far below the store's limit). */
-        const val MAX_BODY = 20_000
-        const val MAX_LOGGED = 120
+        private const val MAX_BODY = 20_000
+        private const val MAX_LOGGED = 120
     }
 }

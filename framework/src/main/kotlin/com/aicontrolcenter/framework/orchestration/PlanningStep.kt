@@ -2,6 +2,7 @@ package com.aicontrolcenter.framework.orchestration
 
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.activity.Severity
+import com.aicontrolcenter.core.llm.LlmException
 import com.aicontrolcenter.core.agents.label
 import com.aicontrolcenter.core.llm.ChatMessage
 import com.aicontrolcenter.core.taskId
@@ -23,23 +24,64 @@ import com.aicontrolcenter.framework.agents.RunLimits
  * it, or failed at once when nobody can take it), and the SYNTHESIS task, whose instructions
  * keep the Director's interpretation and final instructions. Everything the rest of the run
  * needs is then in the task store, so an interrupted objective resumes without planning again.
+ *
+ * Phase 6: today's limit reached pauses the objective (rule 6); a Director whose provider is not
+ * answering, or asks the app to slow down, waits and plans again without using a planning round
+ * (R4): the objective's status says until when, and [com.aicontrolcenter.core.tasks.TaskRecord.retryAt]
+ * on the objective publishes the wait. The objective's own time limit bounds it.
  */
 internal class PlanningStep(private val ctx: OrchestrationContext) {
 
-    /** Returns true when the plan is stored; false when the objective failed or is no longer running. */
+    /** Returns true when the plan is stored; false when the objective failed, paused or is no longer running. */
     suspend fun plan(rt: ObjectiveRuntime): Boolean {
-        val objective = ctx.tasks.get(rt.rootId) ?: return false
-        val directorId = objective.assignee ?: return failObjective(rt, "No Director was set for this objective.")
-        val ready = when (val readiness = ctx.steps.prepare(directorId)) {
-            is Readiness.Ready -> readiness
-            is Readiness.NotReady -> return failObjective(rt, "The Director cannot plan: ${readiness.reason}.")
+        while (true) {
+            val objective = ctx.tasks.get(rt.rootId) ?: return false
+            val directorId = objective.assignee ?: return failObjective(rt, "No Director was set for this objective.")
+            val ready = when (val readiness = ctx.prepareChecked(directorId)) {
+                is Readiness.Ready -> readiness
+                is Readiness.NotReady -> {
+                    if (!readiness.transient) return failObjective(rt, "The Director cannot plan: ${readiness.reason}.")
+                    if (!waitToPlan(rt, ProviderWaits.named(readiness.provider, "The provider"), null)) return false
+                    continue
+                }
+            }
+            when (val outcome = planWith(rt, objective, directorId, ready)) {
+                is Planned.Done -> return outcome.stored
+                is Planned.Wait -> if (!waitToPlan(rt, ProviderWaits.named(ready.provider, ready.providerName), outcome.error)) return false
+            }
         }
+    }
+
+    /** How one planning attempt ended: stored (or failed, or paused), or waiting for the Director's provider. */
+    private sealed interface Planned {
+        class Done(val stored: Boolean) : Planned
+
+        class Wait(val error: LlmException) : Planned
+    }
+
+    /**
+     * Waits for the Director's provider ([provider], [error] as for [OrchestrationContext.waitForProvider]): the
+     * objective, still running, says until when and carries the time as its retryAt. False when it is no longer running.
+     */
+    private suspend fun waitToPlan(rt: ObjectiveRuntime, provider: String, error: LlmException?): Boolean {
+        val earlier = rt.waitsSoFar[rt.rootId] ?: 0
+        val at = ctx.clock.now() + ProviderWaits.waitMs(earlier, error)
+        val waiting = ctx.change(rt, rt.rootId, setOf(TaskStatus.RUNNING)) {
+            it.copy(retryAt = at, statusDetail = ProviderWaits.text(provider, error, at, ctx.zone()))
+        } ?: return false
+        rt.waitsSoFar[rt.rootId] = earlier + 1
+        ctx.journal.taskChanged(waiting, "Planning waits for its provider")
+        ctx.waits.until(rt, rt.rootId, at)
+        return ctx.change(rt, rt.rootId, setOf(TaskStatus.RUNNING)) { it.copy(retryAt = null) } != null
+    }
+
+    private suspend fun planWith(rt: ObjectiveRuntime, objective: TaskRecord, directorId: AgentId, ready: Readiness.Ready): Planned {
         val settings = ctx.settings.get()
         val limits = ctx.limits(objective, settings)
         val conversationId = objective.conversationId ?: ctx.transcripts.open(directorId, "Plan · ${objective.title}")
         val planning = ctx.change(rt, objective.id, setOf(TaskStatus.RUNNING)) {
-            it.copy(conversationId = conversationId, statusDetail = "${ready.agent.name} is planning, ${ready.destination}.")
-        } ?: return false
+            it.copy(conversationId = conversationId, retryAt = null, statusDetail = "${ready.agent.name} is planning, ${ready.destination}.")
+        } ?: return Planned.Done(false)
         ctx.journal.taskChanged(planning, "Planning started")
 
         val snapshot = ctx.directory.snapshot()
@@ -47,7 +89,8 @@ internal class PlanningStep(private val ctx: OrchestrationContext) {
             RosterEntry(it.profile.name, it.profile.kind.label, it.profile.description, it.profile.skills.toList(), it.availability.isReady)
         }
         val reviewOn = objective.options?.reviewResults ?: true
-        var prompt = ctx.briefs.plan(planning, roster, ready.agent.name, limits.maxTasks, reviewOn, ctx.steps.briefBudget(ready))
+        val notes = ctx.ownerNotes(planning.id).map { it.id.value to it.body }
+        var prompt = ctx.briefs.plan(planning, roster, ready.agent.name, limits.maxTasks, reviewOn, ctx.steps.briefBudget(ready), notes)
         var history = emptyList<ChatMessage>()
         var problems = emptyList<String>()
         for (round in 0 until PLANNING_ROUNDS) {
@@ -60,14 +103,23 @@ internal class PlanningStep(private val ctx: OrchestrationContext) {
                 ctx.steps.run(
                     ready, planning, conversationId, prompt, history, json = true, limits = RunLimits(timeoutMs = minOf(limits.taskTimeoutMs, left)),
                     label = "Task: Planning · ${planning.title}", purpose = "the owner's objective and the team roster",
+                    screens = planning.options?.screenActionsAllowed ?: true,
                 )
             } finally {
                 ctx.runtimes.ended(directorId, planning.id)
             }
             ctx.account(rt, planning.id) { it.copy(usage = it.usage + result.usage) }
+            when (val trouble = Trouble.of(result)) {
+                is Trouble.DailyLimit -> {
+                    ctx.pauseForDailyLimit(rt, trouble.sentence)
+                    return Planned.Done(false)
+                }
+                is Trouble.Passing -> return Planned.Wait(trouble.error)
+                null -> rt.waitsSoFar.remove(rt.rootId)
+            }
             problems = if (result.ok) {
                 when (val reading = PlanParser.read(result.text, limits.maxTasks, reviewOn)) {
-                    is PlanReading.Valid -> return store(rt, planning, directorId, reading.plan, reviewOn, limits.maxTasks)
+                    is PlanReading.Valid -> return Planned.Done(store(rt, planning, directorId, reading.plan, reviewOn, limits.maxTasks))
                     is PlanReading.Invalid -> reading.problems
                 }
             } else {
@@ -79,11 +131,12 @@ internal class PlanningStep(private val ctx: OrchestrationContext) {
                 prompt = ctx.briefs.planCorrection(problems, limits.maxTasks)
             }
         }
-        return failObjective(rt, StoredText.capChars("The Director could not produce a usable plan. ${problems.joinToString(" ")}", StoredText.MAX_REASON_CHARS))
+        return Planned.Done(failObjective(rt, StoredText.capChars("The Director could not produce a usable plan. ${problems.joinToString(" ")}", StoredText.MAX_REASON_CHARS)))
     }
 
     private suspend fun store(rt: ObjectiveRuntime, objective: TaskRecord, directorId: AgentId, plan: ObjectivePlan, reviewOn: Boolean, maxTasks: Int): Boolean {
-        val team = ctx.directory.snapshot().agents
+        val snapshot = ctx.directory.snapshot()
+        val team = snapshot.agents
         val load = ctx.runtimes.loads().toMutableMap()
         val idsByKey = plan.tasks.associate { it.key to ctx.ids.taskId() }
         val base = ctx.clock.now()
@@ -96,7 +149,7 @@ internal class PlanningStep(private val ctx: OrchestrationContext) {
                 requestedBy = director, status = TaskStatus.QUEUED, dependsOn = planned.dependsOn.map { idsByKey.getValue(it) },
                 order = index, needsReview = planned.needsReview && reviewOn, createdAt = at, updatedAt = at,
             )
-            when (val selection = ctx.selector.forWork(TaskNeeds(planned.title, planned.instructions, planned.skills, planned.assignee), team, load)) {
+            when (val selection = ctx.selector.forWork(TaskNeeds(planned.title, planned.instructions, planned.skills, planned.assignee), team, load, models = snapshot.modelsById)) {
                 is Selection.Chosen -> {
                     load[selection.agent.id] = (load[selection.agent.id] ?: 0) + 1
                     record.copy(assignee = selection.agent.id, statusDetail = "Assigned to ${selection.agent.name}: ${selection.why}.")

@@ -3,10 +3,13 @@ package com.aicontrolcenter.framework.orchestration
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ConversationId
 import com.aicontrolcenter.core.ModelId
+import com.aicontrolcenter.core.ProviderId
 import com.aicontrolcenter.core.ToolId
 import com.aicontrolcenter.core.agents.AgentAvailability
 import com.aicontrolcenter.core.agents.AgentProfile
 import com.aicontrolcenter.core.llm.ChatMessage
+import com.aicontrolcenter.core.llm.LlmException
+import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.registry.effectiveLocality
 import com.aicontrolcenter.core.tasks.TaskRecord
@@ -32,13 +35,23 @@ internal sealed interface Readiness {
         val jsonCapable: Boolean,
         /** The model's context window in tokens, when it states one. */
         val contextWindow: Int? = null,
+        /** The provider the model is on, for the status line of a wait after its call failed in a way that passes. */
+        val provider: ProviderSide? = null,
     ) : Readiness {
         /** Where this agent's work goes, in words for the task's status line. */
         val destination: String
             get() = if (leavesDevice) "using $modelName; its prompts go to $providerName, off this device" else "using $modelName on this device"
     }
 
-    data class NotReady(val reason: String) : Readiness
+    /**
+     * [transient]: the agent's provider is only not answering ([com.aicontrolcenter.core.agents.UnavailableReason.isTransient]),
+     * which passes by itself: the work waits for it ([provider] names it) instead of failing or moving to an agent
+     * farther from the phone (rule 25). Every other reason is the owner's to fix.
+     */
+    data class NotReady(val reason: String, val transient: Boolean = false, val provider: ProviderSide? = null) : Readiness
+
+    /** The provider an agent's primary model is on, for a wait's status line and its re-check. */
+    data class ProviderSide(val id: ProviderId, val name: String, val locality: Locality)
 }
 
 internal enum class StepEnd { SUCCESS, FAILED, TIMED_OUT }
@@ -56,6 +69,8 @@ internal data class StepResult(
     /** What the run added to the conversation, for a follow-up run (the planning retry) to build on. */
     val produced: List<ChatMessage>,
     val modelName: String?,
+    /** Why the model call that ended the run failed, when one did (Phase 6: a daily limit pauses, provider trouble waits). */
+    val error: LlmException? = null,
 ) {
     val ok: Boolean get() = end == StepEnd.SUCCESS
 }
@@ -77,7 +92,15 @@ internal class StepRunner(
         val entry = snapshot.agentsById[agentId] ?: return Readiness.NotReady("the agent no longer exists")
         return when (val availability = entry.availability) {
             is AgentAvailability.Disabled -> Readiness.NotReady("${entry.profile.name} is switched off")
-            is AgentAvailability.Unavailable -> Readiness.NotReady("${entry.profile.name} cannot run right now. ${availability.detail}")
+            is AgentAvailability.Unavailable -> {
+                // The primary model's provider: the one the reason is about (a fallback is never farther, rule 25).
+                val provider = entry.profile.modelId?.let { snapshot.modelsById[it] }?.let { snapshot.provider(it) }
+                Readiness.NotReady(
+                    "${entry.profile.name} cannot run right now. ${availability.detail}",
+                    transient = availability.reason.isTransient && provider != null,
+                    provider = provider?.let { Readiness.ProviderSide(it.id, it.name, it.effectiveLocality) },
+                )
+            }
             is AgentAvailability.Ready -> {
                 val model = snapshot.modelsById[availability.modelId]
                     ?: return Readiness.NotReady("the model of ${entry.profile.name} is no longer registered")
@@ -88,6 +111,7 @@ internal class StepRunner(
                     leavesDevice = provider?.effectiveLocality?.leavesDevice ?: false,
                     jsonCapable = model.capabilities.jsonOutput,
                     contextWindow = model.capabilities.contextWindow?.takeIf { it > 0 },
+                    provider = provider?.let { Readiness.ProviderSide(it.id, it.name, it.effectiveLocality) },
                 )
             }
         }
@@ -109,10 +133,16 @@ internal class StepRunner(
         onTool: suspend (ToolExecution) -> Unit = {},
         /** The task's call budget, shared with the runs made on its behalf; see [TaskCallBudget]. */
         callBudget: TaskCallBudget? = null,
+        /**
+         * False for an objective whose options allow no screens (a routine without the tick, F12): the screen tools are
+         * not offered at all, which saves their definitions on every call. The broker refuses them anyway.
+         */
+        screens: Boolean = true,
     ): StepResult {
         conversationId?.let { transcripts.user(it, prompt) }
+        val agent = if (screens) ready.agent else ready.agent.copy(toolIds = ready.agent.toolIds.filterNot { it.value.startsWith(SCREEN_FAMILY) }.toSet())
         val request = AgentRunRequest(
-            agent = ready.agent, modelId = ready.modelId, messages = history + ChatMessage.user(prompt),
+            agent = agent, modelId = ready.modelId, messages = history + ChatMessage.user(prompt),
             taskId = task.id, rootTaskId = task.rootId, purpose = purpose, conversationId = conversationId,
             delegationChain = task.delegationChain, extraToolIds = extraTools,
             // Only where the model supports it: the request asks, the briefs say it in words as well.
@@ -130,7 +160,7 @@ internal class StepRunner(
         val usage = TaskUsage(run.modelCalls, run.toolCalls, run.usage.inputTokens, run.usage.outputTokens)
         val text = run.text.trim()
         fun failed(end: StepEnd, why: String, limit: String? = null) =
-            StepResult(end, text, why, limit, usage, run.produced, run.modelName)
+            StepResult(end, text, why, limit, usage, run.produced, run.modelName, run.error.takeIf { run.end == RunEnd.FAILED })
         val result = when (run.end) {
             RunEnd.COMPLETED ->
                 if (text.isEmpty()) failed(StepEnd.FAILED, "${ready.agent.name} returned an empty answer.")
@@ -167,5 +197,8 @@ internal class StepRunner(
 
     companion object {
         const val TRUNCATED_NOTE = "The answer was cut off at the model's output limit."
+
+        /** The tool ids of the screen family ("screen.read", "screen.operate", …). */
+        const val SCREEN_FAMILY = "screen."
     }
 }

@@ -1,0 +1,139 @@
+package com.aicontrolcenter.framework.orchestration
+
+import com.aicontrolcenter.core.Clock
+import com.aicontrolcenter.core.TaskId
+import com.aicontrolcenter.core.health.TimedWaits
+import com.aicontrolcenter.core.llm.LlmException
+import com.aicontrolcenter.core.registry.Locality
+import com.aicontrolcenter.core.usage.DailyLimits
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.withTimeoutOrNull
+
+/**
+ * Work that waits to be tried again (Phase 6, R4 part 1, D28, rule 5): a step whose model call
+ * failed in a way that passes (a provider not answering, a "slow down" answer), or whose agent
+ * cannot run only because its provider is not answering, is stored with a time to try again
+ * ([com.aicontrolcenter.core.tasks.TaskRecord.retryAt]) instead of failing. The objective's own
+ * time limit bounds how long it waits.
+ *
+ * [nextDueAt] is the earliest such time over every running objective, for the background service
+ * (keep the phone awake within two minutes of it, set a wake alarm for a later one). [wake] makes
+ * every waiter look at the wall clock again at once: a wait whose time has come goes on, another
+ * one keeps waiting. Waiters also wake when their own delay is over, and then look at the clock
+ * too, so a delay that ran late (the phone slept) or early (the clock was changed) never loses a
+ * wait or starts one too soon by more than [MIN_LOOK_MS].
+ */
+internal class TaskWaits(private val runtimes: Runtimes, private val clock: Clock) : TimedWaits {
+    private val due = MutableStateFlow<Long?>(null)
+    private val wakes = MutableStateFlow(0L)
+
+    override val nextDueAt: StateFlow<Long?> = due.asStateFlow()
+
+    override fun wake() {
+        wakes.update { it + 1 }
+        runtimes.pokeAll()
+    }
+
+    /** Publishes the earliest wait of every objective; called whenever one starts, ends or moves. */
+    fun publish() {
+        due.value = runtimes.nextDueAt()
+    }
+
+    /**
+     * Suspends until [at] by the wall clock, published as a wait of [rt] under [key] meanwhile: for
+     * planning, a synthesis and delegated work, which wait in their own step (the scheduler waits
+     * for planned tasks itself). Cancelling the caller ends the wait.
+     */
+    suspend fun until(rt: ObjectiveRuntime, key: TaskId, at: Long) {
+        rt.dueAt[key] = at
+        publish()
+        try {
+            while (true) {
+                val left = at - clock.now()
+                if (left <= 0) return
+                val seen = wakes.value
+                withTimeoutOrNull(left.coerceAtLeast(MIN_LOOK_MS)) { wakes.first { it != seen } }
+            }
+        } finally {
+            rt.dueAt.remove(key)
+            publish()
+        }
+    }
+
+    /** How long a delay may run before the scheduler looks at the clock again: [until]'s rule, for the scheduler's own wait. */
+    fun lookAfter(at: Long): Long = (at - clock.now()).coerceAtLeast(MIN_LOOK_MS)
+
+    companion object {
+        /** A wait never looks at the clock more often than this, whatever the clock says. */
+        const val MIN_LOOK_MS = 1_000L
+    }
+}
+
+/** What made a step end without its result, when it is not an ordinary failure (Phase 6). */
+internal sealed interface Trouble {
+    /** Today's limit of model answers, tokens or money is reached ([LlmException.DailyLimitReached]): the objective pauses. */
+    data class DailyLimit(val sentence: String) : Trouble
+
+    /** The provider failed in a way that passes ([LlmException.retryable]): the step waits and is tried again. */
+    data class Passing(val error: LlmException) : Trouble
+
+    companion object {
+        fun of(result: StepResult): Trouble? = when (val error = result.error) {
+            null -> null
+            is LlmException.DailyLimitReached -> DailyLimit(error.message?.takeIf { it.isNotBlank() } ?: DailyLimits.PAUSED_TEXT)
+            else -> if (error.retryable) Passing(error) else null
+        }
+    }
+}
+
+/** How long work waits for a provider, and what its status line says meanwhile. */
+internal object ProviderWaits {
+    /** The first wait of a task in a row. */
+    const val FIRST_WAIT_MS = 30_000L
+
+    /** Every later wait of the same task in a row. */
+    const val LATER_WAIT_MS = 2 * 60_000L
+
+    /** A provider's own "try again after" is honoured up to this. */
+    const val MAX_WAIT_MS = 10 * 60_000L
+
+    /** A provider whose status is older than this is checked again before work waits for it (D28). */
+    const val STALE_MS = 60_000L
+
+    /** How long to wait after [earlier] waits in a row, honouring what a "slow down" answer asked for. */
+    fun waitMs(earlier: Int, error: LlmException?): Long {
+        val base = if (earlier <= 0) FIRST_WAIT_MS else LATER_WAIT_MS
+        val asked = (error as? LlmException.RateLimited)?.retryAfterMs ?: 0
+        return maxOf(base, asked.coerceAtMost(MAX_WAIT_MS))
+    }
+
+    /** "Ollama on your network", "Groq": a provider as the owner knows it. */
+    fun named(provider: Readiness.ProviderSide?, fallback: String): String = when (provider?.locality) {
+        null -> fallback
+        Locality.ON_DEVICE -> "${provider.name} on this phone"
+        Locality.LOCAL_NETWORK -> "${provider.name} on your network"
+        Locality.CLOUD -> provider.name
+    }
+
+    /** "Waiting: xAI is not answering; trying again at 10:45." */
+    fun text(provider: String, error: LlmException?, at: Long, zone: ZoneId): String {
+        val what = when (error) {
+            is LlmException.RateLimited -> "$provider asked the app to slow down"
+            is LlmException.Overloaded -> "$provider is busy"
+            else -> "$provider is not answering"
+        }
+        return "$WAITING $what; trying again at ${CLOCK.format(Instant.ofEpochMilli(at).atZone(zone))}."
+    }
+
+    /** Opens the status line of work waiting for its provider. */
+    const val WAITING = "Waiting:"
+
+    private val CLOCK: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+}

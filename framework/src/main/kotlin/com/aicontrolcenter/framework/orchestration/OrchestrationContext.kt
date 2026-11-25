@@ -1,14 +1,20 @@
 package com.aicontrolcenter.framework.orchestration
 
+import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.IdGenerator
 import com.aicontrolcenter.core.TaskId
+import com.aicontrolcenter.core.activity.Severity
+import com.aicontrolcenter.core.llm.LlmException
+import com.aicontrolcenter.core.llm.ProviderRechecks
 import com.aicontrolcenter.core.memory.MemoryService
 import com.aicontrolcenter.core.registry.AgentStatsLog
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.settings.FrameworkSettings
 import com.aicontrolcenter.core.settings.SettingsView
+import com.aicontrolcenter.core.tasks.AgentMessage
 import com.aicontrolcenter.core.tasks.MessageRepository
+import com.aicontrolcenter.core.tasks.MessageType
 import com.aicontrolcenter.core.tasks.ObjectiveLimits
 import com.aicontrolcenter.core.tasks.Participant
 import com.aicontrolcenter.core.tasks.TaskKind
@@ -17,7 +23,10 @@ import com.aicontrolcenter.core.tasks.TaskRepository
 import com.aicontrolcenter.core.tasks.TaskRequester
 import com.aicontrolcenter.core.tasks.TaskStatus
 import com.aicontrolcenter.core.tools.ToolRegistry
+import com.aicontrolcenter.core.usage.DailyLimits
 import com.aicontrolcenter.framework.agents.DefaultAgentActivityMonitor
+import com.aicontrolcenter.framework.llm.rethrowIfCancelled
+import java.time.ZoneId
 import kotlin.time.TimeSource
 
 /** What the steps of an objective share. One per orchestrator. */
@@ -38,9 +47,91 @@ internal class OrchestrationContext(
     val runtimes: Runtimes,
     /** Measures the objective's pausable time limits; tests pass the test scheduler's. */
     val timeSource: TimeSource = TimeSource.Monotonic,
+    /** Looks again at a provider that is not answering before work waits for it (D28); agent side only, never the provider manager. */
+    val rechecks: ProviderRechecks = ProviderRechecks.None,
+    /** The owner's time zone, for the clock times in status lines ("trying again at 10:45"). */
+    val zone: () -> ZoneId = { ZoneId.systemDefault() },
 ) {
     val briefs = BriefWriter()
     val selector = AgentSelector()
+
+    /** Work waiting to be tried again, published for the background service ([com.aicontrolcenter.core.tasks.Orchestrator.timedWaits]). */
+    val waits = TaskWaits(runtimes, clock)
+
+    /**
+     * [agentId]'s readiness. When it cannot run only because its provider is not answering, that provider is first
+     * checked again if its status is older than [ProviderWaits.STALE_MS] (D28), and the answer is read afresh.
+     */
+    suspend fun prepareChecked(agentId: AgentId): Readiness {
+        val first = steps.prepare(agentId)
+        val provider = (first as? Readiness.NotReady)?.takeIf { it.transient }?.provider ?: return first
+        try {
+            rechecks.recheckIfStale(provider.id, ProviderWaits.STALE_MS)
+        } catch (e: Exception) {
+            rethrowIfCancelled(e) // a check that fails changes nothing: the work waits as it would have
+        }
+        return steps.prepare(agentId)
+    }
+
+    /**
+     * Stores [task] as waiting for its provider (R4 part 1): QUEUED until [com.aicontrolcenter.core.tasks.TaskRecord.retryAt],
+     * its attempt kept, its status line naming [provider] and the time ("Waiting: xAI is not answering; trying again at
+     * 10:45."). [error] is the model call's failure, or null when its agent cannot run until the provider answers. Each
+     * wait in a row is longer ([ProviderWaits.waitMs]). Only while the task's status is one of [expected]; returns the
+     * stored task, or null when the owner changed it meanwhile.
+     */
+    suspend fun waitForProvider(rt: ObjectiveRuntime, task: TaskRecord, provider: String, error: LlmException?, expected: Set<TaskStatus>): TaskRecord? {
+        val earlier = rt.waitsSoFar[task.id] ?: 0
+        val at = clock.now() + ProviderWaits.waitMs(earlier, error)
+        val text = ProviderWaits.text(provider, error, at, zone())
+        val stored = change(rt, task.id, expected) { it.copy(status = TaskStatus.QUEUED, retryAt = at, statusDetail = text) } ?: return null
+        rt.waitsSoFar[task.id] = earlier + 1
+        journal.taskChanged(stored, "Task waits for its provider")
+        rt.poke()
+        return stored
+    }
+
+    /**
+     * Pauses the objective of [rt] because today's limit of model answers, tokens or money is reached (rule 6, Q2): as the
+     * owner's pause does (every working task PAUSED, the deadline as the running limit has it), never a failure, and with
+     * no attempt used: resuming runs each task again from its brief. The status says [DailyLimits.PAUSED_TEXT]; [sentence]
+     * (which limit) is logged. Then the objective's job is stopped, whose tasks write nothing on their way out. Returns
+     * false when the objective was not running any more.
+     */
+    suspend fun pauseForDailyLimit(rt: ObjectiveRuntime, sentence: String): Boolean {
+        val outcome = rt.lock.withLockNonCancellable {
+            val objective = tasks.get(rt.rootId)?.takeIf { it.status == TaskStatus.RUNNING } ?: return@withLockNonCancellable null
+            val now = clock.now()
+            val changes = tasks.getTree(rt.rootId).filter { it.id != rt.rootId && it.status in WORKING }
+                .map { it.copy(status = TaskStatus.PAUSED, statusDetail = DailyLimits.PAUSED_TEXT, updatedAt = now) }
+            val updated = objective.copy(
+                status = TaskStatus.PAUSED, statusDetail = DailyLimits.PAUSED_TEXT, deadlineAt = rt.deadlineNow(objective.deadlineAt), retryAt = null, updatedAt = now,
+            )
+            tasks.upsertAll(changes + updated)
+            updated to changes
+        } ?: return false
+        val (paused, changes) = outcome
+        changes.forEach { journal.taskChanged(it, "Task paused") }
+        journal.taskChanged(paused, "Objective paused", Severity.WARNING)
+        journal.warn(rt.rootId, paused, "Daily limit reached", sentence)
+        journal.send(rt.rootId, paused, Participant.System, Participant.Owner, MessageType.STATUS, DailyLimits.PAUSED_TEXT)
+        rt.job?.cancel()
+        return true
+    }
+
+    /**
+     * How many messages of objective [rootId] its message limit counts: all of them but the owner's notes (C2), which
+     * never count. The notes are looked for only from [threshold] on, where they could make a difference.
+     */
+    suspend fun countedMessages(rootId: TaskId, threshold: Int): Int {
+        val all = messages.count(rootId)
+        if (all < threshold) return all
+        return all - messages.list(rootId).count { OwnerNotes.isNote(it) }
+    }
+
+    /** The owner's notes to objective [rootId] (C2, rule 24), in the order they were written. */
+    suspend fun ownerNotes(rootId: TaskId): List<AgentMessage> =
+        messages.list(rootId).filter { OwnerNotes.isNote(it) }.sortedWith(compareBy({ it.at }, { it.id.value }))
 
     /**
      * Changes one task under the objective's lock, only when its status is one of [expected];
