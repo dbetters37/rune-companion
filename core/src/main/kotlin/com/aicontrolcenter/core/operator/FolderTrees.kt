@@ -12,10 +12,13 @@ package com.aicontrolcenter.core.operator
  * picker's entries named them: the phone's storage provider ("primary:Download/x" is
  * "/storage/emulated/0/Download/x", "<volume>:x" is "/storage/<volume>/x", "home:x" is the
  * Documents folder's "x") and the downloads provider, whose "raw:" ids are paths, whose MediaStore
- * folders "msf:<n>" lie somewhere in a Download folder that the id does not tell (SEC-W2B-2), and
+ * folders "msd:<n>" lie somewhere in a Download folder that the id does not tell (SEC-W2B-2), and
  * whose root "downloads" (a folder only on Android 9 and 10) lists the download manager's files
- * wherever they were saved, so it may hold files anywhere on the phone's storage (B1-DL). Folder
- * names on the phone's storage ignore case.
+ * wherever they were saved, so it may hold files anywhere on the phone's storage (B1-DL). The
+ * device gate of wave 2b saw Android 14 give "msd:<n>" for a folder of the Downloads entry once
+ * MediaStore has seen it, and "raw:<path>" before; "msf:<n>" names a MediaStore file, which never
+ * comes back as a folder, and is placed like "msd:<n>" should it. Folder names on the phone's
+ * storage ignore case.
  * The media provider's folders are somewhere on the phone's storage. A tree of any other provider
  * (a cloud drive, a file manager, an app's own provider: [otherAppProvider]) whose id is a path on
  * the phone's storage ("/storage/emulated/0/Download/x", "/sdcard/x"), as many file managers give,
@@ -75,7 +78,7 @@ object FolderTrees {
      * True when the folders shared as [a] and [b] are the same place or one is inside the other;
      * false when they are apart; null when that cannot be told (a URI that is not a picker's tree,
      * or two folders on the phone's storage of which one cannot be placed exactly, such as a
-     * downloads-provider folder "msf:<n>" and a folder in or around a Download folder). Callers
+     * downloads-provider folder "msd:<n>" and a folder in or around a Download folder). Callers
      * that protect something count null as overlapping.
      */
     fun overlap(a: String, b: String): Boolean? {
@@ -94,7 +97,7 @@ object FolderTrees {
 
     /**
      * True when [treeUri] is a folder the folder picker's Downloads entry gave whose place on the phone's storage its id
-     * does not tell exactly ("msf:<n>", the Downloads root, ...), so the owner can share that place again through the
+     * does not tell exactly ("msd:<n>", the Downloads root, ...), so the owner can share that place again through the
      * phone's storage entry for [overlap] to tell. False for "raw:" paths on a volume, other providers and other profiles.
      */
     fun fromDownloadsEntryUnplaced(treeUri: String): Boolean {
@@ -192,8 +195,9 @@ object FolderTrees {
         }
         DOWNLOADS -> when {
             tree.documentId.startsWith("raw:/") -> raw(tree.documentId.removePrefix("raw:"))
-            // MediaStore folders of the Downloads entry: Android keeps them in a Download folder.
-            tree.documentId.startsWith("msf:") -> Place.InDownloads
+            // MediaStore folders ("msd:<n>", what the Downloads entry gives for a folder; seen on Android 14) and files
+            // ("msf:<n>"): the Downloads entry lists only MediaStore downloads, which Android keeps in a Download folder.
+            tree.documentId.startsWith("msd:") || tree.documentId.startsWith("msf:") -> Place.InDownloads
             // Any other id, among them the Downloads root ("downloads"), which Android 9 and 10 let the picker give as a
             // folder: it lists every file the download manager fetched, wherever it was saved (B1-DL).
             else -> Place.Somewhere

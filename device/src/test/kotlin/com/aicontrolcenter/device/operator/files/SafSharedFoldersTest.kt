@@ -120,6 +120,37 @@ class SafSharedFoldersTest {
     }
 
     @Test
+    fun `a Downloads-entry folder as Android 14 names it stops changes only in or around Download (device gate, wave 2b)`() = runTest {
+        // The device gate's ids: GateDL through the Downloads entry is "msd:1000000019"; Download/GateDL/Inner and the
+        // unrelated Documents/Notes come through the phone's storage entry.
+        val gateDl = SharedFolder(FolderId("fld_gatedl"), "content://com.android.providers.downloads.documents/tree/msd%3A1000000019", "GateDL", addedAt = 1, readOnly = false)
+        val inner = SharedFolder(
+            FolderId("fld_inner"), "content://com.android.externalstorage.documents/tree/primary%3ADownload%2FGateDL%2FInner", "Inner",
+            addedAt = 2, readOnly = true, readOnlySince = 2,
+        )
+        val notes = SharedFolder(
+            FolderId("fld_notes"), "content://com.android.externalstorage.documents/tree/primary%3ADocuments%2FNotes", "Notes",
+            addedAt = 3, readOnly = true, readOnlySince = 2,
+        )
+        fun notReadOnlyRefusal(result: DocResult<*>) = assertFalse(result is DocResult.NotAllowed && "read-only folder" in result.reason, "$result")
+
+        // Scenario A: GateDL writable. Beside the read-only Inner, nothing changes in it; beside Notes alone, it does.
+        repository.upsert(gateDl)
+        repository.upsert(notes)
+        notReadOnlyRefusal(folders.write(gateDl.id, p("note.txt"), "x".toByteArray(), "text/plain", overwrite = false))
+        repository.upsert(inner)
+        assertNotAllowed(folders.write(gateDl.id, p("note.txt"), "x".toByteArray(), "text/plain", overwrite = false), "Android does not tell this app where GateDL is")
+
+        // Scenario D: GateDL read-only, Inner and Notes writable. Inner may be inside GateDL: no change there. Notes is apart.
+        repository.upsert(gateDl.copy(readOnly = true, readOnlySince = 3))
+        repository.upsert(inner.copy(readOnly = false, readOnlySince = null))
+        repository.upsert(notes.copy(readOnly = false, readOnlySince = null))
+        assertNotAllowed(folders.write(inner.id, p("note.txt"), "x".toByteArray(), "text/plain", overwrite = false), "may hold, or be inside, the read-only folder GateDL")
+        notReadOnlyRefusal(folders.write(notes.id, p("note.txt"), "x".toByteArray(), "text/plain", overwrite = false))
+        notReadOnlyRefusal(folders.makeFolder(notes.id, p("New")))
+    }
+
+    @Test
     fun `nothing changes beside a read-only folder that another app names by its path on the phone's storage (B1)`() = runTest {
         // The verifier's mirror case: a file manager gives Download/Agents/inbox, made read-only; the phone's storage entry
         // gave Download/Agents for agents to change. A change there would land in the read-only folder. Also the other way round.
