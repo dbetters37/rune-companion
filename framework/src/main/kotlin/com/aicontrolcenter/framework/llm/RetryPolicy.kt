@@ -25,10 +25,12 @@ data class RetryPolicy(
     /**
      * The pause before trying again after failed attempt number [attempt] (1 is the first
      * call), or null when the call should fail now. A provider's Retry-After is honoured, never
-     * shortened: sending earlier than asked only burns another request.
+     * shortened: sending earlier than asked only burns another request. A provider that says its
+     * daily quota is used up ([LlmException.RateLimited.dailyQuota]) is not asked again.
      */
     fun delayBeforeRetry(attempt: Int, error: LlmException): Long? {
         if (!error.retryable || attempt > maxRetries) return null
+        if (error is LlmException.RateLimited && error.dailyQuota) return null
         val backoff = (initialDelayMs shl (attempt - 1).coerceAtMost(16)).coerceAtMost(maxDelayMs)
         val asked = (error as? LlmException.RateLimited)?.retryAfterMs ?: return backoff
         if (asked > maxRetryAfterMs) return null

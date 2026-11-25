@@ -103,6 +103,32 @@ class ErrorMappingTest : MockServerTest() {
     }
 
     @Test
+    fun `a 429 says when its provider names a daily quota, in the message or in the body`() {
+        fun google(quotaId: String) =
+            """[{"error":{"code":429,"message":"You exceeded your current quota, please check your plan and billing details.","status":"RESOURCE_EXHAUSTED",""" +
+                """"details":[{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaMetric":"generativelanguage.googleapis.com/generate_content_free_tier_requests",""" +
+                """"quotaId":"$quotaId","quotaValue":"50"}]},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"35s"}]}}]"""
+
+        // Gemini names the day only in the quota's id in the body, and asks for a short wait all the same.
+        enqueue(google("GenerateRequestsPerDayPerProjectPerModel-FreeTier"), 429)
+        val daily = failsWith<LlmException.RateLimited> { chat() }
+        assertTrue(daily.dailyQuota, daily.message)
+        assertEquals(35_000, daily.retryAfterMs)
+        enqueue(google("GenerateRequestsPerMinutePerProjectPerModel-FreeTier"), 429)
+        assertFalse(failsWith<LlmException.RateLimited> { chat() }.dailyQuota)
+
+        // OpenRouter and Groq say it in the message.
+        enqueue(openAiError("Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day"), 429)
+        assertTrue(failsWith<LlmException.RateLimited> { chat() }.dailyQuota)
+        enqueue(openAiError("Rate limit exceeded: free-models-per-min."), 429)
+        assertFalse(failsWith<LlmException.RateLimited> { chat() }.dailyQuota)
+        enqueue(openAiError("Rate limit reached in organization `o` on tokens per day (TPD): Limit 100000, Used 99649, Requested 1015. Please try again in 9m10s.", "rate_limit_exceeded"), 429, "Retry-After" to "550")
+        assertTrue(failsWith<LlmException.RateLimited> { chat() }.dailyQuota)
+        enqueue(openAiError("Rate limit reached in organization `o` on requests per minute (RPM): Limit 30, Used 30, Requested 1. Please try again in 2s.", "rate_limit_exceeded"), 429, "Retry-After" to "2")
+        assertFalse(failsWith<LlmException.RateLimited> { chat() }.dailyQuota)
+    }
+
+    @Test
     fun `retry-after is read as seconds or as a date`() {
         val now = 1_800_000_000_000L
         assertEquals(12_000, ProviderHttp.retryAfterMillis(headersOf("Retry-After", "12"), now))

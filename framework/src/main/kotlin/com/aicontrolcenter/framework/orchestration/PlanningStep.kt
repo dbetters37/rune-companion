@@ -57,7 +57,12 @@ internal class PlanningStep(private val ctx: OrchestrationContext) {
                 is Planned.Wait -> {
                     // A few waits at most; then, or for a used-up quota, the objective cannot be planned (INT-1).
                     if (!ctx.mayWait(rt, rt.rootId, ready.provider, outcome.error)) {
-                        return failObjective(rt, "The Director could not plan: ${ProviderWaits.what(name, outcome.error)}, and waiting for it did not help. Try again later.")
+                        val daily = (outcome.error as? LlmException.RateLimited)?.dailyQuota == true
+                        return failObjective(
+                            rt,
+                            if (daily) "The Director could not plan: ${ProviderWaits.what(name, outcome.error)}. Try again tomorrow, or give the Director a model of another provider."
+                            else "The Director could not plan: ${ProviderWaits.what(name, outcome.error)}, and waiting for it did not help. Try again later.",
+                        )
                     }
                     if (!waitToPlan(rt, name, outcome.error)) return false
                 }

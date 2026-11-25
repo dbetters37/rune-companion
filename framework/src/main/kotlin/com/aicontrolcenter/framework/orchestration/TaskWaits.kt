@@ -100,11 +100,19 @@ internal sealed interface Trouble {
 /**
  * Providers that asked the app to slow down (INT-1), shared by every objective: work on such a provider waits together
  * until the time its "slow down" answer set ([heldUntil]), instead of each step probing it with requests of its own.
- * Each such answer after the provider's last wait is a strike. A provider that asks again after its wait has used up
- * its quota for now (a free tier's daily quota answers "slow down" all day) when it said nothing about when to try
- * again, or when it did and asks a fourth time ([ProviderWaits.MAX_WAITS_AFTER_FAILURE]): [slowedDown] then returns
- * false, the step counts the answer as an ordinary failed attempt, and so does every step that gets one until the
- * provider answers or [REPEAT_WINDOW_MS] passes without such an answer. In memory: a restart starts afresh.
+ * Each such answer after the provider's last wait is a strike, and the provider's waits follow R4 whichever step a
+ * strike hits: 30 seconds after the first, 2 minutes after each later one, longer when the provider asks for it.
+ *
+ * Its quota counts as used up for now (a free tier's daily quota answers "slow down" all day), and [slowedDown] returns
+ * false, when:
+ *  - the answer names a daily quota ([LlmException.RateLimited.dailyQuota]): at once, no wait;
+ *  - it said nothing about when to try again and asks a third time, after the 30-second and the 2-minute wait
+ *    ([ProviderWaits.WAITS_WITHOUT_RETRY_AFTER]; a per-minute limit, as Groq's, OpenRouter's free models' and Gemini's
+ *    free tier's, is over by then, NEW-2);
+ *  - it named a time and asks a fourth time ([ProviderWaits.MAX_WAITS_AFTER_FAILURE]).
+ * The step then counts the answer as an ordinary failed attempt, and so does every step that gets one, until a call to
+ * the provider is answered ([answered]) or [REPEAT_WINDOW_MS] passes without such an answer. In memory: a restart
+ * starts afresh.
  */
 internal class ProviderSlowDowns {
     private class SlowDown(val until: Long, val error: LlmException, val lastAt: Long, val strikes: Int)
@@ -119,26 +127,31 @@ internal class ProviderSlowDowns {
 
     /**
      * [provider] answered "slow down" ([error]) at [now], and the step would wait until [waitUntil] if [mayWait]. True
-     * when it waits, and then every step on that provider waits until then too; false when it may not, or the provider
-     * has used up its quota for now.
+     * when it waits, and then every step on that provider waits until then too (at least the provider's own wait for
+     * this strike, [ProviderWaits.waitMs]); false when it may not, or the provider has used up its quota for now.
      */
     @Synchronized
     fun slowedDown(provider: ProviderId?, error: LlmException.RateLimited, now: Long, waitUntil: Long, mayWait: Boolean): Boolean {
-        val id = provider ?: return mayWait
+        val id = provider ?: return mayWait && !error.dailyQuota
         val before = states[id]?.takeIf { now - maxOf(it.lastAt, it.until) <= REPEAT_WINDOW_MS }
         // The same answer reached several steps whose calls were already on their way: they wait together.
-        if (before != null && before.until > now) {
+        if (before != null && before.until > now && !error.dailyQuota) {
             if (mayWait) states[id] = SlowDown(maxOf(before.until, waitUntil), error, now, before.strikes)
             return mayWait
         }
         val strikes = (before?.strikes ?: 0) + 1
-        val allowed = if (error.retryAfterMs != null) ProviderWaits.MAX_WAITS_AFTER_FAILURE else 1
+        val allowed = when {
+            error.dailyQuota -> 0
+            error.retryAfterMs != null -> ProviderWaits.MAX_WAITS_AFTER_FAILURE
+            else -> ProviderWaits.WAITS_WITHOUT_RETRY_AFTER
+        }
         val waits = mayWait && strikes <= allowed
-        states[id] = SlowDown(if (waits) waitUntil else now, error, now, strikes)
+        // R4 for the provider as a whole: 30 seconds after its first strike, 2 minutes after a later one.
+        states[id] = SlowDown(if (waits) maxOf(waitUntil, now + ProviderWaits.waitMs(strikes - 1, error)) else now, error, now, strikes)
         return waits
     }
 
-    /** [provider] answered: work on it no longer waits, and a later "slow down" starts afresh. */
+    /** A call to [provider] was answered: work on it no longer waits, its quota no longer counts as used up, and a later "slow down" starts afresh. */
     fun answered(provider: ProviderId?) {
         states.remove(provider ?: return)
     }
@@ -166,6 +179,13 @@ internal object ProviderWaits {
      */
     const val MAX_WAITS_AFTER_FAILURE = 3
 
+    /**
+     * A provider that asks the app to slow down without saying until when is waited for this many times in a row: 30
+     * seconds, then 2 minutes (R4). A per-minute limit is over by then; a provider that still asks has used up its quota
+     * for now ([ProviderSlowDowns], NEW-2).
+     */
+    const val WAITS_WITHOUT_RETRY_AFTER = 2
+
     /** A provider whose status is older than this is checked again before work waits for it (D28). */
     const val STALE_MS = 60_000L
 
@@ -188,9 +208,9 @@ internal object ProviderWaits {
     fun text(provider: String, error: LlmException?, at: Long, zone: ZoneId): String =
         "$WAITING ${what(provider, error)}; trying again at ${CLOCK.format(Instant.ofEpochMilli(at).atZone(zone))}."
 
-    /** "xAI is not answering", "Gemini asked the app to slow down", "Groq is busy". */
+    /** "xAI is not answering", "Gemini asked the app to slow down", "Gemini has used up its quota for today", "Groq is busy". */
     fun what(provider: String, error: LlmException?): String = when (error) {
-        is LlmException.RateLimited -> "$provider asked the app to slow down"
+        is LlmException.RateLimited -> if (error.dailyQuota) "$provider has used up its quota for today" else "$provider asked the app to slow down"
         is LlmException.Overloaded -> "$provider is busy"
         else -> "$provider is not answering"
     }

@@ -212,6 +212,19 @@ class ModelGatewayTest {
     }
 
     @Test
+    fun `a rate limit that says a daily quota is used up is not sent again within the call`() = runTest {
+        val world = TestWorld(retry = RetryPolicy(initialDelayMs = 1_000, maxRetryAfterMs = 20_000))
+        val usedUp = ScriptedLlmClient.script(ScriptStep.Fail(LlmException.RateLimited("Rate limit exceeded: free-models-per-day.")))
+        assertFailsWith<LlmException.RateLimited> { world.gateway.chat(world.serve(usedUp).id, ask) }
+        assertEquals(1, usedUp.requests.size)
+        assertEquals(0, currentTime, "no time was spent waiting for it")
+
+        val perMinute = ScriptedLlmClient.script(ScriptStep.Fail(LlmException.RateLimited("Rate limit exceeded: free-models-per-min.")), ScriptStep.Reply("ok"))
+        assertEquals("ok", world.gateway.chat(world.serve(perMinute).id, ask).message.text)
+        assertEquals(2, perMinute.requests.size)
+    }
+
+    @Test
     fun `a stream is retried while nothing was passed on, never after output started`() = runTest {
         val recovers = StreamingClient { _, attempt ->
             flow {

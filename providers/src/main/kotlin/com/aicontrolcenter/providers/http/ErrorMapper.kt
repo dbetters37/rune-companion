@@ -19,7 +19,7 @@ import javax.net.ssl.SSLException
  * | 404 whose body is about the model | [LlmException.ModelNotFound] |
  * | 404 otherwise (wrong base URL) | [LlmException.InvalidRequest] |
  * | 408, 504 | [LlmException.Timeout] |
- * | 429 | [LlmException.RateLimited], with the wait from Retry-After or the body |
+ * | 429 | [LlmException.RateLimited], with the wait from Retry-After or the body, and whether it names a daily quota |
  * | 400, 413, 422 saying the context window was exceeded | [LlmException.ContextTooLong] |
  * | 400, 413, 422 otherwise, and every other 3xx/4xx | [LlmException.InvalidRequest] |
  * | 529, or 503 saying the provider is overloaded | [LlmException.Overloaded] |
@@ -52,6 +52,8 @@ internal class ErrorMapper(private val label: String, private val redactor: Reda
             status == 429 -> LlmException.RateLimited(
                 describe("is limiting requests", failure),
                 retryAfterMs = failure.retryAfterMs ?: detail.retryDelayMs,
+                // The message, or a quota's id in the body (Gemini: "…PerDay…"), says a daily quota is used up.
+                dailyQuota = LlmException.RateLimited.namesDailyQuota(detail.searchable),
             )
             status == 529 || (status == 503 && saysOverloaded(detail)) ->
                 LlmException.Overloaded(describe("is overloaded", failure))

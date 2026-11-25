@@ -91,10 +91,13 @@ do it.
   answered is recorded on every call.
 - When a provider is not answering or asks the app to slow down, a task waits and tries again
   a few times (its other tasks on that provider wait with it), then counts it as a failed
-  attempt. A provider that asks to slow down again right after the wait has most likely used up
-  its quota for the day (free tiers do this); its tasks then fail within minutes instead of
-  waiting out the objective's time limit. Such refused calls are not counted against your
-  daily limit of model answers.
+  attempt. A provider that asks to slow down without saying for how long is waited for 30
+  seconds, then 2 minutes, which outlasts the per-minute limits of free plans (Groq, OpenRouter's
+  free models, Gemini's free tier). If it still asks after that, or its answer says that a daily
+  quota is used up, it has most likely used up its quota for the day; its tasks then fail
+  within minutes instead of waiting out the objective's time limit, until a call to that
+  provider is answered again. Such refused calls are not counted against your daily limit of
+  model answers.
 - Content an agent reads (web pages, files, other apps' screens, other agents' messages) can
   contain instructions aimed at the model. The framework passes such content as data and
   never lets it raise an agent's permissions, but a model can still be misled by it. Keep
