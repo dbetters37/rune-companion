@@ -433,6 +433,25 @@ class RoomOwnerBackupTest {
     }
 
     @Test
+    fun `the core port's save, inspect and restore are the detailed ones`() = runBlocking<Unit> {
+        val source: com.aicontrolcenter.core.backup.OwnerBackup = phone().backup
+        val out = ByteArrayOutputStream()
+        val report = source.save(BackupFiles.PASSPHRASE, BackupFiles.PASSPHRASE, { out }).done()
+        assertEquals(2, report.counts.agents)
+        val target = fresh()
+        val port: com.aicontrolcenter.core.backup.OwnerBackup = target.backup
+        val summary = port.inspect(BackupFiles.opener(out.toByteArray()), BackupFiles.PASSPHRASE).done()
+        assertEquals(report.counts, summary.counts)
+        assertEquals(out.size().toLong(), summary.sizeBytes)
+        assertEquals(1_700_000_000_000L, summary.createdAt)
+        assertEquals("0.6.0", summary.appVersion)
+        assertEquals(6, summary.schemaVersion)
+        val restored = port.restore(BackupFiles.opener(out.toByteArray()), BackupFiles.PASSPHRASE).done()
+        assertEquals(report.counts, restored.counts)
+        assertEquals(summary.settingChanges, restored.settingChanges)
+    }
+
+    @Test
     fun `too many agents is too large`() = runBlocking<Unit> {
         val body = (0..BackupFormat.MAX_AGENTS).map { BackupRecord.Agent(Samples.agent(id = "agt_$it", name = "Agent $it", modelId = null).copy(templateId = null)) }
         val file = BackupFiles.craft(BackupFiles.framed(body))
