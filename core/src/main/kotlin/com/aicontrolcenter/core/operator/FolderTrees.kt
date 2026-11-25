@@ -11,9 +11,11 @@ package com.aicontrolcenter.core.operator
  * does). Trees of the phone's own storage are compared by their place on it, whichever of the
  * picker's entries named them: the phone's storage provider ("primary:Download/x" is
  * "/storage/emulated/0/Download/x", "<volume>:x" is "/storage/<volume>/x", "home:x" is the
- * Documents folder's "x") and the downloads provider, whose "raw:" ids are paths and whose other
- * folders ("downloads", its root, and MediaStore folders "msf:<n>") lie somewhere in a Download
- * folder that the id does not tell (SEC-W2B-2). Folder names on the phone's storage ignore case.
+ * Documents folder's "x") and the downloads provider, whose "raw:" ids are paths, whose MediaStore
+ * folders "msf:<n>" lie somewhere in a Download folder that the id does not tell (SEC-W2B-2), and
+ * whose root "downloads" (a folder only on Android 9 and 10) lists the download manager's files
+ * wherever they were saved, so it may hold files anywhere on the phone's storage (B1-DL). Folder
+ * names on the phone's storage ignore case.
  * The media provider's folders are somewhere on the phone's storage. Trees of any other provider
  * (a cloud drive, a file manager, an app's own provider: [otherAppProvider]) count as apart from
  * another provider's: Android does not tell whether such a provider also shows the phone's own
@@ -152,7 +154,10 @@ object FolderTrees {
         }
         DOWNLOADS -> when {
             tree.documentId.startsWith("raw:/") -> raw(tree.documentId.removePrefix("raw:"))
-            tree.documentId == "downloads" || tree.documentId.startsWith("msf:") -> Place.InDownloads
+            // MediaStore folders of the Downloads entry: Android keeps them in a Download folder.
+            tree.documentId.startsWith("msf:") -> Place.InDownloads
+            // Any other id, among them the Downloads root ("downloads"), which Android 9 and 10 let the picker give as a
+            // folder: it lists every file the download manager fetched, wherever it was saved (B1-DL).
             else -> Place.Somewhere
         }
         else -> null

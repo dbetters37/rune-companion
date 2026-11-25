@@ -88,10 +88,25 @@ class FolderTreesTest {
     @Test
     fun `a folder of the downloads provider is apart from folders outside every Download folder`() {
         assertEquals(false, FolderTrees.overlap(downloads("msf:31"), storage("primary:Documents/Notes")))
-        assertEquals(false, FolderTrees.overlap(downloads("downloads"), storage("primary:Documents")))
         assertEquals(false, FolderTrees.overlap(downloads("msf:31"), storage("primary:Downloads2")))
         assertEquals(false, FolderTrees.overlap(downloads("msf:31"), cloud), "a cloud drive never holds the phone's files")
         assertEquals(false, FolderTrees.overlap(storage("primary:Download"), cloud))
+    }
+
+    @Test
+    fun `the Downloads root picked as a folder may hold downloads saved anywhere on the phone (B1-DL)`() {
+        // On Android 9 and 10 the picker lets the Downloads root itself be picked. It lists every file the download
+        // manager fetched, wherever the downloading app saved it (Pictures, Documents, any path before Android 10), and
+        // those files can be changed through it. So it may hold files of any folder on the phone's storage: unknown.
+        assertNull(FolderTrees.overlap(downloads("downloads"), storage("primary:Pictures")))
+        assertNull(FolderTrees.overlap(storage("primary:Pictures"), downloads("downloads")))
+        assertNull(FolderTrees.overlap(downloads("downloads"), storage("primary:Documents")))
+        assertNull(FolderTrees.overlap(downloads("downloads"), storage("1234-ABCD:Pictures")))
+        assertNull(FolderTrees.overlap(downloads("downloads"), downloads("raw:/storage/emulated/0/Documents/Notes")))
+        // A MediaStore folder of the Downloads entry is a folder in a Download folder (Android keeps them there): apart.
+        assertEquals(false, FolderTrees.overlap(downloads("msf:31"), storage("primary:Pictures")))
+        // A cloud drive never holds the phone's files the download manager fetched.
+        assertEquals(false, FolderTrees.overlap(downloads("downloads"), cloud))
     }
 
     @Test

@@ -334,7 +334,11 @@ do it.
   (also through the folder picker's "Downloads" entry). Where it cannot tell exactly where such a
   folder is (a folder picked through "Downloads", or one of a work profile or another user on
   the phone), it plays safe: agents cannot change it while a read-only folder might be inside it
-  or around it, and the message says why. A folder that comes from another app, such as a cloud
+  or around it, and the message says why. On Android 9 and 10 the picker also lets you pick the
+  "Downloads" entry's top folder itself. It lists every file the phone downloaded, wherever it
+  was saved, so it counts as possibly holding any folder on the phone: while it is shared and
+  agents may change it, they cannot change anything in it as long as any shared folder is
+  read-only, and no folder of the phone can be picked up from. A folder that comes from another app, such as a cloud
   drive or a file manager, is different: Android does not tell whether that app also shows your
   phone's own files. If it does, agents could change files there even in folders you made
   read-only. Make such a folder read-only too, or share folders from the phone's storage instead.
