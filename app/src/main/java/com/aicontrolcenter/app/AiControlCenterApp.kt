@@ -1,6 +1,7 @@
 package com.aicontrolcenter.app
 
 import android.app.Application
+import android.content.Context
 import android.os.Process
 import com.aicontrolcenter.app.di.AppGraph
 import com.aicontrolcenter.app.di.createProductionPorts
@@ -9,6 +10,8 @@ import com.aicontrolcenter.app.di.wiring.BackgroundWiring
 import com.aicontrolcenter.app.di.wiring.PickUpStepPorts
 import com.aicontrolcenter.app.di.wiring.RoutinesWiring
 import com.aicontrolcenter.app.health.AppGate
+import com.aicontrolcenter.app.operator.PickUpFoldersView
+import com.aicontrolcenter.app.operator.SharedFolderFilesView
 import com.aicontrolcenter.app.work.AndroidNotificationAccess
 import com.aicontrolcenter.app.work.AppProcessHooks
 import com.aicontrolcenter.app.work.ScreenSessionNotifications
@@ -23,15 +26,18 @@ import com.aicontrolcenter.core.backup.MaintenanceGate
 import com.aicontrolcenter.core.health.OwnerRecovery
 import com.aicontrolcenter.core.memory.Embedder
 import com.aicontrolcenter.core.memory.MemoryService
-import com.aicontrolcenter.core.pickup.PickUpFolders
+import com.aicontrolcenter.core.operator.ProtectedPackages
 import com.aicontrolcenter.core.settings.ReadOnlySettings
+import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.data.DataLayer
+import com.aicontrolcenter.device.operator.PhoneOperatorLayer
 import com.aicontrolcenter.memory.DefaultMemoryService
 import com.aicontrolcenter.memory.HashingEmbedder
 import com.aicontrolcenter.memory.MemoryConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import java.time.ZoneId
 
 /**
  * Owns the process-wide [AppGraph] and the few things the whole main process shares with it.
@@ -116,7 +122,7 @@ class AiControlCenterApp : Application(), UpkeepHost {
      */
     override val upkeep: UpkeepGraph by lazy {
         val settings = ReadOnlySettings(dataLayer.settings)
-        val zone = { java.time.ZoneId.systemDefault() }
+        val zone = { ZoneId.systemDefault() }
         val ports = UpkeepPorts(
             memory = sharedMemory,
             activityLog = dataLayer.activityLog,
@@ -128,16 +134,7 @@ class AiControlCenterApp : Application(), UpkeepHost {
             noBackupFilesDir = noBackupFilesDir,
             versionCode = BuildConfig.VERSION_CODE.toLong(),
         )
-        val pickUp = PickUpStepPorts(
-            rules = dataLayer.pickUpRules,
-            // WP17: PickUpFoldersView(dataLayer.sharedFolders, <the device's folder reader>); no folder is read in wave 1.
-            folders = PickUpFolders.None,
-            memory = sharedMemory,
-            settings = settings,
-            clock = WallClock,
-            zone = zone,
-            gate = maintenanceGate,
-        )
+        val pickUp = pickUpStepPorts(this, dataLayer, sharedMemory, settings, maintenanceGate, zone)
         UpkeepGraph(ports, RoutinesWiring.upkeepSteps(pickUp))
     }
 
@@ -180,6 +177,38 @@ class AiControlCenterApp : Application(), UpkeepHost {
         synchronized(this) {
             installedGraph = graph
             installedGate = AppGate.open()
+        }
+    }
+
+    internal companion object {
+        /**
+         * What folder pick-up may reach while nobody watches (WP17, Appendix A; security review of wave 1, F11): the rules,
+         * the owner's folders read only through [PickUpFoldersView] (a folder's record from the store, the files inside it
+         * through Android's folder access, which the view offers for reading only, never taking or releasing access), the
+         * one memory service, the settings read only, the maintenance gate, and the activity log for what a run did.
+         * Building it opens nothing: the folder reader is the device's, made without the graph and without a system call.
+         */
+        fun pickUpStepPorts(
+            context: Context,
+            data: DataLayer,
+            memory: MemoryService,
+            settings: SettingsView,
+            gate: MaintenanceGate,
+            zone: () -> ZoneId,
+        ): PickUpStepPorts {
+            val app = context.applicationContext ?: context
+            // Only the folder reader of the phone layer is kept; its other members are never used here.
+            val reader = PhoneOperatorLayer(app, data.sharedFolders, protectedPackages = { ProtectedPackages(app.packageName) }).sharedFolders
+            return PickUpStepPorts(
+                rules = data.pickUpRules,
+                folders = PickUpFoldersView(data.sharedFolders, SharedFolderFilesView(reader)),
+                memory = memory,
+                settings = settings,
+                clock = WallClock,
+                zone = zone,
+                gate = gate,
+                activity = ActivityRecorder(data.activityLog, RandomIdGenerator, WallClock),
+            )
         }
     }
 }
