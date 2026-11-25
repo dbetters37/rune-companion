@@ -33,6 +33,7 @@ import java.lang.reflect.Modifier
 import java.util.IdentityHashMap
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
@@ -79,9 +80,11 @@ class AssemblyMoveTest {
         assertSame(graph.teamAssembly.agentChat, graph.agentChat)
         assertSame<Any>(graph.teamAssembly.agentChat, graph.teamAssembly.chatDeletionListener)
         assertSame(graph.teamAssembly.ownerConversation, graph.ownerConversation)
-        // Routines (WP17): nothing yet.
-        assertEquals(null, graph.ownerRoutines)
-        assertEquals(null, graph.ownerPickUpRules)
+        // Routines and folder pick-up (WP17): the owner's ports of the assembly.
+        assertSame(graph.routinesAssembly.ownerRoutines, graph.ownerRoutines)
+        assertSame(graph.routinesAssembly.ownerPickUpRules, graph.ownerPickUpRules)
+        assertNotNull(graph.ownerRoutines)
+        assertNotNull(graph.ownerPickUpRules)
         // Every read is the same instance (the members delegate; nothing is built on read).
         assertSame(graph.modelGateway, graph.modelGateway)
         assertSame(graph.toolExecutor, graph.toolExecutor)
