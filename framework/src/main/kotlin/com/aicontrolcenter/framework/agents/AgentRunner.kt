@@ -355,7 +355,9 @@ class AgentRunner(
          * Puts the memories recalled for [profile] in front of the text of the newest owner or
          * task message, in the request only: the stored conversation keeps the message as the
          * owner wrote it. Runs before the first model call, so nothing has been sent yet and the
-         * transcript still only grows from the model's point of view.
+         * transcript still only grows from the model's point of view. The block's text has the
+         * owner notes' words defused (rule 24, [DataBlock.neutralise]): it shares its message with a
+         * brief, whose notes section only the app writes (wave-2a residual verification, NEW-RECALL).
          */
         private suspend fun recallMemories(profile: AgentProfile) {
             val recall = recall ?: return
@@ -364,7 +366,8 @@ class AgentRunner(
             if (newest < 0) return
             report("Recalling memories")
             val recalled = recall.recall(profile, request.messages, request.taskId, request.rootTaskId) ?: return
-            transcript[newest] = RecalledMemoriesBlock.prepend(transcript[newest], recalled.section)
+            val section = RecalledMemoriesBlock.mapContent(recalled.section, DataBlock::neutralise)
+            transcript[newest] = RecalledMemoriesBlock.prepend(transcript[newest], section)
             val count = recalled.memories.size
             val memories = if (count == 1) "1 recalled memory" else "$count recalled memories"
             callContext = callContext.copy(purpose = "${request.purpose}, with $memories")

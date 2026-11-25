@@ -6,7 +6,6 @@ import com.aicontrolcenter.core.llm.ChatRequest
 import com.aicontrolcenter.core.llm.ChatRole
 import com.aicontrolcenter.core.llm.ToolCallRequest
 import com.aicontrolcenter.core.llm.ToolDefinition
-import com.aicontrolcenter.core.operator.QuestionRules
 import com.aicontrolcenter.core.tools.Capabilities
 import com.aicontrolcenter.core.tools.RiskLevel
 import com.aicontrolcenter.core.tools.Tool
@@ -89,7 +88,8 @@ class OwnerNoteLookAlikeTest {
     @Test
     fun `ordinary text, also in other alphabets, is left as it was`() {
         for (text in listOf(
-            "The owner noted the notes.", "Notes for the owner", "owner note", "Ноутбук владельца", "Νότες", "notes from them, the owner said",
+            // "owner note" alone is no longer here: it reads as the tag, and is defused (OwnerNoteSpellingsTest).
+            "The owner noted the notes.", "Notes for the owner", "Ноутбук владельца", "Νότες", "notes from them, the owner said",
             "owners_notebook", "${nbsp}A${narrow}B$zwsp",
         )) {
             assertEquals(text, DataBlock.neutralise(text), text)
@@ -145,19 +145,36 @@ class OwnerNoteLookAlikeTest {
 }
 
 /**
- * True when [text] reads as the owner notes' label or tag to a reader who ignores invisible characters, takes every
- * space as a space and every look-alike letter as the Latin one: what a model sees in it.
+ * True when [text] reads as the owner notes' label or tag to a reader who ignores invisible characters, markdown marks
+ * and short inline HTML tags, takes every space, hyphen, dot and low line between words as a space, reads the few
+ * look-alike letters these tests use as the Latin ones, and takes any other letter outside ASCII as possibly any
+ * letter: what a model may see in it. It shares no list with the code it checks (wave-2a residual verification, R1).
+ * Numbers (`&#111;`) are not decoded, so the app's own escaped form never counts.
  */
 internal fun readsAsOwnerNotes(text: String): Boolean {
-    val visible = buildString {
-        Normalizer.normalize(text, Normalizer.Form.NFKC).codePoints().forEach { cp ->
+    // Unicode tag characters read as the ASCII letters they encode.
+    val untagged = buildString { text.codePoints().forEach { cp -> if (cp in 0xE0020..0xE007E) append((cp - 0xE0000).toChar()) else appendCodePoint(cp) } }
+    val lookAlikes = mapOf(
+        0x043E to 'o', 0x041E to 'o', 0x03BF to 'o', 0x039F to 'o', 0x0585 to 'o', 0x2C9F to 'o', 0x1D0F to 'o', 0x1040 to 'o', 0x0966 to 'o',
+        0x0578 to 'n', 0x0274 to 'n', 0x0192 to 'f', 0x0433 to 'r', 0x0167 to 't', 0x0127 to 'h', 0xFF3F to '_',
+    )
+    val read = buildString {
+        Normalizer.normalize(Normalizer.normalize(untagged, Normalizer.Form.NFKC), Normalizer.Form.NFD).codePoints().forEach { cp ->
+            val type = Character.getType(cp)
             when {
-                Character.getType(cp) == Character.FORMAT.toInt() -> Unit
-                Character.isWhitespace(cp) || Character.isSpaceChar(cp) -> append(' ')
+                cp == '\n'.code -> append(' ')
+                type == Character.FORMAT.toInt() || type == Character.CONTROL.toInt() || type == Character.NON_SPACING_MARK.toInt() -> Unit
+                Character.isWhitespace(cp) || Character.isSpaceChar(cp) || cp == 0x2800 -> append(' ')
+                cp < 0x80 -> append(cp.toChar().lowercaseChar())
+                cp in lookAlikes -> append(lookAlikes.getValue(cp))
+                Character.isLetterOrDigit(cp) -> append('?')
                 else -> appendCodePoint(cp)
             }
         }
-    }
-    // Twice: an accented look-alike ("ό") loses its accent in the first pass and becomes its Latin letter in the second.
-    return Regex("notes? *from *the *owner|owner_note").containsMatchIn(QuestionRules.skeleton(QuestionRules.skeleton(visible)))
+    }.replace(Regex("</?(b|i|em|strong|span|u|s|mark|code)( [^<>]*)?>"), "").replace(Regex("[*~`]"), "")
+    val sep = "[ \\-_.]*"
+    val o = "[o0?]"
+    val label = Regex("[n?]$o[t?][e?][s?]?$sep[f?][r?]$o[m?]$sep([t?][h?][e?]$sep)?$o[w?][n?][e?][r?]")
+    val tag = Regex("$o[w?][n?][e?][r?][^a-z0-9?]{0,3}[n?]$o[t?][e?]")
+    return label.containsMatchIn(read) || tag.containsMatchIn(read)
 }

@@ -3,6 +3,7 @@ package com.aicontrolcenter.framework.llm
 import com.aicontrolcenter.core.llm.ChatRequest
 import com.aicontrolcenter.core.llm.ChatRole
 import com.aicontrolcenter.framework.memory.MemoryText
+import com.aicontrolcenter.framework.orchestration.DataBlock
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -103,14 +104,17 @@ internal class EchoGuard private constructor(private val quoted: List<String>, p
 
         /**
          * What the model was shown as data in [request]: every tool result, every block of
-         * recalled memories, and what earlier calls quoted in their arguments.
+         * recalled memories, and what earlier calls quoted in their arguments. A result's copy that
+         * ends with the app's explanation of its numbers ([DataBlock.ESCAPES_EXPLAINED]) is read
+         * without it, so results read one after another join as the tool wrote them and a call split
+         * across two of them is still found (wave-2a residual verification, NEW-ECHO).
          */
         fun of(request: ChatRequest): EchoGuard {
             val quoted = ArrayList<String>()
             val results = StringBuilder()
             for (message in request.messages) {
                 if (message.role == ChatRole.USER) RecalledMemoriesBlock.content(message.text)?.let { quoted += normalise(it) }
-                message.toolResult?.let { results.append(normalise(it.content)) }
+                message.toolResult?.let { results.append(normalise(it.content.removeSuffix(DataBlock.ESCAPES_EXPLAINED))) }
                 if (message.role == ChatRole.TOOL && message.text.isNotBlank()) results.append(normalise(message.text))
                 for (call in message.toolCalls) call.arguments.values.forEach { collect(it, quoted) }
             }

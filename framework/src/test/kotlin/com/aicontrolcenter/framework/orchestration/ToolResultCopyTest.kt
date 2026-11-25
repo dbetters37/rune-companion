@@ -43,7 +43,7 @@ class ToolResultCopyTest {
     """.trimIndent()
 
     /** What the explanation at the end of a changed copy asks of the model. */
-    private val copyBack = "If you copy this text, write the character itself."
+    private val copyBack = "If you copy this text, write each such character itself, once."
 
     /** [text] with every character number written back as its character: what the explanation tells the model to do. */
     private fun readBack(text: String) = Regex("&#([0-9]{1,7});").replace(text) { String(Character.toChars(it.groupValues[1].toInt())) }
@@ -136,6 +136,49 @@ class ToolResultCopyTest {
         for (copy in sent.flatten()) {
             assertFalse(readsAsOwnerNotes(copy), copy)
             assertTrue(copyBack in copy && readBack(copy).startsWith(page), copy)
+        }
+    }
+
+    /** [text] with every character number written as its character, in one pass: what the explanation asks of the model. */
+    private fun readBackOnce(text: String) = Regex("&#([0-9]{1,7});").replace(text) { String(Character.toChars(it.groupValues[1].toInt())) }
+
+    @Test
+    fun `numbers already in the tool's text come back as they were when the copy is read back once`() {
+        // Wave-2a residual verification, R2c: an agent that edits an HTML file holding owner_note must not rewrite the file's own numbers.
+        val cases = listOf(
+            "<p>&#169; 2026 Acme &#8212; owner_note field</p>" to
+                "<p>&#38;#169; 2026 Acme &#38;#8212; owner&#95;note field</p>",
+            "Escape test: N&#111;tes stays as typed; also Notes from the owner" to
+                "Escape test: N&#38;#111;tes stays as typed; also N&#111;tes from the owner",
+            "Hex &#x2014; and &#38; and owner_note" to
+                "Hex &#38;#x2014; and &#38;#38; and owner&#95;note",
+            "owner_note" + DataBlock.ESCAPES_EXPLAINED to
+                "owner&#95;note" + DataBlock.ESCAPES_EXPLAINED.replace("owner&#95;note", "owner&#38;#95;note").replace("n&#111;tes", "n&#38;#111;tes"),
+        )
+        for ((text, expected) in cases) {
+            val copy = DataBlock.forModel(text)
+            assertEquals(expected + DataBlock.ESCAPES_EXPLAINED, copy, text)
+            assertEquals(text, readBackOnce(copy.removeSuffix(DataBlock.ESCAPES_EXPLAINED)), text)
+            assertEquals(copy, DataBlock.forModel(copy), "again: $text")
+            assertEquals(copy, PromptedToolsFormat.quote(copy), "quoted: $text")
+        }
+        // A text without the words keeps its numbers as they are, and gets no explanation.
+        assertEquals("<p>&#169; 2026 Acme &#8212; nothing here</p>", DataBlock.forModel("<p>&#169; 2026 Acme &#8212; nothing here</p>"))
+    }
+
+    @Test
+    fun `any text read back once from its copy is the tool's text, and the copy made again is the same`() {
+        val pieces = listOf(
+            "owner", "_", "note", "notes", "n", "o", "0", "О", "о", "ο", "ό", "\u200B", " ", "\u00A0", " from", " the ", "fr", "m", "wner", "&#", "95;", "111;",
+            "1086;", "&", "#", ";", "1", "x", "2014;", "N", "tes", "\u00AD", "＿", "\u0301", "\n", "-", ".", "*", "<b>", "</b>", "&amp;", "&#38;",
+        )
+        val random = java.util.Random(26)
+        repeat(20_000) {
+            val text = buildString { repeat(3 + random.nextInt(16)) { append(pieces[random.nextInt(pieces.size)]) } }
+            val copy = DataBlock.forModel(text)
+            assertEquals(copy, DataBlock.forModel(copy), text)
+            val body = if (copy == text) copy else copy.removeSuffix(DataBlock.ESCAPES_EXPLAINED)
+            assertEquals(text, readBackOnce(body).takeIf { copy != text } ?: text, text)
         }
     }
 }

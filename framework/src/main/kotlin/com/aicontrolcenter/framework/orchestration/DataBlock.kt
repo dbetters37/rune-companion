@@ -21,7 +21,8 @@ import java.security.SecureRandom
  *    heading and fixed sentence) are escaped ([neutralise]) wherever they appear, also when they
  *    are spelled with look-alike characters, so only the section [OwnerNoteFrame] writes from the
  *    owner's stored notes carries them. Every tool result is neutralised as well, in the copy a
- *    model reads ([forModel]); the stored result is the tool's own text.
+ *    model reads ([forModel]); the stored result is the tool's own text. So are memories recalled
+ *    into a brief.
  */
 internal object DataBlock {
     const val TAG = "agent_data"
@@ -64,28 +65,32 @@ internal object DataBlock {
      * for the notes' section or the frame of a note. Escaping `<` is the caller's: a tool result is not escaped.
      *
      * The words are found as a model reads them ([NoteWords]), so look-alike spellings are made inert too: invisible
-     * characters inside them, any kind of space between them, letters of other alphabets that look like Latin ones.
-     * Only one character of each is changed, written as its number (`N&#1086;tes` for a Cyrillic "о"); everything
-     * else stays as it was. Doing it again changes nothing more: a number matches nothing.
+     * characters inside them, any kind of space, a hyphen, a dot or a low line between them, markdown emphasis and short
+     * inline HTML tags around or inside them, letters of other alphabets that look like Latin ones, and up to half of the
+     * letters written with other letters. Only one character of each is changed, written as its number
+     * (`N&#1086;tes` for a Cyrillic "о"); everything else stays as it was, except Unicode tag characters (invisible
+     * letters that some models read), which are left out. Doing it again changes nothing more: a number matches nothing.
      */
-    fun neutralise(text: String): String = NoteWords.defuse(text)
+    fun neutralise(text: String): String = NoteWords.defuse(text).text
 
     /**
-     * What a model reads of a tool's result [text] (rule 24): [neutralise]d, and when that changed anything, followed by
-     * [ESCAPES_EXPLAINED], so a model that copies the text (a file it edits and writes back) can write it as it was.
+     * What a model reads of a tool's result [text] (rule 24): [neutralise]d, and when that wrote a number, followed by
+     * [ESCAPES_EXPLAINED], so a model that copies the text (a file it edits and writes back) can write it as it was. The
+     * `&` of every number the text already held (`&#169;`) is then written as `&#38;` too, so writing every number of
+     * the copy as its character, once, gives back the tool's text exactly, its own numbers included.
      * The stored result, and what the owner sees, stay the tool's own text: the agent runner makes this copy for every
      * request that sends the result, a later turn's replay of a stored chat included, always the same for the same
      * text. Making it again changes nothing.
      */
     fun forModel(text: String): String {
-        val neutral = neutralise(text)
-        return if (neutral == text) text else neutral + ESCAPES_EXPLAINED
+        val defused = NoteWords.defuse(text, escapeNumbers = true)
+        return if (defused.escaped) defused.text + ESCAPES_EXPLAINED else defused.text
     }
 
-    /** Follows a tool result in which [neutralise] changed something. Its own words are already defused, so it never changes. */
+    /** Follows a tool result in which [forModel] wrote a number. Its own words are already defused, so it never changes. */
     const val ESCAPES_EXPLAINED = "\n\n(Added by the app: so that tool output never looks like the owner's notes, one character of each " +
-        "owner&#95;note or n&#111;tes from the owner in this result is written as &#NNN;, the number of that character. " +
-        "If you copy this text, write the character itself.)"
+        "owner&#95;note or n&#111;tes from the owner here is written as &#NNN;, its number, and so is the & of each &#NNN; that was " +
+        "already here. If you copy this text, write each such character itself, once.)"
 
     /** One block read back from a brief. */
     data class Block(val label: String, val content: String)
@@ -131,41 +136,143 @@ internal object DataBlock {
 /**
  * Finds the owner notes' tag name and label in text as a model reads it, for [DataBlock.neutralise] (rule 24). A model
  * reads past what it cannot see and what only looks different, so the words are matched on a skeleton of the text:
- * Unicode NFKC; format characters (zero-width spaces, joiners, soft hyphens), marks and control characters left out;
- * every kind of space and line break a space; Cyrillic and Greek letters that look like Latin ones read as those
- * ([QuestionRules.skeleton]); lower case. A digit zero counts as an "o". Each skeleton character remembers the
- * character of the text it came from, so the change is made in the text itself, one character per match.
+ *  - left out: format characters (zero-width spaces, joiners, soft hyphens, Unicode tag characters), marks, control
+ *    characters, letters that show nothing, and markdown's `*`, `~` and backticks; in a second skeleton, also short
+ *    inline HTML tags (`N<b>o</b>tes`);
+ *  - every kind of space and line break, and the blank braille pattern, a space;
+ *  - a character Unicode's confusables data says looks like one of the words' letters ([NoteLookAlikes]) that letter;
+ *    otherwise Unicode NFKC, and Cyrillic and Greek letters that look like Latin ones read as those
+ *    ([QuestionRules.skeleton]); lower case; a digit zero counts as an "o", "rn" as an "m" and "vv" as a "w";
+ *  - any other letter or digit outside ASCII stands for any letter. A match may hold such letters for at most half of
+ *    its letters, so text in another alphabet is never taken for the words.
+ * Between the label's words there may be spaces, hyphens, dots and low lines, or nothing, and "the" may be left out;
+ * between the tag's two words up to three characters that are not letters or digits, or nothing ("owner note" only
+ * when no letter follows, so "the owner noted" stays as it was). Each skeleton character remembers the character of the
+ * text it came from, so the change is made in the text itself, one character per match. Unicode tag characters
+ * (U+E0000 to U+E007F), invisible but read by some models, are left out of the text that comes back.
  */
 internal object NoteWords {
-    /** The tag name: the escaped character is its "_" (any connector, such as a full-width low line). */
-    private val TAG = Regex("[o0]wner_n[o0]te")
-    private const val TAG_ESCAPED = 5
+    /** The result of [defuse]: the text, and whether a number was written into it. */
+    class Defused(val text: String, val escaped: Boolean)
 
-    /** The label, singular or plural, with any spaces (or none) between the words: the escaped character is the "o" of "notes". */
-    private val LABEL = Regex("n[o0]tes? *fr[o0]m *the *[o0]wner")
+    /** In a skeleton: a letter or digit outside ASCII that looks like none of the words' letters. It may stand for any letter. */
+    private const val ANY = '\u0000'
+    private const val ANY_CLASS = "\\x00"
+
+    private fun letter(c: Char): String = if (c == 'o') "[o0$ANY_CLASS]" else "[$c$ANY_CLASS]"
+    private fun word(text: String): String = text.map(::letter).joinToString("")
+
+    private val OWNER = letter('o') + "(?:" + letter('w') + "|vv)" + word("ner")
+    private val NOTE = word("note")
+
+    /**
+     * The tag name. The escaped character is the first after "owner": what stands between the words (the "_" of
+     * `owner_note`), or the "n" of "note" when nothing does.
+     */
+    private val TAG = Regex("($OWNER)(?:[^a-z0-9 $ANY_CLASS]{0,3}$NOTE|[^a-z0-9$ANY_CLASS]{0,3}$NOTE(?![a-z0-9$ANY_CLASS]))")
+
+    /** The label, singular or plural, not inside a longer word ("Footnotes"): the escaped character is the "o" of "notes". */
+    private val LABEL = run {
+        val between = "[ ._-]*"
+        Regex(
+            "(?<![a-z0-9$ANY_CLASS])" + NOTE + letter('s') + "?" + between + word("fro") + "(?:" + letter('m') + "|rn)" + between +
+                "(?:" + word("the") + between + ")?" + OWNER,
+        )
+    }
     private const val LABEL_ESCAPED = 1
+
+    /** Short inline HTML tags, which a model reads through: left out of the second skeleton. */
+    private val INLINE_TAG = Regex(
+        "</?(?:a|abbr|b|code|del|em|font|i|ins|kbd|mark|q|s|small|span|strike|strong|sub|sup|u|var)(?:\\s[^<>]{0,80})?/?>",
+        RegexOption.IGNORE_CASE,
+    )
 
     /** Letters that show as nothing (Hangul fillers), left out like format characters. */
     private val BLANK_LETTERS = setOf(0x115F, 0x1160, 0x3164, 0xFFA0)
+    private const val BRAILLE_BLANK = 0x2800
 
-    fun defuse(text: String): String {
-        val skeleton = Skeleton(text)
-        val escaped = java.util.TreeSet<Int>()
-        TAG.findAll(skeleton.text).forEach { escaped += skeleton.origin(it.range.first + TAG_ESCAPED) }
-        LABEL.findAll(skeleton.text).forEach { escaped += skeleton.origin(it.range.first + LABEL_ESCAPED) }
-        if (escaped.isEmpty()) return text
-        return buildString(text.length + escaped.size * 6) {
+    /** Unicode tag characters: invisible, and read as ASCII letters by some models ("ASCII smuggling"). */
+    private val TAG_CHARACTERS = 0xE0000..0xE007F
+
+    /**
+     * [text] with one character of every match of the tag name and the label written as its number, and without Unicode
+     * tag characters. With [escapeNumbers], when a number was written, the `&` of every number already in [text] is
+     * written as `&#38;` too ([DataBlock.forModel]).
+     */
+    fun defuse(text: String, escapeNumbers: Boolean = false): Defused {
+        val escaped = HashSet<Int>()
+        collect(Skeleton(text, null), escaped)
+        if (text.indexOf('<') >= 0) inlineTags(text)?.let { collect(Skeleton(text, it), escaped) }
+        val tagCharacters = text.codePoints().anyMatch { it in TAG_CHARACTERS }
+        if (escaped.isEmpty() && !tagCharacters) return Defused(text, false)
+        val out = buildString(text.length + escaped.size * 6) {
             var i = 0
             while (i < text.length) {
                 val cp = text.codePointAt(i)
-                if (i in escaped) append("&#").append(cp).append(';') else appendCodePoint(cp)
+                when {
+                    cp in TAG_CHARACTERS -> Unit
+                    i in escaped -> append("&#").append(cp).append(';')
+                    escapeNumbers && escaped.isNotEmpty() && cp == '&'.code && startsNumber(text, i + 1) -> append("&#38;")
+                    else -> appendCodePoint(cp)
+                }
                 i += Character.charCount(cp)
             }
         }
+        return Defused(out, escaped.isNotEmpty())
     }
 
-    /** The skeleton of a text, and for each of its characters the index of the character of the text it came from. */
-    private class Skeleton(source: String) {
+    /** Adds to [escaped] the index in the text of the character to escape of every match in [skeleton]. */
+    private fun collect(skeleton: Skeleton, escaped: MutableSet<Int>) {
+        for (match in accepted(TAG, skeleton.text)) escaped += skeleton.origin(match.groups[1]!!.range.last + 1)
+        for (match in accepted(LABEL, skeleton.text)) escaped += skeleton.origin(match.range.first + LABEL_ESCAPED)
+    }
+
+    /** The matches of [regex] in [text] of which at most half the letters are [ANY]. */
+    private fun accepted(regex: Regex, text: String): List<MatchResult> {
+        val found = ArrayList<MatchResult>()
+        var from = 0
+        while (from < text.length) {
+            val match = regex.find(text, from) ?: break
+            var letters = 0
+            var any = 0
+            for (c in match.value) {
+                if (c == ANY) any++
+                if (c == ANY || c.isLetterOrDigit()) letters++
+            }
+            if (any * 2 <= letters) {
+                found += match
+                from = match.range.last + 1
+            } else {
+                from = match.range.first + 1
+            }
+        }
+        return found
+    }
+
+    /** Which characters of [text] belong to a short inline HTML tag, or null when none does. */
+    private fun inlineTags(text: String): BooleanArray? {
+        var inside: BooleanArray? = null
+        for (tag in INLINE_TAG.findAll(text)) {
+            val marks = inside ?: BooleanArray(text.length).also { inside = it }
+            for (i in tag.range) marks[i] = true
+        }
+        return inside
+    }
+
+    /** True when [text] at [at] continues a number: `#` and a digit, or `#x` and a hexadecimal digit. */
+    private fun startsNumber(text: String, at: Int): Boolean {
+        if (at + 1 >= text.length || text[at] != '#') return false
+        val next = text[at + 1]
+        return next in '0'..'9' || ((next == 'x' || next == 'X') && at + 2 < text.length && text[at + 2].isHexDigit())
+    }
+
+    private fun Char.isHexDigit(): Boolean = this in '0'..'9' || this in 'a'..'f' || this in 'A'..'F'
+
+    /**
+     * The skeleton of a text, and for each of its characters the index of the character of the text it came from. The
+     * characters at the indices [skip] marks (inline HTML tags) are left out.
+     */
+    private class Skeleton(source: String, skip: BooleanArray?) {
         private val chars = StringBuilder(source.length)
         private var origins = IntArray(source.length + 16)
         private val cache = HashMap<Int, String>()
@@ -174,7 +281,7 @@ internal object NoteWords {
             var i = 0
             while (i < source.length) {
                 val cp = source.codePointAt(i)
-                read(cp, i)
+                if (skip == null || !skip[i]) read(cp, i)
                 i += Character.charCount(cp)
             }
         }
@@ -184,28 +291,34 @@ internal object NoteWords {
         fun origin(index: Int): Int = origins[index]
 
         private fun read(cp: Int, at: Int) {
-            if (cp < 0x80) {
-                when {
-                    cp.toChar().isWhitespace() -> add(' ', at)
-                    cp < 0x20 || cp == 0x7F -> Unit
-                    else -> add(cp.toChar().lowercaseChar(), at)
-                }
-                return
-            }
+            if (cp < 0x80) return ascii(cp.toChar(), at)
+            if (cp in TAG_CHARACTERS || cp in BLANK_LETTERS) return
             when (Character.getType(cp)) {
                 Character.FORMAT.toInt(), Character.CONTROL.toInt(), Character.NON_SPACING_MARK.toInt(), Character.ENCLOSING_MARK.toInt() -> return
             }
-            if (cp in BLANK_LETTERS) return
-            if (Character.isWhitespace(cp) || Character.isSpaceChar(cp)) return add(' ', at)
+            if (cp == BRAILLE_BLANK || Character.isWhitespace(cp) || Character.isSpaceChar(cp)) return add(' ', at)
+            NoteLookAlikes.letterOf(cp)?.let { return add(it, at) }
             // Twice: an accented look-alike ("ό") loses its accent in the first pass and becomes its Latin letter in the second.
             val read = cache.getOrPut(cp) { QuestionRules.skeleton(QuestionRules.skeleton(String(Character.toChars(cp)))) }
-            for (c in read) {
+            read.codePoints().forEach { c ->
                 when {
-                    c.isWhitespace() || Character.isSpaceChar(c) -> add(' ', at)
+                    c < 0x80 -> ascii(c.toChar(), at)
+                    Character.isWhitespace(c) || Character.isSpaceChar(c) -> add(' ', at)
                     Character.getType(c) == Character.CONNECTOR_PUNCTUATION.toInt() -> add('_', at)
-                    Character.getType(c) == Character.FORMAT.toInt() -> Unit
-                    else -> add(c, at)
+                    Character.getType(c) == Character.FORMAT.toInt() || Character.getType(c) == Character.NON_SPACING_MARK.toInt() -> Unit
+                    NoteLookAlikes.letterOf(c) != null -> add(NoteLookAlikes.letterOf(c)!!, at)
+                    Character.isLetterOrDigit(c) -> add(ANY, at)
+                    else -> if (c <= 0xFFFF) add(c.toChar(), at)
                 }
+            }
+        }
+
+        private fun ascii(c: Char, at: Int) {
+            when {
+                c.isWhitespace() -> add(' ', at)
+                c.code < 0x20 || c.code == 0x7F -> Unit
+                c == '*' || c == '~' || c == '`' -> Unit
+                else -> add(c.lowercaseChar(), at)
             }
         }
 
