@@ -233,9 +233,11 @@ Rules that hold around this:
   or ask only before buying, sending, deleting and similar, recognised from the words on the
   control, its row and its window. A consequential action shows the window's text; a digest of
   the window and the control is checked again before the action runs. A banner "Agent is
-  operating <app> · Stop" is shown the whole time. The service never operates this app, Android
-  settings, the permission controller, the package installer, system dialogs, the lock screen
-  or password fields, and is not declared an accessibility tool.
+  operating <app> · Stop" is shown while it works and ends 30 s after its last screen call
+  (`ScreenOperator.SESSION_IDLE_MS`), even if one of its actions still waits for you. The
+  service never operates this app, Android settings, the permission controller, the package
+  installer, system dialogs, the lock screen or password fields, and is not declared an
+  accessibility tool.
 - **Files.** Shared storage is reached only through folders you pick; the app does not ask for
   all-files access. A replaced workspace file goes to the trash; replacing or deleting in a
   shared folder, emptying the trash, and changing many files in a short time are consequential.

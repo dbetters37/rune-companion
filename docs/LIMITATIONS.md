@@ -247,7 +247,11 @@ do it.
   lowest priority from then on; while two such threads run, new scripts are refused with a
   message that says so, and an endless one ends only with the app itself: closing the app ends
   it, and when Android keeps the app running in the background (for an objective, or for
-  screen control), Force stop in Android's settings for the app does. The memory limit is
+  screen control), Force stop in Android's settings for the app does (this also switches off
+  the app's accessibility service; see "Screen control in practice" below). The time limit
+  counts from the start of the script's thread, so it includes starting the script engine: on
+  the software emulator a one-line script did not finish within the default 5 seconds and was
+  reported as not stopping in time, and needed a limit of 10 seconds. The memory limit is
   measured roughly, on the whole app: a script is stopped when
   the app's memory grew by more than 96 MB since it began, or when less than an eighth of the
   memory Android gives the app (and less than 96 MB) is left, whichever comes first. Telling
@@ -332,6 +336,20 @@ do it.
   (another language, an icon with a misleading label) can run without asking. Screen actions are
   blocked in local-only mode, because the operated app may send data off the phone. Back is
   allowed only when the home screen app is authorised too, since it can leave the app.
+- **Screen control in practice.** Seen on the emulator:
+  - Anything that force-stops the app, Force stop in Android's settings included, makes Android
+    switch the app's accessibility service off. Tools > Screen then shows "Off", and you turn the
+    service on again in Android's accessibility settings.
+  - The banner "Agent is operating app · Stop" and its notification end 30 seconds after the
+    agent's last screen call, also while one of its screen actions waits for your answer. An
+    action you approve after that runs without the banner. Stop in Tools > Screen is there at
+    all times.
+  - Opening an app returns as soon as Android starts it. A screen call made right after it can
+    still find this app, or no window, in front, and is refused; the agent has to try again a
+    moment later. On the emulator the opened app took several seconds to come up.
+  - When a protected window whose content the service cannot see is in front (Android's
+    permission screens, for one), a screen call answers that no app window is in front. Nothing
+    is read either way.
 
 ## 7. Not verifiable in the build environment
 

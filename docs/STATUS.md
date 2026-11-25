@@ -339,9 +339,173 @@ What the review found and what was fixed:
 - If saving knowledge is refused because the Director lost access to the space, the refusal is
   logged, but the objective's status does not mention it.
 
-## Next: Phase 5
+## Phase 5: the phone operator (complete)
 
-The phone operator: a permission broker with per-agent, per-capability grants and an approval
-screen, file and document tools in the app's workspace and in folders you choose, opening apps
-and links, scripts in a sandbox, and the accessibility operator for apps you authorise, with
-confirmation before anything consequential.
+### What works
+
+- **One gate for every tool call.** Whatever an agent wants to do on the phone passes the
+  permission broker, in this order: the agent is switched on, the tool is switched on for that
+  agent, the master switches and local-only mode allow it, the agent holds the permission for
+  it (for that one folder or that one app where it applies), and anything consequential is put
+  to you with the exact action, every time, whatever was allowed before. The request, your
+  answer and the result are logged.
+- **Two master switches, both off after installing.** Settings > Phone operator turns the phone
+  tools on. Screen control, below it, additionally lets agents use other apps' screens. With
+  both off the app behaves as in 0.4.
+- **Fourteen permissions,** each with a plain description: read the workspace, change the
+  workspace, read a shared folder, change a shared folder, see photos and videos, open apps and
+  links, prepare messages, install and remove apps, read web pages, see an app's screen, use an
+  app's screen, run JavaScript, run shell commands, run Termux commands. Only reading the
+  workspace is given from the start. When an agent lacks one, its task waits and you choose:
+  once, for this task, always, or deny. Agents can ask for a permission and say why (shown as
+  the agent's own words); they can never give themselves anything. Tools > Allowed lists what
+  each agent may do and revokes it, one permission or all of them.
+- **Approvals.** A badge in the app's frame, an Approvals list and an Approval screen that
+  shows the agent, the action in full, where data would go and the agent's reason. A
+  notification tells you a request is waiting; it only opens the app, it cannot approve. A
+  request raised in a chat also appears in that chat. While a request waits, the task's and
+  the objective's time limits are paused. A request nobody answers is refused after 30 minutes
+  (Settings > Orchestration limits > Approval time-out).
+- **After a Deny** the same agent cannot ask for the same permission and target again for 10
+  minutes. "Let it ask again" on the refused request (Tools > History) ends that at once.
+- **Workspace.** A private folder for agents' files, with a file manager: browse, read, import,
+  share, move to trash, restore, empty the trash. A file an agent replaces or edits is kept in
+  the trash first. If the app is killed in the middle of a change, the file is in its place or
+  in the trash, never lost; "Empty the trash" deletes only what you were shown.
+- **Folders you choose.** Pick a folder with Android's folder picker in Tools > Folders, mark it
+  read-only if you like, and say which agents may use it. Deleting or replacing a file there
+  asks you every time, because shared folders have no trash.
+- **Photos and videos.** Agents can list them (name, date, size) and copy one into the
+  workspace, once you allow photo access.
+- **Apps and links.** List and open apps, open web and map links, prepare an email, a text
+  message or a dial screen (you send it yourself in that app), share text to an app. Any other
+  kind of link, and installing or removing an app, asks you every time, and Android asks again.
+- **Web pages.** Read a page as text, or open it in the browser. Addresses inside your network
+  or on the phone itself are refused.
+- **Screen control.** With Android's accessibility service enabled and an app authorised in
+  Tools > Screen, an agent can read that app's screen and tap, type, scroll and go back in it.
+  Each app starts on "Ask before every action": every action shows you the window's text and
+  the control, and is carried out only if the window still shows the same when you answer. A
+  banner "Agent is operating <app> · Stop" is on screen while it works, and Stop works at once.
+  The operator never touches this app, Android's settings, permission dialogs, the installer,
+  the lock screen or password fields.
+- **Scripts.** JavaScript in a sandbox with no access to the phone beyond the workspace, with
+  limits on instructions, time and memory. Shell commands in the workspace and Termux commands
+  ask every time, with the exact command. Two things hold however a command is written: from
+  the moment you are asked until the command ends, nothing else can change the workspace (if
+  something changed while you decided, the command does not run), and everything the command
+  starts is stopped when it ends, including work sent to the background. For a plain
+  `sh file` command the approval shows that file as the script that runs; for anything else it
+  says the app cannot be sure which files run and shows its best reading. Many doubtful
+  commands are refused before you are asked.
+- **Local-only mode** blocks everything that can send data off the phone: web pages, links, the
+  browser, handing text or files to other apps, acting on another app's screen, shell and
+  Termux commands. What does leave is logged where it happens, with the agent and the task.
+- **Tools section.** All tools (what exists, how risky it is, which agents have it, and what
+  Android still has to allow), Allowed, Folders, Screen, History.
+- **Starter team.** The phone tools are switched on for the Operator agent only, and it still
+  needs each permission from you.
+
+### Installing 0.5.0
+
+0.5.0 is the first build signed with a key only you hold instead of the public development
+key, so it does not install over 0.4.x: uninstall the old build once, which deletes its agents,
+memories and keys, then install 0.5.0 and enter your provider key again. Builds made by GitHub
+Actions still use the development key until the four signing secrets in the README are added.
+
+### Still marked "(test)"
+
+Controls that do nothing yet carry "(test)" in their label. In 0.5.0 these are three fields in
+the model editor: Vision, Reasoning and Coding. Nothing reads them yet.
+
+### How it was verified
+
+| Check | Result |
+|---|---|
+| Unit and UI tests, all modules | 2,480 pass on a fresh run without the build cache: core 82, test kit 118, framework 755, memory 107, providers 227, Claude adapter 89, data 339, device 333, app 430 |
+| Storage | Schema 5 adds four tables: permissions given, requests to you, shared folders and apps authorised for screen control. Migrations 4 → 5, 1 → 5 step by step and 1 → 5 directly were tested with data in every table, and the migration runs exactly the exported statements |
+| Instrumented tests on the emulator | The shell's process-stopping and home-folder test (10 cases) and the database tests (21) pass on Android 14 |
+| Shell guarantees on the emulator | 14 ways of escaping a command (background jobs, `setsid`, `nohup`, double forks, processes that ignore stop signals, processes that keep starting new ones) left nothing running, at the end of the command, at its time limit and after Stop; the app's own processes were never touched. 105 plain `sh file` commands ran exactly the file shown. 13 ways of locking or replacing the shell's home folder did not stop the next command |
+| Release build | Signed with the new private key; the manifest has the same 13 permissions and the same three exported parts as before (the main screen, the accessibility service, and the AndroidX profile installer) |
+| End-to-end on the emulator | The signed build was installed fresh on Android 14 (installing it over 0.4.1 is refused, as it must be with a new key) and driven through a scripted stand-in for a model server: permission requests answered once, always and deny, "Let it ask again", revoking; the Workspace with trash, restore and emptying; shell approvals for a plain and a non-plain command, and a command that did not run because the workspace changed while you decided; JavaScript; local-only mode; web pages; screen control of SIM Toolkit (reading it, a tap that asked first and showed the window's text, Stop on the banner, Resume); and force-stopping the app while an approval waited (the request closed as "No longer waiting" and nothing ran). Nothing consequential ran without approval. Seven minor problems were found; they are under Known rough edges |
+| Independent review | An adversarial review of the phone operator found 32 problems. Five rounds of fixes followed. Separate verifiers checked each round, re-running the earlier reproductions and writing new attacks: three (security, Android, integration) for the first four rounds, and two (the whole test suite with probes, and the emulator) for the last |
+
+What the review found and what was fixed:
+
+- Approvals could outlive their call, wait without pausing the task's clock, or be raised
+  again right after you refused. A request now lives exactly as long as its call, waiting
+  costs the task no time, and a refusal holds for 10 minutes unless you let the agent ask again.
+- Replacing or editing a file could lose the old version if the app died at the wrong moment.
+  Every replacement now keeps the old version in the trash first, in an order that leaves the
+  file in its place or in the trash at every step; this was checked at 78 kill points.
+- Screen control could act on a row that had been recycled for other content between the
+  approval and the tap, or miss a price on a tappable row. It now checks the row again before
+  every step and treats amounts and prices anywhere in the window as consequential.
+- Approval previews could be made to look as if a value ended early, using quote look-alikes.
+  Such characters are now shown by their code.
+- The shell tool was the hardest part. Reading a command to find which scripts it runs turned
+  out to be impossible to do completely: each round's verifiers found new spellings that ran a
+  script the approval did not show. So the approach changed to guarantees that do not depend
+  on reading the command (nothing else changes the workspace while you decide and while it
+  runs; everything it starts is stopped), and the approval now claims to know the script only
+  for the plain `sh file` form.
+- The JavaScript sandbox could be kept busy past its limits by built-in loops and very large
+  values. It now counts every call into the script's own code, and checks memory as it goes.
+
+### Not verified
+
+- Nothing has run on a physical phone. Everything on a device ran on one software-emulated
+  Android 14 emulator, whose shell is Android's own mksh. Other phones' shells and vendors'
+  accessibility behaviour may differ.
+- Real models driving the phone tools. The tools were driven by tests and, on the emulator,
+  by a scripted stand-in for a model server; how well a real model chooses and asks for tools
+  is not known yet.
+- Termux, installing and removing apps through Android's installer, and photo access were not
+  driven on the emulator.
+- Parts of the end-to-end run: "Allow for the rest of this task" (it is offered only inside a
+  task, and the run used a chat), reading a public web page (the emulator has no internet), and
+  screen control of Android's Settings, which that emulator image does not have; the refusal was
+  checked through the tools that name it. Screen control was tried on SIM Toolkit only, the one
+  other app on the image.
+
+### Known rough edges
+
+- A JavaScript loop made only of the engine's own built-in functions can still keep a script
+  thread busy. After two such scripts no new script starts until the app is closed and opened
+  again; the refusal says so. Moving scripts into a separate process that can be ended is
+  planned for Phase 6.
+- For a shell command that is not the plain `sh file` form, the scripts the approval shows are
+  the app's best reading, and it says so. The reader also refuses some harmless commands.
+- If you or an agent change anything in the workspace while a shell command waits for your
+  answer, the command does not run and the agent has to ask again. While a command runs (about
+  a minute at most) the Workspace screens and other agents' file changes wait for it.
+- A shell command that leaves a folder in its home folder that cannot be deleted at all (a path
+  too long to name) leaves it in the app's cache until Android or you clear the cache.
+- An approval nobody answers is refused after 30 minutes (Settings > Orchestration limits >
+  Approval time-out).
+- The 10-minute window in which an agent's bulk changes are counted runs on the clock and is
+  not paused while an approval waits.
+- A one-line JavaScript did not finish within the default 5-second limit on the emulator,
+  because the limit includes starting the script engine; with 10 seconds it did. The answer
+  then says the script did not stop in time, which is misleading. Not yet tried on a phone.
+- The screen-control banner and its notification end 30 seconds after the agent's last screen
+  call, also while one of its taps waits for your answer, so a tap you approve later runs
+  without the banner. Stop in Tools > Screen always works.
+- Force-stopping the app makes Android switch off its accessibility service; you turn it on
+  again in Android's accessibility settings.
+- A screen call right after opening an app can be refused because the app is not in front yet;
+  the agent has to try again.
+- With Android's permission screens in front, screen calls say that no app window is in front
+  instead of naming it protected. Nothing is read.
+- Reading a page at a private address first asks you for the page-reading permission, and is
+  refused only after you allow it.
+- On the emulator Android once reported the app as not responding at a cold start. Android's
+  own apps did the same at that moment, so it is most likely the emulator's speed.
+
+## Next: Phase 6
+
+Advanced autonomy and polish: longer background runs, performance monitoring, recovery and
+collaboration refinements, and a live view of the agent network. Also due: faster objective
+screens for objectives with many large results, scripts in a separate process that can be
+ended, screen calls that wait for an app that is still opening, the screen-control banner kept
+while an action waits for you, and the other rough edges above.
