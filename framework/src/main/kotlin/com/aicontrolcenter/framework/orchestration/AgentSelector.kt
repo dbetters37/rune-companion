@@ -31,7 +31,10 @@ internal sealed interface Selection {
  * same agent.
  *
  * Rules, in order:
- *  - An agent that cannot run right now is never chosen: it would only fail the task.
+ *  - An agent that cannot run right now is never chosen: it would only fail the task. One
+ *    exception (rule 25): an assignee the plan named whose provider is only not answering keeps
+ *    the task, which waits for it, rather than going to another agent that may be farther from
+ *    the phone.
  *  - A named assignee that exists and can run wins, except that the Director does not take
  *    work while another agent can run.
  *  - Otherwise agents are tried in tiers: specialists and operators first; reviewers only when
@@ -57,6 +60,13 @@ internal class AgentSelector {
         exclude: Set<AgentId> = emptySet(),
         models: Map<ModelId, ModelDescriptor> = emptyMap(),
     ): Selection {
+        needs.named?.let { name ->
+            val waiting = team.firstOrNull {
+                it.profile.id !in exclude && !it.isDirector() && it.profile.name.trim().equals(name.trim(), ignoreCase = true) &&
+                    (it.availability as? AgentAvailability.Unavailable)?.reason?.isTransient == true
+            }
+            if (waiting != null) return Selection.Chosen(waiting.profile, "the plan named ${waiting.profile.name}, which waits for its provider")
+        }
         val ready = team.filter { it.availability is AgentAvailability.Ready && it.profile.id !in exclude }
         if (ready.isEmpty()) return Selection.NoneSuitable(noOneCanRun(team))
         val nonDirector = ready.filter { !it.isDirector() }

@@ -152,4 +152,14 @@ class AgentSelectorTest {
         assertEquals("Cy", selector.forWork(TaskNeeds("Write a script", "Debug the code", listOf("research", "coding")), listOf(skilled, bea), emptyMap(), models = models).agent().name)
         assertEquals(0.75, AgentSelector.TIER_STEP)
     }
+
+    @Test
+    fun `rule 25 - an assignee the plan named whose provider is only not answering keeps the task, any other reason does not`() {
+        val offline = researcher.copy(availability = AgentAvailability.Unavailable(com.aicontrolcenter.core.agents.UnavailableReason.PROVIDER_OFFLINE, "Provider X is offline."))
+        val named = TaskNeeds("Research", "x", listOf("research"), named = "Researcher")
+        assertEquals("Researcher", selector.forWork(named, listOf(director, offline, analyst), emptyMap()).agent().name, "it waits for its provider")
+        val disabled = researcher.copy(availability = AgentAvailability.Disabled)
+        assertEquals("Analyst", selector.forWork(named, listOf(director, disabled, analyst), emptyMap()).agent().name)
+        assertEquals("Analyst", selector.forWork(TaskNeeds("Research", "x", listOf("research")), listOf(director, offline, analyst), emptyMap()).agent().name, "unnamed: the best agent that can run")
+    }
 }
