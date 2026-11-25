@@ -20,7 +20,13 @@ import java.nio.file.StandardOpenOption
  * Numbers and fixed words only; no secret, no text from Android or an agent. A missing or unreadable file reads as
  * [Entry.EMPTY]: nothing known, nothing held back. Writes replace the whole file atomically.
  */
-class StartLedger(private val file: File) {
+class StartLedger(fileOf: () -> File) {
+    /** The ledger in [file]. */
+    constructor(file: File) : this({ file })
+
+    /** Found on first use, off the main thread (wave 3, D45): `noBackupFilesDir` touches the disk when asked for. */
+    private val file: File by lazy(fileOf)
+
 
     /** What the ledger holds. */
     data class Entry(
@@ -87,6 +93,9 @@ class StartLedger(private val file: File) {
 
         /** The app's ledger in [noBackupFilesDir]. */
         fun inFolder(noBackupFilesDir: File): StartLedger = StartLedger(File(noBackupFilesDir, PATH))
+
+        /** The ledger in the folder [noBackupFilesDir] gives, asked for only when the ledger is first read or written. */
+        fun inFolder(noBackupFilesDir: () -> File): StartLedger = StartLedger { File(noBackupFilesDir(), PATH) }
 
         private const val MAX_CRASHES = 10
 

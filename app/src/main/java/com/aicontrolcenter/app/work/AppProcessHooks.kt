@@ -20,7 +20,8 @@ object AppProcessHooks {
      */
     fun onCreate(app: Application) {
         if (!isMainProcess(app)) return
-        CrashNotes.install(CrashNotes.inFolder(app.noBackupFilesDir))
+        // The folder is asked for only when a note is written or read, never here on the main thread (D45).
+        CrashNotes.install(CrashNotes.inFolder { app.noBackupFilesDir })
     }
 
     /**

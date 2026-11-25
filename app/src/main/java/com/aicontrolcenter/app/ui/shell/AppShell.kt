@@ -54,14 +54,14 @@ fun AiControlCenterRoot(graph: AppGraph, darkTheme: Boolean = isSystemInDarkThem
  * The frame around every screen. Phones get a bottom bar with four sections and "More", which
  * opens a sheet listing all eight; wide screens get a rail with all eight. The bottom bar is
  * shown on section roots only, so inner screens (an editor, a detail page) have the full height.
- * While requests wait for the owner, phones show how many above the bottom bar, and the rail
- * shows the count on its Approvals item at the top.
+ * While requests or agents' questions wait for the owner, phones show how many above the bottom bar, and the rail
+ * shows the count on its "Waiting for you" item at the top.
  */
 @Composable
 fun AppShell(modifier: Modifier = Modifier) {
     val graph = LocalAppGraph.current
     val navController = rememberNavController()
-    val shellViewModel = viewModel { ShellViewModel(graph.registryDirectory, graph.ownerRequests.pending) }
+    val shellViewModel = viewModel { ShellViewModel(graph.registryDirectory, graph.ownerRequests.pending, graph.waitingRoutines.observeWaiting()) }
     val shellState by shellViewModel.uiState.collectAsStateWithLifecycle()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val destination = backStackEntry?.destination
@@ -78,6 +78,18 @@ fun AppShell(modifier: Modifier = Modifier) {
         approvalToOpen?.let { id ->
             graph.approvalOpened()
             navController.navigate(ApprovalRoute(id.value)) { launchSingleTop = true }
+        }
+    }
+
+    // "Tap to start" (WP17, F12): a routine run that waits for the owner's tap opens its confirmation step once, when the
+    // app is on screen; never from an intent (rule 23). The Dashboard shows the same banner, so there it only counts as shown.
+    val routineToShow = shellState.routineToShow
+    LaunchedEffect(routineToShow) {
+        routineToShow?.let { run ->
+            shellViewModel.routineShown(run)
+            val here = navController.currentDestination
+            val alreadyShown = here?.hasRoute<DashboardRoute>() == true || here?.hasRoute<WaitingRoutinesRoute>() == true
+            if (!alreadyShown) navController.navigate(WaitingRoutinesRoute) { launchSingleTop = true }
         }
     }
 
@@ -122,7 +134,7 @@ fun AppShell(modifier: Modifier = Modifier) {
                 }
                 // Agents wait while a request is open, so it is shown on every section root until answered.
                 if (isTopLevel && shellState.pendingRequests > 0) {
-                    ApprovalsStrip(shellState.pendingRequests, openApprovals)
+                    ApprovalsStrip(shellState.pendingRequests, openApprovals, questions = shellState.pendingQuestions)
                 }
                 if (isTopLevel) {
                     AppBottomBar(

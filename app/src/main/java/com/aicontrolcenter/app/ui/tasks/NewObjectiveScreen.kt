@@ -1,5 +1,6 @@
 package com.aicontrolcenter.app.ui.tasks
 
+import com.aicontrolcenter.app.Phase6Stub
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -72,8 +73,18 @@ class NewObjectiveActions(
     val onRequestPermission: () -> Unit,
 )
 
+/**
+ * Wave 3 (WP11a): the daily-limit line ("Today: 37 of 200 answers", `graph.todayUsage`) links to [onOpenDailyLimits];
+ * the background warning (A3) to [onOpenSettings] (Settings > Working in the background).
+ */
+@Phase6Stub("WP11a")
 @Composable
-fun NewObjectiveRoute(onBack: () -> Unit, onStarted: (TaskId) -> Unit) {
+fun NewObjectiveRoute(
+    onBack: () -> Unit,
+    onStarted: (TaskId) -> Unit,
+    @Suppress("UNUSED_PARAMETER") onOpenDailyLimits: () -> Unit = {},
+    @Suppress("UNUSED_PARAMETER") onOpenSettings: () -> Unit = {},
+) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel {
         NewObjectiveViewModel(graph.orchestrator, graph.registryDirectory, graph.memoryService, graph.notifications, awaitStartup = graph::awaitStartup)

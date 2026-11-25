@@ -1,5 +1,6 @@
 package com.aicontrolcenter.app.ui.approvals
 
+import com.aicontrolcenter.app.Phase6Stub
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,8 +29,13 @@ import com.aicontrolcenter.app.ui.icons.Approval
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.core.RequestId
 
+/**
+ * The "Waiting for you" list (wave 3, WP11a renames it): approvals and agents' questions. A question opens its own screen
+ * through [onOpenQuestion] (rule 13), never the Approval screen.
+ */
+@Phase6Stub("WP11a")
 @Composable
-fun ApprovalsRoute(onBack: (() -> Unit)?, onOpenRequest: (RequestId) -> Unit) {
+fun ApprovalsRoute(onBack: (() -> Unit)?, onOpenRequest: (RequestId) -> Unit, @Suppress("UNUSED_PARAMETER") onOpenQuestion: (RequestId) -> Unit = onOpenRequest) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel {
         ApprovalsViewModel(graph.ownerRequests, graph.registryDirectory, graph.capabilities::info, graph.clock, notificationsEnabled = graph.notifications.enabled)

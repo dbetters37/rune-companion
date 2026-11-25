@@ -87,6 +87,11 @@ class RoutineRunner(
     private val clock: RoutineClock,
     private val ids: IdGenerator,
     private val notices: RoutineNotices = RoutineNotices.None,
+    /**
+     * Whether the app is in safe start (wave 3, WP8; rule 10): after repeated failed starts or crashes nothing starts by
+     * itself, so a routine due on time waits for the owner's tap ([SAFE_START_NOTE]) instead of starting from the alarm.
+     */
+    private val safeStartOn: () -> Boolean = { false },
 ) : WaitingRoutines {
     private val lock = Mutex()
 
@@ -190,6 +195,8 @@ class RoutineRunner(
         if (tooOld) return runs
         runs += when {
             mode == Mode.OWNER_PRESENT -> record(routine, newRun(routine, overdue.latest, RoutineRunOutcome.WAITING_FOR_TAP, note = WAITING_NOTE))
+            safeStartOn() -> record(routine, newRun(routine, overdue.latest, RoutineRunOutcome.WAITING_FOR_TAP, note = SAFE_START_NOTE))
+                .also { notices.waitingForTap(routine.title) }
             late > RoutineClock.LATE_START_MS -> record(routine, newRun(routine, overdue.latest, RoutineRunOutcome.WAITING_FOR_TAP, note = LATE_NOTE))
                 .also { notices.waitingForTap(routine.title) }
             else -> record(routine, attempt(routine, current).run(routine, overdue.latest, ids.routineRunId()))
@@ -429,6 +436,8 @@ class RoutineRunner(
 
         const val WAITING_NOTE: String = "It did not start at its time. It waits for you to tap Start."
         const val LATE_NOTE: String = "Android let the app run it late, so it waits for you to tap Start."
+        const val SAFE_START_NOTE: String =
+            "The app had trouble starting, so nothing starts by itself until you choose. It waits for you to tap Start."
         const val STILL_RUNNING_NOTE: String =
             "The objective of its previous run has not finished yet (it may be paused or interrupted). Finish, resume or stop it first."
         const val LOCAL_ONLY_NOTE: String = "Local-only mode is on, and the Director's model would send data off the phone."

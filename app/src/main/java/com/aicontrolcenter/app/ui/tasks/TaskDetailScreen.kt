@@ -1,5 +1,6 @@
 package com.aicontrolcenter.app.ui.tasks
 
+import com.aicontrolcenter.app.Phase6Stub
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -47,6 +48,8 @@ class TaskDetailActions(
     val onOpenRequest: (RequestId) -> Unit = {},
 )
 
+/** Wave 3 (WP11a): [onOpenQuestion] opens a question the task waits on (rule 13). */
+@Phase6Stub("WP11a")
 @Composable
 fun TaskDetailRoute(
     taskId: TaskId,
@@ -54,6 +57,7 @@ fun TaskDetailRoute(
     onOpenTask: (TaskId) -> Unit,
     onOpenObjective: (TaskId) -> Unit,
     onOpenRequest: (RequestId) -> Unit = {},
+    @Suppress("UNUSED_PARAMETER") onOpenQuestion: (RequestId) -> Unit = {},
 ) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel(key = "task-${taskId.value}") {

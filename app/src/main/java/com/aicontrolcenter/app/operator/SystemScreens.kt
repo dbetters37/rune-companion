@@ -33,6 +33,14 @@ interface SystemScreens {
 
     /** Android's settings screen where the owner turns [access] on or off, or null when there is none. */
     fun accessSettings(access: DeviceAccess): Intent?
+
+    /**
+     * The name of the app whose storage provider a shared folder's [treeUri] comes from (a cloud drive, a file manager),
+     * for the Folders screen's note (`OwnerFolders.otherAppStorageNote`; wave 2b residual fixes, B1); null for the
+     * phone's own storage, downloads and media providers, and whenever Android does not tell it (package visibility, a
+     * provider that went away). It asks PackageManager: call it off the main thread.
+     */
+    fun storageAppName(treeUri: String): String? = null
 }
 
 /** The type Android is told a shared or previewed file has, from its name. Unknown kinds are shared as plain bytes. */

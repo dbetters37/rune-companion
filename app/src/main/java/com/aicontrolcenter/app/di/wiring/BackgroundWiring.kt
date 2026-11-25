@@ -84,11 +84,12 @@ object BackgroundWiring {
         val exits = AndroidExitHistory(app)
         val storage = AndroidStorageWatch(app)
         val hooks = AndroidStartupHooks(
-            ledger = StartLedger.inFolder(app.noBackupFilesDir),
+            // Both folders are asked for on first use, off the main thread (D45): this runs on it, from the main activity.
+            ledger = StartLedger.inFolder { app.noBackupFilesDir },
             exits = exits,
             storage = storage,
             health = health,
-            crashNotes = CrashNotes.inFolder(app.noBackupFilesDir),
+            crashNotes = CrashNotes.inFolder { app.noBackupFilesDir },
             versionCode = BuildConfig.VERSION_CODE.toLong(),
             clock = WallClock,
             scheduleUpkeep = { UpkeepJobService.schedule(app) },

@@ -27,20 +27,23 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val gate = app.gate
         val firstCreation = savedInstanceState == null
-        gate.whenOpen {
+        // Queued work runs only while this activity still exists (wave 3): one destroyed while the data opened never
+        // reaches the graph afterwards.
+        gate.whenOpen(this) {
             // Idempotent: seeds the starter team once and begins following package changes.
             graph.start()
             if (firstCreation) openRequestedObjective(intent)
         }
         setContent {
-            GateHost(gate, recovery = { state -> RecoveryHost(state, app.recovery) }) { AiControlCenterRoot(graph) }
+            // "Try again" on the Recovery screen asks the gate to look again; nothing else of the gate reaches it.
+            GateHost(gate, recovery = { state -> RecoveryHost(state, app.recovery, onTryAgain = gate::recheck) }) { AiControlCenterRoot(graph) }
         }
     }
 
     /** A notification (objectives, an approval) was tapped while the activity existed. */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        app.gate.whenOpen { openRequestedObjective(intent) }
+        app.gate.whenOpen(this) { openRequestedObjective(intent) }
     }
 
     private fun openRequestedObjective(intent: Intent?) {
@@ -52,7 +55,7 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         // Package broadcasts are not delivered reliably to a stopped app, so re-check on return.
-        app.gate.whenOpen { graph.onAppForegrounded() }
+        app.gate.whenOpen(this) { graph.onAppForegrounded() }
     }
 
     override fun onStop() {

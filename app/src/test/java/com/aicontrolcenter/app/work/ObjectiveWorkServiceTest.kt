@@ -246,7 +246,11 @@ class ObjectiveWorkServiceTest {
         val objective = runBlocking { app.graph.orchestrator.startObjective("Compare offline note apps") }
         val controller = Robolectric.buildService(ObjectiveWorkService::class.java).create().startCommand(0, 1)
         idle()
-        assertEquals(TaskStatus.PAUSED, runBlocking { app.tasks.get(objective.id) }?.status)
+        val paused = runBlocking { app.tasks.get(objective.id) }
+        assertEquals(TaskStatus.PAUSED, paused?.status)
+        // Wave 3 (WP8): the objective itself says why, and the pause is not logged as the owner's.
+        assertEquals(WorkResult.STORAGE_PAUSED_DETAIL, paused?.statusDetail)
+        assertTrue(app.activityLog.all.none { it.type == com.aicontrolcenter.core.activity.ActivityType.USER_ACTION && it.title == "Objective paused" })
         assertTrue(app.activityLog.all.any { it.title == WorkResult.STORAGE_FULL && it.rootTaskId == objective.id }, app.activityLog.all.map { it.title }.toString())
         val result = shadowOf(manager).allNotifications.single { it.channelId == ResultNotifications.CHANNEL_ID }
         assertEquals(WorkResult.STORAGE_FULL, result.extras.getCharSequence(Notification.EXTRA_TITLE).toString())

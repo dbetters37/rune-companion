@@ -154,8 +154,15 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
 
     // --- Phase 6 ---
 
-    /** Usage records, reports and the owner's history in one store, as Room keeps them in one database (UTC zone). */
-    val usage = InMemoryUsageStore(clock, zone = { java.time.ZoneOffset.UTC })
+    /**
+     * The owner's time zone, UTC unless a test moves it: one "today" for the usage store, the daily limiter, the
+     * orchestrator, the routines and the usage screens (wave 3), as production has one system zone.
+     */
+    @Volatile var zone: java.time.ZoneId = java.time.ZoneOffset.UTC
+    private val ownerZone: () -> java.time.ZoneId = { zone }
+
+    /** Usage records, reports and the owner's history in one store, as Room keeps them in one database. */
+    val usage = InMemoryUsageStore(clock, zone = ownerZone)
 
     /** The owner's prices; agent-facing code gets [ModelPrices] through a read-only view, as in production. */
     val prices = InMemoryModelPrices(clock)
@@ -174,6 +181,9 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
 
     /** The database opened normally until a test says otherwise. */
     val recovery = FakeOwnerRecovery()
+
+    /** Safe start off until a test turns it on ([TestSafeStart.state]). */
+    val safeStart = TestSafeStart()
     val routineStore = InMemoryRoutineRepository()
     val pickUpRuleStore = InMemoryPickUpRuleRepository()
     val maintenanceGate = LocalMaintenanceGate()
@@ -233,10 +243,11 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
         modelPrices = ModelPricesView(prices),
         ownerModelPrices = prices,
         ownerUsage = usage,
-        background = BackgroundPorts(health = backgroundHealth, exits = exits, storage = storage, recovery = recovery),
+        background = BackgroundPorts(health = backgroundHealth, exits = exits, storage = storage, recovery = recovery, safeStart = safeStart),
         network = network,
-        routines = RoutinesPorts(routines = routineStore, pickUpRules = pickUpRuleStore),
+        routines = RoutinesPorts(routines = routineStore, pickUpRules = pickUpRuleStore, zone = ownerZone),
         maintenanceGate = maintenanceGate,
+        zone = ownerZone,
     )
 
     /**
@@ -343,6 +354,19 @@ fun <T> StateFlow<T>.activeIn(scope: CoroutineScope): StateFlow<T> {
     return this
 }
 
+/** Safe start a test turns on and off; [leave] is the owner's "Back to normal" and is counted. */
+class TestSafeStart : com.aicontrolcenter.app.health.SafeStartControl {
+    override val state = kotlinx.coroutines.flow.MutableStateFlow(com.aicontrolcenter.app.health.SafeStartState.OFF)
+
+    /** How often the owner chose to leave safe start. */
+    val left = java.util.concurrent.atomic.AtomicInteger()
+
+    override suspend fun leave() {
+        left.incrementAndGet()
+        state.value = com.aicontrolcenter.app.health.SafeStartState.OFF
+    }
+}
+
 /** [SystemScreens] whose intents name what they stand for, so a test can check which screen the app asked Android for. */
 class TestSystemScreens : SystemScreens {
     /** What [accessState] reports; everything is off until a test turns it on. */
@@ -365,6 +389,11 @@ class TestSystemScreens : SystemScreens {
 
     override fun accessSettings(access: DeviceAccess): Intent? =
         if (access == DeviceAccess.ACCESSIBILITY_SERVICE) null else Intent(ACCESS_SETTINGS).putExtra(ACCESS, access.name)
+
+    /** What [storageAppName] answers, by a folder's tree URI; nothing until a test sets it (Android does not tell). */
+    val storageApps: MutableMap<String, String> = java.util.concurrent.ConcurrentHashMap()
+
+    override fun storageAppName(treeUri: String): String? = storageApps[treeUri]
 
     companion object {
         const val ACCESSIBILITY_SETTINGS = "test.ACCESSIBILITY_SETTINGS"

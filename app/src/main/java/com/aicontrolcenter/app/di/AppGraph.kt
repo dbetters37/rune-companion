@@ -6,10 +6,13 @@ import com.aicontrolcenter.app.di.wiring.BackgroundScreens
 import com.aicontrolcenter.app.di.wiring.BackupWiring
 import com.aicontrolcenter.app.di.wiring.ModelsAssembly
 import com.aicontrolcenter.app.di.wiring.OperatorAssembly
+import com.aicontrolcenter.app.di.wiring.PickUpImports
 import com.aicontrolcenter.app.di.wiring.RoutinesAssembly
 import com.aicontrolcenter.app.di.wiring.TeamAssembly
 import com.aicontrolcenter.app.operator.ScreenSessions
+import com.aicontrolcenter.app.health.SafeStartControl
 import com.aicontrolcenter.app.operator.SystemScreens
+import com.aicontrolcenter.app.usage.TodayUsage
 import com.aicontrolcenter.app.work.InMemoryNotificationAccess
 import com.aicontrolcenter.app.work.NotificationAccess
 import com.aicontrolcenter.core.Clock
@@ -21,7 +24,6 @@ import com.aicontrolcenter.core.activity.ActivityRecorder
 import com.aicontrolcenter.core.agents.AgentActivityMonitor
 import com.aicontrolcenter.core.agents.AgentManager
 import com.aicontrolcenter.core.backup.MaintenanceGate
-import com.aicontrolcenter.core.backup.OwnerBackup
 import com.aicontrolcenter.core.chat.AgentChat
 import com.aicontrolcenter.core.device.DeviceInspector
 import com.aicontrolcenter.core.health.BackgroundHealth
@@ -68,6 +70,8 @@ import com.aicontrolcenter.framework.operator.PermissionBroker
 import com.aicontrolcenter.framework.operator.RequestWaiters
 import com.aicontrolcenter.framework.registry.DefaultAiAppRegistry
 import com.aicontrolcenter.framework.registry.LoggingAiAppLauncher
+import com.aicontrolcenter.framework.routines.WaitingRoutines
+import com.aicontrolcenter.data.backup.DetailedOwnerBackup
 import com.aicontrolcenter.framework.tools.CapabilityRegistry
 import com.aicontrolcenter.framework.tools.ToolExecutor
 import com.aicontrolcenter.memory.DefaultMemoryService
@@ -78,9 +82,13 @@ import com.aicontrolcenter.providers.anthropic.AnthropicAdapterFactory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.launch
 import kotlin.coroutines.CoroutineContext
 
 /**
@@ -113,7 +121,7 @@ fun productionAdapterFactories(): List<ProviderAdapterFactory> =
  */
 class AppGraph(
     val ports: Ports,
-    appScope: CoroutineScope,
+    private val appScope: CoroutineScope,
     adapterFactories: List<ProviderAdapterFactory> = productionAdapterFactories(),
     val memoryConfig: MemoryConfig = MemoryConfig(appVersion = BuildConfig.VERSION_NAME),
     /**
@@ -133,6 +141,11 @@ class AppGraph(
     memoryService: MemoryService? = null,
     /** The embedder [memoryService] was built with (the graph's own memory service uses it too). */
     embedder: Embedder = HashingEmbedder(),
+    /**
+     * Emits when the owner's day changes, so screens showing "today" move on at midnight ([TodayUsage]). The app passes
+     * a timer (`DayChanges.daily`); tests pass nothing, so no endless timer runs in them.
+     */
+    dayChanges: Flow<Unit> = emptyFlow(),
 ) {
     val clock: Clock = ports.clock
     val idGenerator: IdGenerator = ports.idGenerator
@@ -171,7 +184,7 @@ class AppGraph(
     // --- models and providers (WP4) ---
 
     /** The registry directory, the gateway and the provider manager. */
-    internal val modelsAssembly = ModelsAssembly(ports, settingsView, activityRecorder, adapterFactories, appScope, ports.network)
+    internal val modelsAssembly = ModelsAssembly(ports, settingsView, activityRecorder, adapterFactories, appScope, ports.network, zone = ports.zone)
 
     val registryDirectory: RegistryDirectory get() = modelsAssembly.registryDirectory
     val modelGateway: ModelGateway get() = modelsAssembly.modelGateway
@@ -351,14 +364,32 @@ class AppGraph(
 
     // --- routines and folder pick-up (WP17, Tier B) ---
 
-    /** Built after the orchestrator, which a routine starts its objective through. */
-    internal val routinesAssembly = RoutinesAssembly(ports, settingsView, orchestrator, this.memoryService, activityRecorder, appScope)
+    /**
+     * Built after the orchestrator, which a routine starts its objective through. While safe start is on, nothing
+     * starts by itself: a routine due on time waits for the owner's tap (wave 3, WP8; rule 10).
+     */
+    internal val routinesAssembly = RoutinesAssembly(
+        ports, settingsView, orchestrator, this.memoryService, activityRecorder, appScope,
+        safeStartOn = { ports.background.safeStart.state.value.on },
+    )
 
     /** Owner-only: the owner's routines (Appendix A). Null until WP17 builds them; the screen then stays hidden. */
     val ownerRoutines: OwnerRoutines? get() = routinesAssembly.ownerRoutines
 
     /** Owner-only: the owner's folder pick-up rules (Appendix A). Null until WP17 builds them. */
     val ownerPickUpRules: OwnerPickUpRules? get() = routinesAssembly.ownerPickUpRules
+
+    /**
+     * Owner-only, read only: the files each pick-up rule imported or saw (wave 3, for WP10c's Folder pick-up screen).
+     * Null without the store, as [ownerPickUpRules].
+     */
+    val pickUpImports: PickUpImports? get() = routinesAssembly.pickUpImports
+
+    /**
+     * Owner-only: the routine runs waiting for the owner's tap ("Tap to start", F12), for WP17's banner on the Dashboard
+     * and WP10c's confirmation screen. Nothing starts without the owner's tap and confirmation there.
+     */
+    val waitingRoutines: WaitingRoutines get() = routinesAssembly.waitingRoutines
 
     // --- usage, cost, background, backup and recovery for the owner's screens (Phase 6) ---
 
@@ -387,7 +418,25 @@ class AppGraph(
     val exitHistory: ExitHistory = ports.background.exits
 
     /** Owner-only: the backup file (WP3, Tier B). Null: no backup in this build; the screen stays hidden. */
-    val ownerBackup: OwnerBackup? = ports.backup
+    val ownerBackup: DetailedOwnerBackup? = ports.backup
+
+    /** Safe start for the owner's banner (WP2, rule 10; Tier B): whether it is on, and "Back to normal". */
+    val safeStart: SafeStartControl = ports.background.safeStart
+
+    /**
+     * Today's use as the daily limits count it, with the limits, read only (wave 3): the Today tile, the Daily limits
+     * screen and the New objective form show the same numbers as the limiter.
+     */
+    val todayUsage: TodayUsage = TodayUsage(ports.usageReports, ports.modelPrices, settingsView, ports.clock, ports.zone, dayChanges)
+
+    /** The owner's time zone, read at each use: one "today" everywhere (wave 3). */
+    val zone: () -> java.time.ZoneId = ports.zone
+
+    /**
+     * Owner-only, for Tools › Screen control (D7): why Android switched screen control off, in plain words, or null.
+     * Only the owner's screen reads it; [screenControl] says whether it is switched off.
+     */
+    val screenSwitchedOffSentence: StateFlow<String?> = ports.operator.screenSwitchedOffSentence
 
     init {
         // A saved chat names each tool it used by the title the owner knows ("Read the screen"), not by its function name
@@ -490,6 +539,28 @@ class AppGraph(
         // Android 9 to 12 do not say when the owner switches the accessibility service on.
         ports.operator.refreshScreenState()
         startup.onAppForegrounded()
+        // The owner is looking at the app (WP17, F12): routine due times that passed without a run now wait for a tap,
+        // or are missed when too old. It starts nothing; the waiting runs show on the Dashboard and the shell opens them.
+        appScope.launch {
+            try {
+                routinesAssembly.catchUp()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                try {
+                    activityRecorder.record(
+                        com.aicontrolcenter.core.activity.ActivityType.ERROR,
+                        "Could not look for routines waiting to start",
+                        failure.javaClass.simpleName,
+                        com.aicontrolcenter.core.activity.Severity.WARNING,
+                    )
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    // The log itself is unavailable; the banner looks again when it is shown.
+                }
+            }
+        }
     }
 
     /** Call when the app leaves the foreground; periodic memory upkeep pauses until it returns. */

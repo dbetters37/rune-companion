@@ -1,5 +1,6 @@
 package com.aicontrolcenter.app.ui.models
 
+import com.aicontrolcenter.app.Phase6Stub
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -78,8 +79,13 @@ import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.registry.CapabilityTier
 import com.aicontrolcenter.core.registry.ModelSource
 
+/**
+ * Wave 3 (WP11b): price fields (`graph.ownerModelPrices`), "Speed and reliability" (`graph.usageReports`), whose rows link
+ * to [onOpenUsage] (Activity › Usage and cost), the cheaper-helper suggestion; Reasoning and Coding lose "(test)".
+ */
+@Phase6Stub("WP11b")
 @Composable
-fun ModelEditorRoute(modelId: ModelId, onBack: () -> Unit) {
+fun ModelEditorRoute(modelId: ModelId, onBack: () -> Unit, @Suppress("UNUSED_PARAMETER") onOpenUsage: () -> Unit = {}) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel { ModelEditorViewModel(modelId, graph.registryDirectory, graph.providerManager, graph.agentManager) }
     val state by viewModel.uiState.collectAsStateWithLifecycle()

@@ -57,6 +57,9 @@ class ProductionGraphDependencyTest {
             graph.modelGateway to "model gateway", graph.registryDirectory to "registry directory",
             // Wave 2a: the provider re-checks as production builds them (WP4) and the question's agent side (WP5).
             graph.providerRechecks to "provider re-checks", graph.operatorAssembly.ownerQuestions to "questions to the owner (agent side)",
+            // Wave 3 (WP8): the script host a running script calls into (WP6), made here as a run makes it (it is a binder,
+            // made per run; ScriptsWalkTest walks it too). The engine itself is reached through the scripts.run_js tool.
+            scriptHost() to "script host",
         ) + graph.toolRegistry.all().map { it to "tool ${it.spec.id.value}" }
         // Room's database and DAOs are walked by their holder (second review of F4/F10): a Room store may hold them, nothing else.
         val walk = AgentFacingWalk(extraViews = productionViews)
@@ -82,6 +85,46 @@ class ProductionGraphDependencyTest {
         }
         // A Room store holds them: that is the storage engine, not a port someone wired.
         assertEquals(emptyList(), walk.walk(data.memories, "memory store").violations)
+    }
+
+    /**
+     * Wave 3 (WP8; rule 1, WP2's hand-off): the upkeep job is a root of the architecture tests too. What it reaches, as
+     * the application builds it, holds no graph, orchestrator, gateway, executor, chat, provider manager, key vault,
+     * grant or request store, and builds no graph (`UpkeepJobTest` checks the same from the job's side).
+     */
+    @Test
+    fun `the upkeep job reaches nothing of the graph, no model, tool or provider, and no owner's store but its own`() {
+        val app = context as com.aicontrolcenter.app.AiControlCenterApp
+        val upkeep = (app as com.aicontrolcenter.app.work.UpkeepHost).upkeep
+        val forbidden = listOf(
+            AppGraph::class.java, com.aicontrolcenter.core.tasks.Orchestrator::class.java, com.aicontrolcenter.core.llm.ModelGateway::class.java,
+            com.aicontrolcenter.framework.tools.ToolExecutor::class.java, com.aicontrolcenter.core.chat.AgentChat::class.java,
+            com.aicontrolcenter.core.llm.ProviderManager::class.java, com.aicontrolcenter.core.security.SecretVault::class.java,
+            com.aicontrolcenter.core.operator.PermissionRepository::class.java, com.aicontrolcenter.core.operator.OwnerRequestRepository::class.java,
+            com.aicontrolcenter.core.llm.OwnerKeyCheck::class.java, com.aicontrolcenter.core.settings.SettingsRepository::class.java,
+            com.aicontrolcenter.app.AiControlCenterApp::class.java, DataLayer::class.java,
+        )
+        val result = AgentFacingWalk(ownerOnly = forbidden, checkActions = false).walk(upkeep, "upkeep job")
+        assertEquals(emptyList(), result.violations, "the upkeep job reaches the graph or an owner's store")
+        assertTrue(result.objects > 10, "the walk saw the upkeep's ports (${result.objects} objects)")
+        kotlin.test.assertNull(app.graphIfBuilt(), "walking the upkeep built no graph")
+    }
+
+    /** A run's host, as `IsolatedJsEngine` makes one for each script it runs. */
+    private fun scriptHost(): Any {
+        val workspace = object : com.aicontrolcenter.framework.operator.JsHost {
+            override val canWrite = true
+
+            override fun read(path: String): String = ""
+
+            override fun list(path: String): List<Triple<String, Boolean, Long?>> = emptyList()
+
+            override fun write(path: String, text: String): String = path
+        }
+        return com.aicontrolcenter.app.scripts.RunHost(
+            workspace, com.aicontrolcenter.framework.operator.JsLimits(), com.aicontrolcenter.app.scripts.ScriptPipes.Android,
+            java.util.concurrent.Executors.newSingleThreadExecutor(), deadlineMs = { 0L },
+        )
     }
 
     /** The data layer's database, which is internal to `:data`: read the way a wiring slip could hand it on. */

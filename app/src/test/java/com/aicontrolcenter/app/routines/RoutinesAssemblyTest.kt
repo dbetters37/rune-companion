@@ -91,6 +91,35 @@ class RoutinesAssemblyTest {
     )
 
     @Test
+    fun `keeping Android in step is supervised - a failure is logged and the collector starts again (rule 26)`() = runTest(mainRule.dispatcher) {
+        // Wave 3 (WP8; the wave-2b merge's rule-26 row): a failing read or PackageManager call no longer leaves the alarm
+        // and the receivers out of step until the next start.
+        val app = TestApp(backgroundScope)
+        val alarms = object : RoutineAlarmPort {
+            var failures = 1
+            var receivers: Boolean? = null
+
+            override fun arm(atMs: Long) = Unit
+
+            override fun cancel() = Unit
+
+            override fun receiversEnabled(enabled: Boolean) {
+                if (failures-- > 0) error("Android's package manager failed")
+                receivers = enabled
+            }
+        }
+        val ports = app.ports.copy(routines = RoutinesPorts(app.routineStore, app.pickUpRuleStore, alarms, RecordingNotices(), zone = { ZoneOffset.UTC }))
+        RoutinesAssembly(ports, app.graph.settingsView, app.graph.orchestrator, app.graph.memoryService, app.graph.activityRecorder, backgroundScope)
+        runCurrent()
+        assertEquals(null, alarms.receivers, "the first try failed")
+        val warning = app.activityLog.all.single { it.title == "${RoutinesAssembly.KEEPING_IN_STEP} had to be restarted" }
+        assertEquals(com.aicontrolcenter.core.activity.Severity.WARNING, warning.severity)
+        testScheduler.advanceTimeBy(1_500)
+        runCurrent()
+        assertEquals(false, alarms.receivers, "started again after a short wait, it keeps Android in step")
+    }
+
+    @Test
     fun `both switches are off after installing, and nothing is armed or enabled while there is no routine`() = runTest(mainRule.dispatcher) {
         val w = world()
         val settings = w.app.graph.settingsView.get()

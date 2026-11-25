@@ -126,7 +126,7 @@ class ApprovalScreenshotTest {
     fun wide() {
         val robot = app()
         shoot("p5_approvals_1_badge_wide")
-        robot.openSection("Approvals")
+        robot.openSection("Waiting for you")
         shoot("p5_approvals_2_list_wide")
         robot.tapItemContaining("Delete 3 files")
         shoot("p5_approval_1_consequential_wide")
@@ -157,7 +157,7 @@ class ApprovalScreenshotTest {
     @Test
     @Config(qualifiers = WIDE)
     fun nothingWaiting() {
-        AppRobot(compose).given { populateWithObjectives() }.launch().also { robot = it }.openSection("Approvals")
+        AppRobot(compose).given { populateWithObjectives() }.launch().also { robot = it }.openSection("Waiting for you")
         shoot("p5_approvals_3_empty_wide")
     }
 }

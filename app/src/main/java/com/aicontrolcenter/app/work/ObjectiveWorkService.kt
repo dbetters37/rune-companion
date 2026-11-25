@@ -258,7 +258,8 @@ class ObjectiveWorkService : Service() {
         }
         for (id in running) {
             try {
-                graph.orchestrator.pause(id)
+                // The app's pause with its own reason: the objective says why, and it is not logged as the owner's action.
+                graph.orchestrator.pause(id, WorkResult.STORAGE_PAUSED_DETAIL)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {

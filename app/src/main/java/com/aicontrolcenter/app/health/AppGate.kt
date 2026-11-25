@@ -2,6 +2,8 @@ package com.aicontrolcenter.app.health
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
 import com.aicontrolcenter.core.health.DatabaseState
 import com.aicontrolcenter.core.health.OwnerRecovery
 import kotlinx.coroutines.CancellationException
@@ -29,11 +31,16 @@ import kotlinx.coroutines.withContext
  *   installed its own graph).
  * @param scope where the check runs; null opens the gate at once.
  * @param main where queued work runs: the main thread.
+ * @param prepare runs on [scope], off the main thread, once the data opened and before the gate opens (wave 3, D45):
+ *   the app builds its graph there, so the main thread never builds it at a cold start (the class loading and wiring
+ *   of every service, which on a slow phone took long enough to be reported as not responding). A failure in it is
+ *   ignored: the graph is then built on first use, as before.
  */
 class AppGate(
     private val recovery: OwnerRecovery?,
     private val scope: CoroutineScope?,
     private val main: CoroutineDispatcher = Dispatchers.Main.immediate,
+    private val prepare: suspend () -> Unit = {},
 ) {
     /** Where the gate is. */
     sealed interface State {
@@ -70,6 +77,14 @@ class AppGate(
         }
     }
 
+    /**
+     * As [whenOpen], for work of [owner] (an activity): queued work runs only while [owner] still exists, so an activity
+     * destroyed while the data was opened (rotated, closed) never touches the graph afterwards (wave 3).
+     */
+    fun whenOpen(owner: LifecycleOwner, action: () -> Unit) {
+        whenOpen { if (owner.lifecycle.currentState != Lifecycle.State.DESTROYED) action() }
+    }
+
     /** Looks again whether the data opens (the owner tapped "Try again"). Does nothing unless the data could not be opened. */
     fun recheck() {
         if (current.value !is State.NeedsRecovery) return
@@ -87,6 +102,15 @@ class AppGate(
                 throw cancelled
             } catch (_: Exception) {
                 DatabaseState.OTHER
+            }
+            if (!database.needsRecovery) {
+                try {
+                    prepare()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    // Built on first use instead, on whatever thread asks.
+                }
             }
             withContext(main) { settle(database) }
         }

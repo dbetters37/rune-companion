@@ -132,6 +132,16 @@ abstract class UsageLedgerContract {
     }
 
     @Test
+    fun `a model's and a provider's labels are those of the row with the newest call, also when calls arrive out of order`() = runTest {
+        // Wave 3 (WP8; WP1b's hand-off): two rows of one model in one hour (two agents); the newer call is recorded first.
+        val stores = createStores(FakeClock(u.at("2026-11-25T12:00")), zone)
+        stores.ledger.record(u.call(u.at("2026-11-25T10:50"), model = "mdl_b", agent = "agt_writer", label = "New label", providerLabel = "New provider"))
+        stores.ledger.record(u.call(u.at("2026-11-25T10:10"), model = "mdl_b", agent = "agt_researcher", label = "Old label", providerLabel = "Old provider"))
+        assertEquals("New label", stores.reports.byModel(today).single().modelLabel)
+        assertEquals("New provider", stores.reports.byProvider(today).single().providerLabel)
+    }
+
+    @Test
     fun `a day in a half-hour zone is cut at the UTC hour that holds local midnight`() = runTest {
         val india = ZoneId.of("Asia/Kolkata")
         val stores = createStores(FakeClock(u.at("2026-11-25T12:00", india)), india)

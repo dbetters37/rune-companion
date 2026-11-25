@@ -57,6 +57,9 @@ data class WorkResult(
         /** "Paused: the phone is almost full" (WP2 item 10): what the service says when it pauses objectives. */
         const val STORAGE_FULL: String = "Paused: the phone is almost full"
 
+        /** The objective's own status text when the service paused it for room (wave 3: not "Paused by the owner."). */
+        const val STORAGE_PAUSED_DETAIL: String = "Paused: the phone is almost full. Free some room, then resume it."
+
         /**
          * The result for [row], which was [before] at the last look, or null when nothing is worth saying (still going,
          * paused by the owner, or it was not going before). [interruptCause] is the app-written cause of the last

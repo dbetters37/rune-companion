@@ -191,7 +191,15 @@ class DefaultOrchestrator(
         return objective
     }
 
-    override suspend fun pause(rootId: TaskId) {
+    override suspend fun pause(rootId: TaskId) = pause(rootId, reason = OWNER_PAUSED, byOwner = true)
+
+    override suspend fun pause(rootId: TaskId, reason: String) = pause(rootId, reason.trim().ifEmpty { APP_PAUSED }, byOwner = false)
+
+    /**
+     * Pauses for the owner (their tap: "Paused by the owner.", logged as their action) or for the app with its own
+     * [reason] (the phone almost full), which is then what the objective, its paused tasks and the team's message say.
+     */
+    private suspend fun pause(rootId: TaskId, reason: String, byOwner: Boolean) {
         val rt = runtimes.of(rootId)
         val outcome = rt.lock.withLockNonCancellable {
             val objective = ctx.tasks.get(rootId) ?: throw IllegalArgumentException(GONE)
@@ -199,9 +207,9 @@ class DefaultOrchestrator(
             val now = clock.now()
             val tree = ctx.tasks.getTree(rootId)
             val changes = tree.filter { it.id != rootId && it.status in WORKING }
-                .map { it.copy(status = TaskStatus.PAUSED, statusDetail = "Paused by the owner.", updatedAt = now) }
+                .map { it.copy(status = TaskStatus.PAUSED, statusDetail = reason, updatedAt = now) }
             // The deadline as its running limit has it: time spent waiting for the owner moved it later.
-            val updated = objective.copy(status = TaskStatus.PAUSED, statusDetail = "Paused by the owner.", deadlineAt = rt.deadlineNow(objective.deadlineAt), updatedAt = now)
+            val updated = objective.copy(status = TaskStatus.PAUSED, statusDetail = reason, deadlineAt = rt.deadlineNow(objective.deadlineAt), updatedAt = now)
             // Work that waited for its provider no longer says it tries again at a time that will pass (INT-3).
             ctx.tasks.upsertAll(changes + ProviderWaits.stoppedIn(tree, rootId, now) + updated)
             updated to changes
@@ -209,9 +217,9 @@ class DefaultOrchestrator(
         stop(rt)
         val (paused, tasks) = outcome
         tasks.forEach { journal.taskChanged(it, "Task paused") }
-        journal.ownerAction(rootId, paused, "Objective paused", paused.title)
+        if (byOwner) journal.ownerAction(rootId, paused, "Objective paused", paused.title)
         journal.taskChanged(paused, "Objective paused")
-        journal.send(rootId, paused, Participant.Owner, director(paused), MessageType.STATUS, "Paused by the owner.")
+        journal.send(rootId, paused, if (byOwner) Participant.Owner else Participant.System, director(paused), MessageType.STATUS, reason)
     }
 
     override suspend fun resume(rootId: TaskId) = resume(rootId, byOwner = true)
@@ -608,6 +616,8 @@ class DefaultOrchestrator(
     private companion object {
         const val TITLE_LENGTH = 72
         const val GONE = "That objective no longer exists."
+        const val OWNER_PAUSED = "Paused by the owner."
+        const val APP_PAUSED = "Paused by the app."
         const val TASK_GONE = "That task no longer exists."
         const val CANCELLED_BY_OWNER = "Cancelled by the owner."
         const val INTERRUPTED = "Interrupted: the app stopped while this was running."

@@ -40,6 +40,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.aicontrolcenter.app.ui.components.plural
 import com.aicontrolcenter.app.ui.icons.AppIcons
@@ -70,21 +71,35 @@ private fun BadgedIcon(icon: ImageVector, badge: Int) {
 
 private fun attentionSuffix(badge: Int): String = if (badge > 0) ", ${plural(badge, "item")} need attention" else ""
 
-/** "1 request waits for your answer", "3 requests wait for your answer". */
-internal fun waitingText(count: Int): String = plural(count, "request") + if (count == 1) " waits for your answer" else " wait for your answer"
+/**
+ * "1 request waits for your answer", "3 requests wait for your answer"; with agents' questions among them (Phase 6),
+ * "1 question waits for your answer", "2 requests and 1 question wait for your answer".
+ */
+internal fun waitingText(count: Int, questions: Int = 0): String {
+    val asks = (count - questions).coerceAtLeast(0)
+    val what = when {
+        questions <= 0 -> plural(count, "request")
+        asks == 0 -> plural(questions, "question")
+        else -> plural(asks, "request") + " and " + plural(questions, "question")
+    }
+    return what + if (count == 1) " waits for your answer" else " wait for your answer"
+}
+
+/** The name of what waits for the owner, on the rail and in the strip's description (Phase 6: approvals and questions). */
+internal const val WAITING_FOR_YOU = "Waiting for you"
 
 /**
  * The phone's line above the bottom bar while agents wait for the owner: how many requests,
  * and the way to them. Shown only while something waits, on every section root.
  */
 @Composable
-internal fun ApprovalsStrip(count: Int, onOpen: () -> Unit) {
+internal fun ApprovalsStrip(count: Int, onOpen: () -> Unit, questions: Int = 0) {
     Column {
         HorizontalDivider(color = appColors.attention.copy(alpha = 0.4f))
         Surface(
             onClick = onOpen,
             color = appColors.attention.copy(alpha = if (appColors.isDark) 0.14f else 0.10f).compositeOver(MaterialTheme.colorScheme.surface),
-            modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) { contentDescription = waitingText(count) + ". Review" },
+            modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) { contentDescription = waitingText(count, questions) + ". Review" },
         ) {
             Row(
                 modifier = Modifier.heightIn(min = 52.dp).padding(start = Spacing.lg, end = Spacing.md, top = Spacing.sm, bottom = Spacing.sm),
@@ -105,7 +120,7 @@ internal fun ApprovalsStrip(count: Int, onOpen: () -> Unit) {
                     }
                 }
                 Text(
-                    waitingText(count),
+                    waitingText(count, questions),
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.weight(1f),
@@ -181,7 +196,7 @@ internal fun AppNavigationRail(
                 selected = approvalsOpen,
                 onClick = onOpenApprovals,
                 icon = { BadgedIcon(AppIcons.Approval, waiting) },
-                label = { Text("Approvals", maxLines = 1) },
+                label = { Text(WAITING_FOR_YOU, maxLines = 2, textAlign = TextAlign.Center) },
                 colors = NavigationRailItemDefaults.colors(
                     selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
                     selectedTextColor = MaterialTheme.colorScheme.onSurface,
@@ -190,7 +205,7 @@ internal fun AppNavigationRail(
                     unselectedTextColor = if (waiting > 0) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
                 ),
                 modifier = Modifier.semantics {
-                    contentDescription = "Approvals" + if (waiting > 0) ", " + waitingText(waiting) else ", nothing waits for your answer"
+                    contentDescription = WAITING_FOR_YOU + if (waiting > 0) ", " + waitingText(waiting, state.pendingQuestions) else ", nothing waits for your answer"
                 },
             )
             HorizontalDivider(color = appColors.hairline, modifier = Modifier.padding(horizontal = Spacing.md, vertical = Spacing.xs).size(width = 48.dp, height = 1.dp))

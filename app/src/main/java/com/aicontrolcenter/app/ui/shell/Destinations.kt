@@ -3,6 +3,7 @@ package com.aicontrolcenter.app.ui.shell
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.navigation.NavDestination
 import androidx.navigation.NavDestination.Companion.hasRoute
+import com.aicontrolcenter.app.ui.activity.ActivityTab
 import com.aicontrolcenter.app.ui.agents.AgentStatusFilter
 import com.aicontrolcenter.app.ui.icons.Activity
 import com.aicontrolcenter.app.ui.icons.Agent
@@ -37,7 +38,11 @@ import kotlinx.serialization.Serializable
 /** [tab] opens one of the section's tabs; [agentId] narrows its Permissions tab to one agent. */
 @Serializable data class ToolsRoute(val tab: ToolsTab = ToolsTab.TOOLS, val agentId: String? = null)
 
-@Serializable data object ActivityRoute
+/**
+ * The Activity section (Phase 6: a data class, so a screen can open a tab or a filtered log). [tab] opens the log or
+ * "Usage and cost"; [agentId] narrows the log to one agent; [text] fills the log's search (a model's name, say).
+ */
+@Serializable data class ActivityRoute(val tab: ActivityTab = ActivityTab.LOG, val agentId: String? = null, val text: String? = null)
 
 @Serializable data object SettingsRoute
 
@@ -103,6 +108,42 @@ import kotlinx.serialization.Serializable
 /** The workspace trash. */
 @Serializable data object WorkspaceTrashRoute
 
+// --- Phase 6 (wave 3): the owner's new screens. Which package fills each is in scratchpad/phase6/wave3-ownership.md. ---
+
+/** The Team view (WP9): who works, who waits for whom, who waits for you. [objectiveId] opens it on one objective. */
+@Serializable data class TeamRoute(val objectiveId: String? = null)
+
+/** One question an agent asked the owner, where it is answered (WP11a, rule 13): never the Approval screen. */
+@Serializable data class QuestionRoute(val requestId: String)
+
+/** Today's limits of answers, tokens and money, and what happens when one is reached (WP10a; Settings). */
+@Serializable data object DailyLimitsRoute
+
+/** Saving a backup file (WP10b, Tier B; Settings). No intent opens it (rule 23). */
+@Serializable data object BackupSaveRoute
+
+/** Restoring a backup file into a fresh app (WP10b, Tier B; Settings). No intent opens it (rule 23). */
+@Serializable data object BackupRestoreRoute
+
+/** The owner's routines (WP10c, Tier B; Tools: a list of the owner's things). */
+@Serializable data object RoutinesRoute
+
+/** A new routine, or [routineId] to change one (WP10c). */
+@Serializable data class RoutineEditorRoute(val routineId: String? = null)
+
+/**
+ * The routines waiting for the owner's tap (WP10c): the "Tap to start" confirmation step. The app opens here by itself
+ * when it comes to the front while a run waits that this process has not shown yet (never from an intent, rule 23);
+ * Start is WP17's `WaitingRoutinesBanner`, which asks once more before exactly that run starts.
+ */
+@Serializable data object WaitingRoutinesRoute
+
+/** The owner's folder pick-up rules (WP10c, Tier B; Tools). */
+@Serializable data object PickUpRulesRoute
+
+/** A new pick-up rule, for [folderId] when one is picked already, or [ruleId] to change one (WP10c). */
+@Serializable data class PickUpRuleEditorRoute(val ruleId: String? = null, val folderId: String? = null)
+
 /** The eight primary sections of the control center, in their fixed order. */
 enum class Section(val title: String, val description: String) {
     DASHBOARD("Dashboard", "Overview of your whole AI ecosystem"),
@@ -136,7 +177,7 @@ enum class Section(val title: String, val description: String) {
             TASKS -> TasksRoute
             MEMORY -> MemoryRoute()
             TOOLS -> ToolsRoute()
-            ACTIVITY -> ActivityRoute
+            ACTIVITY -> ActivityRoute()
             SETTINGS -> SettingsRoute
         }
 
@@ -159,13 +200,17 @@ fun NavDestination.section(): Section = when {
     hasRoute<ModelsRoute>() || hasRoute<AiAppDetailRoute>() || hasRoute<RegisterAppRoute>() ||
         hasRoute<ConceptsRoute>() || hasRoute<ProviderPresetsRoute>() || hasRoute<ProviderFormRoute>() ||
         hasRoute<ProviderDetailRoute>() || hasRoute<ModelEditorRoute>() -> Section.MODELS
-    hasRoute<TasksRoute>() || hasRoute<NewObjectiveRoute>() || hasRoute<ObjectiveRoute>() || hasRoute<TaskRoute>() -> Section.TASKS
+    hasRoute<TasksRoute>() || hasRoute<NewObjectiveRoute>() || hasRoute<ObjectiveRoute>() || hasRoute<TaskRoute>() ||
+        hasRoute<TeamRoute>() -> Section.TASKS
     hasRoute<MemoryRoute>() || hasRoute<MemoryDetailRoute>() || hasRoute<MemoryEditorRoute>() ||
         hasRoute<SpaceDetailRoute>() -> Section.MEMORY
-    // Requests are about what agents may do.
-    hasRoute<ToolsRoute>() || hasRoute<ApprovalsRoute>() || hasRoute<ApprovalRoute>() ||
-        hasRoute<WorkspaceRoute>() || hasRoute<WorkspaceFileRoute>() || hasRoute<WorkspaceTrashRoute>() -> Section.TOOLS
+    // Requests are about what agents may do; routines and pick-up rules are lists of the owner's things.
+    hasRoute<ToolsRoute>() || hasRoute<ApprovalsRoute>() || hasRoute<ApprovalRoute>() || hasRoute<QuestionRoute>() ||
+        hasRoute<WorkspaceRoute>() || hasRoute<WorkspaceFileRoute>() || hasRoute<WorkspaceTrashRoute>() ||
+        hasRoute<RoutinesRoute>() || hasRoute<RoutineEditorRoute>() || hasRoute<WaitingRoutinesRoute>() ||
+        hasRoute<PickUpRulesRoute>() || hasRoute<PickUpRuleEditorRoute>() -> Section.TOOLS
     hasRoute<ActivityRoute>() -> Section.ACTIVITY
-    hasRoute<SettingsRoute>() -> Section.SETTINGS
+    // Settings-like switches and the screens behind them.
+    hasRoute<SettingsRoute>() || hasRoute<DailyLimitsRoute>() || hasRoute<BackupSaveRoute>() || hasRoute<BackupRestoreRoute>() -> Section.SETTINGS
     else -> Section.DASHBOARD
 }

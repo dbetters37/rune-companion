@@ -128,6 +128,7 @@ class RoutineRunnerTest {
         var limit: String? = null
         var limitFails = false
         var localOnlyBlocks = false
+        var safeStart = false
         val ids = SequentialIdGenerator()
 
         /** The phone's zone: the owner may travel. */
@@ -139,6 +140,7 @@ class RoutineRunnerTest {
             dailyLimits = { if (limitFails) error("unreadable") else limit },
             localOnly = { localOnlyBlocks },
             gate = gate, activity = ActivityRecorder(log, ids, clock), clock = routineClock, ids = ids, notices = notices,
+            safeStartOn = { safeStart },
         )
 
         suspend fun routine(
@@ -191,6 +193,27 @@ class RoutineRunnerTest {
         w.alarmAt("2026-11-26T07:00")
         assertTrue(w.orchestrator.started.last().second.screenActionsAllowed)
         assertEquals(ticked.id, w.orchestrator.started.last().second.routineId)
+    }
+
+    @Test
+    fun `in safe start a routine due on time waits for the owner's tap instead of starting from the alarm`() = runTest {
+        // Wave 3 (WP8, rule 10): after repeated failed starts or crashes nothing starts by itself until the owner chooses.
+        val w = World()
+        val routine = w.routine()
+        w.safeStart = true
+        val run = w.alarmAt("2026-11-25T07:00").single()
+        assertEquals(RoutineRunOutcome.WAITING_FOR_TAP, run.outcome)
+        assertEquals(RoutineRunner.SAFE_START_NOTE, run.note)
+        assertTrue(w.orchestrator.started.isEmpty(), "nothing started by itself")
+        assertEquals(listOf("Morning news"), w.notices.waiting, "the owner is told it waits")
+        assertEquals(at("2026-11-26T07:00"), w.get(routine).nextRunAt, "the due time is used, never run twice")
+        // The owner's own tap still starts exactly that run.
+        assertIs<OwnerResult.Done<RoutineRun>>(w.runner.startWaiting(routine.id, run.id))
+        assertEquals(1, w.orchestrator.started.size)
+        // Out of safe start, the next due time starts by itself again.
+        w.safeStart = false
+        w.orchestrator.end(TaskId("tsk_1"), TaskStatus.COMPLETED)
+        assertEquals(RoutineRunOutcome.STARTED, w.alarmAt("2026-11-26T07:00").single().outcome)
     }
 
     @Test

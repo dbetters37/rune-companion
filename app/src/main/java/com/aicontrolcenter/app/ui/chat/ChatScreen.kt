@@ -1,5 +1,6 @@
 package com.aicontrolcenter.app.ui.chat
 
+import com.aicontrolcenter.app.Phase6Stub
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -100,8 +101,16 @@ class ChatActions(
     val onOpenRequest: (RequestId) -> Unit = {},
 )
 
+/** Wave 3 (WP11b): the limit sentence links to [onOpenDailyLimits]; the cost line uses `graph.usageReports`. */
+@Phase6Stub("WP11b")
 @Composable
-fun ChatRoute(conversationId: ConversationId, onBack: () -> Unit, onOpenProvider: (ProviderId) -> Unit, onOpenRequest: (RequestId) -> Unit = {}) {
+fun ChatRoute(
+    conversationId: ConversationId,
+    onBack: () -> Unit,
+    onOpenProvider: (ProviderId) -> Unit,
+    onOpenRequest: (RequestId) -> Unit = {},
+    @Suppress("UNUSED_PARAMETER") onOpenDailyLimits: () -> Unit = {},
+) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel {
         ChatViewModel(

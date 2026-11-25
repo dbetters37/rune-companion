@@ -96,10 +96,25 @@ class ManifestRulesTest {
         assertEquals(listOf("android.intent.action.BOOT_COMPLETED", "android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED"), actions)
 
         // Every service, receiver and provider of the app's own manifest says whether it is exported, and only the
-        // main activity is (rule 22: the share receiver of WP16 is added in wave 3, if it ships).
+        // main activity and the share receiver (rule 22; WP16, Tier B, added in wave 3) are.
         val components = listOf("activity", "service", "receiver", "provider").flatMap { application.children(it) }
         assertTrue(components.all { it.android("exported") != null }, "every component states exported")
-        assertEquals(listOf(".MainActivity"), components.filter { it.android("exported") == "true" }.map { it.android("name") })
+        assertEquals(
+            listOf(".MainActivity", ".share.ShareReceiverActivity"),
+            components.filter { it.android("exported") == "true" }.map { it.android("name") },
+        )
+    }
+
+    @Test
+    fun `the share receiver takes text from other apps' share sheets and nothing else`() {
+        // Rule 34 and rule 23: its own activity, only SEND and SEND_MULTIPLE of text types, no scheme or host.
+        val share = component("activity", ".share.ShareReceiverActivity")
+        val filters = share.children("intent-filter")
+        assertEquals(listOf("android.intent.action.SEND", "android.intent.action.SEND_MULTIPLE"), filters.flatMap { f -> f.children("action").map { it.android("name") } })
+        for (filter in filters) {
+            assertEquals(listOf("android.intent.category.DEFAULT"), filter.children("category").map { it.android("name") })
+            assertEquals(listOf("text/*"), filter.children("data").map { it.android("mimeType") })
+        }
     }
 
     @Test

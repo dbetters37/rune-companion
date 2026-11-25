@@ -21,6 +21,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.aicontrolcenter.app.di.LocalAppGraph
+import com.aicontrolcenter.app.routines.WaitingRoutinesBanner
+import com.aicontrolcenter.app.routines.WaitingRoutinesViewModel
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -49,6 +51,36 @@ data class DashboardNavigation(
     val onOpenMemory: () -> Unit = {},
     /** Opens a task an agent is working on. */
     val onOpenTask: (TaskId) -> Unit = {},
+    // --- Phase 6 (wave 3): where the new Dashboard parts lead ---
+    /** Activity › Usage and cost. */
+    val onOpenUsage: () -> Unit = {},
+    /** Settings › Daily limits. */
+    val onOpenDailyLimits: () -> Unit = {},
+    /** The Settings section (Working in the background, and the rest). */
+    val onOpenSettings: () -> Unit = {},
+    /** What a model, a provider and an agent are. */
+    val onOpenConcepts: () -> Unit = {},
+    /** One objective (one paused by today's limit, say). */
+    val onOpenObjective: (TaskId) -> Unit = {},
+    /** The Team view, on one objective or on all. */
+    val onOpenTeam: (TaskId?) -> Unit = {},
+)
+
+/**
+ * The Dashboard's Phase 6 parts, each owned by its package and placed by [DashboardScreen] (wave 3, WP8): null shows
+ * nothing, which is what previews and the existing screenshots use.
+ */
+class DashboardSlots(
+    /** At the very top: safe start is on (WP10a). */
+    val safeStart: (@Composable () -> Unit)? = null,
+    /** At the top: a routine waits for the owner's tap (WP17's banner). */
+    val waitingRoutines: (@Composable () -> Unit)? = null,
+    /** With the first-run notice: Getting started (WP10a, Tier B). */
+    val gettingStarted: (@Composable () -> Unit)? = null,
+    /** Below the summary: today's answers, tokens and cost (WP10a). */
+    val today: (@Composable () -> Unit)? = null,
+    /** Below the attention list: the phone's own attention items (WP10a). */
+    val phoneAttention: (@Composable () -> Unit)? = null,
 )
 
 @Composable
@@ -69,6 +101,21 @@ fun DashboardRoute(navigation: DashboardNavigation) {
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    // Phase 6 (wave 3): one view model for the Today tile, Getting started, the phone's attention items and safe start.
+    val extras = viewModel {
+        DashboardExtrasViewModel(
+            today = graph.todayUsage,
+            settings = graph.settings,
+            directory = graph.registryDirectory,
+            tasks = graph.tasks,
+            backgroundHealth = graph.backgroundHealth,
+            storage = graph.storageWatch,
+            safeStart = graph.safeStart,
+            clock = graph.clock,
+        )
+    }
+    // "Tap to start" (WP17, F12): the banner names each waiting run; Start asks once more, then starts exactly that run.
+    val waiting = viewModel { WaitingRoutinesViewModel(graph.waitingRoutines, graph.clock, graph.zone) }
     DashboardScreen(
         state = state,
         navigation = navigation,
@@ -76,6 +123,13 @@ fun DashboardRoute(navigation: DashboardNavigation) {
         onScan = viewModel::scanForApps,
         onTrySimulator = viewModel::trySimulator,
         onMessageShown = viewModel::messageShown,
+        slots = DashboardSlots(
+            safeStart = { SafeStartBanner(extras, navigation) },
+            waitingRoutines = { WaitingRoutinesBanner(waiting) },
+            gettingStarted = { GettingStartedCard(extras, navigation) },
+            today = { TodayTile(extras, navigation) },
+            phoneAttention = { PhoneAttention(extras, navigation) },
+        ),
     )
 }
 
@@ -90,6 +144,7 @@ fun DashboardScreen(
     onScan: () -> Unit,
     onTrySimulator: () -> Unit,
     onMessageShown: () -> Unit,
+    slots: DashboardSlots = DashboardSlots(),
 ) {
     var confirmSimulator by rememberSaveable { mutableStateOf(false) }
     ScreenScaffold(title = "Dashboard", message = state.message, onMessageShown = onMessageShown) { padding ->
@@ -112,7 +167,12 @@ fun DashboardScreen(
                     onOpenMemory = navigation.onOpenMemory,
                 )
             }
+            val top: @Composable () -> Unit = {
+                slots.safeStart?.invoke()
+                slots.waitingRoutines?.invoke()
+            }
             val notice: @Composable () -> Unit = {
+                slots.gettingStarted?.invoke()
                 state.quickStart?.let {
                     QuickStartCard(
                         quickStart = it,
@@ -124,7 +184,11 @@ fun DashboardScreen(
                 }
             }
             val working: @Composable () -> Unit = { WorkingNowSection(state.working, navigation.onOpenAgent, navigation.onOpenTask) }
-            val attention: @Composable () -> Unit = { AttentionSection(state.attention, navigation.onOpenAttention) }
+            val attention: @Composable () -> Unit = {
+                AttentionSection(state.attention, navigation.onOpenAttention)
+                slots.phoneAttention?.invoke()
+            }
+            val today: @Composable () -> Unit = { slots.today?.invoke() }
             val network: @Composable () -> Unit = {
                 NetworkCard(
                     network = state.network,
@@ -132,6 +196,7 @@ fun DashboardScreen(
                     onSelectNode = onSelectNode,
                     onOpenAgent = navigation.onOpenAgent,
                     onNewAgent = navigation.onNewAgent,
+                    onOpenTeam = { navigation.onOpenTeam(null) },
                 )
             }
             val actions: @Composable () -> Unit = {
@@ -151,8 +216,10 @@ fun DashboardScreen(
                     horizontalArrangement = Arrangement.spacedBy(Spacing.lg),
                 ) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Spacing.md)) {
+                        top()
                         notice()
                         summary()
+                        today()
                         attention()
                         working()
                         actions()
@@ -167,8 +234,10 @@ fun DashboardScreen(
                     modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(contentPadding),
                     verticalArrangement = Arrangement.spacedBy(Spacing.md),
                 ) {
+                    top()
                     notice()
                     summary()
+                    today()
                     attention()
                     working()
                     network()

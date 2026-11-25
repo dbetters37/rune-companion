@@ -1,5 +1,7 @@
 package com.aicontrolcenter.app.ui.activity
 
+import com.aicontrolcenter.app.Phase6Stub
+import com.aicontrolcenter.core.AgentId
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -53,8 +55,18 @@ import com.aicontrolcenter.core.activity.ActivityEvent
 import com.aicontrolcenter.core.activity.ActivityType
 import com.aicontrolcenter.core.activity.Severity
 
+/**
+ * The Activity section. Wave 3 (WP10a): tabs [ActivityTab.LOG] and [ActivityTab.USAGE] ("Usage and cost",
+ * [UsageViewModel]); [initialAgent] and [initialText] open the log filtered (a usage row's link); [navigation] leads on.
+ */
+@Phase6Stub("WP10a")
 @Composable
-fun ActivityRoute() {
+fun ActivityRoute(
+    @Suppress("UNUSED_PARAMETER") initialTab: ActivityTab = ActivityTab.LOG,
+    @Suppress("UNUSED_PARAMETER") initialAgent: AgentId? = null,
+    @Suppress("UNUSED_PARAMETER") initialText: String? = null,
+    @Suppress("UNUSED_PARAMETER") navigation: ActivityNavigation = ActivityNavigation(),
+) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel { ActivityViewModel(graph.activityLog, graph.registryDirectory, graph.clock) }
     val state by viewModel.uiState.collectAsStateWithLifecycle()

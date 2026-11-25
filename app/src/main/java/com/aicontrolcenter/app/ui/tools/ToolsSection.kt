@@ -1,5 +1,6 @@
 package com.aicontrolcenter.app.ui.tools
 
+import com.aicontrolcenter.app.Phase6Stub
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -69,7 +70,14 @@ enum class ToolsTab(val title: String) {
         }
 }
 
-/** Where the Tools section leads. Supplied by the navigation shell. */
+/**
+ * Where the Tools section leads. Supplied by the navigation shell.
+ *
+ * Wave 3 (WP11b wires the new ones): the owner's routines and folder pick-up rules are lists of the owner's things and sit
+ * in Tools (WP10c builds their screens); a folder's "Pick up new files" opens [onNewPickUpRule]; a question in the
+ * History opens its own screen ([onOpenQuestion], rule 13).
+ */
+@Phase6Stub("WP11b")
 class ToolsNavigation(
     val onOpenAgent: (AgentId) -> Unit,
     val onOpenWorkspace: () -> Unit,
@@ -77,6 +85,10 @@ class ToolsNavigation(
     val onOpenSettings: () -> Unit,
     /** Shown as a back arrow when the section was opened from another screen (an agent's Permissions link). */
     val onBack: (() -> Unit)? = null,
+    val onOpenRoutines: () -> Unit = {},
+    val onOpenPickUpRules: () -> Unit = {},
+    val onNewPickUpRule: (com.aicontrolcenter.core.FolderId) -> Unit = {},
+    val onOpenQuestion: (RequestId) -> Unit = onOpenRequest,
 )
 
 /**
