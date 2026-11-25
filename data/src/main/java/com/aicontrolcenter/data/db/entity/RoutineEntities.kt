@@ -82,6 +82,8 @@ internal data class PickUpRuleEntity(
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
     @ColumnInfo(name = "last_run_at") val lastRunAt: Long?,
     @ColumnInfo(name = "last_result") val lastResult: String?,
+    /** The folder's read-only time the rule was switched on under (security review of wave 1, F1). */
+    @ColumnInfo(name = "folder_read_only_since") val folderReadOnlySince: Long?,
 ) {
     companion object {
         const val TABLE = "pickup_rules"
@@ -111,6 +113,8 @@ internal data class PickUpImportEntity(
     @ColumnInfo(name = "size_bytes") val sizeBytes: Long,
     @ColumnInfo(name = "imported_at") val importedAt: Long,
     @ColumnInfo(name = "memory_id") val memoryId: String?,
+    /** A file that was in the folder when the rule was switched on: recorded, never imported, not counted (F1). */
+    @ColumnInfo(name = "seen_only", defaultValue = "0") val seenOnly: Boolean,
 ) {
     companion object {
         const val TABLE = "pickup_imports"

@@ -30,7 +30,8 @@ internal object AiccMigrations {
  *
  * - [ADD_COLUMNS]: `tasks.retry_at` and `tasks.result_chars` (R4, P1), `agent_messages.to_space_id`
  *   (memory shared into a space), `owner_requests.question`, `options_json` and `answer` (an
- *   agent's question to the owner), `conversations.turn_started_at` (R3). SQLite appends an added
+ *   agent's question to the owner), `conversations.turn_started_at` (R3), `shared_folders.read_only_since`
+ *   (when the owner made a folder read-only; folder pick-up, security review of wave 1, F1). SQLite appends an added
  *   column, so the entities declare these last, in this order: a new installation and an
  *   upgraded phone have the same columns in the same order. Each definition is the exported
  *   column's, verbatim (`SchemaExportTest`).
@@ -53,6 +54,7 @@ internal object Migration5To6 : Migration(5, 6) {
         "ALTER TABLE `owner_requests` ADD COLUMN `options_json` TEXT",
         "ALTER TABLE `owner_requests` ADD COLUMN `answer` TEXT",
         "ALTER TABLE `conversations` ADD COLUMN `turn_started_at` INTEGER",
+        "ALTER TABLE `shared_folders` ADD COLUMN `read_only_since` INTEGER",
     )
 
     /** Version 6's column names, which this step must keep using whatever later happens to the entity classes. */
@@ -88,11 +90,11 @@ internal object Migration5To6 : Migration(5, 6) {
         "CREATE INDEX IF NOT EXISTS `index_routine_runs_routine_id_due_at_id` ON `routine_runs` (`routine_id`, `due_at`, `id`)",
         "CREATE TABLE IF NOT EXISTS `pickup_rules` (`id` TEXT NOT NULL, `folder_id` TEXT NOT NULL, `space_id` TEXT NOT NULL, " +
             "`enabled` INTEGER NOT NULL, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, `last_run_at` INTEGER, " +
-            "`last_result` TEXT, PRIMARY KEY(`id`))",
+            "`last_result` TEXT, `folder_read_only_since` INTEGER, PRIMARY KEY(`id`))",
         "CREATE UNIQUE INDEX IF NOT EXISTS `index_pickup_rules_folder_id` ON `pickup_rules` (`folder_id`)",
         "CREATE TABLE IF NOT EXISTS `pickup_imports` (`rule_id` TEXT NOT NULL, `content_sha256` TEXT NOT NULL, " +
             "`document_name` TEXT NOT NULL, `size_bytes` INTEGER NOT NULL, `imported_at` INTEGER NOT NULL, `memory_id` TEXT, " +
-            "PRIMARY KEY(`rule_id`, `content_sha256`))",
+            "`seen_only` INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(`rule_id`, `content_sha256`))",
         "CREATE INDEX IF NOT EXISTS `index_pickup_imports_rule_id_imported_at_content_sha256` ON `pickup_imports` " +
             "(`rule_id` ASC, `imported_at` DESC, `content_sha256` ASC)",
         "CREATE INDEX IF NOT EXISTS `index_pickup_imports_imported_at` ON `pickup_imports` (`imported_at`)",

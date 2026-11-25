@@ -6,12 +6,15 @@ import com.aicontrolcenter.app.di.AppGraph
 import com.aicontrolcenter.app.di.createProductionPorts
 import com.aicontrolcenter.app.di.wiring.BackgroundPorts
 import com.aicontrolcenter.app.di.wiring.BackgroundWiring
+import com.aicontrolcenter.app.di.wiring.PickUpStepPorts
 import com.aicontrolcenter.app.di.wiring.RoutinesWiring
 import com.aicontrolcenter.app.health.AppGate
 import com.aicontrolcenter.app.work.AndroidNotificationAccess
 import com.aicontrolcenter.app.work.AppProcessHooks
 import com.aicontrolcenter.app.work.ScreenSessionNotifications
 import com.aicontrolcenter.app.work.UpkeepGraph
+import com.aicontrolcenter.app.work.UpkeepHost
+import com.aicontrolcenter.app.work.UpkeepPorts
 import com.aicontrolcenter.core.RandomIdGenerator
 import com.aicontrolcenter.core.WallClock
 import com.aicontrolcenter.core.activity.ActivityRecorder
@@ -20,6 +23,7 @@ import com.aicontrolcenter.core.backup.MaintenanceGate
 import com.aicontrolcenter.core.health.OwnerRecovery
 import com.aicontrolcenter.core.memory.Embedder
 import com.aicontrolcenter.core.memory.MemoryService
+import com.aicontrolcenter.core.pickup.PickUpFolders
 import com.aicontrolcenter.core.settings.ReadOnlySettings
 import com.aicontrolcenter.data.DataLayer
 import com.aicontrolcenter.memory.DefaultMemoryService
@@ -45,7 +49,7 @@ import kotlinx.coroutines.SupervisorJob
  * The application object is also created in the isolated script process (`:scripts`), where it
  * must do nothing: every member is built on first use, and [onCreate] returns at once there.
  */
-class AiControlCenterApp : Application() {
+class AiControlCenterApp : Application(), UpkeepHost {
     /** Lives as long as the process. A failing child never cancels the others. Built on first use (never in `:scripts`). */
     private val appScope: CoroutineScope by lazy {
         CoroutineScope(SupervisorJob() + Dispatchers.Default + AppProcessHooks.scopeContext(this))
@@ -105,9 +109,36 @@ class AiControlCenterApp : Application() {
     /** Owner-only: the database check and Start over, for the gate and the Recovery screen (never through the graph). */
     val recovery: OwnerRecovery? get() = background.recovery
 
-    /** What the upkeep job may reach: never the graph, a model, a tool or a provider (rule 1). */
-    val upkeep: UpkeepGraph by lazy {
-        UpkeepGraph(this, dataLayer, sharedMemory, maintenanceGate, RoutinesWiring.upkeepSteps(this, dataLayer, sharedMemory))
+    /**
+     * What the upkeep job may reach: never the graph, a model, a tool or a provider (rule 1). Built here from narrow
+     * ports only (security review of wave 1, F11): neither the job nor its steps get the data layer, a context or
+     * this application object, through which they could reach the owner's stores or build the graph.
+     */
+    override val upkeep: UpkeepGraph by lazy {
+        val settings = ReadOnlySettings(dataLayer.settings)
+        val zone = { java.time.ZoneId.systemDefault() }
+        val ports = UpkeepPorts(
+            memory = sharedMemory,
+            activityLog = dataLayer.activityLog,
+            usageHousekeeping = dataLayer.usageHousekeeping,
+            settings = settings,
+            gate = maintenanceGate,
+            clock = WallClock,
+            zone = zone,
+            noBackupFilesDir = noBackupFilesDir,
+            versionCode = BuildConfig.VERSION_CODE.toLong(),
+        )
+        val pickUp = PickUpStepPorts(
+            rules = dataLayer.pickUpRules,
+            // WP17: PickUpFoldersView(dataLayer.sharedFolders, <the device's folder reader>); no folder is read in wave 1.
+            folders = PickUpFolders.None,
+            memory = sharedMemory,
+            settings = settings,
+            clock = WallClock,
+            zone = zone,
+            gate = maintenanceGate,
+        )
+        UpkeepGraph(ports, RoutinesWiring.upkeepSteps(pickUp))
     }
 
     /**

@@ -20,6 +20,8 @@ internal data class SharedFolderEntity(
     @ColumnInfo(name = "display_name") val displayName: String,
     @ColumnInfo(name = "added_at") val addedAt: Long,
     @ColumnInfo(name = "read_only") val readOnly: Boolean,
+    /** Schema 6 (security review of wave 1, F1): when the owner last switched [readOnly] on; null while off. Added last. */
+    @ColumnInfo(name = "read_only_since") val readOnlySince: Long? = null,
 ) {
     companion object {
         const val TABLE = "shared_folders"

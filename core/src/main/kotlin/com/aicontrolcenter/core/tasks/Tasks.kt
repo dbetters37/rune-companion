@@ -112,7 +112,33 @@ data class ObjectiveOptions(
      * news'"; null when the owner started it by hand (Phase 6, Appendix A).
      */
     val routineId: RoutineId? = null,
-)
+    /**
+     * Whether the objective's agents may use other apps' screens (Phase 6, Appendix A; security
+     * review of wave 1, F12). True for an objective the owner starts by hand; a routine's
+     * objective copies the routine's "May use other apps' screens" ([com.aicontrolcenter.core.routines.Routine.objectiveOptions]),
+     * off by default. When false, the broker refuses every screen tool of the objective's tasks
+     * ([SCREEN_ACTIONS_NOT_ALLOWED]) before anything is asked.
+     *
+     * The default fails closed: options that name a routine but were built without
+     * `Routine.objectiveOptions()` (or stored without this key) allow no screens; only options
+     * without a routine (the owner's own objectives) default to allowing them.
+     */
+    val screenActionsAllowed: Boolean = routineId == null,
+    /**
+     * How many minutes this objective's requests wait for the owner; null: the owner's usual
+     * `approvalTimeoutMinutes`. A routine's own choice (1 to 240), copied when it starts the objective;
+     * the broker brings any other value into that range.
+     */
+    val approvalTimeoutMinutes: Int? = null,
+) {
+    /** Texts. */
+    companion object {
+        /** Why a screen tool is refused in an objective whose [screenActionsAllowed] is false. */
+        const val SCREEN_ACTIONS_NOT_ALLOWED: String =
+            "This routine may not use other apps' screens, so nothing on the screen was read or done. " +
+                "The owner can allow it in the routine's settings (\"May use other apps' screens\")."
+    }
+}
 
 /**
  * One task: the owner's objective, a piece of work, a review, or the final synthesis. Tasks of

@@ -18,7 +18,7 @@ import com.aicontrolcenter.core.llm.ToolCallRequest
 import com.aicontrolcenter.core.llm.ToolDefinition
 import com.aicontrolcenter.core.operator.OwnerRequest
 import com.aicontrolcenter.core.operator.ScreenOperator
-import com.aicontrolcenter.core.registry.AgentRepository
+import com.aicontrolcenter.core.registry.AgentStatsLog
 import com.aicontrolcenter.core.settings.FrameworkSettings
 import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.tasks.withPausableTimeout
@@ -31,9 +31,9 @@ import com.aicontrolcenter.framework.memory.AutoRecall
 import com.aicontrolcenter.framework.memory.MemoryReferences
 import com.aicontrolcenter.framework.operator.OwnerWaits
 import com.aicontrolcenter.framework.tools.ToolExecutor
+import kotlin.time.TimeSource
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
-import kotlin.time.TimeSource
 
 /**
  * Runs one turn of one agent: call the model, run the tools it asks for, feed the results
@@ -89,7 +89,7 @@ class AgentRunner(
     private val gateway: ModelGateway,
     private val tools: ToolRegistry,
     private val executor: ToolExecutor,
-    private val agents: AgentRepository,
+    private val agents: AgentStatsLog,
     private val settings: SettingsView,
     private val monitor: DefaultAgentActivityMonitor,
     private val clock: Clock,

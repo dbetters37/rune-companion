@@ -1,7 +1,5 @@
 package com.aicontrolcenter.memory
 
-import kotlinx.coroutines.Dispatchers
-import kotlin.coroutines.CoroutineContext
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.IdGenerator
@@ -35,9 +33,13 @@ import com.aicontrolcenter.core.memory.ProvenanceOrigin
 import com.aicontrolcenter.core.memory.RecallQuery
 import com.aicontrolcenter.core.memory.editedNote
 import com.aicontrolcenter.core.memoryId
+import com.aicontrolcenter.core.registry.AgentDirectory
 import com.aicontrolcenter.core.registry.AgentRepository
+import com.aicontrolcenter.core.registry.ReadOnlyRegistry
 import com.aicontrolcenter.core.settings.SettingsView
+import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -78,7 +80,12 @@ import kotlinx.serialization.json.put
  */
 class DefaultMemoryService(
     private val repository: MemoryRepository,
-    private val agents: AgentRepository,
+    /**
+     * The owner's agent store. The service keeps only a read-only view of it and a way to take a deleted space away
+     * from agents (security review of wave 1, F3, second review): agents reach this service, so it may not hold the
+     * store that changes an agent's tools, spaces or model.
+     */
+    agents: AgentRepository,
     settings: SettingsView,
     embedder: Embedder,
     activity: ActivityRecorder,
@@ -92,10 +99,11 @@ class DefaultMemoryService(
      */
     computeContext: CoroutineContext = Dispatchers.Default,
 ) : MemoryService {
-    private val resolver = AccessResolver(agents, repository)
-    private val log = MemoryActivity(activity, agents, repository)
+    private val directory: AgentDirectory = ReadOnlyRegistry.agents(agents)
+    private val resolver = AccessResolver(directory, repository)
+    private val log = MemoryActivity(activity, directory, repository)
     private val vectors = MemoryEmbeddings(embedder, settings, repository, log, config)
-    private val ctx = MemoryContext(repository, agents, ids, clock, config, resolver, log, vectors)
+    private val ctx = MemoryContext(repository, directory, ReadOnlyRegistry.spaceRevoker(agents), ids, clock, config, resolver, log, vectors)
     private val scorer = RecallScorer(config)
     private val reader = MemoryReader(repository, config)
     private val recaller = MemoryRecall(ctx, reader, scorer, computeContext)
@@ -112,7 +120,7 @@ class DefaultMemoryService(
         MemoryActor.Owner -> repository.observe(filter)
         is MemoryActor.Agent -> {
             val id = actor.profile.id
-            combine(agents.observe(id), repository.observeSpaces()) { profile, spaces ->
+            combine(directory.observe(id), repository.observeSpaces()) { profile, spaces ->
                 resolver.forProfile(id, profile, spaces.mapTo(HashSet()) { it.id }, actor.profile.name).access
             }.distinctUntilChanged().flatMapLatest { access ->
                 if (access.readable.isEmpty() && access.taskOwner == null) {
@@ -263,7 +271,7 @@ class DefaultMemoryService(
      */
     override suspend fun forgetAgent(agentId: AgentId): Int {
         val deleted = ctx.writeLock.withLock { repository.deleteAgentMemory(agentId) }
-        val name = agents.get(agentId)?.name ?: "agent ${agentId.value}"
+        val name = directory.get(agentId)?.name ?: "agent ${agentId.value}"
         log.event(
             null, "Agent memory forgotten: $name",
             "Deleted $deleted memor${if (deleted == 1) "y" else "ies"} (private and task memory). Memories it shared into knowledge spaces stay there.",
@@ -343,9 +351,9 @@ class DefaultMemoryService(
     private suspend fun deleteMemoryOfRemovedAgents(): Map<AgentId, Int> {
         val owners = repository.agentsWithMemory()
         if (owners.isEmpty()) return emptyMap()
-        val existing = agents.getAll().mapTo(HashSet()) { it.id }
+        val existing = directory.getAll().mapTo(HashSet()) { it.id }
         if (existing.isEmpty()) return emptyMap()
-        return (owners - existing).filter { agents.get(it) == null }
+        return (owners - existing).filter { directory.get(it) == null }
             .associateWith { repository.deleteAgentMemory(it) }
             .filterValues { it > 0 }
     }

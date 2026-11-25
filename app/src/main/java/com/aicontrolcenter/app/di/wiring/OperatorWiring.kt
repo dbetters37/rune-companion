@@ -10,7 +10,7 @@ import com.aicontrolcenter.app.operator.ScreenSessions
 import com.aicontrolcenter.app.operator.SharedFolderFilesView
 import com.aicontrolcenter.app.operator.SystemScreens
 import com.aicontrolcenter.core.activity.ActivityRecorder
-import com.aicontrolcenter.core.llm.ProviderManager
+import com.aicontrolcenter.core.llm.OwnerKeyCheck
 import com.aicontrolcenter.core.memory.MemoryService
 import com.aicontrolcenter.core.operator.GrantLookup
 import com.aicontrolcenter.core.operator.OperatorCapabilities
@@ -24,6 +24,7 @@ import com.aicontrolcenter.core.operator.ScreenControl
 import com.aicontrolcenter.core.operator.WebReader
 import com.aicontrolcenter.core.operator.Workspace
 import com.aicontrolcenter.core.registry.AiAppScanner
+import com.aicontrolcenter.core.registry.ReadOnlyRegistry
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.tasks.Orchestrator
@@ -69,8 +70,9 @@ import kotlinx.coroutines.launch
  * @param appScope lives as long as the process.
  * @param registryDirectory the registry as agents see it (the built-in tools read it).
  * @param memory the one memory service of the process (the memory tools use it).
- * @param providerManager the provider manager (WP5: answering a question checks the answer against the stored keys,
- *   rule 32).
+ * @param ownerKeyCheck owner-only (WP5: answering a question checks the answer against the stored keys, rule 32). Only
+ *   the owner's request port (`OwnerServices.answer`) may hold it, never the broker, the tools or the question tool
+ *   (security review of wave 1, F3).
  */
 class OperatorAssembly(
     ports: Ports,
@@ -79,7 +81,7 @@ class OperatorAssembly(
     appScope: CoroutineScope,
     registryDirectory: RegistryDirectory,
     memory: MemoryService,
-    @Suppress("UNUSED_PARAMETER") providerManager: ProviderManager,
+    @Suppress("UNUSED_PARAMETER") ownerKeyCheck: OwnerKeyCheck,
 ) {
     /** The apps that are never operated: resolved once at start-up, the same set everywhere. */
     private val protectedPackages: () -> ProtectedPackages = ports.operator.protectedPackages
@@ -129,7 +131,7 @@ class OperatorAssembly(
      * folder or app a call targets and the protected apps. Read-only.
      */
     private val operatorFacts = OperatorFacts(
-        agents = ports.agents,
+        agents = ReadOnlyRegistry.agents(ports.agents),
         settings = settings,
         capabilities = capabilities,
         folders = folderDirectory,
@@ -161,7 +163,7 @@ class OperatorAssembly(
     /** Every tool agents can be given. The team tools are added once the orchestrator exists (TeamAssembly). */
     val toolRegistry: ToolRegistry = DefaultToolRegistry().also { registry ->
         BuiltInTools.registerAll(registry, ports.clock, registryDirectory)
-        MemoryTools.registerAll(registry, memory, capabilities, ports.agents, ports.clock)
+        MemoryTools.registerAll(registry, memory, capabilities, ReadOnlyRegistry.agents(ports.agents), ports.clock)
         // The phone operator's tools get gateways, the workspace and read-only lookups; nothing owner-only.
         val dependencies = OperatorToolDependencies(
             workspace = workspace,
@@ -234,9 +236,11 @@ class OperatorAssembly(
         clock = ports.clock,
     )
 
-    /** The folders the owner shares with agents. Removing one withdraws the questions about it. */
+    /** The folders the owner shares with agents. Removing one withdraws the questions about it; making one writable stops its pick-up. */
     val ownerFolders: OwnerFolders = DefaultOwnerFolders(
         ports.operator.folderAccess, ports.operator.sharedFolders, ports.operator.permissions, requestQueue, activity, ports.idGenerator, ports.clock,
+        // Making a folder writable switches folder pick-up from it off (security review of wave 1, F1).
+        pickUpRules = ports.routines.pickUpRules,
     )
 
     /** The apps the owner authorised for screen operation. Withdrawing one withdraws the questions about it. */

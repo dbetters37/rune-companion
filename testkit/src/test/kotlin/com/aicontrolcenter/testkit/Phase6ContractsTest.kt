@@ -4,6 +4,7 @@ import com.aicontrolcenter.core.IdGenerator
 import com.aicontrolcenter.core.memory.MemoryRepository
 import com.aicontrolcenter.core.operator.FrontState
 import com.aicontrolcenter.core.operator.SharedFolderRepository
+import com.aicontrolcenter.core.pickup.PickUpFolders
 import com.aicontrolcenter.core.pickup.PickUpRuleRepository
 import com.aicontrolcenter.core.routines.RoutineRepository
 import com.aicontrolcenter.testkit.contract.ActivityPageContract
@@ -67,7 +68,7 @@ class InMemoryOwnerQuestionTest : OwnerQuestionContract() {
 class InMemoryUsageLedgerTest : UsageLedgerContract() {
     override fun createStores(clock: FakeClock, zone: ZoneId): UsageStores {
         val store = InMemoryUsageStore(clock) { zone }
-        return UsageStores(store, store, store)
+        return UsageStores(store, store, store, store)
     }
 }
 
@@ -99,7 +100,7 @@ class ReferenceOwnerPickUpRulesTest : OwnerPickUpRulesContract() {
 
     override fun createOwnerPickUpRules(
         repository: PickUpRuleRepository,
-        folders: SharedFolderRepository,
+        folders: PickUpFolders,
         memory: MemoryRepository,
         clock: FakeClock,
         ids: IdGenerator,

@@ -4,9 +4,12 @@ import android.content.Context
 import com.aicontrolcenter.app.Phase6Stub
 import com.aicontrolcenter.app.di.Ports
 import com.aicontrolcenter.app.work.UpkeepStep
+import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.activity.ActivityRecorder
+import com.aicontrolcenter.core.backup.MaintenanceGate
 import com.aicontrolcenter.core.memory.MemoryService
 import com.aicontrolcenter.core.pickup.OwnerPickUpRules
+import com.aicontrolcenter.core.pickup.PickUpFolders
 import com.aicontrolcenter.core.pickup.PickUpRuleRepository
 import com.aicontrolcenter.core.routines.OwnerRoutines
 import com.aicontrolcenter.core.routines.RoutineRepository
@@ -14,6 +17,7 @@ import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.tasks.Orchestrator
 import com.aicontrolcenter.data.DataLayer
 import kotlinx.coroutines.CoroutineScope
+import java.time.ZoneId
 
 /*
  * Routines (objectives started at set times) and automatic folder pick-up (Phase 6, owner decision Q1 = "Yes, both";
@@ -59,7 +63,32 @@ class RoutinesAssembly(
 
     /** Owner-only: the folder pick-up screen (WP10). Null until WP17 builds it; the screen then stays hidden. */
     val ownerPickUpRules: OwnerPickUpRules? = null
+
+    /**
+     * Runs the routines that are due now (WP17), with every check of Appendix A at run time. Called by the foreground
+     * service when a routine's alarm asked for it ([RoutinesWiring.ACTION_RUN_DUE_ROUTINES]); never from a receiver
+     * and never from a notification tap (F12: "Tap to start" opens the app, where the owner confirms). Wave 1: nothing.
+     */
+    suspend fun runDue() {}
 }
+
+/**
+ * Everything a folder pick-up step may reach while nobody watches (security review of wave 1, F11): the rules and
+ * their import records, the owner's folders read-only ([PickUpFolders]: a folder's record, its files, reading one),
+ * the one memory service of the process (offline hashing embedder; the pick-up writes into the rule's space as the
+ * owner's import, `PickUpSafety.memoryDraft`), the settings read-only (the master switch), the clock and the owner's
+ * zone (the daily cap), and the maintenance gate. No data layer, no `Context`, no application object, no graph:
+ * `UpkeepIsolationTest` fails on any of them.
+ */
+class PickUpStepPorts(
+    val rules: PickUpRuleRepository,
+    val folders: PickUpFolders,
+    val memory: MemoryService,
+    val settings: SettingsView,
+    val clock: Clock,
+    val zone: () -> ZoneId,
+    val gate: MaintenanceGate,
+)
 
 @Phase6Stub("WP17")
 object RoutinesWiring {
@@ -70,11 +99,14 @@ object RoutinesWiring {
     /**
      * Upkeep that folder pick-up adds to the daily upkeep job (Appendix A: "run by the upkeep job's scheduler"). Run
      * by `UpkeepGraph` after its own steps and under the same checks (rule 1: never a model, a tool or a provider).
-     * None in wave 1.
+     * Built from [ports] only (F11). None in wave 1.
      */
-    fun upkeepSteps(
-        @Suppress("UNUSED_PARAMETER") context: Context,
-        @Suppress("UNUSED_PARAMETER") data: DataLayer,
-        @Suppress("UNUSED_PARAMETER") memory: MemoryService,
-    ): List<UpkeepStep> = emptyList()
+    fun upkeepSteps(@Suppress("UNUSED_PARAMETER") ports: PickUpStepPorts): List<UpkeepStep> = emptyList()
+
+    /**
+     * The intent action with which a routine's alarm receiver asks the foreground service to run the routines that
+     * are due (F11, F12): receivers only signal; the service, which may build the graph, calls
+     * [RoutinesAssembly.runDue]. WP2 handles it in `ObjectiveWorkService`; WP17 sends it.
+     */
+    const val ACTION_RUN_DUE_ROUTINES: String = "com.aicontrolcenter.app.action.RUN_DUE_ROUTINES"
 }

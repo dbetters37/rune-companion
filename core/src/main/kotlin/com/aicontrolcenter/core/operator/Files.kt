@@ -358,6 +358,13 @@ data class SharedFolder(
     val addedAt: Long,
     /** The owner's switch: no agent may change anything in it, whatever was granted. */
     val readOnly: Boolean = false,
+    /**
+     * When the owner last switched [readOnly] on; null while it is off (and for a folder made
+     * read-only before version 0.6.0). Folder pick-up keeps the value a rule was switched on under:
+     * a different one means the folder was writable for agents at some moment since, and the rule
+     * imports nothing (security review of wave 1, F1).
+     */
+    val readOnlySince: Long? = null,
 )
 
 /**

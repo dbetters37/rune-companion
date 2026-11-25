@@ -30,6 +30,7 @@ import com.aicontrolcenter.core.health.StorageWatch
 import com.aicontrolcenter.core.llm.ModelGateway
 import com.aicontrolcenter.core.llm.ProviderAdapterFactory
 import com.aicontrolcenter.core.llm.ProviderManager
+import com.aicontrolcenter.core.llm.ProviderRechecks
 import com.aicontrolcenter.core.memory.Embedder
 import com.aicontrolcenter.core.memory.MemoryService
 import com.aicontrolcenter.core.operator.OwnerFolders
@@ -173,7 +174,12 @@ class AppGraph(
 
     val registryDirectory: RegistryDirectory get() = modelsAssembly.registryDirectory
     val modelGateway: ModelGateway get() = modelsAssembly.modelGateway
+
+    /** Owner-only: the Models screens and start-up. Nothing agent-facing holds it (F3). */
     val providerManager: ProviderManager get() = modelsAssembly.providerManager
+
+    /** Agent-side: re-checking a provider that was not answering, and when the next re-check is due (WP2's wake lock reads it). */
+    val providerRechecks: ProviderRechecks get() = modelsAssembly.providerRechecks
 
     // --- memory ---
 
@@ -203,7 +209,8 @@ class AppGraph(
     // --- the phone operator (WP5) ---
 
     /** The phone operator, the tools, the executor, the broker and the owner's operator ports. */
-    internal val operatorAssembly = OperatorAssembly(ports, settingsView, activityRecorder, appScope, registryDirectory, this.memoryService, providerManager)
+    internal val operatorAssembly =
+        OperatorAssembly(ports, settingsView, activityRecorder, appScope, registryDirectory, this.memoryService, modelsAssembly.ownerKeyCheck)
 
     /**
      * The agents' workspace, a folder inside this app. There is exactly one: the workspace tools
@@ -309,7 +316,7 @@ class AppGraph(
         appScope = appScope,
         memory = this.memoryService,
         operatorHooks = operatorAssembly.operatorHooks,
-        providerManager = providerManager,
+        providerRechecks = modelsAssembly.providerRechecks,
         maintenanceGate = maintenanceGate,
     ).also { team ->
         // Before any agent runs: the operator's tools that need the orchestrator (WP5).

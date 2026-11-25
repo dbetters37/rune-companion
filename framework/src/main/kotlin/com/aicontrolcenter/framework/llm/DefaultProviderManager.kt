@@ -473,22 +473,13 @@ class DefaultProviderManager(
     private suspend fun hasStoredKey(provider: ModelProvider?): Boolean = provider?.apiKeyAlias?.let { vault.contains(it) } ?: false
 
     /** The alias of [id]'s key as first saved, before aliases were versioned; records may still point at it. */
-    private fun keyAlias(id: ProviderId): String = "provider/${id.value}"
+    private fun keyAlias(id: ProviderId): String = KeyAliases.base(id)
 
     /** A new alias for [id]'s key, never the one the record points at ([current]). */
-    private fun nextKeyAlias(id: ProviderId, current: String?): String {
-        val base = keyAlias(id)
-        val version = current?.takeIf { isKeyAliasOf(id, it) }?.substringAfter("$base/", missingDelimiterValue = "")?.toIntOrNull() ?: 0
-        return "$base/${version + 1}"
-    }
+    private fun nextKeyAlias(id: ProviderId, current: String?): String = KeyAliases.next(id, current)
 
     /** True when [alias] is one of the names [id]'s key is saved under: the original form or a versioned one. */
-    private fun isKeyAliasOf(id: ProviderId, alias: String): Boolean {
-        val base = keyAlias(id)
-        if (alias == base) return true
-        val version = alias.removePrefix("$base/")
-        return version.length < alias.length && version.isNotEmpty() && version.all { it in '0'..'9' }
-    }
+    private fun isKeyAliasOf(id: ProviderId, alias: String): Boolean = KeyAliases.belongsTo(id, alias)
 
     /** Deletes the key a failed record write left without a record; a failure to do so is kept with [cause]. */
     private suspend fun discardKey(alias: String, cause: Exception) {

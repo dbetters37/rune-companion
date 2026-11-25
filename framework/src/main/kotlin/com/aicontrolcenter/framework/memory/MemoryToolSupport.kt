@@ -6,7 +6,7 @@ import com.aicontrolcenter.core.memory.MemoryActor
 import com.aicontrolcenter.core.memory.MemoryPermissionException
 import com.aicontrolcenter.core.memory.MemoryService
 import com.aicontrolcenter.core.memory.MemoryValidationException
-import com.aicontrolcenter.core.registry.AgentRepository
+import com.aicontrolcenter.core.registry.AgentDirectory
 import com.aicontrolcenter.core.tools.ToolContext
 import com.aicontrolcenter.core.tools.ToolOutcome
 import com.aicontrolcenter.framework.llm.rethrowIfCancelled
@@ -30,7 +30,7 @@ import kotlinx.serialization.json.longOrNull
  */
 internal class MemoryToolSupport(
     val memory: MemoryService,
-    private val agents: AgentRepository,
+    private val agents: AgentDirectory,
 ) {
     /**
      * The calling agent as stored now. Permissions are read from the profile on every memory

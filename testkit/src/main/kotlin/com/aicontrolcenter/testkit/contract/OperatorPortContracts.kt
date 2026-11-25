@@ -204,8 +204,12 @@ abstract class OwnerPortsContract {
         val onReports = PermissionGrant(GrantId("grt_reports"), agent.id, OperatorCapabilities.FOLDERS_READ, CapabilityConstraint.Folder(folder.id), GrantScope.ALWAYS, grantedAt = 1)
         val onPhotos = onReports.copy(id = GrantId("grt_photos"), constraint = CapabilityConstraint.Folder(photos.id))
         listOf(onReports, onPhotos).forEach { world.grants.insert(it) }
-        assertEquals(folder.copy(readOnly = true), owner.setReadOnly(folder.id, true))
+        val readOnly = owner.setReadOnly(folder.id, true)
+        assertEquals(folder.copy(readOnly = true, readOnlySince = world.clock.current), readOnly, "the time it was made read-only is kept (F1)")
         assertEquals(true, world.folders.get(folder.id)?.readOnly)
+        assertEquals(readOnly, owner.setReadOnly(folder.id, true), "switching it on again keeps the time")
+        assertEquals(folder, owner.setReadOnly(folder.id, false), "writable: no time")
+        owner.setReadOnly(folder.id, true)
         assertNull(owner.setReadOnly(FolderId("fld_gone"), true))
         assertTrue(owner.remove(folder.id))
         assertNull(world.folders.get(folder.id))

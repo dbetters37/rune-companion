@@ -4,8 +4,9 @@ import com.aicontrolcenter.app.di.Ports
 import com.aicontrolcenter.core.activity.ActivityRecorder
 import com.aicontrolcenter.core.backup.MaintenanceGate
 import com.aicontrolcenter.core.chat.AgentChat
-import com.aicontrolcenter.core.llm.ProviderManager
+import com.aicontrolcenter.core.llm.ProviderRechecks
 import com.aicontrolcenter.core.memory.MemoryService
+import com.aicontrolcenter.core.registry.ReadOnlyRegistry
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.tasks.Orchestrator
@@ -40,7 +41,9 @@ import kotlinx.coroutines.CoroutineScope
  * @param appScope objectives and chat turns run in it, so they outlive the screen that started them.
  * @param memory the one memory service of the process (the Director may save what an objective taught the team).
  * @param operatorHooks a task's permissions end with it; questions left open when the app stopped are withdrawn.
- * @param providerManager WP7: a provider that is only briefly unavailable is re-checked before the work waits (D28).
+ * @param providerRechecks WP7: a provider that is only briefly unavailable is re-checked before the work waits (D28).
+ *   Only the agent-side re-checks: the orchestrator and chat are agent-facing and never get the owner's provider
+ *   manager or key check (security review of wave 1, F3; both architecture tests walk from them).
  * @param maintenanceGate WP7: starting an objective and sending a chat message are refused while a backup is restored.
  */
 class TeamAssembly(
@@ -55,7 +58,7 @@ class TeamAssembly(
     appScope: CoroutineScope,
     memory: MemoryService,
     operatorHooks: OperatorTaskHooks,
-    @Suppress("UNUSED_PARAMETER") providerManager: ProviderManager,
+    @Suppress("UNUSED_PARAMETER") providerRechecks: ProviderRechecks,
     @Suppress("UNUSED_PARAMETER") maintenanceGate: MaintenanceGate,
 ) {
     /**
@@ -68,7 +71,7 @@ class TeamAssembly(
         tasks = ports.tasks,
         messages = ports.messages,
         conversations = ports.conversations,
-        agents = ports.agents,
+        agents = ReadOnlyRegistry.agents(ports.agents),
         directory = registryDirectory,
         settings = settings,
         runner = runner,
@@ -91,9 +94,9 @@ class TeamAssembly(
 
     private val defaultAgentChat = DefaultAgentChat(
         conversations = ports.conversations,
-        agents = ports.agents,
-        models = ports.models,
-        providers = ports.providers,
+        agents = ReadOnlyRegistry.agents(ports.agents),
+        models = ReadOnlyRegistry.models(ports.models),
+        providers = ReadOnlyRegistry.providers(ports.providers),
         settings = settings,
         runner = runner,
         activity = activity,

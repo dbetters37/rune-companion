@@ -14,9 +14,9 @@ import com.aicontrolcenter.core.llm.LlmException
 import com.aicontrolcenter.core.llm.ModelGateway
 import com.aicontrolcenter.core.registry.ConnectionStatus
 import com.aicontrolcenter.core.registry.ModelDescriptor
+import com.aicontrolcenter.core.registry.ModelDirectory
 import com.aicontrolcenter.core.registry.ModelProvider
-import com.aicontrolcenter.core.registry.ModelRepository
-import com.aicontrolcenter.core.registry.ProviderRepository
+import com.aicontrolcenter.core.registry.ProviderDirectory
 import com.aicontrolcenter.core.registry.effectiveLocality
 import com.aicontrolcenter.core.settings.SettingsView
 import kotlinx.coroutines.CancellationException
@@ -51,8 +51,8 @@ import kotlinx.coroutines.withContext
  *    received is never turned into a failure because it could not be written down.
  */
 class DefaultModelGateway(
-    private val providers: ProviderRepository,
-    private val models: ModelRepository,
+    private val providers: ProviderDirectory,
+    private val models: ModelDirectory,
     private val settings: SettingsView,
     private val connections: ProviderConnections,
     activity: ActivityRecorder,

@@ -15,6 +15,7 @@ import com.aicontrolcenter.core.usage.ModelPrice
 import com.aicontrolcenter.core.usage.ModelPrices
 import com.aicontrolcenter.core.usage.OwnerModelPrices
 import com.aicontrolcenter.core.usage.OwnerUsage
+import com.aicontrolcenter.core.usage.UsageHousekeeping
 import com.aicontrolcenter.core.usage.UsageLedger
 import com.aicontrolcenter.core.usage.UsageRange
 import com.aicontrolcenter.core.usage.UsageReports
@@ -37,8 +38,8 @@ import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** The three usage ports over one store, as the app wires them. */
-data class UsageStores(val ledger: UsageLedger, val reports: UsageReports, val owner: OwnerUsage)
+/** The four usage ports over one store, as the app wires them. */
+data class UsageStores(val ledger: UsageLedger, val reports: UsageReports, val owner: OwnerUsage, val housekeeping: UsageHousekeeping)
 
 /** Samples of model calls, numbers and ids only. */
 object UsageSamples {
@@ -186,10 +187,28 @@ abstract class UsageLedgerContract {
         stores.ledger.record(u.call(u.at("2026-01-01T10:00")))
         stores.ledger.record(u.call(u.at("2026-01-01T11:00"), agent = "agt_writer"))
         stores.ledger.record(u.call(u.at("2026-11-25T11:00")))
-        assertEquals(2, stores.ledger.pruneHours(u.at("2026-06-01T00:00")))
+        assertEquals(2, stores.housekeeping.pruneHours(u.at("2026-06-01T00:00")))
         assertEquals(1, stores.reports.totals(UsageRange.ALL).calls)
         assertEquals(3, stores.reports.workUsage(WorkKind.TASK, "tsk_1").single().calls, "work rows are kept")
-        assertEquals(0, stores.ledger.pruneHours(u.at("2026-06-01T00:00")))
+        assertEquals(0, stores.housekeeping.pruneHours(u.at("2026-06-01T00:00")))
+    }
+
+    @Test
+    fun `pruning never deletes today's usage, which seeds the daily limits`() = runTest {
+        // Security review of wave 1, F4: whatever time pruning is given, today's rows stay.
+        val clock = FakeClock(u.at("2026-11-25T12:00"))
+        val stores = createStores(clock, zone)
+        stores.ledger.record(u.call(u.at("2026-11-24T22:00")))
+        stores.ledger.record(u.call(u.at("2026-11-25T00:30")))
+        stores.ledger.record(u.call(u.at("2026-11-25T09:00")))
+        stores.ledger.record(u.call(u.at("2026-11-25T11:59")))
+        assertEquals(3, stores.reports.totals(today).calls)
+        assertEquals(1, stores.housekeeping.pruneHours(u.at("2026-11-25T13:00")), "only yesterday's row goes")
+        assertEquals(0, stores.housekeeping.pruneHours(Long.MAX_VALUE), "a time far ahead deletes nothing of today")
+        clock.current = u.at("2026-11-25T23:59")
+        assertEquals(0, stores.housekeeping.pruneHours(u.at("2026-11-26T12:00")), "nor late in the day")
+        assertEquals(3, stores.reports.totals(today).calls, "today's calls are all still counted")
+        assertEquals(3, stores.ledger.totalsSince(today.fromMs).calls)
     }
 
     @Test

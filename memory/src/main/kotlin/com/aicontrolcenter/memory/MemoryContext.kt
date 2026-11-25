@@ -13,7 +13,8 @@ import com.aicontrolcenter.core.memory.Provenance
 import com.aicontrolcenter.core.memory.ProvenanceAction
 import com.aicontrolcenter.core.memory.ProvenanceEvent
 import com.aicontrolcenter.core.memory.ProvenanceOrigin
-import com.aicontrolcenter.core.registry.AgentRepository
+import com.aicontrolcenter.core.registry.AgentDirectory
+import com.aicontrolcenter.core.registry.SpaceAccessRevoker
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -24,7 +25,9 @@ import kotlinx.coroutines.sync.withLock
  */
 internal class MemoryContext(
     val repository: MemoryRepository,
-    val agents: AgentRepository,
+    val agents: AgentDirectory,
+    /** Taking a deleted space away from agents: the one change to an agent the memory service makes. */
+    val spaceAccess: SpaceAccessRevoker,
     val ids: IdGenerator,
     val clock: Clock,
     val config: MemoryConfig,

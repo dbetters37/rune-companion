@@ -6,7 +6,7 @@ import com.aicontrolcenter.core.agents.AgentProfile
 import com.aicontrolcenter.core.operator.OperatorGate
 import com.aicontrolcenter.core.operator.OperatorTools
 import com.aicontrolcenter.core.operator.ProtectedPackages
-import com.aicontrolcenter.core.registry.AgentRepository
+import com.aicontrolcenter.core.registry.AgentDirectory
 import com.aicontrolcenter.core.settings.FrameworkSettings
 import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.tools.ActionAssessment
@@ -27,7 +27,7 @@ import kotlinx.coroutines.flow.StateFlow
  * stores, and nothing here reaches an owner-only port.
  */
 class OperatorFacts(
-    private val agents: AgentRepository,
+    private val agents: AgentDirectory,
     private val settings: SettingsView,
     private val capabilities: CapabilityRegistry,
     private val folders: FolderDirectory,

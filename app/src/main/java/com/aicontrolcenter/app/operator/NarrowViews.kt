@@ -1,6 +1,11 @@
 package com.aicontrolcenter.app.operator
 
 import com.aicontrolcenter.core.FolderId
+import com.aicontrolcenter.core.operator.DocResult
+import com.aicontrolcenter.core.operator.DocumentEntry
+import com.aicontrolcenter.core.operator.FileContent
+import com.aicontrolcenter.core.operator.RelativePath
+import com.aicontrolcenter.core.pickup.PickUpFolders
 import com.aicontrolcenter.core.operator.GrantLookup
 import com.aicontrolcenter.core.operator.OperatorApp
 import com.aicontrolcenter.core.operator.OperatorAppRepository
@@ -46,3 +51,17 @@ class AuthorisedAppsView(private val store: OperatorAppRepository) : AuthorisedA
 
 /** Files inside the owner's folders; never taking or releasing Android's access to a folder. */
 class SharedFolderFilesView(store: SharedFolders) : SharedFolderFiles by store
+
+/**
+ * The owner's folders as folder pick-up reads them (security review of wave 1, F11): a folder's record, the files
+ * directly inside it, and reading one; never writing, deleting, adding or removing anything.
+ */
+class PickUpFoldersView(private val store: SharedFolderRepository, private val files: SharedFolderFiles) : PickUpFolders {
+    override suspend fun folder(id: FolderId): SharedFolder? = store.get(id)
+
+    override suspend fun all(): List<SharedFolder> = store.getAll()
+
+    override suspend fun files(folder: FolderId): DocResult<List<DocumentEntry>> = files.list(folder, RelativePath.ROOT)
+
+    override suspend fun read(folder: FolderId, path: RelativePath, maxBytes: Long): DocResult<FileContent> = files.read(folder, path, maxBytes)
+}

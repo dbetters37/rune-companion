@@ -6,8 +6,11 @@ import com.aicontrolcenter.app.di.Ports
 import com.aicontrolcenter.core.activity.ActivityRecorder
 import com.aicontrolcenter.core.health.NetworkStatus
 import com.aicontrolcenter.core.llm.ModelGateway
+import com.aicontrolcenter.core.llm.OwnerKeyCheck
 import com.aicontrolcenter.core.llm.ProviderAdapterFactory
 import com.aicontrolcenter.core.llm.ProviderManager
+import com.aicontrolcenter.core.llm.ProviderRechecks
+import com.aicontrolcenter.core.registry.ReadOnlyRegistry
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.framework.llm.DefaultModelGateway
@@ -40,11 +43,12 @@ class ModelsAssembly(
     @Suppress("UNUSED_PARAMETER") appScope: CoroutineScope,
     @Suppress("UNUSED_PARAMETER") network: NetworkStatus,
 ) {
+    // Agent-facing: reads agents, providers, models and apps through read-only views, never the stores that change them (F3).
     val registryDirectory: RegistryDirectory = DefaultRegistryDirectory(
-        agents = ports.agents,
-        providers = ports.providers,
-        models = ports.models,
-        apps = ports.aiApps,
+        agents = ReadOnlyRegistry.agents(ports.agents),
+        providers = ReadOnlyRegistry.providers(ports.providers),
+        models = ReadOnlyRegistry.models(ports.models),
+        apps = ReadOnlyRegistry.apps(ports.aiApps),
         settings = settings,
     )
 
@@ -52,14 +56,18 @@ class ModelsAssembly(
     private val providerConnections = ProviderConnections(ports.providers, ports.secretVault, adapterFactories, ports.clock)
 
     val modelGateway: ModelGateway = DefaultModelGateway(
-        providers = ports.providers,
-        models = ports.models,
+        providers = ReadOnlyRegistry.providers(ports.providers),
+        models = ReadOnlyRegistry.models(ports.models),
         settings = settings,
         connections = providerConnections,
         activity = activity,
         clock = ports.clock,
     )
 
+    /**
+     * Owner-only: adds, changes and removes providers and their keys (security review of wave 1, F3). Only the owner's
+     * screens and start-up hold it; agent-facing code gets [providerRechecks].
+     */
     val providerManager: ProviderManager = DefaultProviderManager(
         providers = ports.providers,
         models = ports.models,
@@ -70,6 +78,20 @@ class ModelsAssembly(
         ids = ports.idGenerator,
         clock = ports.clock,
     )
+
+    /**
+     * What agent-facing work may ask of the providers: re-check one that was not answering, and when the next
+     * scheduled re-check is due (K15, D28; F3). The orchestrator and chat get this, never [providerManager]. WP4
+     * builds `DefaultProviderRechecks` here; it must hold neither the provider manager nor the vault (the
+     * architecture tests walk into it).
+     */
+    val providerRechecks: ProviderRechecks = ProviderRechecks.None
+
+    /**
+     * Owner-only: whether an answer the owner is about to send holds a stored provider key (rule 32; F3). Only the
+     * owner's answer path gets it (`OwnerServices.answer`, WP5). WP4 builds it over the vault here.
+     */
+    val ownerKeyCheck: OwnerKeyCheck = OwnerKeyCheck.None
 }
 
 @Phase6Stub("WP4")

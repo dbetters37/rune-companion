@@ -271,7 +271,8 @@ class SchemaExportTest {
         }
         assertEquals(
             setOf("tasks" to "retry_at", "tasks" to "result_chars", "agent_messages" to "to_space_id", "owner_requests" to "question",
-                "owner_requests" to "options_json", "owner_requests" to "answer", "conversations" to "turn_started_at"),
+                "owner_requests" to "options_json", "owner_requests" to "answer", "conversations" to "turn_started_at",
+                "shared_folders" to "read_only_since"),
             added.map { it.first to it.second }.toSet(),
         )
     }
@@ -283,7 +284,7 @@ class SchemaExportTest {
     fun `the tables version 6 did not change are exactly those of version 5`() {
         val released = schema(5).tables()
         val current = schema(6).tables()
-        for (table in released.keys - setOf("tasks", "agent_messages", "owner_requests", "conversations")) {
+        for (table in released.keys - setOf("tasks", "agent_messages", "owner_requests", "conversations", "shared_folders")) {
             assertEquals(released.getValue(table)["createSql"], current.getValue(table)["createSql"], table)
             assertEquals(released.getValue(table)["indices"], current.getValue(table)["indices"], table)
         }

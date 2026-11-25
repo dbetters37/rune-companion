@@ -310,9 +310,11 @@ class StoredNamesGoldenTest {
         )
         assertEquals(request, request.toEntity().toDomain())
         assertEquals(
-            SharedFolderEntity("fld_1", "content://tree/primary%3ADocuments", "Documents", 5, readOnly = true),
-            SharedFolder(FolderId("fld_1"), "content://tree/primary%3ADocuments", "Documents", 5, readOnly = true).toEntity(),
+            SharedFolderEntity("fld_1", "content://tree/primary%3ADocuments", "Documents", 5, readOnly = true, readOnlySince = 9),
+            SharedFolder(FolderId("fld_1"), "content://tree/primary%3ADocuments", "Documents", 5, readOnly = true, readOnlySince = 9).toEntity(),
         )
+        val folder = SharedFolder(FolderId("fld_1"), "content://tree/primary%3ADocuments", "Documents", 5, readOnly = true, readOnlySince = 9)
+        assertEquals(folder, folder.toEntity().toDomain())
         assertEquals(
             OperatorAppEntity("com.example.notes", "Notes", 7, "ab".repeat(32), "ASK_EVERY_ACTION"),
             OperatorApp("com.example.notes", "Notes", 7, "ab".repeat(32)).toEntity(),
@@ -360,7 +362,7 @@ class StoredNamesGoldenTest {
     fun `keys and exact text of the task columns`() {
         assertStoredKeys(ReviewVerdict.serializer(), "reviewer", "decision", "summary", "issues", "at", "reviewTaskId")
         assertStoredKeys(TaskUsage.serializer(), "modelCalls", "toolCalls", "inputTokens", "outputTokens", "messagesSent")
-        assertStoredKeys(ObjectiveOptions.serializer(), "reviewResults", "saveKnowledge", "maxTasks", "routineId")
+        assertStoredKeys(ObjectiveOptions.serializer(), "reviewResults", "saveKnowledge", "maxTasks", "routineId", "screenActionsAllowed", "approvalTimeoutMinutes")
         assertEquals("""{"type":"owner"}""", encodeColumn(ColumnSerializers.taskRequester, TaskRequester.Owner))
         assertEquals(
             """{"type":"agent","agentId":"agt_director"}""",
@@ -383,7 +385,7 @@ class StoredNamesGoldenTest {
             encodeColumn(TaskUsage.serializer(), TaskUsage(3, 2, 1_200, 300, 4)),
         )
         assertEquals(
-            """{"reviewResults":true,"saveKnowledge":false,"maxTasks":null,"routineId":null}""",
+            """{"reviewResults":true,"saveKnowledge":false,"maxTasks":null,"routineId":null,"screenActionsAllowed":true,"approvalTimeoutMinutes":null}""",
             encodeColumn(ObjectiveOptions.serializer(), ObjectiveOptions()),
         )
         assertEquals("""["tsk_z","tsk_a"]""", encodeColumn(ColumnSerializers.taskIdList, listOf(TaskId("tsk_z"), TaskId("tsk_a"))))
@@ -397,6 +399,11 @@ class StoredNamesGoldenTest {
         val task = stored.toDomain()
         assertEquals(TaskUsage(modelCalls = 2), task.usage)
         assertEquals(ObjectiveOptions(reviewResults = true, saveKnowledge = true, maxTasks = null), task.options)
+        assertEquals(true, task.options?.screenActionsAllowed, "an objective the owner started allows screens")
+        // F12, second review: options that name a routine but lack the screen key read as "no screens" (fail closed).
+        val routine = stored.copy(optionsJson = """{"routineId":"rtn_1"}""").toDomain()
+        assertEquals(false, routine.options?.screenActionsAllowed)
+        assertEquals(true, stored.copy(optionsJson = """{"routineId":"rtn_1","screenActionsAllowed":true}""").toDomain().options?.screenActionsAllowed)
     }
 
     @Test

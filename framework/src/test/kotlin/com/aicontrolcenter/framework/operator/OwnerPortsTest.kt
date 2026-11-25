@@ -1,9 +1,12 @@
 package com.aicontrolcenter.framework.operator
 
+import com.aicontrolcenter.core.PickUpRuleId
+import com.aicontrolcenter.core.SpaceId
 import com.aicontrolcenter.core.activity.ActivityRecorder
 import com.aicontrolcenter.core.activity.ActivityType
 import com.aicontrolcenter.core.operator.CapabilityRequester
 import com.aicontrolcenter.core.operator.DecideResult
+import com.aicontrolcenter.core.operator.FolderTrees
 import com.aicontrolcenter.core.operator.GrantScope
 import com.aicontrolcenter.core.operator.OperatorCapabilities
 import com.aicontrolcenter.core.operator.OwnerFolders
@@ -12,11 +15,16 @@ import com.aicontrolcenter.core.operator.OwnerOperatorApps
 import com.aicontrolcenter.core.operator.OwnerRequest
 import com.aicontrolcenter.core.operator.OwnerRequestKind
 import com.aicontrolcenter.core.operator.OwnerRequestStatus
+import com.aicontrolcenter.core.operator.OwnerResult
+import com.aicontrolcenter.core.operator.SharedFolder
+import com.aicontrolcenter.core.pickup.PickUpRule
+import com.aicontrolcenter.core.pickup.PickUpSafety
 import com.aicontrolcenter.core.requestId
 import com.aicontrolcenter.core.tools.CapabilityConstraint
 import com.aicontrolcenter.core.tools.RiskLevel
 import com.aicontrolcenter.framework.tools.CapabilityRegistry
 import com.aicontrolcenter.testkit.InMemoryActivityLog
+import com.aicontrolcenter.testkit.InMemoryPickUpRuleRepository
 import com.aicontrolcenter.testkit.OperatorWorld
 import com.aicontrolcenter.testkit.Samples
 import com.aicontrolcenter.testkit.contract.CapabilityRequesterContract
@@ -110,6 +118,41 @@ class OwnerServicesTest {
         assertEquals(OwnerRequestStatus.EXPIRED, world.requests.get(soon.id)?.status)
         assertTrue(world.grants.observeAll().first().isEmpty())
         assertEquals(listOf(later.id), owner.pending.first().map { it.id })
+    }
+
+    @Test
+    fun `making a folder writable switches off folder pick-up from it and from folders around or inside it`() = runTest {
+        // Second review of F1: the rule does not wait for a run to notice; the owner sees why at once.
+        val world = OperatorWorld()
+        val built = Built(world)
+        val rules = InMemoryPickUpRuleRepository()
+        val folders = DefaultOwnerFolders(world.gateway, world.folders, world.grants, world.requests, built.activity, world.ids, world.clock, rules)
+        fun tree(path: String) = "content://${FolderTrees.EXTERNAL_STORAGE}/tree/primary%3A" + path.replace("/", "%2F")
+        suspend fun share(path: String): SharedFolder {
+            world.gateway.pickable[tree(path)] = path
+            return assertIs<OwnerResult.Done<SharedFolder>>(folders.add(tree(path))).value
+        }
+        val inbox = share("Inbox")
+        val notes = share("Docs/Notes")
+        val apart = share("Music")
+        for (folder in listOf(inbox, notes, apart)) assertEquals(world.clock.current, folders.setReadOnly(folder.id, true)!!.readOnlySince)
+        for ((n, folder) in listOf(inbox, notes, apart).withIndex()) {
+            rules.upsert(
+                PickUpRule(
+                    PickUpRuleId("pku_$n"), folder.id, SpaceId("spc_inbox"), enabled = true, createdAt = 1, updatedAt = 1,
+                    folderReadOnlySince = world.folders.get(folder.id)!!.readOnlySince,
+                ),
+            )
+        }
+        // The owner makes Inbox writable: its rule is off at once, with the reason as its last result; the others run on.
+        assertNull(folders.setReadOnly(inbox.id, false)!!.readOnlySince)
+        assertEquals(false to PickUpSafety.RUN_FOLDER_NOT_READ_ONLY, rules.get(PickUpRuleId("pku_0"))!!.let { it.enabled to it.lastResult })
+        assertTrue(rules.get(PickUpRuleId("pku_1"))!!.enabled && rules.get(PickUpRuleId("pku_2"))!!.enabled)
+        // The owner shares "Docs", which holds Notes: Notes' rule is off too; Music is apart and stays on.
+        share("Docs")
+        assertEquals(false to PickUpSafety.RUN_FOLDER_OVERLAPS_WRITABLE, rules.get(PickUpRuleId("pku_1"))!!.let { it.enabled to it.lastResult })
+        assertTrue(rules.get(PickUpRuleId("pku_2"))!!.enabled)
+        assertTrue(built.log.all.any { it.title == "Folder pick-up switched off: Inbox" })
     }
 
     @Test

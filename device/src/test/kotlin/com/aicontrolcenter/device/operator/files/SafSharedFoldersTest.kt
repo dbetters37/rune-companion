@@ -82,6 +82,25 @@ class SafSharedFoldersTest {
     }
 
     @Test
+    fun `nothing changes in a folder that holds or is inside a read-only folder shared on its own`() = runTest {
+        // Second review of F1: "Documents" writable and "Documents/Inbox" read-only name the same files.
+        picked()
+        provider.folder(rootId, "Inbox")
+        val inbox = SharedFolder(FolderId("fld_inbox"), "$treeUri%2FInbox", "Inbox", addedAt = 2, readOnly = true, readOnlySince = 2)
+        repository.upsert(inbox)
+        assertNotAllowed(folders.write(id, p("Inbox/note.txt"), "x".toByteArray(), "text/plain", overwrite = false), "read-only folder Inbox")
+        assertNotAllowed(folders.write(id, p("elsewhere.txt"), "x".toByteArray(), "text/plain", overwrite = false), "read-only folder Inbox")
+        assertNotAllowed(folders.makeFolder(id, p("New")), "read-only folder Inbox")
+        assertNotAllowed(folders.delete(id, p("Inbox")), "read-only folder Inbox")
+        assertEquals(listOf("Inbox"), folders.list(id, RelativePath.ROOT).ok().map { it.name }, "reading goes on")
+        // Writable again, or a folder that is apart: changes go on.
+        repository.upsert(inbox.copy(readOnly = false, readOnlySince = null))
+        folders.write(id, p("elsewhere.txt"), "x".toByteArray(), "text/plain", overwrite = false).ok()
+        repository.upsert(inbox.copy(treeUri = provider.tree("Music").toString()))
+        folders.write(id, p("again.txt"), "x".toByteArray(), "text/plain", overwrite = false).ok()
+    }
+
+    @Test
     fun `lists folders first, then files by name, with sizes`() = runTest {
         picked()
         provider.file(rootId, "b.txt", "bee")

@@ -8,13 +8,20 @@ import com.aicontrolcenter.core.RoutineId
 import com.aicontrolcenter.core.RoutineRunId
 import com.aicontrolcenter.core.SpaceId
 import com.aicontrolcenter.core.memory.MemoryRepository
+import com.aicontrolcenter.core.operator.DocResult
+import com.aicontrolcenter.core.operator.DocumentEntry
+import com.aicontrolcenter.core.operator.FileContent
 import com.aicontrolcenter.core.operator.OwnerResult
+import com.aicontrolcenter.core.operator.RelativePath
+import com.aicontrolcenter.core.operator.SharedFolder
 import com.aicontrolcenter.core.operator.SharedFolderRepository
 import com.aicontrolcenter.core.pickUpRuleId
 import com.aicontrolcenter.core.pickup.OwnerPickUpRules
+import com.aicontrolcenter.core.pickup.PickUpFolders
 import com.aicontrolcenter.core.pickup.PickUpLimits
 import com.aicontrolcenter.core.pickup.PickUpRule
 import com.aicontrolcenter.core.pickup.PickUpRuleRepository
+import com.aicontrolcenter.core.pickup.PickUpSafety
 import com.aicontrolcenter.core.pickup.PickedUpFile
 import com.aicontrolcenter.core.routineId
 import com.aicontrolcenter.core.routines.OwnerRoutines
@@ -204,7 +211,8 @@ class InMemoryPickUpRuleRepository : PickUpRuleRepository {
         true
     }
 
-    override suspend fun bytesImportedSince(fromMs: Long): Long = state.value.files.filter { it.importedAt >= fromMs }.sumOf { it.sizeBytes }
+    override suspend fun bytesImportedSince(fromMs: Long): Long =
+        state.value.files.filter { it.importedAt >= fromMs && !it.seenOnly }.sumOf { it.sizeBytes }
 
     override fun observeImports(ruleId: PickUpRuleId, limit: Int): Flow<List<PickedUpFile>> = state.map { current ->
         current.files.filter { it.ruleId == ruleId }
@@ -214,12 +222,15 @@ class InMemoryPickUpRuleRepository : PickUpRuleRepository {
 
 /**
  * Reference implementation of [OwnerPickUpRules] over a [PickUpRuleRepository], checking folders
- * against [folders] and spaces against [memory]. Changes are serialised so the rule cap and the
- * one-rule-per-folder rule cannot be passed by two creations at once.
+ * through [folders] (they must exist, be read-only for agents and overlap no folder agents may
+ * change, [PickUpSafety.folderProblem]) and spaces against [memory]. Making a rule and switching one
+ * on record the files in the folder as seen first ([PickUpSafety.baseline]) and keep the folder's
+ * `readOnlySince`. Changes are serialised so the rule cap and the one-rule-per-folder rule cannot be
+ * passed by two creations at once.
  */
 class ReferenceOwnerPickUpRules(
     private val repository: PickUpRuleRepository,
-    private val folders: SharedFolderRepository,
+    private val folders: PickUpFolders,
     private val memory: MemoryRepository,
     private val clock: Clock,
     private val ids: IdGenerator,
@@ -229,15 +240,40 @@ class ReferenceOwnerPickUpRules(
     override fun observeAll(): Flow<List<PickUpRule>> = repository.observeAll()
 
     override suspend fun create(folderId: FolderId, spaceId: SpaceId): OwnerResult<PickUpRule> = mutex.withLock {
-        if (folders.get(folderId) == null) return OwnerResult.Refused(NO_FOLDER)
+        // Security review of wave 1, F1: only a folder agents cannot change, and that is not inside or around one they can, may feed a space.
+        val all = folders.all()
+        val folder = all.firstOrNull { it.id == folderId }
+        PickUpSafety.folderProblem(folder, all)?.let { return OwnerResult.Refused(it) }
         if (memory.getSpace(spaceId) == null) return OwnerResult.Refused(NO_SPACE)
         val rules = repository.getAll()
         if (rules.any { it.folderId == folderId }) return OwnerResult.Refused("This folder already has a pick-up rule.")
         if (rules.size >= PickUpLimits.MAX_RULES) return OwnerResult.Refused("You can have at most ${PickUpLimits.MAX_RULES} pick-up rules. Delete one first.")
         val now = clock.now()
-        val rule = PickUpRule(id = ids.pickUpRuleId(), folderId = folderId, spaceId = spaceId, enabled = true, createdAt = now, updatedAt = now)
+        // Stored switched off until what is in the folder now is recorded as seen.
+        val rule = PickUpRule(
+            id = ids.pickUpRuleId(), folderId = folderId, spaceId = spaceId, enabled = false, createdAt = now, updatedAt = now,
+            folderReadOnlySince = folder!!.readOnlySince,
+        )
         repository.upsert(rule)
-        OwnerResult.Done(rule)
+        switchOn(rule, folder.readOnlySince, now) ?: run {
+            repository.delete(rule.id)
+            OwnerResult.Refused(PickUpSafety.FOLDER_UNREADABLE)
+        }
+    }
+
+    /**
+     * Records the files in [rule]'s folder as seen, then switches it on under [readOnlySince], unless the folder
+     * changed meanwhile. Null when the folder could not be read; a refusal when it changed.
+     */
+    private suspend fun switchOn(rule: PickUpRule, readOnlySince: Long?, now: Long): OwnerResult<PickUpRule>? {
+        val seen = PickUpSafety.baseline(rule, folders, now) ?: return null
+        seen.forEach { repository.recordImport(it) }
+        val all = folders.all()
+        val folder = all.firstOrNull { it.id == rule.folderId }
+        PickUpSafety.folderProblem(folder, all)?.let { return OwnerResult.Refused(it) }
+        if (folder!!.readOnlySince != readOnlySince) return OwnerResult.Refused(PickUpSafety.FOLDER_NOT_READ_ONLY)
+        val on = repository.update(rule.id) { it.copy(enabled = true, folderReadOnlySince = readOnlySince, updatedAt = now, lastResult = null) }
+        return on?.let { OwnerResult.Done(it) } ?: OwnerResult.Refused(MISSING)
     }
 
     override suspend fun changeSpace(id: PickUpRuleId, spaceId: SpaceId): OwnerResult<PickUpRule> = mutex.withLock {
@@ -248,7 +284,17 @@ class ReferenceOwnerPickUpRules(
 
     override suspend fun setEnabled(id: PickUpRuleId, enabled: Boolean): OwnerResult<PickUpRule> = mutex.withLock {
         val now = clock.now()
-        repository.update(id) { it.copy(enabled = enabled, updatedAt = now) }?.let { OwnerResult.Done(it) } ?: OwnerResult.Refused(MISSING)
+        if (!enabled) {
+            return repository.update(id) { it.copy(enabled = false, updatedAt = now) }?.let { OwnerResult.Done(it) } ?: OwnerResult.Refused(MISSING)
+        }
+        val rule = repository.get(id) ?: return OwnerResult.Refused(MISSING)
+        val all = folders.all()
+        val folder = all.firstOrNull { it.id == rule.folderId }
+        PickUpSafety.folderProblem(folder, all)?.let { return OwnerResult.Refused(it) }
+        if (rule.enabled && rule.folderReadOnlySince == folder!!.readOnlySince) return OwnerResult.Done(rule)
+        // Off while what is in the folder now is recorded as seen, then on under the folder's present read-only time.
+        val off = repository.update(id) { it.copy(enabled = false, updatedAt = now) } ?: return OwnerResult.Refused(MISSING)
+        switchOn(off, folder!!.readOnlySince, now) ?: OwnerResult.Refused(PickUpSafety.FOLDER_UNREADABLE)
     }
 
     override suspend fun delete(id: PickUpRuleId): Boolean = mutex.withLock {
@@ -258,8 +304,47 @@ class ReferenceOwnerPickUpRules(
     }
 
     private companion object {
-        const val NO_FOLDER = "That shared folder is no longer there. Add it again in Tools > Folders."
         const val NO_SPACE = "That memory space is no longer there."
         const val MISSING = "This pick-up rule no longer exists."
+    }
+}
+
+/**
+ * [PickUpFolders] over a [SharedFolderRepository] and files kept in memory: what folder pick-up reads,
+ * for the contract suites and the runner's tests. Each folder holds files directly in its root.
+ */
+class InMemoryPickUpFolders(private val store: SharedFolderRepository) : PickUpFolders {
+    private class File(val bytes: ByteArray, val mimeType: String?)
+
+    private val files = java.util.concurrent.ConcurrentHashMap<FolderId, java.util.concurrent.ConcurrentHashMap<String, File>>()
+
+    /** Puts a file named [name] holding [text] into [folder]'s root, replacing one of that name. */
+    fun put(folder: FolderId, name: String, text: String, mimeType: String? = "text/plain") {
+        files.getOrPut(folder) { java.util.concurrent.ConcurrentHashMap() }[name] = File(text.encodeToByteArray(), mimeType)
+    }
+
+    /** Removes the file named [name] from [folder]. */
+    fun remove(folder: FolderId, name: String) {
+        files[folder]?.remove(name)
+    }
+
+    override suspend fun folder(id: FolderId): SharedFolder? = store.get(id)
+
+    override suspend fun all(): List<SharedFolder> = store.getAll()
+
+    override suspend fun files(folder: FolderId): DocResult<List<DocumentEntry>> {
+        if (store.get(folder) == null) return DocResult.NotFound("")
+        return DocResult.Ok(
+            files[folder].orEmpty().entries.sortedBy { it.key }.map { (name, file) ->
+                DocumentEntry(RelativePath.of(name), isFolder = false, sizeBytes = file.bytes.size.toLong(), mimeType = file.mimeType)
+            },
+        )
+    }
+
+    override suspend fun read(folder: FolderId, path: RelativePath, maxBytes: Long): DocResult<FileContent> {
+        if (store.get(folder) == null) return DocResult.NotFound(path.value)
+        val file = files[folder]?.get(path.value) ?: return DocResult.NotFound(path.value)
+        val bytes = file.bytes.copyOf(minOf(file.bytes.size.toLong(), maxBytes).toInt())
+        return DocResult.Ok(FileContent(bytes, file.bytes.size.toLong()))
     }
 }

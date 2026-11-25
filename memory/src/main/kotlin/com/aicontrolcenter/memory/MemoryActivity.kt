@@ -8,7 +8,7 @@ import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.memory.MemoryRecord
 import com.aicontrolcenter.core.memory.MemoryRepository
 import com.aicontrolcenter.core.memory.MemoryScope
-import com.aicontrolcenter.core.registry.AgentRepository
+import com.aicontrolcenter.core.registry.AgentDirectory
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -32,7 +32,7 @@ internal val MemoryScope.taskIdOrNull: TaskId? get() = (this as? MemoryScope.Tas
  */
 internal class MemoryActivity(
     private val recorder: ActivityRecorder,
-    private val agents: AgentRepository,
+    private val agents: AgentDirectory,
     private val repository: MemoryRepository,
 ) {
     /** Where a memory lives, in words: "the private memory of Researcher". */

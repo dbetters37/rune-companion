@@ -4,7 +4,18 @@ import com.aicontrolcenter.core.FolderId
 import com.aicontrolcenter.core.MemoryId
 import com.aicontrolcenter.core.PickUpRuleId
 import com.aicontrolcenter.core.SpaceId
+import com.aicontrolcenter.core.memory.MemoryDraft
+import com.aicontrolcenter.core.memory.MemoryKind
+import com.aicontrolcenter.core.memory.MemoryScope
+import com.aicontrolcenter.core.memory.Provenance
+import com.aicontrolcenter.core.memory.ProvenanceOrigin
+import com.aicontrolcenter.core.operator.DocResult
+import com.aicontrolcenter.core.operator.DocumentEntry
+import com.aicontrolcenter.core.operator.FileContent
+import com.aicontrolcenter.core.operator.FolderTrees
 import com.aicontrolcenter.core.operator.OwnerResult
+import com.aicontrolcenter.core.operator.RelativePath
+import com.aicontrolcenter.core.operator.SharedFolder
 import kotlinx.coroutines.flow.Flow
 
 /*
@@ -51,12 +62,23 @@ data class PickUpRule(
     val updatedAt: Long,
     val lastRunAt: Long? = null,
     val lastResult: String? = null,
+    /**
+     * The folder's [SharedFolder.readOnlySince] when the rule was made or last switched on (security
+     * review of wave 1, F1): a run imports nothing when the folder's value differs, because the
+     * folder was writable for agents at some moment since.
+     */
+    val folderReadOnlySince: Long? = null,
 )
 
 /**
  * One file a rule imported: its content's SHA-256 (lower-case hex), so the same content is never
  * imported twice by the rule. [documentName] is the file's name for the history; [memoryId] the
  * memory it became (null if that memory was later deleted).
+ *
+ * [seenOnly]: a file that was already in the folder when the rule was made or switched on
+ * (security review of wave 1, F1). It was not imported (it may have been written while agents
+ * could change the folder) and never is by a run; it counts for no daily limit. Only the owner,
+ * ticking it on a list, may have it imported (WP17).
  */
 data class PickedUpFile(
     val ruleId: PickUpRuleId,
@@ -65,6 +87,7 @@ data class PickedUpFile(
     val sizeBytes: Long,
     val importedAt: Long,
     val memoryId: MemoryId? = null,
+    val seenOnly: Boolean = false,
 ) {
     init {
         require(SHA256_HEX.matches(contentSha256)) { "A content hash is 64 lower-case hex digits." }
@@ -98,7 +121,7 @@ interface PickUpRuleRepository {
     /** Deletes the rule and its import records (the memories stay). No-op when absent. */
     suspend fun delete(id: PickUpRuleId)
 
-    /** True when [ruleId] already imported content with this hash. */
+    /** True when [ruleId] already imported content with this hash, or saw it when it was switched on ([PickedUpFile.seenOnly]). */
     suspend fun wasImported(ruleId: PickUpRuleId, contentSha256: String): Boolean
 
     /**
@@ -108,7 +131,7 @@ interface PickUpRuleRepository {
      */
     suspend fun recordImport(file: PickedUpFile): Boolean
 
-    /** Bytes imported by every rule at or after [fromMs] (for the daily cap). */
+    /** Bytes imported by every rule at or after [fromMs] (for the daily cap); files only seen ([PickedUpFile.seenOnly]) do not count. */
     suspend fun bytesImportedSince(fromMs: Long): Long
 
     /** The newest [limit] imports of one rule. */
@@ -124,16 +147,214 @@ interface OwnerPickUpRules {
 
     /**
      * Creates a rule, switched on, from a shared folder the owner added to a memory space.
-     * Refused, with a sentence, when the folder or the space does not exist, the folder already
+     * Refused, with a sentence, when the folder or the space does not exist, the folder is not
+     * read-only for agents ([PickUpSafety.FOLDER_NOT_READ_ONLY]) or lies inside, or holds, a
+     * shared folder agents may change ([PickUpSafety.FOLDER_OVERLAPS_WRITABLE]), the folder already
      * has a rule, or [PickUpLimits.MAX_RULES] exist. It runs only while the master switch is on.
+     *
+     * The files already in the folder are recorded as seen ([PickUpSafety.baseline],
+     * [PickedUpFile.seenOnly]) before the rule is on, and the rule keeps the folder's
+     * [SharedFolder.readOnlySince] ([PickUpRule.folderReadOnlySince]): only what arrives later,
+     * while the folder stays read-only, is picked up. Refused with
+     * [PickUpSafety.FOLDER_UNREADABLE] when the folder cannot be read for that.
      */
     suspend fun create(folderId: FolderId, spaceId: SpaceId): OwnerResult<PickUpRule>
 
     /** Points the rule at another existing space. Refused when the rule or the space is missing. */
     suspend fun changeSpace(id: PickUpRuleId, spaceId: SpaceId): OwnerResult<PickUpRule>
 
+    /**
+     * Switches the rule on or off. Switching on is refused, with a sentence, when the rule's folder
+     * is gone, is no longer read-only for agents or overlaps a folder agents may change
+     * ([PickUpSafety.folderProblem]); otherwise it records the files in the folder now as seen and
+     * the folder's [SharedFolder.readOnlySince] anew, as [create] does. Switching off always works
+     * while the rule exists.
+     */
     suspend fun setEnabled(id: PickUpRuleId, enabled: Boolean): OwnerResult<PickUpRule>
 
     /** Deletes the rule and its import records; memories it made stay. Returns false when it did not exist. */
     suspend fun delete(id: PickUpRuleId): Boolean
+}
+
+/**
+ * What folder pick-up may do with the owner's shared folders (security review of wave 1, F11):
+ * read a folder's record, list the files directly in it, and read one. It cannot write, rename,
+ * delete, add or remove a folder, or take or release Android's access. The runner (WP17) gets this
+ * and nothing wider; the app's view over the folder store and the SAF gateway implements it.
+ */
+interface PickUpFolders {
+    /** The folder as stored now (its [SharedFolder.readOnly] switch included), or null when it was removed. */
+    suspend fun folder(id: FolderId): SharedFolder?
+
+    /** Every folder the owner shares, as stored now (to find one that overlaps a rule's folder). */
+    suspend fun all(): List<SharedFolder>
+
+    /** The files and folders directly inside the folder's root. */
+    suspend fun files(folder: FolderId): DocResult<List<DocumentEntry>>
+
+    /** At most [maxBytes] of the file at [path]. */
+    suspend fun read(folder: FolderId, path: RelativePath, maxBytes: Long): DocResult<FileContent>
+
+    /** No folders: every pick-up finds its folder gone. */
+    object None : PickUpFolders {
+        override suspend fun folder(id: FolderId): SharedFolder? = null
+
+        override suspend fun all(): List<SharedFolder> = emptyList()
+
+        override suspend fun files(folder: FolderId): DocResult<List<DocumentEntry>> = DocResult.NotFound("")
+
+        override suspend fun read(folder: FolderId, path: RelativePath, maxBytes: Long): DocResult<FileContent> = DocResult.NotFound(path.value)
+    }
+}
+
+/**
+ * The checks every pick-up makes, and the form of what it stores (security review of wave 1, F1).
+ * Pure but for [baseline], which reads through the port it is given: the owner's port
+ * ([OwnerPickUpRules]) and the runner (WP17) call them, and the contract suites pin them.
+ *
+ * Why a picked-up file can only be the owner's: a rule is switched on only for a folder that is
+ * read-only for agents and overlaps no folder they may change; what is in the folder at that moment
+ * is recorded as seen and never imported ([baseline]); the rule keeps the folder's
+ * [SharedFolder.readOnlySince], so a folder that became writable at any moment since imports
+ * nothing ([runProblem]); and making a folder writable switches its rules off (the owner's
+ * Folders port, `DefaultOwnerFolders.setReadOnly`).
+ *
+ * The runner (WP17), at every run of every rule, before it lists the folder: reads the rule and
+ * every folder afresh and calls [runProblem]; when it gives a sentence, the run imports nothing,
+ * stores the sentence as the rule's `lastResult`, and (when the folder is the reason) switches the
+ * rule off, so the owner must make the folder read-only again and switch the rule on. It skips every
+ * file whose [contentHash] the rule has recorded (imported or seen), and calls [runProblem] again
+ * after reading the files and before storing anything, dropping the run when it now gives a
+ * sentence. Every file it imports becomes a memory made by [memoryDraft] (origin IMPORT, written
+ * through `MemoryActor.Owner` so the owner's chosen space accepts it, and kept as IMPORT by the
+ * memory service), never a memory with origin OWNER.
+ */
+object PickUpSafety {
+    /** Why a rule is not made or switched on for a folder agents may change: what the owner should do. */
+    const val FOLDER_NOT_READ_ONLY: String =
+        "Make this folder read-only for agents first: in Tools > Folders, switch on \"Read-only\" for it. Then try again."
+
+    /** The folder of a rule was removed. */
+    const val FOLDER_GONE: String = "That shared folder is no longer there. Add it again in Tools > Folders."
+
+    /** What a run that found the folder writable again stores as the rule's last result. */
+    const val RUN_FOLDER_NOT_READ_ONLY: String =
+        "Nothing was picked up: agents may change this folder again, so the rule was switched off. " +
+            "Make the folder read-only in Tools > Folders, then switch the rule on."
+
+    /** What a run stores when the master switch is off. */
+    const val RUN_SWITCHED_OFF: String = "Nothing was picked up: folder pick-up is switched off in Settings."
+
+    /** What a run stores when the rule is off. */
+    const val RUN_RULE_OFF: String = "Nothing was picked up: this rule is switched off."
+
+    /** Why a rule is not made or switched on for a folder inside, or holding, a shared folder agents may change. */
+    const val FOLDER_OVERLAPS_WRITABLE: String =
+        "This folder is inside another shared folder agents may change, or holds one. In Tools > Folders, make that folder " +
+            "read-only too, or remove it. Then try again."
+
+    /** What a run stores when the rule's folder now overlaps a folder agents may change. */
+    const val RUN_FOLDER_OVERLAPS_WRITABLE: String =
+        "Nothing was picked up: this folder is inside another shared folder agents may change, or holds one, so the rule was " +
+            "switched off. Make that folder read-only in Tools > Folders, then switch the rule on."
+
+    /** Why a rule is not made or switched on when the folder's files cannot be listed and read now. */
+    const val FOLDER_UNREADABLE: String = "The folder could not be read just now, so nothing was changed. Try again."
+
+    /** Longest folder name kept in a memory's source line; a longer one is cut. */
+    const val MAX_SOURCE_NAME_CHARS: Int = 80
+
+    /**
+     * Why [folder] cannot feed a pick-up rule (a sentence for the owner), or null when it can: it
+     * exists, is read-only for agents, and no other shared folder in [allFolders] that agents may
+     * change is the same place, inside it or around it ([FolderTrees.overlap]; one whose place
+     * cannot be told counts as overlapping).
+     */
+    fun folderProblem(folder: SharedFolder?, allFolders: List<SharedFolder>): String? = when {
+        folder == null -> FOLDER_GONE
+        !folder.readOnly -> FOLDER_NOT_READ_ONLY
+        overlapsWritable(folder, allFolders) -> FOLDER_OVERLAPS_WRITABLE
+        else -> null
+    }
+
+    /** True when a folder of [allFolders] other than [folder], that agents may change, overlaps it (or may: unknown counts). */
+    fun overlapsWritable(folder: SharedFolder, allFolders: List<SharedFolder>): Boolean =
+        allFolders.any { other -> other.id != folder.id && !other.readOnly && FolderTrees.overlap(folder.treeUri, other.treeUri) != false }
+
+    /**
+     * Why this run of [rule] imports nothing (the sentence stored as its last result), or null
+     * when it may import. Read [rule], [folder] and [allFolders] afresh at every run: the master
+     * switch ([masterSwitchOn], `FrameworkSettings.folderPickUpEnabled`) and the rule must be on,
+     * the folder must still exist, be the rule's folder and still be read-only for agents, it must
+     * have stayed read-only since the rule was switched on (its [SharedFolder.readOnlySince] is the
+     * rule's [PickUpRule.folderReadOnlySince]), and no shared folder agents may change may overlap it.
+     */
+    fun runProblem(rule: PickUpRule?, folder: SharedFolder?, allFolders: List<SharedFolder>, masterSwitchOn: Boolean): String? = when {
+        !masterSwitchOn -> RUN_SWITCHED_OFF
+        rule == null || !rule.enabled -> RUN_RULE_OFF
+        folder == null || folder.id != rule.folderId -> FOLDER_GONE
+        !folder.readOnly || folder.readOnlySince != rule.folderReadOnlySince -> RUN_FOLDER_NOT_READ_ONLY
+        overlapsWritable(folder, allFolders) -> RUN_FOLDER_OVERLAPS_WRITABLE
+        else -> null
+    }
+
+    /** The content hash a rule records for a file: SHA-256 of its bytes, lower-case hex. */
+    fun contentHash(bytes: ByteArray): String =
+        java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+
+    /**
+     * The files in [rule]'s folder now, as records of files seen but not imported
+     * ([PickedUpFile.seenOnly], at [at]): every `text/…` file of at most
+     * [PickUpLimits.MAX_FILE_BYTES] directly in the folder (others are never picked up anyway).
+     * Null when the folder or one of those files cannot be read: the rule is then not made or not
+     * switched on. Taken when a rule is made and whenever it is switched on.
+     */
+    suspend fun baseline(rule: PickUpRule, folders: PickUpFolders, at: Long): List<PickedUpFile>? {
+        val entries = (folders.files(rule.folderId) as? DocResult.Ok)?.value ?: return null
+        val seen = ArrayList<PickedUpFile>()
+        for (entry in entries) {
+            if (entry.isFolder || !PickUpLimits.accepts(entry.mimeType)) continue
+            if ((entry.sizeBytes ?: 0) > PickUpLimits.MAX_FILE_BYTES) continue
+            val content = (folders.read(rule.folderId, entry.path, PickUpLimits.MAX_FILE_BYTES) as? DocResult.Ok)?.value ?: return null
+            if (content.truncated) continue
+            seen += PickedUpFile(rule.id, contentHash(content.bytes), entry.name, content.bytes.size.toLong(), at, memoryId = null, seenOnly = true)
+        }
+        return seen.distinctBy { it.contentSha256 }
+    }
+
+    /** The source line of a picked-up memory: "Picked up from <folder>". */
+    fun source(folder: SharedFolder): String = "Picked up from " + folder.displayName.trim().take(MAX_SOURCE_NAME_CHARS)
+
+    /**
+     * Where a picked-up memory came from: an import ([ProvenanceOrigin.IMPORT]) from [folder], no
+     * agent, task or model. Never [ProvenanceOrigin.OWNER]: the owner did not write it, and
+     * recall frames it as data like any other memory.
+     */
+    fun provenance(folder: SharedFolder, at: Long): Provenance =
+        Provenance(origin = ProvenanceOrigin.IMPORT, source = source(folder), recordedAt = at)
+
+    /** The longest memory title (the memory service's limit); a longer file name is cut. */
+    const val MAX_TITLE_CHARS: Int = 200
+
+    /**
+     * The memory a picked-up file (or one part of it) becomes: a NOTE in [rule]'s space, titled
+     * [title] (the file's name, cut to [MAX_TITLE_CHARS]), holding [text], with [provenance]. The
+     * runner checks the size limits ([PickUpLimits]) before; the memory service checks the
+     * content's length as for any memory (a file longer than one memory holds is split by the
+     * runner, each part titled "<name> (part 2 of 3)").
+     */
+    fun memoryDraft(rule: PickUpRule, folder: SharedFolder, title: String, text: String, at: Long): MemoryDraft {
+        require(folder.id == rule.folderId) { "The folder is not this rule's folder." }
+        return MemoryDraft(
+            scope = MemoryScope.Shared(rule.spaceId),
+            kind = MemoryKind.NOTE,
+            title = title.trim().take(MAX_TITLE_CHARS).ifEmpty { "Picked-up file" },
+            content = text,
+            tags = setOf(TAG),
+            provenance = provenance(folder, at),
+        )
+    }
+
+    /** The tag every picked-up memory carries, so the owner can find them. */
+    const val TAG: String = "picked-up"
 }
