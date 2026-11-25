@@ -113,6 +113,45 @@ class WakeHoldTest {
     }
 
     @Test
+    fun `the approval reminder's alarm is one wall-clock alarm, allowed while idle, apart from the wake alarm (AND-W2B-3)`() {
+        val shadow = shadowOf(context.getSystemService(AlarmManager::class.java))
+        val wake = WakeAlarms(context, elapsedNow = { 5_000L })
+        wake.set(at = now + 9 * minute, now = now)
+        for (sdk in listOf(28, 35)) {
+            val reminder = ReminderAlarm.Android(context, sdkInt = sdk)
+            reminder.set(now + 14 * minute)
+            reminder.set(now + 15 * minute)
+            val alarm = shadow.scheduledAlarms.single { shadowOf(it.operation).savedIntent.action == WakeReceiver.ACTION_REMIND }
+            assertEquals(AlarmManager.RTC_WAKEUP, alarm.type)
+            assertEquals(now + 15 * minute, alarm.triggerAtTime)
+            assertTrue(alarm.allowWhileIdle)
+            assertEquals(WakeReceiver::class.java.name, shadowOf(alarm.operation).savedIntent.component?.className)
+            assertEquals(2, shadow.scheduledAlarms.size, "the wake alarm stays")
+            reminder.cancel()
+            assertEquals(listOf(WakeReceiver.ACTION_WAKE), shadow.scheduledAlarms.map { shadowOf(it.operation).savedIntent.action })
+        }
+        wake.cancel()
+    }
+
+    @Test
+    fun `the reminder's alarm only signals a graph that exists, and holds the phone awake briefly (AND-W2B-3)`() {
+        val app = context as AiControlCenterApp
+        val signals = WakeSignals.signals.value
+        WakeReceiver().onReceive(context, Intent(context, WakeReceiver::class.java).setAction(WakeReceiver.ACTION_REMIND))
+        assertNull(app.graphIfBuilt())
+        assertEquals(signals, WakeSignals.signals.value)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try {
+            app.installGraph(TestApp(scope).graph)
+            WakeReceiver().onReceive(context, Intent(context, WakeReceiver::class.java).setAction(WakeReceiver.ACTION_REMIND))
+            assertTrue(assertNotNull(ShadowPowerManager.getLatestWakeLock()).isHeld)
+            assertEquals(signals + 1, WakeSignals.signals.value, "the reminders look at the wall clock again")
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
     fun `the receiver only wakes a graph that exists, and holds the phone awake briefly`() {
         val app = context as AiControlCenterApp
         // No graph yet: nothing is built, nothing is held.

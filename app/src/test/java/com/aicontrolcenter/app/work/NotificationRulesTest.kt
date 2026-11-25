@@ -211,28 +211,83 @@ class NotificationRulesTest {
         val pending = MutableStateFlow(listOf(long, short))
         val notifier = ApprovalNotifier(
             context, pending, clock, backgroundScope, enabled = flowOf(true), post = { _, _, _ -> true }, cancel = {}, leftover = { emptySet() },
-            remind = { id, _, _ -> reminded += id; true },
+            remind = { id, _, _ -> reminded += id; true }, reminderAlarm = ReminderAlarm.None, wakes = flowOf(0L),
+        )
+        // The phone awake: the wall clock and the coroutines' time go on together.
+        fun pass(ms: Long) {
+            clock.advance(ms)
+            advanceTimeBy(ms)
+            runCurrent()
+        }
+        backgroundScope.launch { notifier.run() }
+        runCurrent()
+        pass(15 * 60_000L - 1)
+        assertEquals(emptyList(), reminded)
+        pass(2)
+        assertEquals(listOf(RequestId("req_q")), reminded)
+        pass(60 * 60_000L)
+        assertEquals(listOf(RequestId("req_q")), reminded, "once")
+
+        // Answered before the reminder: none.
+        val other = question(at = clock.now(), minutes = 30).copy(id = RequestId("req_other"))
+        pending.value = listOf(other)
+        runCurrent()
+        pending.value = emptyList()
+        pass(60 * 60_000L)
+        assertEquals(listOf(RequestId("req_q")), reminded)
+    }
+
+    @Test
+    fun `the reminder comes while the phone sleeps, as an alarm wakes it at the reminder's wall-clock time (AND-W2B-3)`() = runTest {
+        val clock = FakeClock(1_000)
+        val reminded = mutableListOf<RequestId>()
+        val alarms = mutableListOf<Long?>()
+        val alarm = object : ReminderAlarm {
+            override fun set(at: Long) {
+                alarms += at
+            }
+
+            override fun cancel() {
+                alarms += null
+            }
+        }
+        val wakes = MutableStateFlow(0L)
+        val request = question(at = 1_000, minutes = 20)
+        val pending = MutableStateFlow(listOf(request))
+        val notifier = ApprovalNotifier(
+            context, pending, clock, backgroundScope, enabled = flowOf(true), post = { _, _, _ -> true }, cancel = {}, leftover = { emptySet() },
+            remind = { id, _, _ -> reminded += id; true }, reminderAlarm = alarm, wakes = wakes,
         )
         backgroundScope.launch { notifier.run() }
         runCurrent()
-        advanceTimeBy(15 * 60_000L - 1)
+        assertEquals(listOf<Long?>(request.expiresAt - ApprovalNotifications.REMINDER_BEFORE_MS), alarms, "one alarm at the reminder's time")
+
+        // Deep sleep: the wall clock goes on, the coroutines' time does not.
+        clock.advance(16 * 60_000L)
         runCurrent()
         assertEquals(emptyList(), reminded)
-        advanceTimeBy(2)
+        // The alarm wakes the phone: the reminder comes, once, and no alarm is left.
+        wakes.value += 1
         runCurrent()
         assertEquals(listOf(RequestId("req_q")), reminded)
+        assertEquals(null, alarms.last())
+        wakes.value += 1
         advanceTimeBy(60 * 60_000L)
         runCurrent()
         assertEquals(listOf(RequestId("req_q")), reminded, "once")
 
-        // Answered before the reminder: none.
-        val other = question(at = 1_000, minutes = 30).copy(id = RequestId("req_other"))
-        pending.value = listOf(other)
+        // A wake before the reminder's time reminds nothing; one after the request expired neither.
+        val later = question(at = clock.now(), minutes = 20).copy(id = RequestId("req_later"))
+        pending.value = listOf(later)
         runCurrent()
-        pending.value = emptyList()
-        advanceTimeBy(60 * 60_000L)
+        clock.advance(10 * 60_000L)
+        wakes.value += 1
         runCurrent()
         assertEquals(listOf(RequestId("req_q")), reminded)
+        clock.advance(11 * 60_000L)
+        wakes.value += 1
+        runCurrent()
+        assertEquals(listOf(RequestId("req_q")), reminded, "expired before the phone woke: no reminder")
     }
 
     @Test

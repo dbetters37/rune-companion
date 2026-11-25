@@ -12,15 +12,19 @@ import com.aicontrolcenter.app.AiControlCenterApp
  * [WakeAlarms] alarm to this (non-exported) receiver for a wait longer than two minutes. It only signals a graph that
  * already exists (rule 1): the orchestrator's and the provider re-checks' waits look at the wall clock again, and the
  * service decides again whether to keep the phone awake. It never builds the graph, so it never starts work by itself,
- * and it keeps the phone awake for at most [HOLD_MS] while the waits look.
+ * and it keeps the phone awake for at most [HOLD_MS] while the waits look. The approval reminders' alarm
+ * ([ReminderAlarm], [ACTION_REMIND]) reaches it too: the reminders then look at the wall clock again (AND-W2B-3).
  */
 class WakeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != ACTION_WAKE) return
+        if (intent.action != ACTION_WAKE && intent.action != ACTION_REMIND) return
         val graph = (context.applicationContext as? AiControlCenterApp)?.graphIfBuilt() ?: return
         holdBriefly(context)
-        graph.orchestrator.timedWaits.wake()
-        graph.providerRechecks.timedWaits.wake()
+        if (intent.action == ACTION_WAKE) {
+            graph.orchestrator.timedWaits.wake()
+            graph.providerRechecks.timedWaits.wake()
+        }
+        // The approval reminders look at the wall clock again ([ReminderAlarm]).
         WakeSignals.poke()
     }
 
@@ -38,6 +42,9 @@ class WakeReceiver : BroadcastReceiver() {
 
     companion object {
         const val ACTION_WAKE: String = "com.aicontrolcenter.app.action.WAKE_WAITS"
+
+        /** An approval reminder is due ([ReminderAlarm]). */
+        const val ACTION_REMIND: String = "com.aicontrolcenter.app.action.REMIND_APPROVALS"
         const val TAG: String = "aicc:wake"
         const val HOLD_MS: Long = 30_000
     }
