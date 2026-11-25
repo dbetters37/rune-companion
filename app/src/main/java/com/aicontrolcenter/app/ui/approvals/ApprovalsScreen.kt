@@ -1,6 +1,5 @@
 package com.aicontrolcenter.app.ui.approvals
 
-import com.aicontrolcenter.app.Phase6Stub
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,27 +29,41 @@ import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.core.RequestId
 
 /**
- * The "Waiting for you" list (wave 3, WP11a renames it): approvals and agents' questions. A question opens its own screen
- * through [onOpenQuestion] (rule 13), never the Approval screen.
+ * The "Waiting for you" list: approvals, permission requests and agents' questions, oldest first. A question opens its
+ * own screen through [onOpenQuestion] (rule 13), never the Approval screen; everything else opens through [onOpenRequest].
  */
-@Phase6Stub("WP11a")
 @Composable
-fun ApprovalsRoute(onBack: (() -> Unit)?, onOpenRequest: (RequestId) -> Unit, @Suppress("UNUSED_PARAMETER") onOpenQuestion: (RequestId) -> Unit = onOpenRequest) {
+fun ApprovalsRoute(onBack: (() -> Unit)?, onOpenRequest: (RequestId) -> Unit, onOpenQuestion: (RequestId) -> Unit = onOpenRequest) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel {
         ApprovalsViewModel(graph.ownerRequests, graph.registryDirectory, graph.capabilities::info, graph.clock, notificationsEnabled = graph.notifications.enabled)
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    ApprovalsScreen(state, onBack, onOpenRequest)
+    ApprovalsScreen(state, onBack, onOpenRequest, onOpenQuestion)
+}
+
+/** The screen's title, also the shell's rail item. */
+const val WAITING_FOR_YOU = "Waiting for you"
+
+/**
+ * "Waiting for you · 2 requests and 1 question, oldest first": what waits, in words (requests are approvals and
+ * permission requests; questions are agents' questions).
+ */
+fun waitingSummary(requests: Int, questions: Int): String {
+    val parts = listOfNotNull(
+        requests.takeIf { it > 0 }?.let { plural(it, "request") },
+        questions.takeIf { it > 0 }?.let { plural(it, "question") },
+    )
+    return "$WAITING_FOR_YOU · " + parts.joinToString(" and ") + ", oldest first"
 }
 
 /**
- * Every question waiting for the owner, oldest first. Each opens its Approval screen, where it is
- * answered. [onBack] is null where the screen is a destination of its own (the rail's Approvals).
+ * Everything waiting for the owner, oldest first. A request opens its Approval screen; a question opens its own screen
+ * ([onOpenQuestion]). [onBack] is null where the screen is a destination of its own (the rail's "Waiting for you").
  */
 @Composable
-fun ApprovalsScreen(state: ApprovalsUiState, onBack: (() -> Unit)?, onOpenRequest: (RequestId) -> Unit) {
-    ScreenScaffold(title = "Approvals", onBack = onBack) { padding ->
+fun ApprovalsScreen(state: ApprovalsUiState, onBack: (() -> Unit)?, onOpenRequest: (RequestId) -> Unit, onOpenQuestion: (RequestId) -> Unit = onOpenRequest) {
+    ScreenScaffold(title = WAITING_FOR_YOU, onBack = onBack) { padding ->
         when {
             state.isLoading -> Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
             state.requests.isEmpty() -> Column(Modifier.padding(padding)) {
@@ -58,8 +71,8 @@ fun ApprovalsScreen(state: ApprovalsUiState, onBack: (() -> Unit)?, onOpenReques
                 EmptyState(
                     icon = AppIcons.Approval,
                     title = "Nothing is waiting for you",
-                    message = "When an agent needs a permission, or your approval for something hard to undo, the request waits here, " +
-                        "in the chat or task that asked, and in a notification while notifications are allowed.",
+                    message = "When an agent needs a permission, your approval for something hard to undo, or an answer to a question, " +
+                        "it waits here, in the chat or task that asked, and in a notification while notifications are allowed.",
                 )
             }
             else -> LazyColumn(
@@ -68,17 +81,22 @@ fun ApprovalsScreen(state: ApprovalsUiState, onBack: (() -> Unit)?, onOpenReques
                 verticalArrangement = Arrangement.spacedBy(Spacing.md),
             ) {
                 if (state.notificationsOff) item(key = "notifications") { ApprovalNotificationsOffBanner() }
+                val questions = state.requests.count { it.isQuestion }
                 item(key = "header") {
-                    SectionHeader("Waiting for you · " + plural(state.requests.size, "request") + ", oldest first")
+                    SectionHeader(waitingSummary(state.requests.size - questions, questions))
                     Text(
-                        "Each agent waits until you answer, or is refused when the time runs out. Open a request to see exactly what it would do. " +
-                            "Answered requests are kept in Tools › History.",
+                        buildString {
+                            append("Each agent waits until you answer. ")
+                            if (questions < state.requests.size) append("A request is refused when its time runs out; open it to see exactly what it would do. ")
+                            if (questions > 0) append("A question is only text for the agent: unanswered in time, the agent decides itself. ")
+                            append("Answered ones are kept in Tools › History.")
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 items(state.requests, key = { it.id.value }) { request ->
-                    RequestCard(request, onOpen = { onOpenRequest(request.id) })
+                    RequestCard(request, onOpen = { if (request.isQuestion) onOpenQuestion(request.id) else onOpenRequest(request.id) })
                 }
             }
         }

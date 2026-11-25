@@ -18,6 +18,8 @@ import com.aicontrolcenter.core.tasks.MessageType
 import com.aicontrolcenter.core.tasks.ReviewDecision
 import com.aicontrolcenter.core.tasks.TaskKind
 import com.aicontrolcenter.core.tasks.TaskStatus
+import com.aicontrolcenter.core.usage.DailyLimits
+import com.aicontrolcenter.app.work.WorkResult
 
 /*
  * The single place where task, review and message values become words, tones and glyphs, so a
@@ -40,12 +42,44 @@ fun TaskStatus.toStatusLabel(kind: TaskKind = TaskKind.WORK): StatusLabel = when
 }
 
 /**
+ * A task's status for the owner, with what its status line adds (Phase 6): queued work that waits for its provider says
+ * "Waiting to try again" (R4: `retryAt` set and the line starts with "Waiting:"); work that was waiting when its
+ * objective stopped says "Stopped" ("Was waiting: …", INT-3); everything else as [toStatusLabel] says.
+ */
+fun taskStatusLabel(status: TaskStatus, kind: TaskKind, retryAt: Long?, detail: String?): StatusLabel = when {
+    status == TaskStatus.QUEUED && retryAt != null && detail?.startsWith(WaitTexts.WAITING) == true ->
+        StatusLabel("Waiting to try again", StatusTone.WAITING)
+    status == TaskStatus.QUEUED && detail?.startsWith(WaitTexts.WAS_WAITING) == true -> StatusLabel("Stopped", StatusTone.DISABLED)
+    status == TaskStatus.RUNNING && kind == TaskKind.OBJECTIVE && retryAt != null && detail?.startsWith(WaitTexts.WAITING) == true ->
+        StatusLabel("Waiting to try again", StatusTone.WAITING)
+    status == TaskStatus.PAUSED && detail == DailyLimits.PAUSED_TEXT -> StatusLabel("Paused: today's limit", StatusTone.DISABLED)
+    status == TaskStatus.PAUSED && detail == WorkResult.STORAGE_PAUSED_DETAIL -> StatusLabel("Paused: phone almost full", StatusTone.DISABLED)
+    else -> status.toStatusLabel(kind)
+}
+
+/**
+ * The framework's words for work that waits for its provider (R4, INT-3), as the screens recognise them. The framework
+ * keeps them in its own `ProviderWaits` (internal there); the app's tests pin that the two agree.
+ */
+object WaitTexts {
+    /** Opens the status line of work waiting for its provider: "Waiting: xAI is not answering; trying again at 10:45." */
+    const val WAITING = "Waiting:"
+
+    /** Opens the status line of such work once its objective stopped: "Was waiting: xAI is not answering. Tries again when …" */
+    const val WAS_WAITING = "Was waiting:"
+
+    /** "xAI is not answering; trying again at 10:45." from "Waiting: xAI is not answering; trying again at 10:45.", else null. */
+    fun waitingFor(detail: String?): String? =
+        detail?.takeIf { it.startsWith(WAITING) }?.removePrefix(WAITING)?.trim()?.replaceFirstChar(Char::uppercase)?.takeIf { it.isNotEmpty() }
+}
+
+/**
  * A task's status line as the owner reads it. The framework writes it for every reader, agents
  * included ("Waiting for the owner's permission: …"); on the owner's own screens it says "your".
  */
 fun ownerFacing(detail: String): String = OWNER_WAIT.replaceFirst(detail, "Waiting for your $1:")
 
-private val OWNER_WAIT = Regex("""^Waiting for the owner's (permission|approval):""")
+private val OWNER_WAIT = Regex("""^Waiting for the owner's (permission|approval|answer):""")
 
 val TaskKind.label: String
     get() = when (this) {
@@ -77,7 +111,7 @@ val MessageType.label: String
         MessageType.ANSWER -> "Answer"
         MessageType.CANCEL -> "Cancelled"
         MessageType.STATUS -> "Status"
-        // Phase 6 (WP1a): a note the owner wrote to the team.
+        // A note the owner wrote to the team (C2).
         MessageType.GUIDANCE -> "Your note"
     }
 
@@ -111,6 +145,7 @@ enum class MessageFilter(val label: String, val types: Set<MessageType>) {
     ALL("All", MessageType.entries.toSet()),
     TASKS("Tasks", setOf(MessageType.ASSIGNMENT, MessageType.DELEGATION, MessageType.COMPLETION, MessageType.FAILURE, MessageType.CANCEL)),
     HELP("Help", setOf(MessageType.ASSISTANCE_REQUEST, MessageType.ASSISTANCE_RESPONSE, MessageType.QUESTION, MessageType.ANSWER)),
+    NOTES("Your notes", setOf(MessageType.GUIDANCE)),
     FINDINGS("Findings", setOf(MessageType.FINDINGS, MessageType.MEMORY_SHARE)),
     REVIEWS("Reviews", setOf(MessageType.REVIEW_REQUEST, MessageType.REVIEW_RESULT)),
     STATUS("Status", setOf(MessageType.STATUS)),

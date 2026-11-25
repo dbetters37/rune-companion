@@ -19,6 +19,15 @@ import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.registry.RegistrySnapshot
 import com.aicontrolcenter.core.tasks.ObjectiveOptions
 import com.aicontrolcenter.core.tasks.Orchestrator
+import com.aicontrolcenter.app.usage.TodayUse
+import com.aicontrolcenter.core.backup.MaintenanceGate
+import com.aicontrolcenter.core.health.BackgroundState
+import com.aicontrolcenter.core.health.StorageLevel
+import com.aicontrolcenter.core.health.StorageWatch
+import com.aicontrolcenter.core.registry.CapabilityTier
+import com.aicontrolcenter.core.usage.DailyLimits
+import com.aicontrolcenter.core.usage.ModelPrice
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -28,6 +37,10 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+
+/** Today's use against the daily limits, as the New objective form shows it. */
+@Immutable
+data class TodayLineUi(val text: String, val reached: Boolean, val note: String)
 
 /** The Director as the new-objective screen needs it: who it is, and whether it can take the objective. */
 @Immutable
@@ -51,6 +64,16 @@ data class NewObjectiveUiState(
     /** Explain the progress notification before Android asks for the permission. */
     val explainNotifications: Boolean = false,
     val message: UserMessage? = null,
+    /** "Today: 37 of 200 answers", with the other limits; null when no limit is set. */
+    val today: TodayLineUi? = null,
+    /** D27: the Director's model is rated Basic at reasoning, so planning may go wrong. */
+    val reasoningWarning: String? = null,
+    /** A3: Android may stop the work in the background, and why; null when nothing stands in the way. */
+    val backgroundWarning: String? = null,
+    /** R8: the phone is low on room (a warning) or almost full (no objective starts). */
+    val storageWarning: String? = null,
+    /** The phone is almost full: Start refuses. */
+    val storageFull: Boolean = false,
 ) {
     val canStart: Boolean get() = !isLoading && !isStarting && director?.canRun == true
 
@@ -75,6 +98,12 @@ class NewObjectiveViewModel(
     private val memory: MemoryService?,
     private val notifications: NotificationAccess,
     private val awaitStartup: suspend () -> Unit = {},
+    /** Today's use as the daily limits count it (read only): "Today: 37 of 200 answers". */
+    today: Flow<TodayUse> = flowOf(TodayUse.NONE),
+    /** The phone's free room (R8): measured again at Start, which refuses when it is almost full. */
+    private val storage: StorageWatch = StorageWatch.None,
+    /** Whether Android lets the work go on in the background (A3). */
+    background: Flow<BackgroundState> = flowOf(BackgroundState.UNKNOWN),
 ) : ViewModel() {
 
     private data class Local(
@@ -97,14 +126,26 @@ class NewObjectiveViewModel(
      */
     val objective = TextFieldState()
 
+    private data class Phone(val today: TodayUse, val storage: StorageLevel, val background: BackgroundState)
+
     val uiState: StateFlow<NewObjectiveUiState> = combine(
         directory.observe(),
         memory?.observeSpaces() ?: flowOf(emptyList()),
         local,
-    ) { snapshot, spaces, local ->
+        combine(today, storage.level, background, ::Phone),
+    ) { snapshot, spaces, local, phone ->
         val director = directorOf(snapshot)
         val space = knowledgeSpaceOf(snapshot, spaces)
         NewObjectiveUiState(
+            today = todayLineOf(phone.today),
+            reasoningWarning = reasoningWarningOf(snapshot),
+            backgroundWarning = backgroundWarningOf(phone.background),
+            storageWarning = when (phone.storage) {
+                StorageLevel.CRITICAL -> STORAGE_FULL
+                StorageLevel.LOW -> "The phone has little free room left. Objectives pause by themselves if it gets almost full."
+                else -> null
+            },
+            storageFull = phone.storage == StorageLevel.CRITICAL,
             isLoading = false,
             showErrors = local.showErrors,
             reviewResults = local.reviewResults,
@@ -169,6 +210,11 @@ class NewObjectiveViewModel(
         val saveKnowledge = uiState.value.saveKnowledge
         viewModelScope.launch {
             try {
+                // R8: measured now, not as last seen: an objective started on an almost full phone would only pause at once.
+                if (storage.check() == StorageLevel.CRITICAL) {
+                    fail(STORAGE_FULL)
+                    return@launch
+                }
                 awaitStartup()
                 val started = orchestrator.startObjective(
                     text,
@@ -179,7 +225,7 @@ class NewObjectiveViewModel(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (refused: IllegalStateException) {
-                fail(refused.message ?: NO_DIRECTOR)
+                fail(if (refused.message == MaintenanceGate.RESTORING) RESTORING else refused.message ?: NO_DIRECTOR)
             } catch (invalid: IllegalArgumentException) {
                 fail(invalid.message ?: "The objective is not valid.")
             } catch (failure: Exception) {
@@ -213,8 +259,60 @@ class NewObjectiveViewModel(
         return spaces.firstOrNull { access.canWrite(MemoryScope.Shared(it.id)) }?.name
     }
 
+    /** D27: a Director whose model is rated Basic at reasoning plans less well. */
+    private fun reasoningWarningOf(snapshot: RegistrySnapshot): String? {
+        val entry = snapshot.director ?: return null
+        val modelId = (entry.availability as? AgentAvailability.Ready)?.modelId ?: return null
+        val model = snapshot.modelsById[modelId] ?: return null
+        if (model.capabilities.reasoning != CapabilityTier.BASIC) return null
+        return "${entry.profile.name} plans the work with ${model.displayName}, which is rated Basic at reasoning. Plans may miss steps " +
+            "or go wrong. A model rated Good or Strong at reasoning plans better; you can change the rating or the model in Models."
+    }
+
     companion object {
         const val MAX_LENGTH = 4_000
+
+        /** R8: what Start says, and the form shows, when the phone is almost full. */
+        const val STORAGE_FULL = "The phone is almost full. Free some room before starting an objective."
+
+        /** What Start says while a backup is being restored. */
+        const val RESTORING = "The app is restoring a backup. Start the objective once the restore has finished."
+
+        /** "Today: 37 of 200 answers · 12,400 of 500,000 tokens · US$0.12 of US$1.00", or null without limits. */
+        fun todayLineOf(today: TodayUse): TodayLineUi? {
+            val limits = today.limits
+            val use = today.use
+            val parts = listOfNotNull(
+                limits.maxCalls?.let { "${formatCount(use.calls)} of ${formatCount(it.toLong())} answers" },
+                limits.maxTokens?.let { "${formatCount(use.tokens)} of ${formatCount(it)} tokens" },
+                limits.maxSpendMicros?.takeIf { use.priced }?.let {
+                    "${DailyLimits.money(use.spendMicros, ModelPrice.DEFAULT_CURRENCY)} of ${DailyLimits.money(it, ModelPrice.DEFAULT_CURRENCY)}"
+                },
+            )
+            if (parts.isEmpty()) return null
+            return TodayLineUi(
+                text = "Today: " + parts.joinToString(" · "),
+                reached = today.reached,
+                note = if (today.reached) {
+                    "Today's limit is reached: a new objective pauses at its first step until midnight, or until you raise the limit."
+                } else {
+                    "Answers and tokens are counted for models off this phone. When a limit is reached, objectives pause until midnight."
+                },
+            )
+        }
+
+        /** A3: what may stop the work while the owner is away, in plain words; null when nothing does. */
+        fun backgroundWarningOf(state: BackgroundState): String? {
+            if (state.allClear) return null
+            val reasons = listOfNotNull(
+                "notifications are off".takeIf { !state.notificationsAllowed },
+                "battery saving applies to this app".takeIf { state.batteryOptimised == true },
+                "background use is restricted for this app".takeIf { state.backgroundRestricted == true },
+                "Android rarely lets this app run in the background".takeIf { state.standbyWarning },
+            )
+            return "When you leave the app, Android may stop the work: " + reasons.joinToString(", ") +
+                ". The work goes on while the app is open. Settings › Working in the background shows how to fix each one."
+        }
         private const val NO_DIRECTOR = "No Director is designated. Open Agents, choose an agent with the Director role and designate it."
 
         /** Why [text] cannot be given as an objective, or null when it can. */

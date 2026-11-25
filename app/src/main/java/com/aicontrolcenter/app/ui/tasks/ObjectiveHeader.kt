@@ -42,6 +42,18 @@ import com.aicontrolcenter.app.ui.icons.Egress
 import com.aicontrolcenter.app.ui.icons.OnDevice
 import com.aicontrolcenter.app.ui.icons.Pause
 import com.aicontrolcenter.app.ui.icons.Stop
+import com.aicontrolcenter.app.ui.icons.Hub
+import com.aicontrolcenter.app.ui.icons.Insights
+import com.aicontrolcenter.app.ui.icons.Schedule
+import com.aicontrolcenter.app.ui.icons.Speed
+import com.aicontrolcenter.app.ui.icons.Storage
+import com.aicontrolcenter.app.ui.icons.TouchApp
+import com.aicontrolcenter.app.ui.icons.Tune
+import com.aicontrolcenter.app.ui.components.NeutralChip
+import com.aicontrolcenter.core.RoutineId
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.semantics.semantics
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.app.ui.theme.appColors
@@ -55,22 +67,39 @@ class ObjectiveControls(
     val onRunAgain: () -> Unit,
 )
 
+/** Where the header's links lead. */
+class HeaderLinks(
+    val onOpenTeam: () -> Unit = {},
+    val onOpenDailyLimits: () -> Unit = {},
+    val onOpenRoutine: (RoutineId) -> Unit = {},
+)
+
 /**
  * The top of the objective screen: status and time, the objective, what the Director made of
- * it, progress, who is involved, what left the phone, and the controls.
+ * it, why it is not moving, progress, who is involved, the cost so far, what left the phone, and the controls.
+ * [elapsed] moves on its own every second while the objective runs (P2).
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun ObjectiveHeader(header: ObjectiveHeaderUi, egress: EgressUi, isBusy: Boolean, controls: ObjectiveControls) {
+internal fun ObjectiveHeader(
+    header: ObjectiveHeaderUi,
+    egress: EgressUi,
+    isBusy: Boolean,
+    controls: ObjectiveControls,
+    elapsed: String = "",
+    links: HeaderLinks = HeaderLinks(),
+) {
     AppCard(borderColor = if (header.isLive) appColors.working.copy(alpha = 0.5f) else appColors.hairline) {
         Column(verticalArrangement = Arrangement.spacedBy(Spacing.md)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 StatusChip(header.status.text, header.status.tone)
                 if (header.isLive) CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp, color = appColors.working)
-                Text(header.elapsed, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                Text(elapsed, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
             }
+            RoutineLine(header, links.onOpenRoutine)
             CollapsibleText(header.text, MaterialTheme.typography.titleMedium, collapsedLines = 4, label = "objective")
             Interpretation(header)
+            header.pause?.let { PauseNotice(it) }
             Progress(header)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
                 AvatarStack(header.agents.map { StackedAvatar(it.name, it.colorIndex) }, size = 26.dp)
@@ -81,16 +110,65 @@ internal fun ObjectiveHeader(header: ObjectiveHeaderUi, egress: EgressUi, isBusy
                     modifier = Modifier.weight(1f),
                 )
             }
+            header.cost?.let { CostLine(it) }
             EgressLine(egress)
-            header.error?.let { InfoBanner(text = it, tone = StatusTone.UNAVAILABLE) }
-                ?: header.statusDetail?.takeIf { !header.status.tone.isCalm() }?.let { InfoBanner(text = it, tone = header.status.tone) }
+            if (header.pause == null) {
+                header.error?.let { InfoBanner(text = it, tone = StatusTone.UNAVAILABLE) }
+                    ?: header.statusDetail?.takeIf { !header.status.tone.isCalm() }?.let { InfoBanner(text = it, tone = header.status.tone) }
+            }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(Spacing.sm), verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 if (header.canPause) ControlButton("Pause", AppIcons.Pause, isBusy, tonal = true, onClick = controls.onPause)
                 if (header.canResume) ControlButton("Resume", AppIcons.Play, isBusy, primary = true, onClick = controls.onResume)
                 if (header.canRunAgain) ControlButton("Run again", AppIcons.Refresh, isBusy, primary = true, onClick = controls.onRunAgain)
+                if (header.pause?.kind == PauseKind.DAILY_LIMIT) ControlButton("Daily limits", AppIcons.Tune, isBusy = false, onClick = links.onOpenDailyLimits)
+                ControlButton("Team view", AppIcons.Hub, isBusy = false, onClick = links.onOpenTeam)
                 if (header.canCancel) ControlButton("Cancel", AppIcons.Stop, isBusy, onClick = controls.onCancel)
                 if (header.canDelete) ControlButton("Delete", AppIcons.Delete, isBusy, destructive = true, onClick = controls.onDelete)
             }
+        }
+    }
+}
+
+/** "Started by routine “Morning news”" (a link to the routine) and "Screens: not allowed" for an objective a routine started. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun RoutineLine(header: ObjectiveHeaderUi, onOpenRoutine: (RoutineId) -> Unit) {
+    if (header.routine == null && !header.screensNotAllowed) return
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(Spacing.sm), verticalArrangement = Arrangement.spacedBy(Spacing.xs), itemVerticalAlignment = Alignment.CenterVertically) {
+        header.routine?.let { line ->
+            val id = header.routineId
+            if (id != null) {
+                TextButton(onClick = { onOpenRoutine(id) }, modifier = Modifier.heightIn(min = Spacing.touchTarget)) {
+                    Icon(AppIcons.Schedule, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+                    Text(line, modifier = Modifier.padding(start = Spacing.sm))
+                }
+            } else {
+                Text(line, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        if (header.screensNotAllowed) NeutralChip("Screens: not allowed", icon = AppIcons.TouchApp)
+    }
+}
+
+/** Why the objective is not moving: today's limit, the phone almost full, a provider wait. Never colour alone: the title says it. */
+@Composable
+private fun PauseNotice(pause: PauseNoticeUi) {
+    val (tone, icon) = when (pause.kind) {
+        PauseKind.DAILY_LIMIT -> StatusTone.ATTENTION to AppIcons.Speed
+        PauseKind.STORAGE -> StatusTone.ATTENTION to AppIcons.Storage
+        PauseKind.PROVIDER_WAIT -> StatusTone.WAITING to AppIcons.Schedule
+    }
+    InfoBanner(title = pause.title, text = pause.text, tone = tone, icon = icon)
+}
+
+/** What the objective's model calls came to so far, with what a token is and that money is an estimate. */
+@Composable
+private fun CostLine(cost: CostLineUi) {
+    Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(Spacing.sm), modifier = Modifier.semantics(mergeDescendants = true) {}) {
+        Icon(AppIcons.Insights, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(cost.text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
+            Text(cost.note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

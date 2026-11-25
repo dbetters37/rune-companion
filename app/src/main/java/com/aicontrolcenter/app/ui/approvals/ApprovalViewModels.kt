@@ -5,6 +5,7 @@ import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aicontrolcenter.app.ui.components.UserMessage
+import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.app.ui.components.putText
 import com.aicontrolcenter.app.ui.components.textChanges
 import com.aicontrolcenter.core.Clock
@@ -21,7 +22,13 @@ import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.tools.Capability
 import com.aicontrolcenter.core.tools.CapabilityConstraint
 import com.aicontrolcenter.core.tools.CapabilityInfo
+import com.aicontrolcenter.core.activity.ActivityEvent
+import com.aicontrolcenter.core.activity.ActivityFilter
+import com.aicontrolcenter.core.activity.ActivityLog
+import com.aicontrolcenter.core.activity.ActivityType
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -94,7 +101,13 @@ data class ApprovalUiState(
     val message: UserMessage? = null,
     /** Where to go once the owner allowed a call on another app's screen; the screen acts on it once. */
     val afterAnswer: AfterAnswer? = null,
+    /** D9: what the call the owner allowed or approved did, from the activity log; null while nothing was allowed. */
+    val whatHappened: WhatHappenedUi? = null,
 )
+
+/** D9: what an allowed or approved call did, in one line, with a tone (never colour alone: the words say it). */
+@Immutable
+data class WhatHappenedUi(val text: String, val tone: StatusTone?)
 
 /**
  * What follows once the owner allowed a call on another app's screen. They answered here, in AI
@@ -130,6 +143,8 @@ class ApprovalViewModel(
     private val clock: Clock,
     private val zone: ZoneId = ZoneId.systemDefault(),
     ticker: Flow<Unit> = everyHalfMinute(),
+    /** D9: the activity log, read only; the call an answer let through names this request in its entry. Null: not shown. */
+    activityLog: ActivityLog? = null,
 ) : ViewModel() {
 
     private data class Local(val note: String = "", val isBusy: Boolean = false, val message: UserMessage? = null, val afterAnswer: AfterAnswer? = null)
@@ -148,7 +163,17 @@ class ApprovalViewModel(
         pending.firstOrNull { it.id == requestId } ?: requests.closeIfAbandoned(requestId)
     }.distinctUntilChanged()
 
-    val uiState: StateFlow<ApprovalUiState> = combine(request, directory.observe(), local, ticker, grants.observeAll()) { request, snapshot, local, _, grants ->
+    /** The tool calls of the request's agent, newest first, once the owner allowed or approved it (D9); empty otherwise. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val calls: Flow<List<ActivityEvent>> = request.map { it?.takeIf { request -> request.status == OwnerRequestStatus.APPROVED && request.kind != OwnerRequestKind.QUESTION }?.agentId }
+        .distinctUntilChanged()
+        .flatMapLatest { agent ->
+            if (agent == null || activityLog == null) flowOf(emptyList()) else activityLog.observe(ActivityFilter(types = setOf(ActivityType.TOOL_CALL), agentId = agent), CALLS_READ)
+        }
+
+    private val requestAndCalls = combine(request, calls) { request, calls -> request to calls }
+
+    val uiState: StateFlow<ApprovalUiState> = combine(requestAndCalls, directory.observe(), local, ticker, grants.observeAll()) { (request, calls), snapshot, local, _, grants ->
         val now = clock.now()
         ApprovalUiState(
             isLoading = false,
@@ -158,6 +183,7 @@ class ApprovalViewModel(
             isBusy = local.isBusy,
             message = local.message,
             afterAnswer = local.afterAnswer,
+            whatHappened = request?.let { whatHappened(it, calls, now) },
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ApprovalUiState())
 
@@ -276,6 +302,9 @@ class ApprovalViewModel(
     companion object {
         /** The longest note the owner can send with an answer. */
         const val MAX_NOTE = 500
+
+        /** How many of the agent's newest tool calls are looked through for the one an answer let through (D9). */
+        const val CALLS_READ = 200
 
         /** How long to wait, after a permission for a screen call, for that call's approval before stepping aside. */
         private const val FOLLOW_UP_MS = 1_500L

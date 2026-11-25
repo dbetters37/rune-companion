@@ -1,6 +1,5 @@
 package com.aicontrolcenter.app.ui.tasks
 
-import com.aicontrolcenter.app.Phase6Stub
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -46,10 +45,11 @@ class TaskDetailActions(
     val onMessageShown: () -> Unit,
     /** Opens the Approval screen of a request the task waits on. */
     val onOpenRequest: (RequestId) -> Unit = {},
+    /** Opens the question screen of a question the task waits on (rule 13). */
+    val onOpenQuestion: (RequestId) -> Unit = onOpenRequest,
 )
 
-/** Wave 3 (WP11a): [onOpenQuestion] opens a question the task waits on (rule 13). */
-@Phase6Stub("WP11a")
+/** One task; [onOpenQuestion] opens a question the task waits on (rule 13), [onOpenRequest] any other request. */
 @Composable
 fun TaskDetailRoute(
     taskId: TaskId,
@@ -57,20 +57,21 @@ fun TaskDetailRoute(
     onOpenTask: (TaskId) -> Unit,
     onOpenObjective: (TaskId) -> Unit,
     onOpenRequest: (RequestId) -> Unit = {},
-    @Suppress("UNUSED_PARAMETER") onOpenQuestion: (RequestId) -> Unit = {},
+    onOpenQuestion: (RequestId) -> Unit = {},
 ) {
     val graph = LocalAppGraph.current
+    val work = LocalScreenWork.current
     val viewModel = viewModel(key = "task-${taskId.value}") {
         TaskDetailViewModel(
             taskId, graph.tasks, graph.messages, graph.registryDirectory, graph.agentChat, graph.toolRegistry, graph.orchestrator,
-            graph.activityMonitor, graph.clock, requests = graph.ownerRequests.pending, capabilityInfo = graph.capabilities::info,
-            awaitStartup = graph::awaitStartup,
+            graph.activityMonitor, graph.clock, graph.zone(), requests = graph.ownerRequests.pending, capabilityInfo = graph.capabilities::info,
+            awaitStartup = graph::awaitStartup, spaces = graph.memoryService.observeSpaces(), computation = work,
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     TaskDetailScreen(
         state,
-        TaskDetailActions(onBack, onOpenTask, onOpenObjective, viewModel::retry, viewModel::cancel, viewModel::messageShown, onOpenRequest),
+        TaskDetailActions(onBack, onOpenTask, onOpenObjective, viewModel::retry, viewModel::cancel, viewModel::messageShown, onOpenRequest, onOpenQuestion),
     )
 }
 
@@ -102,7 +103,7 @@ fun TaskDetailScreen(state: TaskDetailUiState, actions: TaskDetailActions) {
                     }
                 }
                 if (state.waitingFor.isNotEmpty()) {
-                    item(key = "waiting") { Pad { WaitingForYou(state.waitingFor, actions.onOpenRequest) } }
+                    item(key = "waiting") { Pad { WaitingForYou(state.waitingFor, actions.onOpenRequest, onOpenQuestion = actions.onOpenQuestion) } }
                 }
                 item(key = "instructions") { Pad { TaskInstructions(task) } }
                 if (task.parent != null || task.dependsOn.isNotEmpty() || task.children.isNotEmpty()) {

@@ -1,6 +1,5 @@
 package com.aicontrolcenter.app.ui.tasks
 
-import com.aicontrolcenter.app.Phase6Stub
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,6 +43,10 @@ import com.aicontrolcenter.app.ui.icons.Tasks
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.approvals.WaitingForYou
 import com.aicontrolcenter.core.RequestId
+import com.aicontrolcenter.core.RoutineId
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.runtime.remember
+import kotlinx.coroutines.flow.flowOf
 import com.aicontrolcenter.core.TaskId
 
 class ObjectiveActions(
@@ -56,33 +59,49 @@ class ObjectiveActions(
     val onMessageShown: () -> Unit,
     /** Opens the Approval screen of a request one of its tasks waits on. */
     val onOpenRequest: (RequestId) -> Unit = {},
+    /** Opens the question screen of a question one of its tasks waits on (rule 13). */
+    val onOpenQuestion: (RequestId) -> Unit = onOpenRequest,
+    /** The header's "Team view" (WP9's screen, opened on this objective). */
+    val onOpenTeam: (TaskId) -> Unit = {},
+    /** The way to raise today's limit when it paused the objective. */
+    val onOpenDailyLimits: () -> Unit = {},
+    /** The routine that started the objective. */
+    val onOpenRoutine: (RoutineId) -> Unit = {},
+    /** The "Write to the team" composer: who the note goes to (null: the Director), and Send. */
+    val onNoteRecipient: (TaskId?) -> Unit = {},
+    val onSendNote: () -> Unit = {},
 )
 
 /**
- * Wave 3 (WP11a): [onOpenTeam] is the header's "Team view", [onOpenQuestion] a question one of its tasks waits on,
+ * One objective: [onOpenTeam] is the header's "Team view", [onOpenQuestion] a question one of its tasks waits on,
  * [onOpenDailyLimits] the way to raise today's limit when it paused the objective, [onOpenRoutine] the routine that
  * started it ("Started by routine '<title>'").
  */
-@Phase6Stub("WP11a")
 @Composable
 fun ObjectiveRoute(
     objectiveId: TaskId,
     onBack: () -> Unit,
     onOpenTask: (TaskId) -> Unit,
     onOpenRequest: (RequestId) -> Unit = {},
-    @Suppress("UNUSED_PARAMETER") onOpenQuestion: (RequestId) -> Unit = {},
-    @Suppress("UNUSED_PARAMETER") onOpenTeam: (TaskId) -> Unit = {},
-    @Suppress("UNUSED_PARAMETER") onOpenDailyLimits: () -> Unit = {},
-    @Suppress("UNUSED_PARAMETER") onOpenRoutine: (com.aicontrolcenter.core.RoutineId) -> Unit = {},
+    onOpenQuestion: (RequestId) -> Unit = {},
+    onOpenTeam: (TaskId) -> Unit = {},
+    onOpenDailyLimits: () -> Unit = {},
+    onOpenRoutine: (RoutineId) -> Unit = {},
 ) {
     val graph = LocalAppGraph.current
+    val work = LocalScreenWork.current
     val viewModel = viewModel(key = "objective-${objectiveId.value}") {
         ObjectiveViewModel(
-            objectiveId, graph.tasks, graph.messages, graph.registryDirectory, graph.orchestrator, graph.activityLog, graph.settings, graph.clock,
+            objectiveId, graph.tasks, graph.messages, graph.registryDirectory, graph.orchestrator, graph.activityLog, graph.settingsView, graph.clock,
+            zone = graph.zone(),
             requests = graph.ownerRequests.pending, capabilityInfo = graph.capabilities::info, awaitStartup = graph::awaitStartup,
+            notes = graph.ownerConversation, usage = graph.usageReports, prices = graph.modelPrices,
+            routines = graph.ownerRoutines?.observeAll() ?: flowOf(emptyList()), spaces = graph.memoryService.observeSpaces(),
+            computation = work,
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val elapsed by viewModel.elapsed.collectAsStateWithLifecycle()
     LaunchedEffect(state.deleted) { if (state.deleted) onBack() }
     ObjectiveScreen(
         state,
@@ -95,7 +114,15 @@ fun ObjectiveRoute(
             onDocumentCopied = viewModel::documentCopied,
             onMessageShown = viewModel::messageShown,
             onOpenRequest = onOpenRequest,
+            onOpenQuestion = onOpenQuestion,
+            onOpenTeam = onOpenTeam,
+            onOpenDailyLimits = onOpenDailyLimits,
+            onOpenRoutine = onOpenRoutine,
+            onNoteRecipient = viewModel::setNoteRecipient,
+            onSendNote = viewModel::sendNote,
         ),
+        elapsed = elapsed,
+        note = viewModel.note,
     )
 }
 
@@ -105,7 +132,7 @@ fun ObjectiveRoute(
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun ObjectiveScreen(state: ObjectiveUiState, actions: ObjectiveActions) {
+fun ObjectiveScreen(state: ObjectiveUiState, actions: ObjectiveActions, elapsed: String = "", note: TextFieldState = remember { TextFieldState() }) {
     var confirmCancel by rememberSaveable { mutableStateOf(false) }
     var confirmDelete by rememberSaveable { mutableStateOf(false) }
     val header = state.header
@@ -135,12 +162,20 @@ fun ObjectiveScreen(state: ObjectiveUiState, actions: ObjectiveActions) {
                                 onDelete = { confirmDelete = true },
                                 onRunAgain = controls.onRunAgain,
                             ),
+                            elapsed = elapsed,
+                            links = HeaderLinks(
+                                onOpenTeam = { actions.onOpenTeam(header.id) },
+                                onOpenDailyLimits = actions.onOpenDailyLimits,
+                                onOpenRoutine = actions.onOpenRoutine,
+                            ),
                         )
                     }
                 }
                 if (state.waitingFor.isNotEmpty()) {
                     item(key = "waiting") {
-                        Box(Modifier.padding(horizontal = Spacing.screen, vertical = Spacing.xs)) { WaitingForYou(state.waitingFor, actions.onOpenRequest) }
+                        Box(Modifier.padding(horizontal = Spacing.screen, vertical = Spacing.xs)) {
+                            WaitingForYou(state.waitingFor, actions.onOpenRequest, onOpenQuestion = actions.onOpenQuestion)
+                        }
                     }
                 }
                 state.limits?.reached?.takeIf { it.isNotEmpty() }?.let { reached ->
@@ -149,13 +184,9 @@ fun ObjectiveScreen(state: ObjectiveUiState, actions: ObjectiveActions) {
                 stickyHeader(key = "tabs") { Tabs(state, actions.onTabChange) }
                 when (state.tab) {
                     ObjectiveTab.PLAN -> planTab(state, actions)
-                    ObjectiveTab.CONVERSATION -> conversationTab(state, actions)
+                    ObjectiveTab.CONVERSATION -> conversationTab(state, actions, note)
                     ObjectiveTab.LOG -> logTab(state)
-                    ObjectiveTab.RESULT -> item(key = "document") {
-                        Box(Modifier.padding(horizontal = Spacing.screen, vertical = Spacing.md)) {
-                            DocumentCard(header.title, state.document, state.documentNote, actions.onDocumentCopied)
-                        }
-                    }
+                    ObjectiveTab.RESULT -> documentItems(header.title, state.document, state.documentBlocks, state.documentNote, actions.onDocumentCopied)
                 }
             }
         }
@@ -247,7 +278,14 @@ private fun LazyListScope.planTab(state: ObjectiveUiState, actions: ObjectiveAct
     }
 }
 
-private fun LazyListScope.conversationTab(state: ObjectiveUiState, actions: ObjectiveActions) {
+private fun LazyListScope.conversationTab(state: ObjectiveUiState, actions: ObjectiveActions, note: TextFieldState) {
+    if (state.notes.canWrite) {
+        item(key = "notes-composer") {
+            Box(Modifier.padding(horizontal = Spacing.screen, vertical = Spacing.md)) {
+                NotesComposer(state.notes, note, onRecipient = actions.onNoteRecipient, onSend = actions.onSendNote)
+            }
+        }
+    }
     if (state.messages.isEmpty()) {
         item(key = "messages-empty") {
             EmptyState(icon = AppIcons.Forum, message = "No messages yet. Assignments, findings, reviews and results between agents appear here as they are sent.")

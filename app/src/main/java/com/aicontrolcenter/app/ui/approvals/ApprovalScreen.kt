@@ -1,6 +1,5 @@
 package com.aicontrolcenter.app.ui.approvals
 
-import com.aicontrolcenter.app.Phase6Stub
 import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
@@ -61,6 +60,7 @@ import com.aicontrolcenter.app.ui.components.readableWidth
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.Approval
 import com.aicontrolcenter.app.ui.icons.Cloud
+import com.aicontrolcenter.app.ui.icons.Help
 import com.aicontrolcenter.app.ui.theme.MonoTextStyle
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
@@ -86,13 +86,15 @@ class ApprovalActions(
     val onAfterAnswerDone: () -> Unit = {},
     /** After a refused permission: end the wait before the agent may ask again. */
     val onLetAskAgain: () -> Unit = {},
+    /** The request is an agent's question: it has its own screen (rule 13). */
+    val onOpenQuestion: (RequestId) -> Unit = {},
 )
 
 /**
- * Wave 3 (WP11a): a QUESTION opened here (its notification opens the Approval route with the request's id) is handed to
- * its own screen with [onOpenQuestion] (rule 13).
+ * One request to the owner. A QUESTION opened here (its notification opens the Approval route with the request's id,
+ * and so does a chat or a list that does not tell questions apart) is handed to its own screen with [onOpenQuestion]
+ * (rule 13) as soon as it is read: the Approval screen never shows a question.
  */
-@Phase6Stub("WP11a")
 @Composable
 fun ApprovalRoute(
     requestId: RequestId,
@@ -101,14 +103,19 @@ fun ApprovalRoute(
     onOpenObjective: (TaskId) -> Unit,
     onOpenConversation: (ConversationId) -> Unit,
     onOpenRequest: (RequestId) -> Unit = {},
-    @Suppress("UNUSED_PARAMETER") onOpenQuestion: (RequestId) -> Unit = {},
+    onOpenQuestion: (RequestId) -> Unit = {},
 ) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel(key = "approval-${requestId.value}") {
-        ApprovalViewModel(requestId, graph.ownerRequests, graph.ownerGrants, graph.registryDirectory, graph.capabilities::info, graph.clock)
+        ApprovalViewModel(
+            requestId, graph.ownerRequests, graph.ownerGrants, graph.registryDirectory, graph.capabilities::info, graph.clock,
+            activityLog = graph.activityLog,
+        )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val activity = LocalActivity.current
+    val isQuestion = state.request?.isQuestion == true
+    LaunchedEffect(isQuestion) { if (isQuestion) onOpenQuestion(requestId) }
     ApprovalScreen(
         state,
         viewModel.note,
@@ -120,6 +127,7 @@ fun ApprovalRoute(
             onOpenRequest = onOpenRequest,
             onAfterAnswerDone = viewModel::afterAnswerDone,
             onLetAskAgain = viewModel::letAskAgain,
+            onOpenQuestion = onOpenQuestion,
         ),
     )
 }
@@ -152,7 +160,7 @@ fun ApprovalScreen(state: ApprovalUiState, note: TextFieldState, actions: Approv
         }
     }
     ScreenScaffold(
-        title = request?.title ?: "Request",
+        title = if (request?.isQuestion == true) "A question" else request?.title ?: "Request",
         onBack = actions.onBack,
         message = state.message,
         onMessageShown = actions.onMessageShown,
@@ -164,6 +172,15 @@ fun ApprovalScreen(state: ApprovalUiState, note: TextFieldState, actions: Approv
                 message = "This request no longer exists. It may have been cleared with the agent that asked.",
                 actionLabel = "Go back",
                 onAction = actions.onBack,
+                modifier = Modifier.padding(padding),
+            )
+            // Rule 13: a question never looks like an approval. The route hands it to the question screen at once.
+            request.isQuestion -> EmptyState(
+                icon = AppIcons.Help,
+                title = "A question from ${request.agent.name}",
+                message = "Questions have their own screen: your answer there is only text for the agent.",
+                actionLabel = "Open the question",
+                onAction = { actions.onOpenQuestion(request.id) },
                 modifier = Modifier.padding(padding),
             )
             else -> {
@@ -186,6 +203,7 @@ fun ApprovalScreen(state: ApprovalUiState, note: TextFieldState, actions: Approv
                         Answer(request, state, note, actions)
                     } else {
                         Outcome(request)
+                        state.whatHappened?.let { WhatHappened(it) }
                         request.askAgain?.let { AskAgain(it, enabled = !state.isBusy, onLetAskAgain = actions.onLetAskAgain) }
                     }
                 }
@@ -480,4 +498,13 @@ private fun Outcome(request: RequestUi) {
         OwnerRequestStatus.PENDING, OwnerRequestStatus.EXPIRED -> "Nobody answered in time, so the agent was refused. Nothing was allowed." to null
     }
     InfoBanner(title = request.status.text, text = listOfNotNull(text, request.note?.let { "Note: $it" }, request.askedAgain).joinToString(" "), tone = tone)
+}
+
+/** D9: what the allowed or approved call did, from the activity log. */
+@Composable
+private fun WhatHappened(what: WhatHappenedUi) {
+    Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+        SectionHeader("What happened")
+        InfoBanner(text = what.text, tone = what.tone)
+    }
 }

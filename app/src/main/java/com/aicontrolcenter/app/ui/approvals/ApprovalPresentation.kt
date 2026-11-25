@@ -22,6 +22,11 @@ import com.aicontrolcenter.core.tools.Capability
 import com.aicontrolcenter.core.tools.CapabilityConstraint
 import com.aicontrolcenter.core.tools.CapabilityInfo
 import com.aicontrolcenter.core.tools.RiskLevel
+import com.aicontrolcenter.core.activity.ActivityEvent
+import com.aicontrolcenter.core.activity.ActivityType
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import java.time.ZoneId
 
 /*
@@ -114,8 +119,16 @@ data class RequestUi(
     val taskId: TaskId?,
     val rootId: TaskId?,
     val conversationId: ConversationId?,
+    /**
+     * An agent's QUESTION only: the question, exactly, with hidden characters shown as marks. Shown quoted, as agent
+     * text, on its own screen (rule 13); null for every other request.
+     */
+    val question: String? = null,
 ) {
     val isConsequential: Boolean get() = riskLevel == RiskLevel.CONSEQUENTIAL
+
+    /** An agent's question: answered with words on its own screen, never with these screens' buttons (rule 13). */
+    val isQuestion: Boolean get() = kind == OwnerRequestKind.QUESTION
 }
 
 /**
@@ -141,8 +154,8 @@ val OwnerRequestKind.title: String
     get() = when (this) {
         OwnerRequestKind.APPROVAL -> "Approval needed"
         OwnerRequestKind.PERMISSION -> "Permission needed"
-        // Phase 6 (WP1a): an agent's question; its own screen comes with WP11a.
-        OwnerRequestKind.QUESTION -> "Question waiting"
+        // An agent's question (rule 13): its own words, never an approval's.
+        OwnerRequestKind.QUESTION -> "Question for you"
     }
 
 /** "Approval request" or "Permission request": a request that no longer waits for anyone. */
@@ -196,7 +209,7 @@ fun RiskLevel.toRiskLabel(): StatusLabel = when (this) {
 
 /** The answers offered for [request]: a scope for a permission (the task one only inside a task), yes or no for an approval. */
 fun choicesFor(request: OwnerRequest): List<RequestChoice> = when (request.kind) {
-    // Phase 6 (WP1a): a question is answered with words on its own screen (WP11a), never with these buttons.
+    // A question is answered with words on its own screen (rule 13), never with these buttons.
     OwnerRequestKind.QUESTION -> emptyList()
     // No first: the safe answer leads.
     OwnerRequestKind.APPROVAL -> listOf(RequestChoice.DENY, RequestChoice.APPROVE)
@@ -321,6 +334,7 @@ fun requestUi(
         taskId = request.taskId,
         rootId = request.rootId,
         conversationId = request.conversationId,
+        question = request.question?.let(::shown),
         returnsToApp = if (open && request.constraint is CapabilityConstraint.App) {
             "You answer here, in AI Control Center. Once you allow it, this app steps aside so $app comes back, and the agent " +
                 "goes on once $app is in front again; an action runs only if $app still shows what is described above. If " +
@@ -530,3 +544,36 @@ private val ACTION_STOP_WORDS = setOf("in", "into", "to", "from", "with", "on", 
 private const val MAX_ACTION_WORDS = 4
 
 private const val MINUTE_MS = 60_000L
+
+/**
+ * D9: what the call the owner allowed or approved did, from its tool-call entry in the activity log ([calls], the
+ * agent's newest calls), which names the request the owner answered (`requestIds`). Null for a request nothing was
+ * allowed for (refused, run out, withdrawn, still waiting, a question). The tool's own words after the summary are its
+ * failure text, shown as they are; nothing here is model text the owner has not seen on this screen.
+ */
+fun whatHappened(request: OwnerRequest, calls: List<ActivityEvent>, now: Long): WhatHappenedUi? {
+    if (request.status != OwnerRequestStatus.APPROVED || request.kind == OwnerRequestKind.QUESTION) return null
+    val call = calls.firstOrNull { event -> event.type == ActivityType.TOOL_CALL && request.id.value in event.requestIds() }
+    if (call == null) {
+        val decided = request.decidedAt ?: request.createdAt
+        return if (now - decided < STILL_RUNNING_MS) {
+            WhatHappenedUi("Still running, or not started yet. What it did is shown here once it ends.", StatusTone.WAITING)
+        } else {
+            WhatHappenedUi("Not in the activity log: older entries are removed after a while, or it never ran.", null)
+        }
+    }
+    val failure = call.detail.substringAfter(" — ", "").ifBlank { null }?.let { inWords(visible(it)) }
+    return when (call.data?.get("outcome")?.jsonPrimitive?.contentOrNull) {
+        "OK" -> WhatHappenedUi("Done.", StatusTone.READY)
+        "FAILED", "TIMED_OUT" -> WhatHappenedUi("It failed" + (failure?.let { ": $it" } ?: "."), StatusTone.UNAVAILABLE)
+        "DENIED", "REJECTED" -> WhatHappenedUi("Not run" + (failure?.let { ": $it" } ?: "."), StatusTone.ATTENTION)
+        else -> WhatHappenedUi("Stopped before it finished, so it may not have run.", StatusTone.DISABLED)
+    }
+}
+
+/** The ids of the requests the owner answered for this tool call, from its log entry. */
+private fun ActivityEvent.requestIds(): List<String> =
+    (data?.get("requestIds") as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
+
+/** For this long after the answer, a call not yet in the log is taken to be still running. */
+private const val STILL_RUNNING_MS = 60 * 60_000L

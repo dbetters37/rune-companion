@@ -49,6 +49,15 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.shareIn
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.conflate
+import com.aicontrolcenter.core.memory.KnowledgeSpace
+import com.aicontrolcenter.core.tasks.TaskSummary
+import com.aicontrolcenter.core.tools.RiskLevel
+import com.aicontrolcenter.framework.agents.ToolMenu
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -142,15 +151,23 @@ class TaskDetailViewModel(
      * the recovery.
      */
     private val awaitStartup: suspend () -> Unit = {},
+    /** The shared memory spaces, for the names of spaces a memory was shared into. */
+    spaces: Flow<List<KnowledgeSpace>> = flowOf(emptyList()),
+    /** Where the state is built (the app's background pool; tests stay on their dispatcher). */
+    computation: CoroutineContext = EmptyCoroutineContext,
 ) : ViewModel() {
 
     private data class Local(val isBusy: Boolean = false, val message: UserMessage? = null)
 
+    /** The objective's task summaries (P1) and this task's own record, read again only when its summary changes. */
+    private data class Tree(val summaries: List<TaskSummary>, val task: TaskRecord?)
+
     private data class Stored(
-        val tree: List<TaskRecord>,
+        val tree: Tree,
         val messages: List<AgentMessage>,
         val snapshot: RegistrySnapshot,
         val working: Map<AgentId, AgentRuntimeState>,
+        val spaces: List<KnowledgeSpace>,
     )
 
     private val local = MutableStateFlow(Local())
@@ -158,16 +175,31 @@ class TaskDetailViewModel(
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private val stored: Flow<Stored?> = flow { emit(tasks.get(taskId)?.rootId) }.flatMapLatest { root ->
-        if (root == null) flowOf(null) else combine(tasks.observeTree(root), messages.observe(root), directory.observe(), monitor.states, ::Stored)
+        if (root == null) flowOf(null) else combine(treeOf(root), messages.observe(root), directory.observe(), monitor.states, spaces, ::Stored)
+    }.shareIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), replay = 1)
+
+    /** The summaries of [root]'s tasks, with this task's record read again only when its own summary changes (any field). */
+    private fun treeOf(root: TaskId): Flow<Tree> = flow {
+        var key: TaskSummary? = null
+        var record: TaskRecord? = null
+        tasks.observeSummaries(root).collect { all ->
+            val summary = all.firstOrNull { it.id == taskId }
+            if (summary != key) {
+                key = summary
+                record = if (summary == null) null else tasks.get(taskId)
+            }
+            emit(Tree(all, record))
+        }
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private val entries: Flow<List<ConversationEntry>> = stored
-        .map { it?.tree?.firstOrNull { task -> task.id == taskId }?.conversationId }
+        .map { it?.tree?.task?.conversationId }
         .distinctUntilChanged()
         .flatMapLatest { id -> if (id == null) flowOf(emptyList()) else chat.observeEntries(id) }
 
     val uiState: StateFlow<TaskDetailUiState> = combine(stored, entries, local, requests) { stored, entries, local, requests -> build(stored, entries, local, requests) }
+        .flowOn(computation).conflate()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TaskDetailUiState())
 
     fun retry() = act("Queued to run again.") {
@@ -180,13 +212,13 @@ class TaskDetailViewModel(
     fun messageShown() = local.update { it.copy(message = null) }
 
     private fun build(stored: Stored?, entries: List<ConversationEntry>, local: Local, requests: List<OwnerRequest>): TaskDetailUiState {
-        val task = stored?.tree?.firstOrNull { it.id == taskId }
+        val task = stored?.tree?.task?.takeIf { record -> stored.tree.summaries.any { it.id == record.id } }
             ?: return TaskDetailUiState(isLoading = false, notFound = true, message = local.message)
-        val faces = AgentFaces(stored.snapshot)
+        val faces = AgentFaces(stored.snapshot, stored.spaces.associate { it.id to it.name })
         val now = clock.now()
-        val tree = stored.tree
+        val tree = stored.tree.summaries
         val byId = tree.associateBy { it.id }
-        fun link(t: TaskRecord) = TaskLinkUi(t.id, t.title, t.kind, t.status.toStatusLabel(t.kind))
+        fun link(t: TaskSummary) = TaskLinkUi(t.id, t.title, t.kind, taskStatusLabel(t.status, t.kind, t.retryAt, t.statusDetailShort))
         val objective = byId[task.rootId]
         val live = task.assignee?.let { stored.working[it] }?.takeIf { it.currentTaskId == task.id }
         return TaskDetailUiState(
@@ -201,7 +233,7 @@ class TaskDetailViewModel(
                 criteria = task.completionCriteria,
                 assignee = faces.of(task.assignee),
                 requestedBy = faces.requester(task.requestedBy),
-                status = task.status.toStatusLabel(task.kind),
+                status = taskStatusLabel(task.status, task.kind, task.retryAt, task.statusDetail),
                 statusDetail = task.statusDetail?.takeIf { it.isNotBlank() }?.let(::ownerFacing),
                 error = task.error?.takeIf { it.isNotBlank() && it != task.statusDetail },
                 liveActivity = live?.let { it.detail ?: "Working" },
@@ -216,20 +248,23 @@ class TaskDetailViewModel(
                     ReviewUi(faces.of(verdict.reviewer), verdict.decision.toStatusLabel(), verdict.summary, verdict.issues, formatCompactTimestamp(verdict.at, now, zone))
                 },
                 usage = usageOf(task.usage),
-                timing = timingOf(task, now, limitPaused = limitPaused(task, tree, requests, now)),
+                timing = timingOf(task, now, limitPaused = limitPaused(task.id, task.status, task.kind, tree, requests, now)),
                 canRetry = task.status in RETRYABLE && task.kind != TaskKind.REVIEW && task.kind != TaskKind.OBJECTIVE && task.delegationChain.isEmpty(),
                 canCancel = !task.status.isFinished && task.kind != TaskKind.OBJECTIVE,
                 retryNote = retryNote(task),
             ),
             transcript = transcriptOf(entries, ::toolInfo, assignedModelName = null, turnRunning = task.status == TaskStatus.RUNNING),
-            messages = messagesUi(stored.messages.filter { it.taskId == task.id }, tree, faces, now, zone),
+            messages = messagesUiOf(stored.messages.filter { it.taskId == task.id }, tree, faces, now, zone),
             waitingFor = requests.filter { it.taskId == task.id && it.isOpenAt(now) }.map { requestUi(it, stored.snapshot, capabilityInfo, now, zone) },
             isBusy = local.isBusy,
             message = local.message,
         )
     }
 
-    private fun toolInfo(functionName: String): ToolInfo? = tools.byFunctionName(functionName)?.spec?.let { ToolInfo(it.title, it.risk) }
+    /** A tool as the transcript names it; the agent's "open more tools" call is not a registered tool (WP15). */
+    private fun toolInfo(functionName: String): ToolInfo? =
+        if (functionName == ToolMenu.FUNCTION_NAME) ToolInfo(ToolMenu.TITLE, RiskLevel.SAFE)
+        else tools.byFunctionName(functionName)?.spec?.let { ToolInfo(it.title, it.risk) }
 
     private fun usageOf(usage: TaskUsage): String? {
         if (usage == TaskUsage()) return null
@@ -254,11 +289,11 @@ class TaskDetailViewModel(
      * a task that is not waiting runs against its limit whatever is open (round 2, B4).
      * [requests] are the ones a live call or ask still waits for (`OwnerRequests.pending`).
      */
-    private fun limitPaused(task: TaskRecord, tree: List<TaskRecord>, requests: List<OwnerRequest>, now: Long, depth: Int = 0): Boolean = when (task.status) {
+    private fun limitPaused(task: TaskId, status: TaskStatus, kind: TaskKind, tree: List<TaskSummary>, requests: List<OwnerRequest>, now: Long, depth: Int = 0): Boolean = when (status) {
         TaskStatus.WAITING_FOR_OWNER -> true
-        TaskStatus.WAITING_FOR_AGENT -> requests.any { it.taskId == task.id && it.toolId != null && it.isOpenAt(now) } ||
-            task.kind == TaskKind.WORK && depth < MAX_DELEGATION_WALK &&
-            tree.any { it.parentId == task.id && it.id != task.id && it.kind == TaskKind.WORK && limitPaused(it, tree, requests, now, depth + 1) }
+        TaskStatus.WAITING_FOR_AGENT -> requests.any { it.taskId == task && it.toolId != null && it.isOpenAt(now) } ||
+            kind == TaskKind.WORK && depth < MAX_DELEGATION_WALK &&
+            tree.any { it.parentId == task && it.id != task && it.kind == TaskKind.WORK && limitPaused(it.id, it.status, it.kind, tree, requests, now, depth + 1) }
         else -> false
     }
 
