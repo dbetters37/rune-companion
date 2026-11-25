@@ -15,5 +15,15 @@ import com.aicontrolcenter.app.Phase6Stub
  */
 @Phase6Stub("WP17")
 class BootReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {}
+    override fun onReceive(context: Context, intent: Intent) {
+        // Only the two system broadcasts of its manifest filter count; anything else is ignored.
+        if (intent.action !in HANDLED) return
+    }
+
+    private companion object {
+        /** `AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED` (Android 12 and later), spelled out for Android 9-11. */
+        const val EXACT_ALARMS_ALLOWED = "android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED"
+
+        val HANDLED = setOf(Intent.ACTION_BOOT_COMPLETED, EXACT_ALARMS_ALLOWED)
+    }
 }
