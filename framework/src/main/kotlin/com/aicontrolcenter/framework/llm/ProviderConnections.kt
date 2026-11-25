@@ -130,11 +130,21 @@ class ProviderConnections(
      * record as it was before, or null when the provider no longer exists. Leaves `updatedAt`
      * alone: a status is an observation, not an edit.
      */
-    suspend fun storeStatus(id: ProviderId, status: ConnectionStatus, message: String?): ModelProvider? = recordLock.withLock {
-        val before = providers.get(id) ?: return@withLock null
-        providers.upsert(before.copy(status = status, statusMessage = message, lastCheckedAt = clock.now()))
-        before
-    }
+    suspend fun storeStatus(id: ProviderId, status: ConnectionStatus, message: String?): ModelProvider? =
+        storeStatusUnless(id, status, message, keep = emptySet())
+
+    /**
+     * As [storeStatus], but leaves the record alone when its stored status is one of [keep], decided under the same
+     * lock as the write (Phase 6, D28: a provider marked as not answering never hides a rejected key). Returns the
+     * record as it was before, whether or not it was changed, or null when the provider no longer exists.
+     */
+    suspend fun storeStatusUnless(id: ProviderId, status: ConnectionStatus, message: String?, keep: Set<ConnectionStatus>): ModelProvider? =
+        recordLock.withLock {
+            val before = providers.get(id) ?: return@withLock null
+            if (before.status in keep) return@withLock before
+            providers.upsert(before.copy(status = status, statusMessage = message, lastCheckedAt = clock.now()))
+            before
+        }
 
     private suspend fun readKey(provider: ModelProvider): String? {
         val alias = provider.apiKeyAlias ?: return null

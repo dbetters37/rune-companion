@@ -19,6 +19,10 @@ import com.aicontrolcenter.core.registry.ModelProvider
 import com.aicontrolcenter.core.registry.ProviderDirectory
 import com.aicontrolcenter.core.registry.effectiveLocality
 import com.aicontrolcenter.core.settings.SettingsView
+import com.aicontrolcenter.core.usage.ModelPrices
+import com.aicontrolcenter.core.usage.TokenCounts
+import com.aicontrolcenter.core.usage.UsageLedger
+import com.aicontrolcenter.core.usage.UsageReports
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
@@ -28,6 +32,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
+import java.time.ZoneId
+import kotlin.time.TimeSource
 
 /**
  * The single door to every model. See [ModelGateway] for what it promises; the decisions that
@@ -47,8 +53,27 @@ import kotlinx.coroutines.withContext
  *    or was abandoned (cancelled, or the consumer of the stream stopped), and it carries egress
  *    information from the moment a request went out, because a call that did not finish may
  *    still have delivered the prompt.
- *  - Book-keeping (the log and the provider's stored status) is best effort: a reply that was
- *    received is never turned into a failure because it could not be written down.
+ *  - Book-keeping (the log, the usage records and the provider's stored status) is best effort:
+ *    a reply that was received is never turned into a failure because it could not be written down.
+ *  - Today's limits (Phase 6, rule 6) are checked before every attempt that would reach a provider
+ *    off this phone, retries and streamed calls included, through the one [DailyLimiter] every call
+ *    of the process shares: a reservation is taken under its lock before the attempt is handed to
+ *    the adapter, so no path of this class sends a request the limits did not allow. A refusal is
+ *    [LlmException.DailyLimitReached] with the owner's sentence; nothing is sent.
+ *  - Every call is timed on [timeSource] (time to the first chunk and to the whole answer of the
+ *    attempt that answered, waits between attempts) and recorded in [usage] with the tokens the
+ *    provider reported (Phase 6, K11). The records hold numbers, ids and labels only (rule 7).
+ *  - Three calls that failed for a reason that passes by itself (no connection, no answer, a server
+ *    error) within five minutes mark the provider as not answering ([ProviderOutages], D28), never
+ *    over a rejected key; the re-checks then look again.
+ *  - A provider that asks to slow down (429) is waited for as it asks ([RetryPolicy]); after the
+ *    last attempt the failure stays [LlmException.RateLimited], so the caller waits rather than fails.
+ *
+ * @param usage where every call is recorded (Room in the app). Only adds; nothing here deletes usage (F4).
+ * @param limiter today's limits; built from read-only usage reports, read-only prices and the
+ *   read-only settings by default, so a gateway can never be built without one.
+ * @param timeSource measures answer times; tests pass the test scheduler's.
+ * @param zone the owner's zone, for "Not answering since 10:42".
  */
 class DefaultModelGateway(
     private val providers: ProviderDirectory,
@@ -58,9 +83,16 @@ class DefaultModelGateway(
     activity: ActivityRecorder,
     private val clock: Clock,
     private val retry: RetryPolicy = RetryPolicy(),
+    usage: UsageLedger = UsageLedger.None,
+    private val limiter: DailyLimiter = DailyLimiter(UsageReports.None, ModelPrices.None, settings, clock),
+    private val timeSource: TimeSource = TimeSource.Monotonic,
+    private val zone: () -> ZoneId = { ZoneId.systemDefault() },
 ) : ModelGateway {
 
-    private val journal = ModelCallJournal(activity)
+    private val journal = ModelCallJournal(activity, usage)
+
+    /** Who has stopped answering (D28). */
+    private val outages = ProviderOutages()
 
     /** Everything needed to carry out one call that policy allows. */
     private class Route(val call: ModelCall, val lease: ProviderLease, val client: LlmClient, val request: ChatRequest)
@@ -70,9 +102,11 @@ class DefaultModelGateway(
         val call = route.call
         try {
             while (true) {
-                if (call.attempts > 0) confirmRetry(route, modelId)
+                beforeAttempt(route, modelId)
                 call.attempts++
                 call.sent = true
+                val started = timeSource.markNow()
+                call.attemptStarted(started)
                 var response: ChatResponse? = null
                 val failure: LlmException? = try {
                     response = route.client.chat(route.request)
@@ -84,9 +118,13 @@ class DefaultModelGateway(
                 } catch (e: Exception) {
                     e.asLlmException(call.provider.name, route.lease)
                 }
-                if (failure == null) return succeed(call, response!!)
+                if (failure == null) {
+                    call.answeredIn = started.elapsedNow()
+                    return succeed(call, response!!)
+                }
+                call.attemptFailed(failure)
                 val pause = retry.delayBeforeRetry(call.attempts, failure) ?: throw fail(call, failure)
-                delay(pause)
+                waitBeforeRetry(call, pause)
             }
         } finally {
             closeUnrecorded(call)
@@ -98,18 +136,25 @@ class DefaultModelGateway(
         val call = route.call
         try {
             while (true) {
-                if (call.attempts > 0) confirmRetry(route, modelId)
+                beforeAttempt(route, modelId)
                 call.attempts++
                 call.sent = true
+                val started = timeSource.markNow()
+                call.attemptStarted(started)
                 var passedOn = false
                 var completed: ChatResponse? = null
                 var thrown: Throwable? = null
                 route.client.chatStream(route.request)
                     .catch { thrown = it }
                     .collect { chunk ->
+                        if (call.firstChunkAt == null) call.firstChunkAt = started.elapsedNow()
+                        if (chunk is ChatChunk.Text && call.firstTextAt == null) call.firstTextAt = started.elapsedNow()
                         when {
                             completed != null -> Unit
-                            chunk is ChatChunk.Completed -> completed = chunk.response
+                            chunk is ChatChunk.Completed -> {
+                                completed = chunk.response
+                                call.answeredIn = started.elapsedNow()
+                            }
                             else -> {
                                 passedOn = true
                                 emit(chunk)
@@ -123,8 +168,9 @@ class DefaultModelGateway(
                     emit(ChatChunk.Completed(succeed(call, response!!)))
                     return@flow
                 }
+                call.attemptFailed(failure)
                 val pause = (if (passedOn) null else retry.delayBeforeRetry(call.attempts, failure)) ?: throw fail(call, failure)
-                delay(pause)
+                waitBeforeRetry(call, pause)
             }
         } finally {
             closeUnrecorded(call)
@@ -144,23 +190,24 @@ class DefaultModelGateway(
         if (!model.enabled) refuse(modelId, context, "Model ${model.displayName} is disabled.")
         val read = providers.get(model.providerId)
             ?: refuse(modelId, context, "The provider of ${model.displayName} is no longer registered.")
-        providerRefusal(read)?.let { refuse(modelId, context, it) }
+        providerRefusal(read)?.let { refuse(modelId, context, it, model, read) }
 
         val prompted = needsPromptedTools(model, request)
         val wireRequest = request.copy(
             model = model.modelName,
             maxOutputTokens = clampOutput(request.maxOutputTokens, model.capabilities.maxOutputTokens),
         )
+        val requestBytes = wireRequest.approximateBytes()
         fun callTo(provider: ModelProvider): ModelCall {
             val locality = provider.effectiveLocality
             val egress = if (locality.leavesDevice) {
-                EgressInfo(provider.destinationHost(), locality, provider.id, context.purpose, wireRequest.approximateBytes())
+                EgressInfo(provider.destinationHost(), locality, provider.id, context.purpose, requestBytes)
             } else {
                 null
             }
             return ModelCall(
                 model, provider, context, startedAt = clock.now(), streamed = streamed, promptedTools = prompted,
-                messageCount = request.messages.size, toolCount = request.tools.size, egress = egress,
+                messageCount = request.messages.size, toolCount = request.tools.size, egress = egress, requestBytes = requestBytes,
             )
         }
         val lease = try {
@@ -169,7 +216,7 @@ class DefaultModelGateway(
             throw fail(callTo(read), e)
         }
         // Nothing has been sent yet: a refusal here costs nothing but the adapter that was built.
-        providerRefusal(lease.provider)?.let { refuse(modelId, context, it) }
+        providerRefusal(lease.provider)?.let { refuse(modelId, context, it, model, lease.provider) }
         val client = if (prompted) PromptedToolsClient(lease.adapter.client) else lease.adapter.client
         return Route(callTo(lease.provider), lease, client, wireRequest)
     }
@@ -192,8 +239,44 @@ class DefaultModelGateway(
      */
     private suspend fun confirmRetry(route: Route, modelId: ModelId) {
         val reason = retryRefusal(route, modelId) ?: return
-        bestEffort { journal.retryBlocked(route.call, reason, elapsed(route.call)) }
+        val call = route.call
+        settleLimits(call, used = null)
+        journal.retryBlocked(call, reason, elapsed(call), clock.now())
         throw LlmException.BlockedByPolicy("$reason The call was not repeated.")
+    }
+
+    /**
+     * Runs before every attempt: a retry is confirmed first ([confirmRetry]), then today's limits are asked for a
+     * place (rule 6). The first attempt of a call reserves one; a retry checks again under the call's own
+     * reservation. Where the call goes is the lease's record, so the limits apply to where the request really goes.
+     * A refusal ends the call before anything more is sent.
+     */
+    private suspend fun beforeAttempt(route: Route, modelId: ModelId) {
+        val call = route.call
+        if (call.attempts > 0) confirmRetry(route, modelId)
+        call.ticket = try {
+            limiter.reserve(call.model.id, route.lease.provider.effectiveLocality, held = call.ticket)
+        } catch (refused: LlmException.DailyLimitReached) {
+            val sentence = refused.message.orEmpty()
+            if (call.attempts == 0) {
+                journal.limitReached(call, sentence, elapsed(call), clock.now())
+            } else {
+                settleLimits(call, used = null)
+                journal.retryBlocked(call, sentence, elapsed(call), clock.now())
+            }
+            throw refused
+        }
+    }
+
+    /** Waits [pauseMs] before the next attempt, as the provider or the retry policy asked. */
+    private suspend fun waitBeforeRetry(call: ModelCall, pauseMs: Long) {
+        call.retryWaitMs += pauseMs
+        delay(pauseMs)
+    }
+
+    /** Ends the call's place in today's limits: it counts, with the tokens reported (none when it failed). Never throws. */
+    private suspend fun settleLimits(call: ModelCall, used: TokenCounts?, at: Long = clock.now()) {
+        call.ticket?.let { limiter.settle(it, call.model.id, used, at) }
     }
 
     private suspend fun retryRefusal(route: Route, modelId: ModelId): String? {
@@ -232,36 +315,65 @@ class DefaultModelGateway(
     private fun clampOutput(requested: Int?, modelLimit: Int?): Int? =
         if (requested != null && modelLimit != null) minOf(requested, modelLimit) else requested
 
-    private suspend fun refuse(modelId: ModelId, context: CallContext, reason: String): Nothing {
-        bestEffort { journal.blocked(modelId, context, reason) }
+    private suspend fun refuse(
+        modelId: ModelId,
+        context: CallContext,
+        reason: String,
+        model: ModelDescriptor? = null,
+        provider: ModelProvider? = null,
+    ): Nothing {
+        bestEffort { journal.blocked(modelId, context, reason, clock.now(), model, provider) }
         throw LlmException.BlockedByPolicy(reason)
     }
 
     private suspend fun succeed(call: ModelCall, response: ChatResponse): ChatResponse {
+        val at = clock.now()
+        settleLimits(call, response.usage?.let { TokenCounts(it.inputTokens.coerceAtLeast(0), it.outputTokens.coerceAtLeast(0), it.cachedInputTokens.coerceAtLeast(0)) }, at)
+        bestEffort { outages.answered(call.provider.id) }
         bestEffort {
             if (currentStatus(call.provider) != ConnectionStatus.ONLINE) {
                 connections.storeStatus(call.provider.id, ConnectionStatus.ONLINE, null)
             }
-            journal.succeeded(call, response, elapsed(call))
         }
+        bestEffort { journal.succeeded(call, response, elapsed(call), at) }
         return response
     }
 
     /** Writes the event of a call that ended without a result or a failure of its own. */
     private suspend fun closeUnrecorded(call: ModelCall) {
-        if (call.recorded) return
-        withContext(NonCancellable) { bestEffort { journal.cancelled(call, elapsed(call)) } }
+        withContext(NonCancellable) {
+            // A call that sent a request counts towards today's limits however it ended.
+            settleLimits(call, used = null)
+            if (!call.recorded) bestEffort { journal.cancelled(call, elapsed(call), clock.now()) }
+        }
     }
 
     /** Logs a final failure and returns it for the caller to throw. */
     private suspend fun fail(call: ModelCall, error: LlmException): LlmException {
+        val at = clock.now()
+        settleLimits(call, used = null, at)
         bestEffort {
             if (error is LlmException.Authentication) {
                 connections.storeStatus(call.provider.id, ConnectionStatus.AUTH_ERROR, error.message)
             }
-            journal.failed(call, error, elapsed(call))
         }
+        bestEffort { markIfNotAnswering(call, error, at) }
+        bestEffort { journal.failed(call, error, elapsed(call), at) }
         return error
+    }
+
+    /**
+     * D28: the third call in five minutes that found [call]'s provider not answering marks it OFFLINE, "Not
+     * answering since 10:42" (the first of them), unless its key was rejected (that is the owner's to fix, and stays
+     * shown) or it is already marked. Only calls that sent a request count.
+     */
+    private suspend fun markIfNotAnswering(call: ModelCall, error: LlmException, at: Long) {
+        if (call.attempts == 0) return
+        val since = outages.failed(call.provider.id, error, at) ?: return
+        connections.storeStatusUnless(
+            call.provider.id, ConnectionStatus.OFFLINE, ProviderOutages.sentence(since, zone()),
+            keep = setOf(ConnectionStatus.AUTH_ERROR, ConnectionStatus.OFFLINE),
+        )
     }
 
     /** The stored status now, not the one seen when the call started: a concurrent call may have changed it. */

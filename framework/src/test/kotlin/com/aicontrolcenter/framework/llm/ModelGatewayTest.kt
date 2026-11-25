@@ -267,15 +267,23 @@ class ModelGatewayTest {
 
     @Test
     fun `a different model answering than the one requested is noted, and flagged when unrelated`() = runTest {
+        // Phase 6, D29: a dated version of the requested name is the same model and is not noted; a variant is noted;
+        // an unrelated model is noted and flagged.
         val snapshot = world.serve(ScriptedLlmClient.script(ScriptStep.Reply("a"), modelName = "scripted-1-2026-01-01"))
+        val variant = world.serve(ScriptedLlmClient.script(ScriptStep.Reply("v"), modelName = "scripted-1-fast"))
         val stranger = world.serve(ScriptedLlmClient.script(ScriptStep.Reply("b"), modelName = "another-model"))
 
         world.gateway.chat(snapshot.id, ask)
+        world.gateway.chat(variant.id, ask)
         world.gateway.chat(stranger.id, ask)
 
-        val (dated, other) = modelCalls()
-        assertTrue("answered by scripted-1-2026-01-01, not the requested scripted-1" in dated.detail)
+        val (dated, fast, other) = modelCalls()
+        assertFalse("answered by" in dated.detail)
+        assertFalse(dated.data!!.getValue("modelSubstituted").jsonPrimitive.boolean)
+        assertEquals("scripted-1-2026-01-01", dated.data!!.getValue("answeredModel").jsonPrimitive.content)
         assertEquals(Severity.INFO, dated.severity)
+        assertTrue("answered by scripted-1-fast, not the requested scripted-1" in fast.detail)
+        assertEquals(Severity.INFO, fast.severity)
         assertTrue("answered by another-model, not the requested scripted-1" in other.detail)
         assertEquals(Severity.WARNING, other.severity)
         assertTrue(other.data!!.getValue("modelSubstituted").jsonPrimitive.boolean)
