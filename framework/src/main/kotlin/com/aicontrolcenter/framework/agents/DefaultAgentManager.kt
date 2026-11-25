@@ -198,7 +198,10 @@ class DefaultAgentManager(
 
     override suspend fun ensureDefaults() = mutex.withLock {
         val before = settings.get().seedVersion
-        if (before >= SEED_VERSION) return@withLock
+        if (before >= SEED_VERSION) {
+            replaceMissingDirector()
+            return@withLock
+        }
         // The starter team is created on the first run only. Resumable: an interrupted first run
         // continues with the templates that are still missing. An owner who already has agents of
         // their own is left alone, and a later version never brings back agents the owner deleted.
@@ -229,6 +232,24 @@ class DefaultAgentManager(
             ?: agents.getAll().firstOrNull { it.kind == AgentKind.DIRECTOR }
         settings.update { it.copy(seedVersion = SEED_VERSION, directorAgentId = director?.id) }
         Unit
+    }
+
+    /**
+     * A designated Director that no longer exists is replaced by the first Director agent there is, or by none (AND-W2B-4):
+     * a restore that ended between its records and its settings leaves the fresh app's Director, a starter agent the
+     * restore replaced. The owner can delete no Director, so nothing else leaves one missing.
+     */
+    private suspend fun replaceMissingDirector() {
+        val missing = settings.get().directorAgentId ?: return
+        if (agents.get(missing) != null) return
+        val director = agents.getAll().firstOrNull { it.kind == AgentKind.DIRECTOR }
+        settings.update { if (it.directorAgentId == missing) it.copy(directorAgentId = director?.id) else it }
+        activity.record(
+            ActivityType.REGISTRY, "Director designated",
+            director?.let { "The designated Director no longer existed; ${it.name} is the Director now." }
+                ?: "The designated Director no longer existed, and no agent has the Director role. Designate a Director before starting an objective.",
+            agentId = director?.id,
+        )
     }
 
     /**
