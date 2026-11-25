@@ -55,6 +55,8 @@ class ProductionGraphDependencyTest {
         val roots = listOf(
             graph.toolExecutor to "executor", graph.permissionBroker to "broker", graph.agentChat to "chat",
             graph.modelGateway to "model gateway", graph.registryDirectory to "registry directory",
+            // Wave 2a: the provider re-checks as production builds them (WP4) and the question's agent side (WP5).
+            graph.providerRechecks to "provider re-checks", graph.operatorAssembly.ownerQuestions to "questions to the owner (agent side)",
         ) + graph.toolRegistry.all().map { it to "tool ${it.spec.id.value}" }
         // Room's database and DAOs are walked by their holder (second review of F4/F10): a Room store may hold them, nothing else.
         val walk = AgentFacingWalk(extraViews = productionViews)

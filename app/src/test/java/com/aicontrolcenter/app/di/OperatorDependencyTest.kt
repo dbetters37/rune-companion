@@ -61,13 +61,15 @@ class OperatorDependencyTest {
 
     /**
      * What agents run through: the executor, the broker, every registered tool, and (security review of wave 1, F10)
-     * the chat, the model gateway and the registry directory, whose held objects nothing else reaches. WP8 adds the
-     * wave-2 roots (the question port's agent side, the script host, the provider re-checks).
+     * the chat, the model gateway and the registry directory, whose held objects nothing else reaches. Wave 2a adds the
+     * provider re-checks (agent side, WP4) and the agent's side of a question to the owner (WP5), so neither can come to
+     * hold an owner-only port unseen; WP8 adds the script host (WP6).
      */
     private fun roots(): List<Pair<Any, String>> =
         listOf(
             app.graph.toolExecutor to "executor", app.graph.permissionBroker to "broker", app.graph.agentChat to "chat",
             app.graph.modelGateway to "model gateway", app.graph.registryDirectory to "registry directory",
+            app.graph.providerRechecks to "provider re-checks", app.graph.operatorAssembly.ownerQuestions to "questions to the owner (agent side)",
         ) + app.graph.toolRegistry.all().map { it to "tool ${it.spec.id.value}" }
 
     @Test
