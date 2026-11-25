@@ -43,6 +43,9 @@ class UpkeepIsolationTest {
         }
         val upkeepSteps = RoutinesWiring::class.java.methods.single { it.name == "upkeepSteps" }
         assertEquals(listOf(PickUpStepPorts::class.java), upkeepSteps.parameterTypes.toList(), "pick-up steps are built from their ports alone")
+        // The job finds its graph through this one member of the application, never the application's other members.
+        assertTrue(UpkeepHost::class.java.isAssignableFrom(AiControlCenterApp::class.java))
+        assertEquals(listOf("getUpkeep"), UpkeepHost::class.java.declaredMethods.map { it.name })
     }
 
     private val sources: File = listOf(File("src/main/java"), File("app/src/main/java")).first { it.isDirectory }

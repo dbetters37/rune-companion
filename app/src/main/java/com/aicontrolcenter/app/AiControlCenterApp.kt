@@ -13,6 +13,7 @@ import com.aicontrolcenter.app.work.AndroidNotificationAccess
 import com.aicontrolcenter.app.work.AppProcessHooks
 import com.aicontrolcenter.app.work.ScreenSessionNotifications
 import com.aicontrolcenter.app.work.UpkeepGraph
+import com.aicontrolcenter.app.work.UpkeepHost
 import com.aicontrolcenter.app.work.UpkeepPorts
 import com.aicontrolcenter.core.RandomIdGenerator
 import com.aicontrolcenter.core.WallClock
@@ -48,7 +49,7 @@ import kotlinx.coroutines.SupervisorJob
  * The application object is also created in the isolated script process (`:scripts`), where it
  * must do nothing: every member is built on first use, and [onCreate] returns at once there.
  */
-class AiControlCenterApp : Application() {
+class AiControlCenterApp : Application(), UpkeepHost {
     /** Lives as long as the process. A failing child never cancels the others. Built on first use (never in `:scripts`). */
     private val appScope: CoroutineScope by lazy {
         CoroutineScope(SupervisorJob() + Dispatchers.Default + AppProcessHooks.scopeContext(this))
@@ -113,7 +114,7 @@ class AiControlCenterApp : Application() {
      * ports only (security review of wave 1, F11): neither the job nor its steps get the data layer, a context or
      * this application object, through which they could reach the owner's stores or build the graph.
      */
-    val upkeep: UpkeepGraph by lazy {
+    override val upkeep: UpkeepGraph by lazy {
         val settings = ReadOnlySettings(dataLayer.settings)
         val zone = { java.time.ZoneId.systemDefault() }
         val ports = UpkeepPorts(

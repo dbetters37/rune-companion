@@ -46,6 +46,15 @@ class UpkeepPorts(
 )
 
 /**
+ * Where the upkeep job finds its [UpkeepGraph]: the application implements it, and the job reads it as
+ * `(application as UpkeepHost).upkeep`, so the job's source never names the application class, through which it could
+ * build the agents' graph (security review of wave 1, F11; `UpkeepIsolationTest` scans for it).
+ */
+interface UpkeepHost {
+    val upkeep: UpkeepGraph
+}
+
+/**
  * The upkeep job's work (Phase 6, rule 1; WP2 owns this file in wave 2): memory upkeep, activity pruning and usage
  * housekeeping through [ports], then [steps] (folder pick-up, WP17), all only while the database is fine, no backup
  * is being restored and the app started once at this version.

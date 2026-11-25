@@ -100,7 +100,9 @@ data class Ports(
     val packageChanges: Flow<Unit> = emptyFlow(),
     /**
      * Phase 6 (K11): one record per model call, numbers, ids and labels only (rule 7). Agent-facing code may hold
-     * the ledger and the reports (WP4: the gateway records every call), never [ownerUsage].
+     * the ledger and the reports (WP4: the gateway records every call): they add and sum, and delete nothing. Never
+     * [ownerUsage], and never the usage pruning (`UsageHousekeeping`, F4), which only the upkeep job holds
+     * (`DataLayer.usageHousekeeping` through `UpkeepPorts`); both architecture tests list it.
      */
     val usageLedger: UsageLedger = UsageLedger.None,
     /** Usage by day, month, model, agent and work item, for the owner's screens and the daily limits. */
