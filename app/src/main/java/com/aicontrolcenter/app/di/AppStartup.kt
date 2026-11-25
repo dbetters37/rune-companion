@@ -6,10 +6,11 @@ import com.aicontrolcenter.core.activity.ActivityRecorder
 import com.aicontrolcenter.core.activity.ActivityType
 import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.agents.AgentManager
+import com.aicontrolcenter.core.chat.AgentChat
 import com.aicontrolcenter.core.llm.ProviderManager
 import com.aicontrolcenter.core.memory.MemoryService
 import com.aicontrolcenter.core.registry.AiAppRegistry
-import com.aicontrolcenter.core.settings.SettingsRepository
+import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.tasks.Orchestrator
 import com.aicontrolcenter.framework.memory.MemorySeeder
 import kotlinx.coroutines.CancellationException
@@ -45,6 +46,10 @@ import kotlinx.coroutines.launch
  * pending when the app stopped (no waiter survives a restart). After the start-up steps, requests
  * nobody answered in time are closed, and again every [REQUEST_SWEEP_INTERVAL_MS] for as long as
  * the process lives: an agent's own ask has no waiter whose timer would close it.
+ *
+ * Phase 6 hooks ([StartupHooks], WP2): [StartupHooks.beforeSteps] before the first step, the cause of an
+ * interruption and whether interrupted objectives may resume at the recovery step, and [StartupHooks.afterSteps]
+ * after the last one. Chat replies the app was stopped in the middle of are marked just before the recovery step.
  */
 class AppStartup(
     private val scope: CoroutineScope,
@@ -53,7 +58,8 @@ class AppStartup(
     private val providerManager: ProviderManager,
     private val memorySeeder: MemorySeeder,
     private val memory: MemoryService,
-    private val settings: SettingsRepository,
+    /** Read only: start-up follows local-only mode and the activity retention setting. */
+    private val settings: SettingsView,
     private val activityLog: ActivityLog,
     private val activityRecorder: ActivityRecorder,
     private val packageChanges: Flow<Unit>,
@@ -69,6 +75,10 @@ class AppStartup(
      * ([com.aicontrolcenter.core.operator.Workspace.tidyTrash]). Null where there is no workspace.
      */
     private val tidyWorkspaceTrash: (suspend () -> Unit)? = null,
+    /** Marks chat replies the app was stopped in the middle of (R3). Null where there is no chat (tests of start-up alone). */
+    private val agentChat: AgentChat? = null,
+    /** What the background package does around the steps (Phase 6, WP2); nothing by default. */
+    private val hooks: StartupHooks = StartupHooks.None,
 ) {
     private var initialJob: Job? = null
     private var foregroundRefresh: Job? = null
@@ -88,6 +98,8 @@ class AppStartup(
     fun start(): Job {
         initialJob?.let { return it }
         val job = scope.launch {
+            // First of all (WP2: the start ledger, which safe start and the upkeep job's version check read).
+            step("Could not note that the app started") { hooks.beforeSteps() }
             // Before anything else: if the app died while a shell command ran, what that command started may still be
             // running. Nothing new has started yet, so everything found now is such a leftover.
             step("Could not stop what an earlier shell command left running") {
@@ -113,10 +125,19 @@ class AppStartup(
             // After the team: the starter space is shared with the starter agents.
             step("Could not set up shared memory") { memorySeeder.ensureDefaults() }
             step("Could not refresh AI app statuses") { aiAppRegistry.refreshStatuses() }
+            // Before a chat can be continued: a reply the app was stopped in the middle of says so, with "Send again".
+            step("Could not mark interrupted chat replies") { agentChat?.recoverInterruptedTurns() }
             // Last, once agents and their availability are known, and before an objective can be
             // started: tasks that were running when the app stopped are marked interrupted (and
-            // resumed, if the owner allows it in the settings).
-            step("Could not recover interrupted objectives") { orchestrator?.recoverInterrupted() }
+            // resumed, if the owner allows it in the settings and the hooks allow it: WP2's safe start).
+            step("Could not recover interrupted objectives") {
+                val cause = hook("Could not find out why the app stopped before", fallback = null) { hooks.interruptCause() }
+                // Unsure whether resuming is safe: nothing resumes by itself, and the owner can resume.
+                val resume = hook("Could not check whether interrupted work may go on by itself", fallback = false) { hooks.resumeAllowed() }
+                orchestrator?.recoverInterrupted(cause, resume)
+            }
+            // After every step (WP2: "started fully" in the start ledger, the upkeep job's schedule).
+            step("Could not note that the app started fully") { hooks.afterSteps() }
         }
         initialJob = job
         closeOverdueRequests?.let { sweep ->
@@ -223,6 +244,17 @@ class AppStartup(
         activityLog.prune(olderThan = clock.now() - retentionDays * MILLIS_PER_DAY)
     }
 
+    /** Asks a hook for a value; a failure is reported under [failureTitle] and [fallback] is used. */
+    private suspend fun <T> hook(failureTitle: String, fallback: T, block: suspend () -> T): T =
+        try {
+            block()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            reportFailure(failureTitle, failure)
+            fallback
+        }
+
     private suspend fun step(failureTitle: String, block: suspend () -> Unit) {
         try {
             block()
@@ -260,4 +292,30 @@ class AppStartup(
         /** How often requests past their expiry are closed. */
         const val REQUEST_SWEEP_INTERVAL_MS = 60L * 1000
     }
+}
+
+/**
+ * What the background package (Phase 6, WP2) does around the start-up steps of [AppStartup]: the start ledger
+ * (rule 10's safe start, the upkeep job's version check), the cause of an interruption read from Android's exit
+ * history (R1, rule 31), and the upkeep job's schedule. Every member has a do-nothing default, which is 0.5.2's
+ * behaviour.
+ */
+interface StartupHooks {
+    /** Before the first start-up step. */
+    suspend fun beforeSteps() {}
+
+    /**
+     * Why the app's main process ended before this start, in app-written words for "Interrupted: …" (never Android's
+     * own description text), or null when unknown.
+     */
+    suspend fun interruptCause(): String? = null
+
+    /** False while safe start holds everything back: interrupted objectives then wait for the owner. */
+    suspend fun resumeAllowed(): Boolean = true
+
+    /** After the last start-up step. */
+    suspend fun afterSteps() {}
+
+    /** No hooks. */
+    object None : StartupHooks
 }

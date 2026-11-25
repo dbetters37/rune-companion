@@ -60,6 +60,9 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+        // Phase 6 (WP6): the binder interfaces between the app and its isolated script process.
+        // R8 stays off (release above), so the generated stubs, the job and the isolated service need no keep rules.
+        aidl = true
     }
 
     testOptions {
@@ -115,4 +118,12 @@ dependencies {
     testImplementation(libs.roborazzi)
     testImplementation(libs.roborazzi.compose)
     testImplementation(libs.roborazzi.junit.rule)
+
+    // On a device (Phase 6, WP6's ScriptProcessDeviceTest): as in :device, without :testkit, whose method names with
+    // spaces cannot be dexed for devices below API 30.
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.kotlin.test)
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation("androidx.test:runner:1.7.0")
 }

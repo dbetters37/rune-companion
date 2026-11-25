@@ -9,6 +9,21 @@ import java.io.File
 import com.aicontrolcenter.app.di.AppGraph
 import com.aicontrolcenter.app.di.OperatorPorts
 import com.aicontrolcenter.app.di.Ports
+import com.aicontrolcenter.app.di.wiring.BackgroundPorts
+import com.aicontrolcenter.app.di.wiring.RoutinesPorts
+import com.aicontrolcenter.core.backup.LocalMaintenanceGate
+import com.aicontrolcenter.core.usage.ModelPrices
+import com.aicontrolcenter.core.usage.UsageLedger
+import com.aicontrolcenter.core.usage.UsageReports
+import com.aicontrolcenter.testkit.FakeBackgroundHealth
+import com.aicontrolcenter.testkit.FakeExitHistory
+import com.aicontrolcenter.testkit.FakeNetworkStatus
+import com.aicontrolcenter.testkit.FakeOwnerRecovery
+import com.aicontrolcenter.testkit.FakeStorageWatch
+import com.aicontrolcenter.testkit.InMemoryModelPrices
+import com.aicontrolcenter.testkit.InMemoryPickUpRuleRepository
+import com.aicontrolcenter.testkit.InMemoryRoutineRepository
+import com.aicontrolcenter.testkit.InMemoryUsageStore
 import com.aicontrolcenter.core.activity.EgressInfo
 import com.aicontrolcenter.core.activity.EgressOrigin
 import com.aicontrolcenter.core.operator.ProtectedPackages
@@ -137,6 +152,32 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
     /** Signing certificates the scanner reports for apps it lists without one (as a phone would for any installed app). */
     val certificates = ConcurrentHashMap<String, String>()
 
+    // --- Phase 6 ---
+
+    /** Usage records, reports and the owner's history in one store, as Room keeps them in one database (UTC zone). */
+    val usage = InMemoryUsageStore(clock, zone = { java.time.ZoneOffset.UTC })
+
+    /** The owner's prices; agent-facing code gets [ModelPrices] through a read-only view, as in production. */
+    val prices = InMemoryModelPrices(clock)
+
+    /** Whether Android lets the app work in the background: unknown until a test sets it. */
+    val backgroundHealth = FakeBackgroundHealth()
+
+    /** The app's earlier exits: none until a test adds some. */
+    val exits = FakeExitHistory()
+
+    /** Plenty of free room until a test sets [FakeStorageWatch.freeBytes]. */
+    val storage = FakeStorageWatch()
+
+    /** A network until a test takes it away. */
+    val network = FakeNetworkStatus()
+
+    /** The database opened normally until a test says otherwise. */
+    val recovery = FakeOwnerRecovery()
+    val routineStore = InMemoryRoutineRepository()
+    val pickUpRuleStore = InMemoryPickUpRuleRepository()
+    val maintenanceGate = LocalMaintenanceGate()
+
     val ports = Ports(
         agents = agents,
         providers = providers,
@@ -186,6 +227,16 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
         clock = clock,
         idGenerator = SequentialIdGenerator(),
         packageChanges = packageChanges,
+        // Narrow views, as production's Room classes are one per port: agent-facing code never holds the owner's side.
+        usageLedger = UsageLedgerView(usage),
+        usageReports = UsageReportsView(usage),
+        modelPrices = ModelPricesView(prices),
+        ownerModelPrices = prices,
+        ownerUsage = usage,
+        background = BackgroundPorts(health = backgroundHealth, exits = exits, storage = storage, recovery = recovery),
+        network = network,
+        routines = RoutinesPorts(routines = routineStore, pickUpRules = pickUpRuleStore),
+        maintenanceGate = maintenanceGate,
     )
 
     /**
@@ -257,6 +308,15 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
         )
     }
 }
+
+/** The ledger side of [InMemoryUsageStore] alone, as `RoomUsageLedger` is in production. */
+class UsageLedgerView(store: InMemoryUsageStore) : UsageLedger by store
+
+/** The reports side of [InMemoryUsageStore] alone, as `RoomUsageReports` is in production. */
+class UsageReportsView(store: InMemoryUsageStore) : UsageReports by store
+
+/** The read side of [InMemoryModelPrices] alone, as `DataLayer.modelPrices` is in production. */
+class ModelPricesView(store: InMemoryModelPrices) : ModelPrices by store
 
 /**
  * [FakeWebReader] that reports each host a page read reached to [onRequestSent], as the real

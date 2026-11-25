@@ -23,6 +23,10 @@ import com.aicontrolcenter.core.operator.ProtectedPackages
 import com.aicontrolcenter.core.operator.ScreenControl
 import com.aicontrolcenter.core.operator.SharedFolderRepository
 import com.aicontrolcenter.core.operator.SharedFolders
+import com.aicontrolcenter.core.settings.FrameworkSettings
+import com.aicontrolcenter.core.settings.ReadOnlySettings
+import com.aicontrolcenter.core.settings.SettingsRepository
+import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.framework.operator.OperatorToolDependencies
 import com.aicontrolcenter.framework.operator.PermissionRequestTool
 import kotlinx.coroutines.CoroutineScope
@@ -32,6 +36,7 @@ import kotlinx.coroutines.cancel
 import org.junit.After
 import org.junit.Test
 import java.lang.reflect.Field
+import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 import java.util.IdentityHashMap
 import kotlin.test.assertEquals
@@ -72,6 +77,8 @@ class OperatorDependencyTest {
         com.aicontrolcenter.core.health.OwnerRecovery::class.java, com.aicontrolcenter.core.routines.OwnerRoutines::class.java,
         com.aicontrolcenter.core.routines.RoutineRepository::class.java, com.aicontrolcenter.core.pickup.OwnerPickUpRules::class.java,
         com.aicontrolcenter.core.pickup.PickUpRuleRepository::class.java,
+        // Phase 6 (rule 3, WP1d): only the owner writes the settings. Agent-facing code holds the read-only view.
+        SettingsRepository::class.java,
     )
 
     /**
@@ -82,6 +89,8 @@ class OperatorDependencyTest {
     private val views: List<Class<*>> = listOf(
         RequestQueueView::class.java, GrantLookupView::class.java, FolderDirectoryView::class.java, AuthorisedAppsView::class.java,
         SharedFolderFilesView::class.java,
+        // Phase 6 (rule 3): the settings as agents read them; its private source is the owner's writer.
+        ReadOnlySettings::class.java,
     )
 
     private fun isOwnerOnly(type: Class<*>): Boolean = ownerOnly.any { it.isAssignableFrom(type) }
@@ -89,12 +98,22 @@ class OperatorDependencyTest {
     /**
      * Actions that are the owner's alone, by method name: an object that offers one is a
      * violation whatever its class, also inside a view. Round 2 (B2): letting an agent ask again
-     * after a refusal ([OwnerRequests.letAskAgain], written by [OwnerRequestDecisions.letAskAgain]).
+     * after a refusal ([OwnerRequests.letAskAgain], written by [OwnerRequestDecisions.letAskAgain]). Phase 6:
+     * starting over, clearing the usage history, and `update` of the settings ([changesSettings]).
      */
     private val ownerOnlyActions = setOf("letAskAgain", "startOver", "clearHistory")
 
+    /**
+     * Phase 6 (rule 3): an `update` that changes the owner's settings, told by its signature, which names
+     * [FrameworkSettings]. The bare name would also match the update of a task, a memory or an agent, which the
+     * orchestrator and the memory tools may do.
+     */
+    private fun changesSettings(method: Method): Boolean =
+        method.name.substringBefore('-') == "update" && method.genericParameterTypes.any { FrameworkSettings::class.java.name in it.typeName }
+
     /** A method taking an id (a value class) is compiled as "name-hash": compared by the name in front. */
-    private fun ownerActionsOf(type: Class<*>): List<String> = type.methods.map { it.name.substringBefore('-') }.filter { it in ownerOnlyActions }.distinct()
+    private fun ownerActionsOf(type: Class<*>): List<String> =
+        type.methods.filter { it.name.substringBefore('-') in ownerOnlyActions || changesSettings(it) }.map { it.name.substringBefore('-') }.distinct()
 
     private class Walk(val violations: MutableList<String> = ArrayList(), val unreadable: MutableList<String> = ArrayList(), var objects: Int = 0)
 
@@ -231,6 +250,27 @@ class OperatorDependencyTest {
         }
         val screenView = ScreenSessions(resumable, AuthorisedAppsView(app.operatorApps), scope)
         assertTrue(walk(screenView, "screen view").violations.isNotEmpty(), "the walk goes behind the agents' screen view")
+    }
+
+    @Test
+    fun `only the owner writes the settings - agent-facing code holds the read-only view`() {
+        // Rule 3: the writer is owner-only by type and by its update; the view offers neither.
+        assertTrue(isOwnerOnly(app.settings.javaClass))
+        assertEquals(listOf("update"), ownerActionsOf(SettingsRepository::class.java))
+        assertEquals(listOf("update"), ownerActionsOf(app.settings.javaClass))
+        assertEquals(emptyList(), ownerActionsOf(SettingsView::class.java))
+        assertEquals(emptyList(), ownerActionsOf(ReadOnlySettings::class.java))
+        assertTrue(!isOwnerOnly(ReadOnlySettings::class.java), "the read-only view is not a writer")
+        // An update of a task, a memory or an agent is not the owner's alone.
+        assertEquals(emptyList(), ownerActionsOf(com.aicontrolcenter.core.tasks.TaskRepository::class.java))
+        assertEquals(emptyList(), ownerActionsOf(com.aicontrolcenter.core.memory.MemoryService::class.java))
+        // As wired: the graph hands the view to everything agent-facing, and the walk finds a writer anywhere else.
+        assertTrue(app.graph.settingsView is ReadOnlySettings)
+        assertTrue(walk(object { val settings: Any = app.settings }, "holder").violations.isNotEmpty())
+        assertTrue(walk(object { val read: suspend () -> FrameworkSettings = app.settings::get }, "bound reference").violations.isNotEmpty())
+        assertEquals(emptyList(), walk(object { val settings: Any = app.graph.settingsView }, "view").violations)
+        // The owner's own services keep the writer: the agent manager and the memory seeder write their bookkeeping.
+        assertTrue(walk(app.graph.agentManager, "agentManager").violations.any { "SettingsRepository" in it || "InMemorySettingsRepository" in it })
     }
 
     @Test

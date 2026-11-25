@@ -3,6 +3,7 @@ package com.aicontrolcenter.app.di
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.aicontrolcenter.data.DataLayer
 import com.aicontrolcenter.device.screen.ResolvingProtectedPackages
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -23,7 +24,7 @@ class ProductionPortsTest {
     fun `the protected apps are resolved on their own thread, and every reader still gets the full set`() {
         val context = ApplicationProvider.getApplicationContext<Application>()
 
-        val ports = createProductionPorts(context)
+        val ports = createProductionPorts(context, DataLayer(context))
 
         // Not a set resolved by the calling (main) thread: the resolver that works on its own thread.
         val protectedPackages = assertIs<ResolvingProtectedPackages>(ports.operator.protectedPackages)
