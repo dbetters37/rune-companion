@@ -65,6 +65,13 @@ class OperatorDependencyTest {
         // Owner-capable mutators: adding and removing folders and apps, taking and releasing a folder's access, Resume after Stop.
         SharedFolderRepository::class.java, OperatorAppRepository::class.java, SharedFolders::class.java,
         Class.forName("com.aicontrolcenter.device.screen.StopSwitch"),
+        // Phase 6 (rule 3, WP1a): notes to the team, prices, usage history, backup, recovery, routines and folder
+        // pick-up, and the two stores that can create work or intake that starts while nobody watches.
+        com.aicontrolcenter.core.tasks.OwnerConversation::class.java, com.aicontrolcenter.core.usage.OwnerModelPrices::class.java,
+        com.aicontrolcenter.core.usage.OwnerUsage::class.java, com.aicontrolcenter.core.backup.OwnerBackup::class.java,
+        com.aicontrolcenter.core.health.OwnerRecovery::class.java, com.aicontrolcenter.core.routines.OwnerRoutines::class.java,
+        com.aicontrolcenter.core.routines.RoutineRepository::class.java, com.aicontrolcenter.core.pickup.OwnerPickUpRules::class.java,
+        com.aicontrolcenter.core.pickup.PickUpRuleRepository::class.java,
     )
 
     /**
@@ -84,7 +91,7 @@ class OperatorDependencyTest {
      * violation whatever its class, also inside a view. Round 2 (B2): letting an agent ask again
      * after a refusal ([OwnerRequests.letAskAgain], written by [OwnerRequestDecisions.letAskAgain]).
      */
-    private val ownerOnlyActions = setOf("letAskAgain")
+    private val ownerOnlyActions = setOf("letAskAgain", "startOver", "clearHistory")
 
     /** A method taking an id (a value class) is compiled as "name-hash": compared by the name in front. */
     private fun ownerActionsOf(type: Class<*>): List<String> = type.methods.map { it.name.substringBefore('-') }.filter { it in ownerOnlyActions }.distinct()

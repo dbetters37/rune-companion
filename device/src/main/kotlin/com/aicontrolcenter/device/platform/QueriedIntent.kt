@@ -52,6 +52,14 @@ internal enum class QueriedIntent(
     REQUEST_PERMISSIONS("android.content.pm.action.REQUEST_PERMISSIONS"),
     ADD_DEVICE_ADMIN("android.app.action.ADD_DEVICE_ADMIN"),
     SET_NEW_PASSWORD("android.app.action.SET_NEW_PASSWORD"),
+
+    // Phase 6 (S26): Android's own file and photo pickers. A "*/*" type matches a picker whatever
+    // types its filter lists (an intent of every type matches any typed filter); the folder
+    // picker's filter lists no type, so its intent carries none.
+    OPEN_DOCUMENT("android.intent.action.OPEN_DOCUMENT", mimeType = "*/*"),
+    OPEN_DOCUMENT_TREE("android.intent.action.OPEN_DOCUMENT_TREE"),
+    CREATE_DOCUMENT("android.intent.action.CREATE_DOCUMENT", mimeType = "*/*"),
+    PICK_IMAGES("android.provider.action.PICK_IMAGES", mimeType = "*/*"),
     ;
 
     /** The URI scheme the manifest entry declares, taken from [exampleData]. */

@@ -142,6 +142,26 @@
         <intent>
             <action android:name="android.app.action.SET_NEW_PASSWORD" />
         </intent>
+        <!--
+            Android's own file and photo pickers (Phase 6, S26): what the owner picks there decides
+            which files an app gets, so they are protected too. "*/*" matches a picker whatever
+            types its filter lists; the folder picker's filter lists none.
+        -->
+        <intent>
+            <action android:name="android.intent.action.OPEN_DOCUMENT" />
+            <data android:mimeType="*/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.OPEN_DOCUMENT_TREE" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.CREATE_DOCUMENT" />
+            <data android:mimeType="*/*" />
+        </intent>
+        <intent>
+            <action android:name="android.provider.action.PICK_IMAGES" />
+            <data android:mimeType="*/*" />
+        </intent>
 
         <!-- Cloud assistants and AI browsers (CloudAiApps.kt). -->
         <package android:name="com.openai.chatgpt" />
