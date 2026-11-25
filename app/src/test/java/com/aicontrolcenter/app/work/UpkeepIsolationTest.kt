@@ -38,6 +38,11 @@ class UpkeepIsolationTest {
     fun `the upkeep job's ports and the pick-up step's ports are narrow`() {
         assertNarrow(UpkeepPorts::class.java)
         assertNarrow(PickUpStepPorts::class.java)
+        // WP2's own ports of the job: the database check and the start ledger.
+        assertNarrow(com.aicontrolcenter.data.recovery.DatabaseHealth::class.java)
+        assertNarrow(com.aicontrolcenter.app.health.StartLedger::class.java)
+        val portTypes = UpkeepPorts::class.java.declaredFields.filter { !java.lang.reflect.Modifier.isStatic(it.modifiers) }.map { it.type }
+        assertTrue(com.aicontrolcenter.data.recovery.DatabaseHealth::class.java in portTypes && com.aicontrolcenter.app.health.StartLedger::class.java in portTypes)
         for (constructor in UpkeepGraph::class.java.constructors) {
             assertTrue(constructor.parameterTypes.none { p -> wide.any { it.isAssignableFrom(p) } }, "UpkeepGraph takes only its ports and steps")
         }
