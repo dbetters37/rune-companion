@@ -168,7 +168,7 @@ abstract class MessageHeaderContract {
         repo.append(TaskSamples.message("msg_1", at = 1))
         repo.append(TaskSamples.message("msg_2", at = 2))
         repo.append(TaskSamples.message("msg_3", at = 3))
-        awaitUntil { headers.last().map { it.id } == listOf(MessageId("msg_2"), MessageId("msg_3")) && recent.last().single().id == MessageId("msg_3") }
+        awaitUntil { headers.last().map { it.id } == listOf(MessageId("msg_2"), MessageId("msg_3")) && recent.last().singleOrNull()?.id == MessageId("msg_3") }
         repo.deleteFor(TaskId("tsk_root"))
         awaitUntil { headers.last().isEmpty() && recent.last().isEmpty() }
         assertTrue(headers.isNotEmpty())
