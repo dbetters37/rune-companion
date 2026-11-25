@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.text.style.TextAlign
 import com.aicontrolcenter.app.ui.components.AgentAvatar
@@ -79,26 +80,39 @@ internal fun AttentionSection(
 
 @Composable
 private fun AttentionRow(item: AttentionItem, onClick: () -> Unit) {
+    AttentionRow(item.tone, item.title, item.detail, onClick, clickLabel = "Fix")
+}
+
+/**
+ * One attention row: a status icon (named for screen readers, never colour alone), a title and a detail; tappable when
+ * [onClick] is set. Shared by the registry's list and the phone's own items ([PhoneAttention]).
+ */
+@Composable
+internal fun AttentionRow(tone: StatusTone, title: String, detail: String, onClick: (() -> Unit)?, clickLabel: String?) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClickLabel = "Fix", onClick = onClick)
+            .then(if (onClick != null) Modifier.clickable(onClickLabel = clickLabel, onClick = onClick) else Modifier.semantics(mergeDescendants = true) {})
             .heightIn(min = 64.dp)
             .padding(horizontal = Spacing.lg, vertical = Spacing.md),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Spacing.md),
     ) {
         Icon(
-            imageVector = item.tone.icon,
-            contentDescription = if (item.tone == StatusTone.UNAVAILABLE) "Blocking" else "Attention",
-            tint = appColors.status(item.tone),
+            imageVector = tone.icon,
+            contentDescription = when (tone) {
+                StatusTone.UNAVAILABLE -> "Blocking"
+                StatusTone.WAITING -> "Waiting"
+                else -> "Attention"
+            },
+            tint = appColors.status(tone),
             modifier = Modifier.size(22.dp),
         )
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(item.title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
-            Text(item.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+            Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Icon(AppIcons.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (onClick != null) Icon(AppIcons.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
