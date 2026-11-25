@@ -67,6 +67,10 @@ internal fun ModelOptionRow(option: ModelOptionUi, modifier: Modifier = Modifier
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            // D27: agents are picked by these for planning and for code, so the picker shows them.
+            option.tiers?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
             FlowRow(
                 modifier = Modifier.padding(top = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),

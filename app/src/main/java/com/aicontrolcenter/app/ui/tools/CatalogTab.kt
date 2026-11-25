@@ -31,6 +31,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
+import com.aicontrolcenter.app.ui.icons.Schedule
 import com.aicontrolcenter.app.ui.approvals.RiskChip
 import com.aicontrolcenter.app.ui.components.AppCard
 import com.aicontrolcenter.app.ui.components.InfoBanner
@@ -71,6 +72,8 @@ fun CatalogTab(
     state: ToolsCatalogUiState,
     onOpenAgent: (AgentId) -> Unit,
     onOpenWorkspace: () -> Unit,
+    /** The owner's routines (objectives that start on a schedule); null when routines are not built or are hidden. */
+    onOpenRoutines: (() -> Unit)? = null,
     access: DeviceAccessActions = DeviceAccessActions(),
 ) {
     if (state.isLoading) {
@@ -92,6 +95,12 @@ fun CatalogTab(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                onOpenRoutines?.let { open ->
+                    androidx.compose.material3.OutlinedButton(onClick = open, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                        Icon(AppIcons.Schedule, contentDescription = null, modifier = Modifier.padding(end = Spacing.sm))
+                        Text("Routines: objectives that start on a schedule")
+                    }
+                }
             }
         }
         items(state.families, key = { it.family.name }) { family ->

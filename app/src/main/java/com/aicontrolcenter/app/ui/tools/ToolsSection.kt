@@ -1,6 +1,5 @@
 package com.aicontrolcenter.app.ui.tools
 
-import com.aicontrolcenter.app.Phase6Stub
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -73,11 +72,11 @@ enum class ToolsTab(val title: String) {
 /**
  * Where the Tools section leads. Supplied by the navigation shell.
  *
- * Wave 3 (WP11b wires the new ones): the owner's routines and folder pick-up rules are lists of the owner's things and sit
- * in Tools (WP10c builds their screens); a folder's "Pick up new files" opens [onNewPickUpRule]; a question in the
- * History opens its own screen ([onOpenQuestion], rule 13).
+ * The owner's routines and folder pick-up rules are lists of the owner's things and sit in Tools (WP10c builds their
+ * screens): "Routines" is offered on the All tools tab and "Folder pick-up rules" on the Folders tab, each only while
+ * the graph has the owner's port for it; a read-only folder's "Pick up new files" opens [onNewPickUpRule]; a question
+ * in the History opens its own screen ([onOpenQuestion], rule 13), never the Approval screen.
  */
-@Phase6Stub("WP11b")
 class ToolsNavigation(
     val onOpenAgent: (AgentId) -> Unit,
     val onOpenWorkspace: () -> Unit,
@@ -129,7 +128,8 @@ fun ToolsSectionRoute(initialTab: ToolsTab, initialAgent: AgentId?, navigation: 
             ({
                 CatalogTab(
                     state, navigation.onOpenAgent, navigation.onOpenWorkspace,
-                    DeviceAccessActions(
+                    onOpenRoutines = navigation.onOpenRoutines.takeIf { graph.ownerRoutines != null },
+                    access = DeviceAccessActions(
                         onRequest = { access ->
                             val wanted = graph.systemScreens.accessPermissions(access)
                             if (wanted.isNotEmpty()) {
@@ -173,7 +173,14 @@ fun ToolsSectionRoute(initialTab: ToolsTab, initialAgent: AgentId?, navigation: 
             })
         }
         ToolsTab.FOLDERS -> {
-            val viewModel = viewModel { FoldersViewModel(graph.ownerFolders, graph.ownerGrants, graph.registryDirectory, familyOfTool, graph.clock) }
+            val viewModel = viewModel {
+                FoldersViewModel(
+                    graph.ownerFolders, graph.ownerGrants, graph.registryDirectory, familyOfTool, graph.clock, graph.zone(),
+                    // PackageManager: read on the IO dispatcher by the view model, never on the main thread.
+                    storageAppName = graph.systemScreens::storageAppName,
+                    pickUpRules = graph.ownerPickUpRules?.observeAll(),
+                )
+            }
             val state by viewModel.uiState.collectAsStateWithLifecycle()
             // Android's folder picker; the tree it returns is kept with a persisted grant by OwnerFolders.
             val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> viewModel.add(uri?.toString()) }
@@ -193,6 +200,8 @@ fun ToolsSectionRoute(initialTab: ToolsTab, initialAgent: AgentId?, navigation: 
                         onRemove = viewModel::remove,
                         onSetReadOnly = viewModel::setReadOnly,
                         onSetAccess = viewModel::setAccess,
+                        onOpenPickUpRules = navigation.onOpenPickUpRules,
+                        onNewPickUpRule = navigation.onNewPickUpRule,
                     ),
                 )
             })
@@ -212,6 +221,7 @@ fun ToolsSectionRoute(initialTab: ToolsTab, initialAgent: AgentId?, navigation: 
                     refreshService = graph::refreshScreenState,
                     clock = graph.clock,
                     registry = graph.aiAppRegistry,
+                    switchedOffSentence = graph.screenSwitchedOffSentence,
                 )
             }
             // Coming back from Android's settings: read the service state again.
@@ -260,6 +270,7 @@ fun ToolsSectionRoute(initialTab: ToolsTab, initialAgent: AgentId?, navigation: 
                     RequestsActions(
                         viewModel::setKind, viewModel::setOutcome, viewModel::setAgent, viewModel::clearFilter, navigation.onOpenRequest,
                         onLetAskAgain = viewModel::letAskAgain,
+                        onOpenQuestion = navigation.onOpenQuestion,
                     ),
                 )
             })

@@ -10,6 +10,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -95,6 +99,10 @@ fun AgentsScreen(
     onOpenAgent: (AgentId) -> Unit,
     onNewAgent: () -> Unit,
 ) {
+    val listState = rememberLazyListState()
+    // D40: the button shows its words at the top of the list and shrinks to its icon once the owner scrolls, so it
+    // covers less of the last card; the list also leaves room under its end.
+    val atTop by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 } }
     ScreenScaffold(
         title = "Agents",
         message = state.message,
@@ -102,6 +110,7 @@ fun AgentsScreen(
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = onNewAgent,
+                expanded = atTop,
                 // Material clears the semantics of an extended FAB's text, so the icon carries the label.
                 icon = { Icon(AppIcons.Add, contentDescription = "New agent") },
                 text = { Text("New agent") },
@@ -133,6 +142,7 @@ fun AgentsScreen(
                     onAction = onClearFilters,
                 )
                 else -> LazyColumn(
+                    state = listState,
                     modifier = Modifier.readableWidth().fillMaxSize(),
                     contentPadding = PaddingValues(start = Spacing.screen, end = Spacing.screen, top = Spacing.sm, bottom = 96.dp),
                     verticalArrangement = Arrangement.spacedBy(Spacing.md),

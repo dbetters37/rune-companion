@@ -78,6 +78,20 @@ class ScreenControlActions(
  * the apps agents may be allowed to see and use, each checked to be that exact app. Touches are
  * refused while another app's window covers the tab or its dialogs, since they give agents access.
  */
+/**
+ * D7: Android switched screen control off after the app was stopped. That is Android's rule; the app only says so and
+ * opens Android's own accessibility settings, where the owner switches it on again with their own tap.
+ */
+@Composable
+private fun SwitchedOffNotice(notice: String, onOpenAccessibilitySettings: () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+        InfoBanner(title = "Screen control was switched off", text = notice, tone = StatusTone.ATTENTION)
+        androidx.compose.material3.OutlinedButton(onClick = onOpenAccessibilitySettings, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+            Text("Open accessibility settings")
+        }
+    }
+}
+
 @Composable
 fun ScreenControlTab(state: ScreenControlUiState, actions: ScreenControlActions) {
     if (state.isLoading) {
@@ -91,6 +105,9 @@ fun ScreenControlTab(state: ScreenControlUiState, actions: ScreenControlActions)
         contentPadding = PaddingValues(start = Spacing.screen, end = Spacing.screen, top = Spacing.md, bottom = Spacing.xl),
         verticalArrangement = Arrangement.spacedBy(Spacing.md),
     ) {
+        state.switchedOffNotice?.let { notice ->
+            item(key = "switched-off") { SwitchedOffNotice(notice, actions.onOpenAccessibilitySettings) }
+        }
         item(key = "service") { ServiceCard(state, actions) }
         item(key = "stop") { StopCard(state.stopped, state.isBusy, actions) }
         item(key = "apps-header") {

@@ -32,6 +32,7 @@ import org.junit.Test
 import java.time.ZoneOffset
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -307,6 +308,85 @@ class ToolsViewModelsTest {
 
         vm.setAccess(folderId, app.id("Operator"), AccessLevel.READ)
         assertEquals("That folder was removed.", vm.uiState.value.message?.text, "the folder service refuses a removed folder")
+    }
+
+    // --- Phase 6: another app's storage, pick-up rules switched off (Folders), Android switching screen control off (D7) ---
+
+    @Test
+    fun `a folder from another app's storage is warned about, by that app's name, and the warning follows read-only`() = runTest(mainRule.dispatcher) {
+        val app = started()
+        val cloud = "content://com.example.cloud.documents/tree/root%3AWork"
+        val unnamed = "content://org.example.files/tree/abc"
+        val phone = "content://com.android.externalstorage.documents/tree/primary%3ADocuments"
+        app.folderAccess.pickable[cloud] = "Work"
+        app.folderAccess.pickable[unnamed] = "Files"
+        app.folderAccess.pickable[phone] = "Documents"
+        val asked = mutableListOf<String>()
+        val vm = FoldersViewModel(
+            app.graph.ownerFolders, app.graph.ownerGrants, app.graph.registryDirectory, app.familyOf(), app.clock, ZoneOffset.UTC,
+            storageAppName = { uri -> asked += uri; if (uri == cloud) "Cloud Drive" else null },
+            io = kotlin.coroutines.EmptyCoroutineContext,
+        ).also { it.uiState.activeIn(backgroundScope) }
+        vm.add(cloud)
+        vm.add(unnamed)
+        vm.add(phone)
+        fun note(name: String) = vm.uiState.value.folders.single { it.name == name }.otherAppNote
+
+        assertEquals(com.aicontrolcenter.core.operator.OwnerFolders.otherAppStorageNote("Cloud Drive", readOnly = false), note("Work"))
+        assertTrue(note("Work")!!.startsWith("This folder comes from Cloud Drive."))
+        assertTrue(note("Files")!!.startsWith("This folder comes from another app."), "Android did not tell the name")
+        assertNull(note("Documents"), "the phone's own storage needs no warning")
+        assertEquals(listOf(cloud, unnamed), asked, "each other app's name is asked once, never for the phone's own folders")
+
+        vm.setReadOnly(vm.uiState.value.folders.single { it.name == "Work" }.id, true)
+        assertEquals(com.aicontrolcenter.core.operator.OwnerFolders.otherAppStorageNote("Cloud Drive", readOnly = true), note("Work"), "the sentence changes with read-only")
+    }
+
+    @Test
+    fun `making a pick-up folder writable says its rule was switched off`() = runTest(mainRule.dispatcher) {
+        val app = started()
+        val rules = assertNotNull(app.graph.ownerPickUpRules)
+        val uri = "content://com.android.externalstorage.documents/tree/primary%3AInbox"
+        app.folderAccess.pickable[uri] = "Inbox"
+        val vm = FoldersViewModel(
+            app.graph.ownerFolders, app.graph.ownerGrants, app.graph.registryDirectory, app.familyOf(), app.clock, ZoneOffset.UTC,
+            pickUpRules = rules.observeAll(), io = kotlin.coroutines.EmptyCoroutineContext,
+        ).also { it.uiState.activeIn(backgroundScope) }
+        assertTrue(vm.uiState.value.pickUpAvailable)
+        vm.add(uri)
+        val folder = vm.uiState.value.folders.single()
+        vm.setReadOnly(folder.id, true)
+        val space = app.graph.memoryService.createSpace(com.aicontrolcenter.core.memory.MemoryActor.Owner, "Inbox notes")
+        val created = rules.create(folder.id, space.id)
+        assertIs<com.aicontrolcenter.core.operator.OwnerResult.Done<*>>(created, created.toString())
+        assertTrue(vm.uiState.value.folders.single().hasPickUpRule)
+
+        vm.setReadOnly(folder.id, false)
+        assertEquals(
+            "“Inbox” can be changed by agents allowed to. Its folder pick-up rule was switched off: pick-up reads only folders agents cannot change.",
+            vm.uiState.value.message?.text,
+        )
+        assertFalse(rules.observeAll().first().single().enabled)
+    }
+
+    @Test
+    fun `when Android switched screen control off, the tab says why and offers Android's settings (D7)`() = runTest(mainRule.dispatcher) {
+        val app = started()
+        val vm = screen(app)
+        assertNull(vm.uiState.value.switchedOffNotice)
+        app.screen.switchedOffByAndroid.value = true
+        assertEquals(SWITCHED_OFF, vm.uiState.value.switchedOffNotice, "the generic sentence when the device layer gave none")
+
+        val sentence = kotlinx.coroutines.flow.MutableStateFlow<String?>("Android switched screen control off after the app was force-stopped. Turn it on again in Android's accessibility settings.")
+        val withSentence = ScreenControlViewModel(
+            serviceState = app.graph.screenSessions.state, control = app.graph.screenControl, settings = app.settings,
+            apps = app.graph.ownerOperatorApps, grants = app.graph.ownerGrants, directory = app.graph.registryDirectory,
+            installed = app.graph.installedApps, isProtected = app.graph::isProtectedPackage, familyOfTool = app.familyOf(),
+            refreshService = {}, clock = app.clock, zone = ZoneOffset.UTC, switchedOffSentence = sentence,
+        ).also { it.uiState.activeIn(backgroundScope) }
+        assertEquals(sentence.value, withSentence.uiState.value.switchedOffNotice)
+        app.screen.switchedOffByAndroid.value = false
+        assertNull(withSentence.uiState.value.switchedOffNotice, "gone once the service is back")
     }
 
     // --- Screen control ---

@@ -29,6 +29,10 @@ import com.aicontrolcenter.core.agents.AgentValidationException
 import com.aicontrolcenter.core.agents.ValidationIssue
 import com.aicontrolcenter.core.agents.toDraft
 import com.aicontrolcenter.core.registry.Locality
+import com.aicontrolcenter.core.registry.CapabilityTier
+import com.aicontrolcenter.core.registry.ModelCapabilities
+import com.aicontrolcenter.app.ui.components.formatCount
+import com.aicontrolcenter.framework.agents.ToolMenu
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.registry.RegistrySnapshot
 import com.aicontrolcenter.core.registry.effectiveLocality
@@ -51,7 +55,20 @@ data class ModelOptionUi(
     /** Disabled or unavailable models stay selectable (the owner may be fixing them) but are marked. */
     val note: String? = null,
     val isSimulator: Boolean = false,
+    /** "Reasoning: Strong · Coding: Good" (D27: agents are picked by these); null when neither is rated. */
+    val tiers: String? = null,
 )
+
+/** The model's Reasoning and Coding ratings in words, the ones it has; null for the simulator or when neither is rated. */
+internal fun tiersOf(capabilities: ModelCapabilities, isSimulator: Boolean): String? {
+    if (isSimulator) return null
+    fun word(tier: CapabilityTier) = tier.name.lowercase().replaceFirstChar(Char::uppercase)
+    val parts = listOfNotNull(
+        capabilities.reasoning.takeIf { it != CapabilityTier.UNKNOWN }?.let { "Reasoning: ${word(it)}" },
+        capabilities.coding.takeIf { it != CapabilityTier.UNKNOWN }?.let { "Coding: ${word(it)}" },
+    )
+    return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
+}
 
 /** Every registered model as a picker option, with its provider, where prompts go, and what is wrong with it. */
 internal fun RegistrySnapshot.modelOptions(): List<ModelOptionUi> = models.map { model ->
@@ -69,6 +86,7 @@ internal fun RegistrySnapshot.modelOptions(): List<ModelOptionUi> = models.map {
             else -> null
         },
         isSimulator = model.isSimulator,
+        tiers = tiersOf(model.capabilities, model.isSimulator),
     )
 }
 
@@ -109,7 +127,22 @@ data class AgentEditorUiState(
     /** Set once after a successful save; the route navigates and calls back to clear it. */
     val savedAgentId: AgentId? = null,
     val message: UserMessage? = null,
+    /** About how many tokens the switched-on tools' descriptions add to every request (WP15's estimate). */
+    val toolTokens: Int = 0,
 ) {
+    /**
+     * What the switched-on tools cost in every request, in plain words; above the menu threshold the agent is offered
+     * its tools in groups (`tools_open`), so each request stays small.
+     */
+    val toolCostLine: String?
+        get() = when {
+            toolTokens <= 0 -> null
+            toolTokens > ToolMenu.THRESHOLD_TOKENS ->
+                "These tools would add about ${formatCount(toolTokens.toLong())} tokens to every request. That is many, so they are " +
+                    "offered in groups: each request carries only the groups the agent opens, and opening one may take one more step."
+            else -> "These tools add about ${formatCount(toolTokens.toLong())} tokens to every request this agent makes."
+        }
+
     fun issue(field: AgentField): String? = issues[field]?.joinToString(" ")
 
     fun model(id: ModelId?): ModelOptionUi? = models.firstOrNull { it.id == id }
@@ -209,6 +242,12 @@ class AgentEditorViewModel(
             tools = tools.sortedBy { it.title }.map { ToolOptionUi(it.id, it.title, plainWordsFor(it), it.risk, it.sendsDataOffDevice, ToolFamily.of(it)) },
         ),
     )
+
+    /** Each tool's definition as a request carries it, for the token line. */
+    private val definitions = tools.associate { it.id to ToolMenu.definition(it) }
+
+    private fun tokensFor(draft: AgentDraft): Int =
+        if (draft.toolIds.isEmpty()) 0 else ToolMenu.estimatedTokens(draft.toolIds.sortedBy { it.value }.mapNotNull(definitions::get))
     val uiState: StateFlow<AgentEditorUiState> = state.asStateFlow()
 
     private var original: AgentDraft? = null
@@ -249,7 +288,7 @@ class AgentEditorViewModel(
         val restored = draftStore.read()?.let { runCatching { json.decodeFromString(AgentDraft.serializer(), it) }.getOrNull() }
         val draft = restored ?: base
         fields.fill(draft)
-        state.update { it.copy(isLoading = false, draft = draft, isDirty = draft != base) }
+        state.update { it.copy(isLoading = false, draft = draft, isDirty = draft != base, toolTokens = tokensFor(draft)) }
         validate(draft)
     }
 
@@ -264,7 +303,8 @@ class AgentEditorViewModel(
         val draft = transform(typed)
         fields.showChanges(typed, draft)
         if (draft == current.draft) return
-        state.update { it.copy(draft = draft, isDirty = draft != original) }
+        val tokens = if (draft.toolIds == current.draft.toolIds) current.toolTokens else tokensFor(draft)
+        state.update { it.copy(draft = draft, isDirty = draft != original, toolTokens = tokens) }
         draftStore.write(json.encodeToString(AgentDraft.serializer(), draft))
         validate(draft)
     }
@@ -336,7 +376,17 @@ class AgentEditorViewModel(
         state.update { it.copy(isSaving = true) }
         viewModelScope.launch {
             try {
-                val saved = if (editingId == null) agentManager.create(current.draft) else agentManager.update(editingId, current.draft)
+                val existing = current.spaces.mapTo(HashSet()) { it.id }
+                val saved = if (editingId == null) {
+                    agentManager.create(current.draft.withSpacesIn(existing, before = original))
+                } else {
+                    // D38: only what the owner changed here is written over the agent as it is stored now, so a change
+                    // made elsewhere meanwhile (a space deleted, which also leaves every agent's lists) is kept.
+                    val stored = directory.snapshot().agentsById[editingId]?.profile?.toDraft()
+                    val base = original
+                    val draft = if (stored == null || base == null) current.draft else mergeEdit(base, current.draft, stored, existing)
+                    agentManager.update(editingId, draft)
+                }
                 draftStore.write(null)
                 original = current.draft
                 state.update { it.copy(isSaving = false, isDirty = false, savedAgentId = saved.id) }
@@ -382,6 +432,53 @@ class AgentEditorViewModel(
 
     companion object {
         private const val MAX_NAME_LENGTH = 40
+
+        /**
+         * D38: the agent as stored now ([stored]) with what the owner changed in the editor ([original] → [edited]):
+         * each field the owner changed takes its new value, every other field keeps the stored one. Spaces the owner
+         * ticked are added only while they exist ([existingSpaces]); spaces the owner unticked are taken away; a space
+         * deleted meanwhile stays gone.
+         */
+        internal fun mergeEdit(original: AgentDraft, edited: AgentDraft, stored: AgentDraft, existingSpaces: Set<SpaceId>): AgentDraft {
+            fun <T> pick(get: (AgentDraft) -> T): T = if (get(edited) != get(original)) get(edited) else get(stored)
+            fun spaces(get: (com.aicontrolcenter.core.agents.MemoryPolicy) -> Set<SpaceId>): Set<SpaceId> {
+                val added = get(edited.memory) - get(original.memory)
+                val removed = get(original.memory) - get(edited.memory)
+                return get(stored.memory) - removed + added.filter { it in existingSpaces }
+            }
+            val memory = stored.memory.copy(
+                privateMemoryEnabled = pick { it.memory.privateMemoryEnabled },
+                autoRecall = pick { it.memory.autoRecall },
+                recallLimit = pick { it.memory.recallLimit },
+                readableSpaces = spaces { it.readableSpaces },
+                writableSpaces = spaces { it.writableSpaces },
+            )
+            return stored.copy(
+                name = pick { it.name },
+                kind = pick { it.kind },
+                description = pick { it.description },
+                systemInstructions = pick { it.systemInstructions },
+                personality = pick { it.personality },
+                responsibilities = pick { it.responsibilities },
+                skills = pick { it.skills },
+                modelId = pick { it.modelId },
+                fallbackModelIds = pick { it.fallbackModelIds },
+                generation = pick { it.generation },
+                toolIds = pick { it.toolIds },
+                memory = memory,
+                delegation = pick { it.delegation },
+                enabled = pick { it.enabled },
+                colorIndex = pick { it.colorIndex },
+                templateId = pick { it.templateId },
+            )
+        }
+
+        /** A new agent's draft with only the spaces that exist now among those ticked since [before] (D38). */
+        internal fun AgentDraft.withSpacesIn(existing: Set<SpaceId>, before: AgentDraft?): AgentDraft {
+            val start = before?.memory
+            fun keep(ids: Set<SpaceId>, was: Set<SpaceId>?) = ids.filterTo(HashSet()) { it in existing || (was != null && it in was) }
+            return copy(memory = memory.copy(readableSpaces = keep(memory.readableSpaces, start?.readableSpaces), writableSpaces = keep(memory.writableSpaces, start?.writableSpaces)))
+        }
         private val json = Json { ignoreUnknownKeys = true }
 
         /**

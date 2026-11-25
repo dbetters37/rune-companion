@@ -9,6 +9,7 @@ import com.aicontrolcenter.core.agents.AgentDraft
 import com.aicontrolcenter.core.agents.AgentField
 import com.aicontrolcenter.core.agents.AgentKind
 import com.aicontrolcenter.core.agents.AgentStats
+import com.aicontrolcenter.core.agents.toDraft
 import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.framework.agents.AgentTemplates
 import com.aicontrolcenter.testkit.Samples
@@ -277,5 +278,78 @@ class AgentEditorViewModelTest {
         viewModel.save()
         assertFalse(com.aicontrolcenter.core.ToolId("scripts.run_shell") in app.agentNamed("Operator").profile.toolIds)
         assertEquals(emptyList(), app.permissions.observeAll().first(), "a tool switch is not a permission")
+    }
+
+    // --- Phase 6: tiers in the model picker (D27), what the tools cost per request (WP15), a space deleted while editing (D38) ---
+
+    @Test
+    fun `the model picker shows each model's reasoning and coding ratings`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.registerSampleModel()
+        app.graph.providerManager.ensureBuiltIns()
+        val viewModel = editor(app)
+        val sample = viewModel.uiState.value.models.single { it.id == ModelId("mdl_sample") }
+        assertEquals("Reasoning: Good · Coding: Basic", sample.tiers)
+        assertNull(viewModel.uiState.value.models.single { it.isSimulator }.tiers, "the simulator has no rating")
+        assertNull(tiersOf(com.aicontrolcenter.core.registry.ModelCapabilities(), isSimulator = false), "nothing rated, nothing shown")
+    }
+
+    @Test
+    fun `the tools say about how much they add to every request, and that many tools are offered in groups`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.graph.agentManager.ensureDefaults()
+        val specs = app.graph.toolRegistry.all().map { it.spec }
+        val operator = app.agentNamed("Operator").profile
+        val viewModel = AgentEditorViewModel(app.graph.agentManager, app.graph.registryDirectory, operator.id, null, tools = specs)
+        val state = viewModel.uiState.value
+        assertTrue(state.toolTokens > com.aicontrolcenter.framework.agents.ToolMenu.THRESHOLD_TOKENS, "the Operator has many tools (${state.toolTokens})")
+        assertTrue(state.toolCostLine!!.startsWith("These tools would add about "), state.toolCostLine)
+        assertTrue("offered in groups" in state.toolCostLine!!)
+
+        specs.forEach { viewModel.setTool(it.id, false) }
+        assertNull(viewModel.uiState.value.toolCostLine, "no tools, nothing added")
+        viewModel.setTool(com.aicontrolcenter.framework.tools.ClockTool.ID, true)
+        val one = viewModel.uiState.value
+        assertTrue(one.toolTokens in 1..com.aicontrolcenter.framework.agents.ToolMenu.THRESHOLD_TOKENS)
+        assertEquals("These tools add about ${one.toolTokens} tokens to every request this agent makes.", one.toolCostLine)
+    }
+
+    @Test
+    fun `a space deleted while the agent is edited stays gone, and the owner's own change is kept (D38)`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        val memory = app.graph.memoryService
+        val owner = com.aicontrolcenter.core.memory.MemoryActor.Owner
+        val kept = memory.createSpace(owner, "Garden")
+        val doomed = memory.createSpace(owner, "Old notes")
+        val writer = app.graph.agentManager.create(AgentDraft(name = "Writer", kind = AgentKind.SPECIALIST))
+        app.graph.agentManager.update(writer.id, writer.toDraft().copy(memory = writer.memory.copy(readableSpaces = setOf(doomed.id))))
+        val viewModel = AgentEditorViewModel(app.graph.agentManager, app.graph.registryDirectory, writer.id, null, spaces = memory.observeSpaces())
+
+        // The owner ticks "Garden"; meanwhile "Old notes" is deleted, which takes it out of every agent's lists.
+        viewModel.setSpaceReadable(kept.id, true)
+        memory.deleteSpace(owner, doomed.id)
+        viewModel.fields.description.setTextAndPlaceCursorAtEnd("Writes the garden diary.")
+        viewModel.save()
+
+        val stored = assertNotNull(app.agents.get(writer.id))
+        assertEquals(setOf(kept.id), stored.memory.readableSpaces, "the new tick is saved and the deleted space does not come back")
+        assertEquals("Writes the garden diary.", stored.description)
+    }
+
+    @Test
+    fun `only the fields the owner changed are written over what is stored now`() {
+        val a = com.aicontrolcenter.core.SpaceId("spc_a")
+        val b = com.aicontrolcenter.core.SpaceId("spc_b")
+        val c = com.aicontrolcenter.core.SpaceId("spc_c")
+        val original = AgentDraft(name = "Writer", description = "Old", memory = com.aicontrolcenter.core.agents.MemoryPolicy(readableSpaces = setOf(a, b)))
+        val edited = original.copy(description = "New", memory = original.memory.copy(readableSpaces = setOf(a, c)))
+        // Meanwhile, elsewhere: a model was assigned and space a was deleted.
+        val stored = original.copy(modelId = ModelId("mdl_x"), memory = original.memory.copy(readableSpaces = setOf(b)))
+        val merged = AgentEditorViewModel.mergeEdit(original, edited, stored, existingSpaces = setOf(b, c))
+        assertEquals("New", merged.description)
+        assertEquals(ModelId("mdl_x"), merged.modelId, "a change made elsewhere is kept")
+        assertEquals(setOf(c), merged.memory.readableSpaces, "b unticked here, a deleted elsewhere, c ticked here")
+        val gone = AgentEditorViewModel.mergeEdit(original, edited, stored, existingSpaces = setOf(b))
+        assertEquals(emptySet(), gone.memory.readableSpaces, "a space ticked here but deleted meanwhile is not written")
     }
 }
