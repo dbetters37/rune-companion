@@ -172,6 +172,11 @@ class AiControlCenterApp : Application(), UpkeepHost {
     /** The graph if it has been built, without building it: for background entry points that only signal (rule 1). */
     fun graphIfBuilt(): AppGraph? = installedGraph
 
+    /** Replaces the gate without a graph (tests of what runs, or does not, before the data opened). */
+    internal fun installGate(gate: AppGate) {
+        synchronized(this) { installedGate = gate }
+    }
+
     /** Replaces the composition root. Meant for tests and must happen before the first screen is shown. */
     fun installGraph(graph: AppGraph) {
         synchronized(this) {
