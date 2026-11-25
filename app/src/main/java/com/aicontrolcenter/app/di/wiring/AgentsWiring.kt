@@ -17,8 +17,13 @@ import kotlin.coroutines.CoroutineContext
 
 /*
  * Agents at work: the activity monitor and the runner every chat turn and task goes through (Phase 6: WP15 owns this
- * file in wave 2; lean requests). Moved out of AppGraph unchanged in wave 1 (WP1d); AppGraph keeps its public members
- * as delegates.
+ * file in wave 2). Moved out of AppGraph unchanged in wave 1 (WP1d); AppGraph keeps its public members as delegates.
+ *
+ * Phase 6 (WP15) changed the runner, not this wiring: lean requests (rule 28: an agent with many tools is offered a
+ * menu, `ToolMenu`, instead of its whole catalogue), the screen hold while a screen action waits for the owner (D4,
+ * through [ScreenOperator.holdSession] on the agents' screen view below) and the chat's id in every model call's
+ * `CallContext` (K8). The runner stays agent-facing: it holds no owner-only port, no provider manager, no key check,
+ * no usage housekeeping and no vault (both app walks start at the chat, which reaches it).
  */
 
 /**
@@ -32,7 +37,8 @@ import kotlin.coroutines.CoroutineContext
  * @param memory the one memory service of the process, for automatic recall.
  * @param activity where recall is logged.
  * @param backgroundContext where memory recall runs.
- * @param screen the agents' screen view: the "is operating" indicator ends with the run that operated the screen.
+ * @param screen the agents' screen view: the "is operating" indicator ends with the run that operated the screen, and a
+ *   screen action's session is held while it waits for the owner (D4).
  */
 class AgentsAssembly(
     ports: Ports,
@@ -62,7 +68,7 @@ class AgentsAssembly(
         clock = ports.clock,
         // Relevant memories are added to the prompt before each turn, per the agent's memory policy.
         recall = AutoRecall(memory, activity, lookupContext = backgroundContext),
-        // The "is operating" indicator ends with the run that operated the screen.
+        // The "is operating" indicator ends with the run that operated the screen; a waiting screen action holds it (D4).
         screen = screen,
     )
 }
