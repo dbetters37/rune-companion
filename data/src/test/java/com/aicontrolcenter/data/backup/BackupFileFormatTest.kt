@@ -166,6 +166,21 @@ class BackupFileFormatTest {
     }
 
     @Test
+    fun `unknown fields of a known record are ignored`() {
+        val manifest = BackupRecords.encode(BackupFiles.framed(emptyList()).first().let { it as BackupRecord.Manifest }.copy(counts = BackupFiles.countsOf(listOf(BackupRecord.Agent(agent))))).encodeToByteArray()
+        // A later version's fields, at the record's level and inside the agent and the settings.
+        val later = BackupRecords.encode(BackupRecord.Agent(agent)).replaceFirst("{", "{\"addedLater\":[1,2],").replace("\"agent\":{", "\"agent\":{\"mood\":\"calm\",")
+        val file = BackupFiles.craftRaw { w ->
+            w.writeEncoded(manifest.decodeToString().replace("\"settings\":{", "\"settings\":{\"futureSwitch\":true,").encodeToByteArray())
+            w.writeEncoded(later.encodeToByteArray())
+            w.writeEncoded(BackupRecords.encode(BackupRecord.End(2)).encodeToByteArray())
+        }
+        val app = MemoryApp()
+        runBlocking { app.backup.restoreWithNotes(BackupFiles.opener(file), BackupFiles.PASSPHRASE) }.done()
+        assertEquals(listOf(agent.copy(memory = agent.memory.copy(readableSpaces = emptySet(), writableSpaces = emptySet()))), runBlocking { app.agents.getAll() })
+    }
+
+    @Test
     fun `a wrong passphrase is told without reading chunk 0`() {
         val file = bigFile()
         val (preamble, _) = BackupFiles.split(file)
