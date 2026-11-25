@@ -193,13 +193,22 @@ internal class SafSharedFolders(
         }
         // A read-only folder can also be shared a second time from around or inside it ("Documents" and "Documents/Inbox"):
         // a change through the other one would land in it (security review of wave 1, F1). No change in either then.
+        // Where that cannot be told (a folder picked through the Downloads entry is named by a number, not by its place),
+        // it counts as overlapping (SEC-W2B-2).
         if (forWriting) {
-            folders.getAll().firstOrNull { other -> other.id != folder.id && other.readOnly && FolderTrees.overlap(folder.treeUri, other.treeUri) == true }
-                ?.let { readOnly ->
-                    return@withContext DocResult.NotAllowed(
-                        "${folder.displayName} holds, or is inside, the read-only folder ${readOnly.displayName}, so nothing can be changed in it.",
-                    )
-                }
+            for (other in folders.getAll()) {
+                if (other.id == folder.id || !other.readOnly) continue
+                val overlap = FolderTrees.overlap(folder.treeUri, other.treeUri)
+                if (overlap == false) continue
+                return@withContext DocResult.NotAllowed(
+                    if (overlap == true) {
+                        "${folder.displayName} holds, or is inside, the read-only folder ${other.displayName}, so nothing can be changed in it."
+                    } else {
+                        "Android does not tell this app where ${folder.displayName} is, and it may hold, or be inside, the read-only folder " +
+                            "${other.displayName}, so nothing can be changed in it. Sharing it through the phone's storage instead of Downloads lets the app tell."
+                    },
+                )
+            }
         }
         val uri = parseTree(folder.treeUri) ?: return@withContext DocResult.NotAllowed(lost(folder))
         val grant = grantFor(uri)
