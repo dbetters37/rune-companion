@@ -306,7 +306,10 @@ do it.
   check that your answer does not go where it should not. This also holds after the app
   restarts. It does not follow your answer further: if an agent saves it to memory, an agent of
   another objective or a chat can find it there later and send it without this extra question
-  (its usual permissions and approvals still apply).
+  (its usual permissions and approvals still apply). The same goes for the option "Save what
+  was learned to memory" of a new objective: when the objective ends, it stores the final
+  result in the shared space you chose, and that result may contain an answer you gave an
+  agent.
 - **After you refuse a permission**, the same agent cannot ask you for the same permission and
   target again for 10 minutes: its calls are refused at once and the refusal in Tools > History
   counts them. This does not apply to approvals of single actions, which are always put to you.
