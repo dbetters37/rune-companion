@@ -34,8 +34,8 @@ object RoutineNotifications {
     const val TITLE: String = "A routine is waiting to start"
     const val PUBLIC_TEXT: String = "A routine is waiting to start."
 
-    /** When the alarm's receiver could not start the work and does not know which routine it was. */
-    const val DUE_TEXT: String = "A routine is due, and Android did not let the app start it by itself. Open the app to start it."
+    /** When the alarm's receiver does not start the work itself (no exact alarm, or Android refused) and does not know which routine it was. */
+    const val DUE_TEXT: String = "A routine is due. Open the app to start it; nothing starts until you tap Start there."
 
     /** The text for a known routine. */
     fun waitingText(routineTitle: String): String =

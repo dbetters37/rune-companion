@@ -152,7 +152,13 @@ class RoutineRunner(
         for (routine in routines.getAll().take(RoutineLimits.MAX_ROUTINES)) {
             val due = routine.nextRunAt ?: continue
             if (!routine.enabled || due > now) continue
-            recorded += handleDue(routine, due, now, mode, current)
+            try {
+                recorded += handleDue(routine, due, now, mode, current)
+            } catch (e: Exception) {
+                rethrowIfCancelled(e)
+                // One routine's trouble (a store that could not be read) never keeps the others from their due times.
+                log("Routine could not be run: ${routine.title}", COULD_NOT_RUN, routine, Severity.WARNING)
+            }
         }
         recorded
     }
@@ -227,6 +233,8 @@ class RoutineRunner(
             val objective = orchestrator.startObjective(routine.objectiveText, routine.objectiveOptions())
             Attempt.Started(objective.id, clock.now())
         } catch (e: IllegalStateException) {
+            // A cancellation is an IllegalStateException too: it is never a refusal.
+            rethrowIfCancelled(e)
             if (e.message == MaintenanceGate.RESTORING) {
                 Attempt.Skipped(RoutineRunOutcome.MISSED, RESTORING_NOTE)
             } else {
@@ -428,6 +436,7 @@ class RoutineRunner(
         const val USE_UNREADABLE_NOTE: String = "Today's use of models could not be read, so the routine did not start."
         const val DIRECTOR_NOTE: String = "The Director could not start the objective."
         const val TAPPED_NOTE: String = "Started after you tapped Start."
+        const val COULD_NOT_RUN: String = "Its due time could not be handled just now. It is looked at again at its next time."
         const val DISMISSED_NOTE: String = "You chose not to start it."
         const val EXPIRED_NOTE: String = "It waited for your tap and was not started."
         const val NOT_WAITING: String = "This routine is no longer waiting to start."

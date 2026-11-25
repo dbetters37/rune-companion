@@ -81,6 +81,14 @@ class RoutineAndroidTest {
     }
 
     @Test
+    fun `without exact alarms allowed, the alarm starts nothing by itself and only posts Tap to start`() {
+        ShadowAlarmManager.setCanScheduleExactAlarms(false)
+        RoutineAlarmReceiver().onReceive(app, Intent(app, RoutineAlarmReceiver::class.java).setAction(AndroidRoutineAlarms.ACTION_ROUTINE_ALARM))
+        assertNull(shadowOf(app).nextStartedService, "an inexact alarm never starts work")
+        assertTapToStart(routineNotifications().single(), RoutineNotifications.DUE_TEXT)
+    }
+
+    @Test
     fun `a routine waiting for a tap is named, with no action, and opens the app without an extra`() {
         AndroidRoutineNotices(app).waitingForTap("Morning news")
         val shown = routineNotifications().single()

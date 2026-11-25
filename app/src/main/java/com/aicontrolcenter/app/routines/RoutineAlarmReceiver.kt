@@ -17,14 +17,16 @@ import com.aicontrolcenter.app.work.ObjectiveWorkService
  * check of a routine run. It never names the application, the app's object graph or the data layer
  * (`UpkeepIsolationTest` scans this folder), and decides nothing itself.
  *
- * When Android does not let the app start a foreground service now (an inexact alarm on Android 12 and later, without
- * the battery exemption), nothing starts: it posts "Tap to start" ([RoutineNotifications]), which only opens the app;
- * there the due time waits for the owner's Start.
+ * Only an exact alarm starts work by itself: when the owner has not allowed "Alarms and reminders" (Android 12 and later,
+ * [AndroidRoutineAlarms.exact]), or Android does not let the app start a foreground service now, nothing starts: it posts
+ * "Tap to start" ([RoutineNotifications]), which only opens the app; there the due time waits for the owner's Start
+ * (the banner, after the app looked for due times that passed).
  */
 class RoutineAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != AndroidRoutineAlarms.ACTION_ROUTINE_ALARM) return
-        if (!startService(context)) RoutineNotifications.post(context, RoutineNotifications.DUE_TEXT)
+        // Only an exact alarm (the owner allowed "Alarms and reminders") starts work by itself; otherwise "Tap to start".
+        if (!AndroidRoutineAlarms(context).exact() || !startService(context)) RoutineNotifications.post(context, RoutineNotifications.DUE_TEXT)
     }
 
     /** Names. */

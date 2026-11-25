@@ -78,7 +78,16 @@ class PickUpRunner(
     /** Runs every rule once. Returns what each did (rules that were off or skipped whole are not listed). */
     suspend fun runAll(): List<RuleRun> = lock.withLock {
         if (gate.busy.value) return@withLock emptyList()
-        rules.getAll().take(PickUpLimits.MAX_RULES).mapNotNull { rule -> if (rule.enabled) runOne(rule.id) else null }
+        rules.getAll().take(PickUpLimits.MAX_RULES).mapNotNull { rule ->
+            if (!rule.enabled) return@mapNotNull null
+            try {
+                runOne(rule.id)
+            } catch (e: Exception) {
+                rethrowIfCancelled(e)
+                // One rule's trouble (a folder or store that failed) never keeps the other rules from running.
+                RuleRun(rule.id, 0, null)
+            }
+        }
     }
 
     private suspend fun runOne(id: PickUpRuleId): RuleRun? {
