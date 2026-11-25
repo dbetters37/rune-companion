@@ -2,13 +2,25 @@ package com.aicontrolcenter.app.di.wiring
 
 import android.content.Context
 import android.content.Intent
-import com.aicontrolcenter.app.Phase6Stub
+import com.aicontrolcenter.app.BuildConfig
 import com.aicontrolcenter.app.di.StartupHooks
+import com.aicontrolcenter.app.health.AndroidStartupHooks
+import com.aicontrolcenter.app.health.CrashNotes
+import com.aicontrolcenter.app.health.SafeStartControl
+import com.aicontrolcenter.app.health.StartLedger
+import com.aicontrolcenter.app.work.UpkeepJobService
+import com.aicontrolcenter.core.RandomIdGenerator
+import com.aicontrolcenter.core.WallClock
+import com.aicontrolcenter.core.activity.ActivityRecorder
 import com.aicontrolcenter.core.health.BackgroundHealth
 import com.aicontrolcenter.core.health.ExitHistory
 import com.aicontrolcenter.core.health.OwnerRecovery
 import com.aicontrolcenter.core.health.StorageWatch
 import com.aicontrolcenter.data.DataLayer
+import com.aicontrolcenter.device.health.AndroidBackgroundHealth
+import com.aicontrolcenter.device.health.AndroidExitHistory
+import com.aicontrolcenter.device.health.AndroidStorageWatch
+import com.aicontrolcenter.device.health.BackgroundSettingsIntents
 
 /*
  * Background work and recovery, Android side (Phase 6, WP2 owns this file in wave 2; rules 1, 4, 5, 9, 10, 26, 30, 31).
@@ -56,16 +68,47 @@ class BackgroundPorts(
     val startup: StartupHooks = StartupHooks.None,
     val recovery: OwnerRecovery? = null,
     val screens: BackgroundScreens = BackgroundScreens.None,
+    /** Safe start for the owner's banner (WP10, Tier B): on after repeated failed starts or crashes. */
+    val safeStart: SafeStartControl = SafeStartControl.None,
 )
 
-@Phase6Stub("WP2")
 object BackgroundWiring {
     /**
-     * The production background port. Called once per process, by the application class; it must not build the
-     * graph or open the database (the gate does that, off the main thread).
+     * The production background port. Called once per process, by the application class; it builds the graph never and
+     * opens nothing (every member reads Android or a file only when first asked; the gate opens the database, off the
+     * main thread).
      */
-    fun production(
-        @Suppress("UNUSED_PARAMETER") context: Context,
-        @Suppress("UNUSED_PARAMETER") data: DataLayer,
-    ): BackgroundPorts = BackgroundPorts()
+    fun production(context: Context, data: DataLayer): BackgroundPorts {
+        val app = context.applicationContext
+        val health = AndroidBackgroundHealth(app)
+        val exits = AndroidExitHistory(app)
+        val storage = AndroidStorageWatch(app)
+        val hooks = AndroidStartupHooks(
+            ledger = StartLedger.inFolder(app.noBackupFilesDir),
+            exits = exits,
+            storage = storage,
+            health = health,
+            crashNotes = CrashNotes.inFolder(app.noBackupFilesDir),
+            versionCode = BuildConfig.VERSION_CODE.toLong(),
+            clock = WallClock,
+            scheduleUpkeep = { UpkeepJobService.schedule(app) },
+            recorder = ActivityRecorder(data.activityLog, RandomIdGenerator, WallClock),
+        )
+        return BackgroundPorts(
+            health = health,
+            exits = exits,
+            storage = storage,
+            startup = hooks,
+            recovery = data.ownerRecovery,
+            screens = AndroidBackgroundScreens(app),
+            safeStart = hooks.safeStart,
+        )
+    }
+}
+
+/** [BackgroundScreens] over Android's settings screens (`:device`). */
+private class AndroidBackgroundScreens(private val context: Context) : BackgroundScreens {
+    override fun batteryExemption(): Intent = BackgroundSettingsIntents.batteryExemption(context)
+
+    override fun appDetails(): Intent = BackgroundSettingsIntents.appDetails(context)
 }
