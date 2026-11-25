@@ -147,7 +147,9 @@ class RoutinesAssembly(
         if (runner != null && store != null) {
             // Supervised (rule 26, wave 3): a failing read restarts the collector with a growing wait and logs a warning,
             // instead of leaving the alarm and the receivers out of step until the next start.
-            val safety = SafetyCollectors(appScope, activity, ports.clock)
+            // Restarts are timed on the real clock: how long a collector ran is no time the owner sees, and the graph's
+            // clock may be a test's, which moves on with every reading.
+            val safety = SafetyCollectors(appScope, activity, com.aicontrolcenter.core.WallClock)
             safety.supervise(KEEPING_IN_STEP) { keepAndroidInStep(runner, store, settings) }
             safety.supervise(WAITING_NOTICE) {
                 runner.observeWaiting().map { it.isEmpty() }.distinctUntilChanged().collect { none -> if (none) notices.noneWaiting() }
