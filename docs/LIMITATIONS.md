@@ -327,6 +327,18 @@ do it.
   confirmation of an install or removal the task's screen still shows the earlier time-out
   moment; it moves once that confirmation ends.
 
+- **Read-only folders and other apps' folders.** The same place on the phone can be shared
+  twice, for example "Download" and "Download/Notes". When you make one of them read-only, agents
+  cannot change anything in the other one either, so nothing reaches the read-only folder
+  through it. The app can tell this only for folders that come from the phone's own storage
+  (also through the folder picker's "Downloads" entry). Where it cannot tell exactly where such a
+  folder is (a folder picked through "Downloads", or one of a work profile or another user on
+  the phone), it plays safe: agents cannot change it while a read-only folder might be inside it
+  or around it, and the message says why. A folder that comes from another app, such as a cloud
+  drive or a file manager, is different: Android does not tell whether that app also shows your
+  phone's own files. If it does, agents could change files there even in folders you made
+  read-only. Make such a folder read-only too, or share folders from the phone's storage instead.
+
 - **What local-only mode blocks.** Models off this phone, reading web pages, opening links,
   shell and Termux commands, every action on another app's screen, and handing a text, a
   workspace file or a prepared email, text message or call to another app. It does not block

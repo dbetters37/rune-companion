@@ -184,6 +184,49 @@ interface OwnerFolders {
 
     /** The owner's read-only switch. Returns the updated folder, or null if it does not exist. */
     suspend fun setReadOnly(id: FolderId, readOnly: Boolean): SharedFolder?
+
+    /**
+     * True when the Folders screen should warn about [folder] (SEC-W2B-2-R): agents may change it, and it comes from
+     * another app's storage provider ([FolderTrees.otherAppProvider]: a cloud drive, a file manager). Android does not
+     * tell whether that app also shows the phone's own files. If it does, a change made there can land in a folder the
+     * owner made read-only, and this app cannot see that ([FolderTrees.overlap] counts such folders as apart). Show
+     * [otherAppStorageNote] under it, with that app's name.
+     */
+    fun fromOtherAppStorage(folder: SharedFolder): Boolean = !folder.readOnly && FolderTrees.otherAppProvider(folder.treeUri) != null
+
+    companion object {
+        /** Longest app name [otherAppStorageNote] keeps; a longer one is cut. */
+        const val MAX_APP_NAME_CHARS: Int = 60
+
+        /**
+         * The sentence under a folder [fromOtherAppStorage] flags. [appName] is the label of the app whose provider gives
+         * the folder (another app's text: kept to one line of at most [MAX_APP_NAME_CHARS] characters), or null when
+         * Android does not tell it.
+         */
+        fun otherAppStorageNote(appName: String?): String {
+            val name = appName?.let(::oneLine)?.takeIf { it.isNotEmpty() }
+            val first = name ?: "another app"
+            val again = name ?: "that app"
+            return "This folder comes from $first. If $again shows your phone's own files, agents could change files there even in " +
+                "folders you made read-only. Make this folder read-only, or share folders from the phone's storage instead."
+        }
+
+        /** [text] as one line: control, format (such as direction marks) and separator characters become spaces. */
+        private fun oneLine(text: String): String {
+            val spaced = text.map { c ->
+                val type = Character.getType(c)
+                if (Character.isISOControl(c) || type == Character.FORMAT.toInt() || type == Character.LINE_SEPARATOR.toInt() ||
+                    type == Character.PARAGRAPH_SEPARATOR.toInt()
+                ) {
+                    ' '
+                } else {
+                    c
+                }
+            }.joinToString("")
+            val cut = spaced.replace(Regex("\\s+"), " ").trim().take(MAX_APP_NAME_CHARS)
+            return (if (cut.isNotEmpty() && cut.last().isHighSurrogate()) cut.dropLast(1) else cut).trimEnd()
+        }
+    }
 }
 
 /**

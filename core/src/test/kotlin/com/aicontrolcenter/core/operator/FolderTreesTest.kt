@@ -20,6 +20,8 @@ class FolderTreesTest {
 
     private fun downloads(id: String) = "content://${FolderTrees.DOWNLOADS}/tree/" + id.replace(":", "%3A").replace("/", "%2F")
 
+    private fun media(id: String) = "content://${FolderTrees.MEDIA}/tree/" + id.replace(":", "%3A").replace("/", "%2F")
+
     private val cloud = "content://com.example.cloud.documents/tree/root%3AAgents"
 
     @Test
@@ -52,12 +54,67 @@ class FolderTreesTest {
     }
 
     @Test
+    fun `raw paths name the phone's storage however they are written, and another profile's storage is unknown (SEC-W2B-2-R)`() {
+        val inbox = storage("primary:Download/Agents/inbox")
+        // /storage/self/primary is the phone's own storage, as /storage/emulated/0 and /sdcard are.
+        assertEquals(true, FolderTrees.overlap(downloads("raw:/storage/self/primary/Download/Agents"), inbox))
+        assertEquals(true, FolderTrees.overlap(inbox, downloads("raw:/storage/self/primary/Download")))
+        assertEquals(true, FolderTrees.overlap(downloads("raw:/storage/self/primary"), storage("primary:Documents")))
+        assertEquals(false, FolderTrees.overlap(downloads("raw:/storage/self/primary/Download/Other"), inbox))
+        // Another profile (a work profile, a second user, the private space): /storage/emulated/10 is this app's own
+        // storage when the app runs in that profile, another's when it does not. Unknown wherever the same place in one
+        // profile would overlap; that counts as overlapping.
+        assertNull(FolderTrees.overlap(downloads("raw:/storage/emulated/10/Download/Agents"), inbox))
+        assertNull(FolderTrees.overlap(inbox, downloads("raw:/storage/emulated/10/Download/Agents")))
+        assertNull(FolderTrees.overlap(downloads("raw:/storage/emulated/10/Download"), storage("primary:")))
+        assertNull(FolderTrees.overlap(downloads("raw:/storage/emulated/10/Download/Agents"), downloads("raw:/storage/emulated/0/Download")))
+        assertNull(FolderTrees.overlap(downloads("raw:/storage/emulated/10/Download/Agents"), downloads("raw:/storage/emulated/11/Download/Agents")))
+        assertNull(FolderTrees.overlap(downloads("raw:/storage/emulated/10"), downloads("msf:31")), "a Download folder is in it")
+        // Apart in every profile: apart. Within one profile: exact.
+        assertEquals(false, FolderTrees.overlap(downloads("raw:/storage/emulated/10/Download/Other"), inbox))
+        assertEquals(false, FolderTrees.overlap(downloads("raw:/storage/emulated/10/Download/Agents"), storage("primary:Documents")))
+        assertEquals(false, FolderTrees.overlap(downloads("raw:/storage/emulated/10/Documents/Notes"), downloads("msf:31")))
+        assertEquals(true, FolderTrees.overlap(downloads("raw:/storage/emulated/10/Download/Agents/inbox"), downloads("raw:/storage/emulated/10/Download/Agents")))
+        // A raw path that names no place on the phone's storage the app knows, and a tree of the phone's storage or
+        // downloads provider of another profile (its URI names the profile): unknown.
+        assertNull(FolderTrees.overlap(downloads("raw:/data/media/0/Download/Agents"), inbox))
+        val otherProfile = "content://10@${FolderTrees.EXTERNAL_STORAGE}/tree/primary%3ADocuments"
+        assertNull(FolderTrees.overlap(otherProfile, storage("primary:Documents/Notes")))
+        assertNull(FolderTrees.overlap(storage("primary:Music"), otherProfile))
+        assertNull(FolderTrees.overlap("content://10@${FolderTrees.DOWNLOADS}/tree/msf%3A31", storage("primary:Documents")))
+        assertEquals(true, FolderTrees.overlap(otherProfile, otherProfile))
+    }
+
+    @Test
     fun `a folder of the downloads provider is apart from folders outside every Download folder`() {
         assertEquals(false, FolderTrees.overlap(downloads("msf:31"), storage("primary:Documents/Notes")))
         assertEquals(false, FolderTrees.overlap(downloads("downloads"), storage("primary:Documents")))
         assertEquals(false, FolderTrees.overlap(downloads("msf:31"), storage("primary:Downloads2")))
         assertEquals(false, FolderTrees.overlap(downloads("msf:31"), cloud), "a cloud drive never holds the phone's files")
         assertEquals(false, FolderTrees.overlap(storage("primary:Download"), cloud))
+    }
+
+    @Test
+    fun `another app's storage provider stays apart from the phone's storage and is named for the Folders screen (SEC-W2B-2-R)`() {
+        // A file manager's provider may show the phone's own files under ids of its own; Android does not tell. Counting it
+        // as overlapping would stop changes in every such folder while any folder is read-only: apart, and the Folders
+        // screen warns instead (OwnerFolders.fromOtherAppStorage).
+        val files = "content://com.example.files.provider/tree/%2Fstorage%2Femulated%2F0%2FDownload%2FAgents"
+        assertEquals(false, FolderTrees.overlap(files, storage("primary:Download/Agents/inbox")))
+        assertEquals(false, FolderTrees.overlap(downloads("msf:31"), files))
+        assertEquals("com.example.files.provider", FolderTrees.otherAppProvider(files))
+        assertEquals("com.example.cloud.documents", FolderTrees.otherAppProvider(cloud))
+        assertEquals("com.example.cloud.documents", FolderTrees.otherAppProvider("content://10@com.example.cloud.documents/tree/root%3AAgents"))
+        // The system's own providers are placed instead, also of another profile; a URI that is no tree names nothing.
+        assertNull(FolderTrees.otherAppProvider(storage("primary:Download")))
+        assertNull(FolderTrees.otherAppProvider(downloads("msf:31")))
+        assertNull(FolderTrees.otherAppProvider(media("images_bucket:123")))
+        assertNull(FolderTrees.otherAppProvider("content://10@${FolderTrees.EXTERNAL_STORAGE}/tree/primary%3ADocuments"))
+        assertNull(FolderTrees.otherAppProvider("not a tree"))
+        // The media provider shows the phone's own files only: a folder of it is somewhere on the phone's storage.
+        assertNull(FolderTrees.overlap(media("images_bucket:123"), storage("primary:DCIM")))
+        assertNull(FolderTrees.overlap(storage("primary:Documents"), media("documents_root")))
+        assertEquals(false, FolderTrees.overlap(media("images_bucket:123"), cloud))
     }
 
     @Test
