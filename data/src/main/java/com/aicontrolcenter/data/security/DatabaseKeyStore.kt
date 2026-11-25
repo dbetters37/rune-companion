@@ -3,14 +3,55 @@ package com.aicontrolcenter.data.security
 import java.io.File
 import java.io.IOException
 import java.security.GeneralSecurityException
+import java.security.KeyStoreException
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.security.UnrecoverableKeyException
+import javax.crypto.AEADBadTagException
 
 /**
  * Thrown when the key of the encrypted database cannot be provided. The database is then not
  * opened at all; nothing is deleted or replaced, so it opens again once the cause is gone.
+ *
+ * @property problem what went wrong, for the Recovery screen (Phase 6, R5): the database check
+ *   (`data/recovery/DatabaseHealth`) turns it into the owner's sentence. Never a secret.
  */
-class DatabaseKeyException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause)
+class DatabaseKeyException(
+    message: String,
+    cause: Throwable? = null,
+    val problem: KeyProblem = KeyProblem.OTHER,
+) : IllegalStateException(message, cause)
+
+/** Why the database key could not be provided (Phase 6, R5). */
+enum class KeyProblem {
+    /** There is data but no sealed key, or the keystore has no entry for the sealed key. */
+    MISSING,
+
+    /** The sealed key or its keystore entry is there but cannot be used: altered, wrong format, or an entry that does not load. */
+    DAMAGED,
+
+    /** The keystore itself did not answer (busy, restarting, or not there at all). */
+    KEYSTORE_UNAVAILABLE,
+
+    /** Anything else: the file could not be read or written. */
+    OTHER,
+    ;
+
+    companion object {
+        /** The problem a keystore or cipher failure stands for. */
+        fun of(failure: GeneralSecurityException): KeyProblem = when (failure) {
+            is KeystoreKeyMissingException -> MISSING
+            is UnrecoverableKeyException -> DAMAGED
+            is AEADBadTagException -> DAMAGED
+            is KeyStoreException -> KEYSTORE_UNAVAILABLE
+            // An unknown algorithm or provider: the keystore is not usable on this phone right now.
+            else -> if (failure.message?.startsWith(NOT_SEALED_PREFIX) == true) DAMAGED else KEYSTORE_UNAVAILABLE
+        }
+
+        /** How [AesGcmVaultCipher] reports a blob that is not in its format. */
+        private const val NOT_SEALED_PREFIX = "Not a sealed vault value"
+    }
+}
 
 /**
  * Keeps the key of the encrypted database: 32 random bytes that never leave the device and are
@@ -54,7 +95,7 @@ class DatabaseKeyStore(
         val stored = read()
         if (stored != null) return unseal(stored)
         if (databaseExists) {
-            throw DatabaseKeyException("The database exists but its key is missing, so it cannot be opened.")
+            throw DatabaseKeyException("The database exists but its key is missing, so it cannot be opened.", problem = KeyProblem.MISSING)
         }
         create()
     }
@@ -63,7 +104,7 @@ class DatabaseKeyStore(
         try {
             durable.readOrNull()
         } catch (failure: IOException) {
-            throw DatabaseKeyException("The database key could not be read from storage.", failure)
+            throw DatabaseKeyException("The database key could not be read from storage.", failure, KeyProblem.OTHER)
         }
 
     private fun create(): ByteArray {
@@ -72,17 +113,17 @@ class DatabaseKeyStore(
             val sealed = try {
                 cipher.encrypt(key, associatedData)
             } catch (failure: GeneralSecurityException) {
-                throw DatabaseKeyException("A database key could not be sealed with the device keystore.", failure)
+                throw DatabaseKeyException("A database key could not be sealed with the device keystore.", failure, KeyProblem.of(failure))
             }
             try {
                 durable.replace(byteArrayOf(FORMAT_V1) + sealed)
             } catch (failure: IOException) {
-                throw DatabaseKeyException("The database key could not be stored.", failure)
+                throw DatabaseKeyException("The database key could not be stored.", failure, KeyProblem.OTHER)
             }
-            val readBack = unseal(read() ?: throw DatabaseKeyException("The database key was stored but is not there."))
+            val readBack = unseal(read() ?: throw DatabaseKeyException("The database key was stored but is not there.", problem = KeyProblem.OTHER))
             val intact = MessageDigest.isEqual(key, readBack)
             readBack.fill(0)
-            if (!intact) throw DatabaseKeyException("The database key did not survive being stored.")
+            if (!intact) throw DatabaseKeyException("The database key did not survive being stored.", problem = KeyProblem.OTHER)
             return key
         } catch (failure: DatabaseKeyException) {
             key.fill(0)
@@ -92,7 +133,10 @@ class DatabaseKeyStore(
 
     private fun unseal(stored: ByteArray): ByteArray {
         if (stored.isEmpty() || stored[0] != FORMAT_V1) {
-            throw DatabaseKeyException("The stored database key is damaged or in a format this version of the app cannot read.")
+            throw DatabaseKeyException(
+                "The stored database key is damaged or in a format this version of the app cannot read.",
+                problem = KeyProblem.DAMAGED,
+            )
         }
         val key = try {
             cipher.decrypt(stored.copyOfRange(1, stored.size), associatedData)
@@ -100,11 +144,12 @@ class DatabaseKeyStore(
             throw DatabaseKeyException(
                 "The database key could not be unsealed. It was altered, or the device keystore cannot be used right now.",
                 failure,
+                KeyProblem.of(failure),
             )
         }
         if (key.size != KEY_BYTES) {
             key.fill(0)
-            throw DatabaseKeyException("The stored database key has the wrong length.")
+            throw DatabaseKeyException("The stored database key has the wrong length.", problem = KeyProblem.DAMAGED)
         }
         return key
     }

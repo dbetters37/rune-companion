@@ -44,6 +44,12 @@ class FakeAndroidKeyStore : Provider(NAME, 1.0, "Test double of the Android keys
     /** While true, `getKey` answers null even for an entry that exists, as the real keystore sometimes does. */
     var hideKeys = false
 
+    /**
+     * Entries that exist but never load: `getKey` throws for them every time, as for an entry the keystore damaged
+     * (Phase 6, rule 9: Start over must still give a fresh start). Other entries are unaffected.
+     */
+    val brokenAliases: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
+
     /** Thrown by the next key generation instead of creating a key. */
     var failGeneration: RuntimeException? = null
 
@@ -74,6 +80,7 @@ class FakeAndroidKeyStore : Provider(NAME, 1.0, "Test double of the Android keys
         override fun engineGetKey(alias: String, password: CharArray?): Key? {
             getKeyCalls++
             getKeyFailures.removeFirstOrNull()?.let { throw it }
+            if (alias in brokenAliases && alias in storedKeys) throw java.security.UnrecoverableKeyException("Failed to obtain information about key")
             return if (hideKeys) null else storedKeys[alias]
         }
 

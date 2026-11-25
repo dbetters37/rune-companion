@@ -2,6 +2,7 @@ package com.aicontrolcenter.data
 
 import android.content.Context
 import androidx.sqlite.db.SupportSQLiteOpenHelper
+import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.WallClock
 import com.aicontrolcenter.core.activity.ActivityLog
@@ -27,9 +28,17 @@ import com.aicontrolcenter.core.usage.OwnerUsage
 import com.aicontrolcenter.core.usage.UsageHousekeeping
 import com.aicontrolcenter.core.usage.UsageLedger
 import com.aicontrolcenter.core.usage.UsageReports
+import com.aicontrolcenter.core.health.OwnerRecovery
 import com.aicontrolcenter.data.db.AiccDatabase
 import com.aicontrolcenter.data.db.DeferredOpenHelperFactory
-import com.aicontrolcenter.data.db.SqlCipher
+import com.aicontrolcenter.data.recovery.DatabaseHealth
+import com.aicontrolcenter.data.recovery.FileOwnerRecovery
+import com.aicontrolcenter.data.recovery.FolderGrants
+import com.aicontrolcenter.data.recovery.GenerationOpenHelperFactory
+import com.aicontrolcenter.data.recovery.GenerationSecretVault
+import com.aicontrolcenter.data.recovery.KeyGenerations
+import com.aicontrolcenter.data.recovery.RecoveryFiles
+import com.aicontrolcenter.data.recovery.SetAside
 import com.aicontrolcenter.data.repository.RoomActivityLog
 import com.aicontrolcenter.data.repository.RoomAgentRepository
 import com.aicontrolcenter.data.repository.RoomAiAppRepository
@@ -50,8 +59,8 @@ import com.aicontrolcenter.data.repository.RoomTaskRepository
 import com.aicontrolcenter.data.repository.RoomUsageHousekeeping
 import com.aicontrolcenter.data.repository.RoomUsageLedger
 import com.aicontrolcenter.data.repository.RoomUsageReports
-import com.aicontrolcenter.data.security.AndroidKeystoreVaultCipher
 import com.aicontrolcenter.data.security.DatabaseKeyStore
+import com.aicontrolcenter.data.security.DatabaseKeying
 import com.aicontrolcenter.data.security.EncryptedFileSecretVault
 import com.aicontrolcenter.data.security.VaultCipher
 import com.aicontrolcenter.data.settings.DataStoreSettingsRepository
@@ -87,7 +96,11 @@ import java.time.ZoneId
  * [com.aicontrolcenter.data.security.DatabaseKeyException]; the database is never opened
  * unencrypted instead, and neither the key nor the database is replaced.
  *
- * @param databaseName file name of the database.
+ * Key generations (Phase 6, rule 9): the database file, its sealed key, the vault and their keystore entries are those
+ * of the generation in use ([KeyGenerations]); generation 1 keeps 0.5.2's names, so its data opens unchanged. Only
+ * [ownerRecovery]'s Start over moves on to the next generation.
+ *
+ * @param databaseName file name of the database (of generation 1; later generations add `.vN` before `.db`).
  * @param databaseEncryption how the database file is protected. Tests on the JVM pass
  *   [DatabaseEncryption.None], because the SQLCipher native library only exists on a device.
  * @param settingsFileName name of the settings DataStore file.
@@ -96,20 +109,44 @@ import java.time.ZoneId
  * @param clock stamps the owner's prices and gives "today" for clearing the usage history.
  * @param zone the owner's time zone, read at each use (the owner can change it), for "today".
  */
-class DataLayer(
+class DataLayer internal constructor(
     context: Context,
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-    private val databaseName: String = AiccDatabase.DEFAULT_NAME,
-    private val databaseEncryption: DatabaseEncryption = DatabaseEncryption.Keystore,
-    private val settingsFileName: String = DataStoreSettingsRepository.DEFAULT_FILE_NAME,
-    private val vaultCipher: VaultCipher = AndroidKeystoreVaultCipher(),
-    private val clock: Clock = WallClock,
-    private val zone: () -> ZoneId = { ZoneId.systemDefault() },
+    private val ioDispatcher: CoroutineDispatcher,
+    private val databaseName: String,
+    private val databaseEncryption: DatabaseEncryption,
+    private val settingsFileName: String,
+    private val vaultCipher: VaultCipher?,
+    private val clock: Clock,
+    private val zone: () -> ZoneId,
+    /** How keys are sealed and a keyed database is opened: the keystore and SQLCipher in the app. */
+    private val keying: DatabaseKeying,
 ) {
+    /**
+     * @param vaultCipher seals the vault's values; null (the app) uses the keystore entry of the key generation in use.
+     */
+    constructor(
+        context: Context,
+        ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+        databaseName: String = AiccDatabase.DEFAULT_NAME,
+        databaseEncryption: DatabaseEncryption = DatabaseEncryption.Keystore,
+        settingsFileName: String = DataStoreSettingsRepository.DEFAULT_FILE_NAME,
+        vaultCipher: VaultCipher? = null,
+        clock: Clock = WallClock,
+        zone: () -> ZoneId = { ZoneId.systemDefault() },
+    ) : this(context, ioDispatcher, databaseName, databaseEncryption, settingsFileName, vaultCipher, clock, zone, DatabaseKeying.Device)
+
     private val appContext = context.applicationContext
     private val settingsJob = SupervisorJob()
 
+    /** Marked by Start over: this process opens no database or vault through the layer any more (rule 9). */
+    private val setAside = SetAside()
+
+    /** Which generation of names and keystore entries is in use (Phase 6, rule 9). Built on first use; touches no file. */
+    private val generations: KeyGenerations by lazy { KeyGenerations(appContext.noBackupFilesDir, databaseName) }
+
     private val lazyDatabase = lazy {
+        // Room is built with the base name; the open helper opens the file of the generation in use, chosen when the
+        // database is first opened (off the main thread).
         AiccDatabase.create(appContext, databaseName, openHelperFactory(), ioDispatcher)
     }
 
@@ -209,8 +246,65 @@ class DataLayer(
         DataStoreSettingsRepository.create(appContext, CoroutineScope(settingsJob + ioDispatcher), settingsFileName)
     }
 
+    /**
+     * The API-key vault of the key generation in use (generation 1: `vault/secrets.json` under `aicc.secret-vault.v1`, as
+     * in 0.5.2). The generation is read on the vault's first use, off the main thread.
+     */
     val secretVault: SecretVault by lazy {
-        EncryptedFileSecretVault(File(appContext.noBackupFilesDir, VAULT_FILE), vaultCipher, ioDispatcher)
+        val folder = appContext.noBackupFilesDir
+        val generations = generations
+        val cipher = vaultCipher
+        val keying = keying
+        val io = ioDispatcher
+        GenerationSecretVault(io, setAside) {
+            val names = generations.namesOf(generations.current())
+            EncryptedFileSecretVault(File(folder, names.vaultFile), cipher ?: keying.cipher(names.vaultKeyAlias), io)
+        }
+    }
+
+    /**
+     * Whether the database opens, and if not why (Phase 6, R5): opens it once for writing, on the I/O dispatcher. The
+     * app's gate and the Recovery screen use it through [ownerRecovery]; a failure is never "repaired" here.
+     */
+    val databaseHealth: DatabaseHealth by lazy {
+        DatabaseHealth { withContext(ioDispatcher) { database.openHelper.writableDatabase } }
+    }
+
+    /**
+     * Owner-only (rule 9; both architecture tests list [OwnerRecovery]): the database check and Start over, for the
+     * Recovery screen. Start over puts the database, its sealed key and the vault aside in `noBackupFilesDir`, moves on to
+     * the next key generation and resets the first-run bookkeeping; it never deletes. The app restarts next (rule 30).
+     */
+    val ownerRecovery: OwnerRecovery by lazy {
+        FileOwnerRecovery(
+            health = databaseHealth,
+            generations = generations,
+            settings = settings,
+            files = RecoveryFiles(
+                databasesFolder = appContext.getDatabasePath(databaseName).absoluteFile.parentFile ?: appContext.filesDir,
+                noBackupFilesDir = appContext.noBackupFilesDir,
+                databaseName = databaseName,
+            ),
+            beforeSettingAside = { retireForStartOver() },
+            releaseFolderGrants = { FolderGrants.releaseAll(appContext) },
+            clock = clock,
+            zone = zone,
+            io = ioDispatcher,
+        )
+    }
+
+    /** Start over: closes the database and refuses every later open of this generation in this process. */
+    private suspend fun retireForStartOver() {
+        setAside.mark()
+        if (lazyDatabase.isInitialized()) {
+            withContext(ioDispatcher) {
+                try {
+                    database.close()
+                } catch (_: RuntimeException) {
+                    // It did not open in the first place; there is nothing to close.
+                }
+            }
+        }
     }
 
     /**
@@ -226,31 +320,37 @@ class DataLayer(
     }
 
     /**
-     * Null means the platform's own SQLite. The encrypted factory is deferred: fetching the
-     * key needs the keystore and a file, which must not happen while the database object is
-     * being built, possibly on the main thread.
+     * Deferred: reading the generation note, fetching the key (the keystore and a file) and choosing the file must not
+     * happen while the database object is being built, possibly on the main thread. [DatabaseEncryption.None] opens the
+     * generation's file with the platform's own SQLite.
      */
-    private fun openHelperFactory(): SupportSQLiteOpenHelper.Factory? = when (databaseEncryption) {
-        DatabaseEncryption.None -> null
-        DatabaseEncryption.Keystore -> DeferredOpenHelperFactory {
-            val keys = DatabaseKeyStore(
-                file = File(appContext.noBackupFilesDir, databaseKeyFile(databaseName)),
-                cipher = AndroidKeystoreVaultCipher(AndroidKeystoreVaultCipher.DATABASE_KEY_ALIAS),
-                databaseName = databaseName,
-            )
-            val key = keys.loadOrCreate(databaseExists = databaseHoldsData())
-            try {
-                SqlCipher.openHelperFactory(key)
-            } finally {
-                key.fill(0)
+    private fun openHelperFactory(): SupportSQLiteOpenHelper.Factory = DeferredOpenHelperFactory {
+        // Phase 6 (rule 9): the file, sealed key and keystore entry of the key generation in use. Generation 1 is what
+        // 0.5.2 used, so its data opens unchanged.
+        setAside.check()
+        val names = generations.namesOf(generations.current())
+        when (databaseEncryption) {
+            DatabaseEncryption.None -> GenerationOpenHelperFactory(names.databaseFile, FrameworkSQLiteOpenHelperFactory(), setAside)
+            DatabaseEncryption.Keystore -> {
+                val keys = DatabaseKeyStore(
+                    file = File(appContext.noBackupFilesDir, names.databaseKeyFile),
+                    cipher = keying.cipher(names.databaseKeyAlias),
+                    databaseName = names.databaseFile,
+                )
+                val key = keys.loadOrCreate(databaseExists = databaseHoldsData(names.databaseFile))
+                try {
+                    GenerationOpenHelperFactory(names.databaseFile, keying.openHelperFactory(key), setAside)
+                } finally {
+                    key.fill(0)
+                }
             }
         }
     }
 
     /** SQLite creates an empty file before it writes anything; only content needs a key to exist. */
-    private fun databaseHoldsData(): Boolean =
+    private fun databaseHoldsData(fileName: String): Boolean =
         try {
-            Files.size(appContext.getDatabasePath(databaseName).toPath()) > 0
+            Files.size(appContext.getDatabasePath(fileName).toPath()) > 0
         } catch (_: NoSuchFileException) {
             false
         }

@@ -38,7 +38,13 @@ internal class KeystoreVaultKey(
 ) : VaultKeySource {
 
     override fun keyForDecryption(): SecretKey = synchronized(lock) {
-        lookUp(keyStore()) ?: throw UnrecoverableKeyException("The device keystore has no usable key '$keyAlias'.")
+        val keyStore = keyStore()
+        lookUp(keyStore) ?: throw if (keyStore.containsAlias(keyAlias)) {
+            // There, but it answers without a key: as damaged as an entry that does not load (Phase 6, R5).
+            UnrecoverableKeyException("The device keystore has no usable key '$keyAlias'.")
+        } else {
+            KeystoreKeyMissingException("The device keystore has no key '$keyAlias'.")
+        }
     }
 
     override fun keyForEncryption(): SecretKey = synchronized(lock) {
@@ -110,3 +116,9 @@ internal class KeystoreVaultKey(
         private val lock = Any()
     }
 }
+
+/**
+ * The keystore has no entry at all under the alias (Phase 6, R5): everything sealed with it was sealed on another phone,
+ * or the entry was removed. Told apart from an entry that is there but does not load, which reads as damaged.
+ */
+internal class KeystoreKeyMissingException(message: String) : UnrecoverableKeyException(message)
