@@ -2,6 +2,7 @@ package com.aicontrolcenter.framework.operator
 
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.IdGenerator
+import com.aicontrolcenter.core.MessageId
 import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.activity.ActivityRecorder
 import com.aicontrolcenter.core.activity.ActivityType
@@ -107,11 +108,13 @@ class OwnerQuestions(
             createdAt = now, expiresAt = now + minutes * MINUTE_MS, agentName = agent.name, toolTitle = TITLE,
             delegationChain = context.delegationChain, question = text, options = suggested,
         )
+        // The question's message, which the answer (or "no answer in time") replies to.
+        var asked: MessageId? = null
         return waiting.ask(
             request, context, OwnerRequestWait.line("Waiting for the owner's answer: $text", MAX_DETAIL),
             admit = { live -> refusal(context, task, objective, text, live) },
-            afterRaise = { send(task, Participant.Agent(agent.id), Participant.Owner, MessageType.QUESTION, questionBody(text, suggested), "Question") },
-            use = { closed -> outcome(closed, task) },
+            afterRaise = { asked = send(task, Participant.Agent(agent.id), Participant.Owner, MessageType.QUESTION, questionBody(text, suggested), "Question") },
+            use = { closed -> outcome(closed, task, asked) },
             finished = { closed, _ -> logEnd(closed) },
             refused = { reason ->
                 waiting.attention.tellOwnerOnce(context, "ask you a question", reason)
@@ -128,7 +131,7 @@ class OwnerQuestions(
         if (live.count { it.taskId == task.id && it.kind == OwnerRequestKind.QUESTION } >= OwnerAttention.MAX_OPEN_QUESTIONS_PER_TASK) {
             return "Your earlier question in this task still waits for the owner. $DECIDE"
         }
-        val asked = messages.list(objective.id).filter { it.type == MessageType.QUESTION && it.to == Participant.Owner }
+        val asked = countedQuestions(messages.list(objective.id), live)
         val ofTask = asked.filter { it.taskId == task.id }
         if (ofTask.size >= OwnerAttention.MAX_QUESTIONS_PER_TASK) {
             return "This task already asked the owner ${OwnerAttention.MAX_QUESTIONS_PER_TASK} questions, the most one task may ask. $DECIDE"
@@ -142,8 +145,24 @@ class OwnerQuestions(
         return waiting.attention.agentRequestRefusal(context, live)
     }
 
+    /**
+     * The questions of [all] (an objective's messages) that count against rule 13's caps and the near-identical check
+     * (review of wave 2a, INT-2): those the owner answered, those that ran out of time, and those still waiting ([live]).
+     * A question withdrawn before the owner could answer (its call was stopped by a pause, a cancel, today's limit, or
+     * the app stopping) gave the owner no chance: it does not count, and the agent may ask it again after a Resume.
+     */
+    private fun countedQuestions(all: List<AgentMessage>, live: List<OwnerRequest>): List<AgentMessage> {
+        val replied = all.filter { it.replyTo != null && (it.type == MessageType.ANSWER || (it.type == MessageType.STATUS && it.body.startsWith(NO_ANSWER_PREFIX))) }
+            .mapNotNull { it.replyTo }.toSet()
+        val waiting = live.filter { it.kind == OwnerRequestKind.QUESTION }.mapNotNull { it.taskId }.toSet()
+        val questions = all.filter { it.type == MessageType.QUESTION && it.to == Participant.Owner }
+        // A task has one question open at most: its newest unanswered one is the one still waiting.
+        val open = questions.filter { it.id !in replied && it.taskId in waiting }.groupBy { it.taskId }.mapNotNull { (_, of) -> of.maxByOrNull { it.at }?.id }.toSet()
+        return questions.filter { it.id in replied || it.id in open }
+    }
+
     /** What the closed question means for the model. */
-    private suspend fun outcome(closed: OwnerRequest, task: TaskRecord): ToolOutcome {
+    private suspend fun outcome(closed: OwnerRequest, task: TaskRecord, question: MessageId?): ToolOutcome {
         val minutes = ((closed.expiresAt - closed.createdAt) / MINUTE_MS).coerceAtLeast(1)
         return when (closed.status) {
             OwnerRequestStatus.APPROVED -> {
@@ -151,16 +170,20 @@ class OwnerQuestions(
                 // (a delegating parent, a task that depends on it, the synthesis): their next call off the phone asks first.
                 answered.mark(task.id, task.rootId)
                 val words = closed.answer
-                send(task, Participant.Owner, Participant.Agent(closed.agentId), MessageType.ANSWER, words ?: DECIDE_YOURSELF_BODY, "Answer")
+                send(task, Participant.Owner, Participant.Agent(closed.agentId), MessageType.ANSWER, words ?: DECIDE_YOURSELF_BODY, "Answer", replyTo = question)
                 if (words == null) {
                     ToolOutcome.success("The owner asked you to decide yourself. Make the most reasonable choice, say which one in your result, and go on.")
                 } else {
                     ToolOutcome.success("The owner answered, in their own words:\n" + DataBlock.frame(words, "The owner's answer"))
                 }
             }
-            OwnerRequestStatus.EXPIRED -> ToolOutcome.success(
-                "The owner did not answer within $minutes minutes. Make the most reasonable choice, say which one in your result, and go on.",
-            )
+            OwnerRequestStatus.EXPIRED -> {
+                // The owner had the chance: the question counts against the caps (INT-2), unlike one withdrawn before.
+                send(task, Participant.System, Participant.Agent(closed.agentId), MessageType.STATUS, "$NO_ANSWER_PREFIX $minutes minutes.", "Question", replyTo = question, log = false)
+                ToolOutcome.success(
+                    "The owner did not answer within $minutes minutes. Make the most reasonable choice, say which one in your result, and go on.",
+                )
+            }
             OwnerRequestStatus.CANCELLED, OwnerRequestStatus.PENDING, OwnerRequestStatus.DENIED -> ToolOutcome.success(
                 "The question was withdrawn (${closed.decisionNote ?: PermissionBroker.CANCELLED_NOTE}). Make the most reasonable choice, " +
                     "say which one in your result, and go on.",
@@ -169,16 +192,27 @@ class OwnerQuestions(
     }
 
     /**
-     * Stores a message of the question's objective and logs it. The log names the question's first
-     * line, never the owner's words (the answer stays in the objective's messages only).
+     * Stores a message of the question's objective and logs it (unless [log] is false). The log names the question's
+     * first line, never the owner's words (the answer stays in the objective's messages only). Returns the stored
+     * message's id, or null when it could not be stored.
      */
-    private suspend fun send(task: TaskRecord, from: Participant, to: Participant, type: MessageType, body: String, label: String) {
+    private suspend fun send(
+        task: TaskRecord,
+        from: Participant,
+        to: Participant,
+        type: MessageType,
+        body: String,
+        label: String,
+        replyTo: MessageId? = null,
+        log: Boolean = true,
+    ): MessageId? {
         val message = AgentMessage(
             id = ids.messageId(), rootId = task.rootId, taskId = task.id, from = from, to = to, type = type,
-            body = body.trim().take(MAX_BODY), at = clock.now(),
+            body = body.trim().take(MAX_BODY), replyTo = replyTo, at = clock.now(),
         )
         // A message that cannot be stored costs the objective's record a line, never the answer the agent waits for.
-        orNull { messages.append(message) } ?: return
+        orNull { messages.append(message) } ?: return null
+        if (!log) return message.id
         val agentId = (from as? Participant.Agent)?.agentId ?: (to as? Participant.Agent)?.agentId
         val name = agentId?.let { facts.agent(it)?.name } ?: "An agent"
         logSafely {
@@ -194,6 +228,7 @@ class OwnerQuestions(
                 },
             )
         }
+        return message.id
     }
 
     private suspend fun logEnd(closed: OwnerRequest) = logSafely {
@@ -230,6 +265,9 @@ class OwnerQuestions(
         private const val DECIDE_LOWER = "make the most reasonable choice, say in your result what you chose and what still needs the owner, and go on."
         private const val DECIDE = "Nothing was asked. Make the most reasonable choice, say in your result what you chose and what still needs the owner, and go on."
         private const val DECIDE_YOURSELF_BODY = "The owner asked you to decide yourself."
+
+        /** How the note that a question ran out of time starts: such a question counts against the caps (INT-2). */
+        const val NO_ANSWER_PREFIX = "The owner did not answer this question within"
         private const val SUGGESTED = "\n\nSuggested answers:\n"
         private const val MINUTE_MS = 60_000L
         private const val MAX_DETAIL = 300

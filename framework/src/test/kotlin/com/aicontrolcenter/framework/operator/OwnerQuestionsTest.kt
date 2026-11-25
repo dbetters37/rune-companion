@@ -235,6 +235,51 @@ class OwnerQuestionsTest {
     }
 
     @Test
+    fun `a question withdrawn before the owner could answer does not count, one that ran out of time does`() = runTest {
+        // Review of wave 2a, INT-2.
+        val w = QuestionWorld(this).setUp()
+        // Withdrawn three times (a pause, a cancel, today's limit stop the call): never refused as asked before.
+        repeat(3) {
+            val call = w.ask("Which city should the report cover?")
+            assertEquals(OwnerRequestKind.QUESTION, w.pendingQuestion().kind)
+            call.cancel()
+            runCurrent()
+        }
+        assertEquals(3, w.questionMessages().size)
+        // A question left by an app that stopped (no reply, no call waiting) does not count either.
+        val left = w.ask("Which city should the report cover?")
+        assertEquals(OwnerRequestKind.QUESTION, w.pendingQuestion().kind)
+        w.owner.answer(w.pendingQuestion().id, "Berlin")
+        runCurrent()
+        assertTrue(left.await().outcome.ok)
+        // Answered: now a near-identical question is refused, and the answer replies to its question.
+        val same = w.ask("Which city should this report cover?")
+        assertTrue("nearly the same question" in same.await().outcome.content, same.await().outcome.content)
+        assertEquals(w.questionMessages().last().id, w.answerMessages().single().replyTo)
+        // Ran out of time: it counts (the task's second), so a third question is refused.
+        val late = w.ask("How many pages may it have?")
+        advanceTimeBy(21 * MINUTE)
+        runCurrent()
+        assertTrue("did not answer within" in late.await().outcome.content)
+        val third = w.ask("Which language should it be in?")
+        assertTrue("already asked the owner 2 questions" in third.await().outcome.content, third.await().outcome.content)
+    }
+
+    @Test
+    fun `a question an earlier run of the app left unanswered does not count`() = runTest {
+        val w = QuestionWorld(this).setUp()
+        w.messages.append(
+            com.aicontrolcenter.core.tasks.AgentMessage(
+                id = com.aicontrolcenter.core.MessageId("msg_earlier"), rootId = TaskId("tsk_root"), taskId = TaskId("tsk_work"),
+                from = Participant.Agent(w.agent.id), to = Participant.Owner, type = MessageType.QUESTION, body = "Which city should the report cover?", at = START,
+            ),
+        )
+        val call = w.ask("Which city should the report cover?")
+        assertEquals(OwnerRequestKind.QUESTION, w.pendingQuestion().kind)
+        call.cancel()
+    }
+
+    @Test
     fun `no question beside a permission or an approval of the same task`() = runTest {
         val w = QuestionWorld(this).setUp()
         val approval = w.authorize(w.b.deleteInFolder, w.b.assessment(RiskLevel.CONSEQUENTIAL))
