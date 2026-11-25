@@ -18,7 +18,7 @@ import com.aicontrolcenter.core.registry.ModelProvider
 import com.aicontrolcenter.core.registry.ModelRepository
 import com.aicontrolcenter.core.registry.ProviderRepository
 import com.aicontrolcenter.core.registry.effectiveLocality
-import com.aicontrolcenter.core.settings.SettingsRepository
+import com.aicontrolcenter.core.settings.SettingsView
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
@@ -53,7 +53,7 @@ import kotlinx.coroutines.withContext
 class DefaultModelGateway(
     private val providers: ProviderRepository,
     private val models: ModelRepository,
-    private val settings: SettingsRepository,
+    private val settings: SettingsView,
     private val connections: ProviderConnections,
     activity: ActivityRecorder,
     private val clock: Clock,

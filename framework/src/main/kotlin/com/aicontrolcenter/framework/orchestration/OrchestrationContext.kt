@@ -7,7 +7,7 @@ import com.aicontrolcenter.core.memory.MemoryService
 import com.aicontrolcenter.core.registry.AgentRepository
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.settings.FrameworkSettings
-import com.aicontrolcenter.core.settings.SettingsRepository
+import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.tasks.MessageRepository
 import com.aicontrolcenter.core.tasks.ObjectiveLimits
 import com.aicontrolcenter.core.tasks.Participant
@@ -26,7 +26,7 @@ internal class OrchestrationContext(
     val messages: MessageRepository,
     val agents: AgentRepository,
     val directory: RegistryDirectory,
-    val settings: SettingsRepository,
+    val settings: SettingsView,
     val tools: ToolRegistry,
     val memory: MemoryService?,
     val monitor: DefaultAgentActivityMonitor,

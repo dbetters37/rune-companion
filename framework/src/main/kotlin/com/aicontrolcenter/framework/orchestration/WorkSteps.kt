@@ -185,10 +185,14 @@ internal class WorkSteps(private val ctx: OrchestrationContext) {
         ctx.journal.send(stored.rootId, stored, Participant.System, ctx.assigner(stored), MessageType.FAILURE, "${stored.title}: $reason")
     }
 
-    /** The team tools offered to [agent] in a task, as its delegation policy allows and where they are registered. */
-    private fun teamTools(agent: AgentProfile): Set<ToolId> = buildSet {
+    /**
+     * The team tools offered to [agent] in a task, as its delegation policy allows and where they are registered; a
+     * question to the owner while the owner allows agents' questions.
+     */
+    private suspend fun teamTools(agent: AgentProfile): Set<ToolId> = buildSet {
         if (agent.delegation.canRequestAssistance && ctx.tools.byId(TeamTools.ASK_ID) != null) add(TeamTools.ASK_ID)
         if (agent.delegation.canDelegate && ctx.tools.byId(TeamTools.DELEGATE_ID) != null) add(TeamTools.DELEGATE_ID)
+        if (ctx.tools.byId(TeamTools.ASK_OWNER_ID) != null && ctx.settings.get().agentQuestionsEnabled) add(TeamTools.ASK_OWNER_ID)
     }
 
     /** The last verdict, when it asked for changes that this attempt must address. */

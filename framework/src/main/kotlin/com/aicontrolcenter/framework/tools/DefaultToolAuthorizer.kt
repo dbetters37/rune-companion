@@ -1,7 +1,7 @@
 package com.aicontrolcenter.framework.tools
 
 import com.aicontrolcenter.core.agents.AgentProfile
-import com.aicontrolcenter.core.settings.SettingsRepository
+import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.tools.ActionAssessment
 import com.aicontrolcenter.core.tools.Authorization
 import com.aicontrolcenter.core.tools.RiskLevel
@@ -25,7 +25,7 @@ import com.aicontrolcenter.core.tools.ToolSpec
  * class keeps every call that would need the owner refused.
  */
 class DefaultToolAuthorizer(
-    private val settings: SettingsRepository,
+    private val settings: SettingsView,
     private val capabilities: CapabilityRegistry,
 ) : ToolAuthorizer {
 

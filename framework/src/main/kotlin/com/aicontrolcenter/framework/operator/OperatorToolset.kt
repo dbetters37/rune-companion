@@ -85,6 +85,10 @@ data class OperatorLimits(
     val screenSettleMs: Long = 3_000,
     /** How often the app in front and its window are looked at while waiting. */
     val screenPollMs: Long = 250,
+    /** How long a screen tool waits for an app the same agent just opened to come to the front ([RecentLaunches]). */
+    val screenOpenWaitMs: Long = 10_000,
+    /** How recent a launch must be for a screen tool to wait for that app ([screenOpenWaitMs]). */
+    val launchRecentMs: Long = 15_000,
 )
 
 /** Everything the operator tools use: gateways, the workspace and read-only lookups. Nothing owner-only. */
@@ -117,6 +121,8 @@ class OperatorToolDependencies(
     val recentChanges: RecentFileChanges = RecentFileChanges(),
     /** The file versions each task wrote itself a short while ago: an edit does not keep those in the trash again. */
     val ownVersions: OwnVersions = OwnVersions(),
+    /** The app each agent opened last: a screen tool waits a short while for an app that is still opening. */
+    val launches: RecentLaunches = RecentLaunches(),
 )
 
 /**
@@ -125,7 +131,8 @@ class OperatorToolDependencies(
  * Each tool's spec is its catalogue entry.
  */
 object OperatorToolset {
-    fun create(d: OperatorToolDependencies): List<Tool> =
+    /** [js] runs `scripts.run_js`; by default the Rhino sandbox in this process, with the limits of [d]. */
+    fun create(d: OperatorToolDependencies, js: JsEngine = JsSandbox(d.limits.js)): List<Tool> =
         WorkspaceTools.create(d) + FolderTools.create(d) + MediaTools.create(d) + AppTools.create(d) +
-            WebTools.create(d) + ScreenTools.create(d) + ScriptTools.create(d, JsSandbox(d.limits.js))
+            WebTools.create(d) + ScreenTools.create(d) + ScriptTools.create(d, js)
 }

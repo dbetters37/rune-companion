@@ -28,7 +28,7 @@ import com.aicontrolcenter.core.registry.ModelDescriptor
 import com.aicontrolcenter.core.registry.ModelRepository
 import com.aicontrolcenter.core.registry.ProviderRepository
 import com.aicontrolcenter.core.registry.effectiveLocality
-import com.aicontrolcenter.core.settings.SettingsRepository
+import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.tools.ToolSpec
 import com.aicontrolcenter.framework.agents.AgentDeletionListener
 import com.aicontrolcenter.framework.agents.AgentRunListener
@@ -94,7 +94,7 @@ class DefaultAgentChat(
     private val agents: AgentRepository,
     private val models: ModelRepository,
     private val providers: ProviderRepository,
-    private val settings: SettingsRepository,
+    private val settings: SettingsView,
     private val runner: AgentRunner,
     private val activity: ActivityRecorder,
     private val ids: IdGenerator,

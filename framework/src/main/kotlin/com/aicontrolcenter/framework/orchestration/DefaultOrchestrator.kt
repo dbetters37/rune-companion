@@ -11,7 +11,7 @@ import com.aicontrolcenter.core.chat.ConversationRepository
 import com.aicontrolcenter.core.memory.MemoryService
 import com.aicontrolcenter.core.registry.AgentRepository
 import com.aicontrolcenter.core.registry.RegistryDirectory
-import com.aicontrolcenter.core.settings.SettingsRepository
+import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.taskId
 import com.aicontrolcenter.core.tasks.MessageRepository
 import com.aicontrolcenter.core.tasks.MessageType
@@ -83,7 +83,7 @@ class DefaultOrchestrator(
     conversations: ConversationRepository,
     agents: AgentRepository,
     private val directory: RegistryDirectory,
-    private val settings: SettingsRepository,
+    private val settings: SettingsView,
     runner: AgentRunner,
     toolRegistry: ToolRegistry,
     monitor: DefaultAgentActivityMonitor,

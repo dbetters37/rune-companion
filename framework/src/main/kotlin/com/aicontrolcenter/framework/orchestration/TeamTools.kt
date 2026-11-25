@@ -35,6 +35,12 @@ object TeamTools {
     val ASK_ID = ToolId("team.ask_agent")
     val DELEGATE_ID = ToolId("team.delegate")
 
+    /**
+     * A question to the owner (Phase 6, Tier B). Not registered by [registerAll]; where it is
+     * registered, a work task offers it while the owner allows agents' questions.
+     */
+    val ASK_OWNER_ID = ToolId("team.ask_owner")
+
     val COMMUNICATE = Capability("team.communicate")
 
     val capability = CapabilityInfo(

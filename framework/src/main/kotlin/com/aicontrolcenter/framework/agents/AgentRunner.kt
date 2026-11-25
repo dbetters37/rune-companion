@@ -20,7 +20,7 @@ import com.aicontrolcenter.core.operator.OwnerRequest
 import com.aicontrolcenter.core.operator.ScreenOperator
 import com.aicontrolcenter.core.registry.AgentRepository
 import com.aicontrolcenter.core.settings.FrameworkSettings
-import com.aicontrolcenter.core.settings.SettingsRepository
+import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.tasks.withPausableTimeout
 import com.aicontrolcenter.core.tools.ToolContext
 import com.aicontrolcenter.core.tools.ToolRegistry
@@ -90,7 +90,7 @@ class AgentRunner(
     private val tools: ToolRegistry,
     private val executor: ToolExecutor,
     private val agents: AgentRepository,
-    private val settings: SettingsRepository,
+    private val settings: SettingsView,
     private val monitor: DefaultAgentActivityMonitor,
     private val clock: Clock,
     private val prompts: AgentPromptComposer = AgentPromptComposer(),

@@ -12,11 +12,21 @@ import com.aicontrolcenter.core.operator.PermissionRepository
 import com.aicontrolcenter.core.operator.ScreenControl
 import com.aicontrolcenter.core.operator.SharedFolderRepository
 import com.aicontrolcenter.core.operator.SharedFolders
+import com.aicontrolcenter.core.settings.FrameworkSettings
+import com.aicontrolcenter.core.settings.ReadOnlySettings
+import com.aicontrolcenter.core.settings.SettingsRepository
+import com.aicontrolcenter.core.settings.SettingsView
+import com.aicontrolcenter.core.tasks.TaskRepository
 import com.aicontrolcenter.framework.TestWorld
 import com.aicontrolcenter.framework.agents.AgentRunner
+import com.aicontrolcenter.framework.chat.DefaultAgentChat
+import com.aicontrolcenter.framework.llm.DefaultModelGateway
 import com.aicontrolcenter.framework.orchestration.DefaultOrchestrator
+import com.aicontrolcenter.framework.registry.DefaultRegistryDirectory
+import com.aicontrolcenter.framework.tools.DefaultToolAuthorizer
 import com.aicontrolcenter.framework.tools.ToolExecutor
 import org.junit.Test
+import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -28,7 +38,9 @@ import kotlin.test.assertTrue
  * the framework's own classes (and their nested classes) field by field. Since review 5 (R2) the
  * stores of folders and authorised apps and the folder gateway's owner side are forbidden too:
  * agent-facing classes declare the read-only lookups ([FolderDirectory], [AuthorisedApps]) and
- * the gateway without taking or releasing access.
+ * the gateway without taking or releasing access. Since Phase 6 (rule 3) only the owner changes
+ * the settings: agent-facing classes declare the read-only [SettingsView], never the
+ * [SettingsRepository] that can write them.
  */
 class OperatorDependencyTest {
     private val ownerOnly: List<Class<*>> = listOf(
@@ -36,6 +48,8 @@ class OperatorDependencyTest {
         OwnerRequestDecisions::class.java, GrantStore::class.java, OwnerRequestRepository::class.java, PermissionRepository::class.java,
         // Owner-capable mutators: adding and removing folders and apps, taking and releasing a folder's access.
         SharedFolderRepository::class.java, OperatorAppRepository::class.java, SharedFolders::class.java,
+        // Phase 6 (rule 3): the settings store, which can change them.
+        SettingsRepository::class.java,
     ) + PHASE6_OWNER_ONLY
 
     /** Every type held by a field reachable from [root] through the framework's classes, with the path that reaches it. */
@@ -59,21 +73,34 @@ class OperatorDependencyTest {
 
     /**
      * Actions that are the owner's alone, by method name: a type that offers one is owner-only
-     * whatever it is called. Round 2 (B2): letting an agent ask again after a refusal.
+     * whatever it is called. Round 2 (B2): letting an agent ask again after a refusal. Phase 6:
+     * starting over, clearing the usage history, and `update` of the settings ([changesSettings]).
      */
     private val ownerOnlyActions = setOf("letAskAgain", "startOver", "clearHistory")
 
+    /**
+     * Phase 6 (rule 3): an `update` that changes the owner's settings, told by its signature, which names
+     * [FrameworkSettings] (the transform, and the result). An `update` of a task or a memory is not the owner's alone.
+     */
+    private fun changesSettings(method: Method): Boolean =
+        method.name.substringBefore('-') == "update" && method.genericParameterTypes.any { FrameworkSettings::class.java.name in it.typeName }
+
     /** A method taking an id (a value class) is compiled as "name-hash": compared by the name in front. */
-    private fun offersOwnerAction(type: Class<*>): Boolean = type.methods.any { it.name.substringBefore('-') in ownerOnlyActions }
+    private fun offersOwnerAction(type: Class<*>): Boolean = type.methods.any { it.name.substringBefore('-') in ownerOnlyActions || changesSettings(it) }
 
     private fun violations(root: Class<*>): List<String> =
         reachable(root).filter { (type, _) -> ownerOnly.any { it.isAssignableFrom(type) } || offersOwnerAction(type) }.map { (type, path) -> "$path: ${type.simpleName}" }
 
-    /** What agents run through: the executor, the broker and what it reads, the requester, the hooks, the runner, the orchestrator and every tool. */
+    /**
+     * What agents run through: the executor, the broker and what it reads, the requester, the hooks, the runner, the
+     * orchestrator and every tool; since Phase 6 also the model gateway, the chat, the registry directory and the tool
+     * authoriser (rule 3).
+     */
     private fun agentFacingRoots(): List<Class<*>> = (
         listOf(
             ToolExecutor::class.java, PermissionBroker::class.java, OperatorFacts::class.java, DefaultCapabilityRequester::class.java,
             PermissionRequestTool::class.java, OperatorTaskHooks::class.java, AgentRunner::class.java, DefaultOrchestrator::class.java,
+            DefaultModelGateway::class.java, DefaultAgentChat::class.java, DefaultRegistryDirectory::class.java, DefaultToolAuthorizer::class.java,
         ) + TestWorld().toolRegistry.all().map { it.javaClass }
         ).distinct()
 
@@ -120,6 +147,25 @@ class OperatorDependencyTest {
         for (store in listOf(com.aicontrolcenter.core.routines.RoutineRepository::class.java, com.aicontrolcenter.core.pickup.PickUpRuleRepository::class.java)) {
             assertTrue(store in ownerOnly, "${store.simpleName} can create work that starts while nobody watches")
         }
+    }
+
+    @Test
+    fun `only the owner changes the settings - agent-facing code holds the read-only view`() {
+        // Rule 3: the writer and its update are owner-only; the view and its read-only wrapper are not.
+        assertTrue(SettingsRepository::class.java in ownerOnly)
+        assertTrue(offersOwnerAction(SettingsRepository::class.java), "update of the settings is an owner-only action")
+        assertTrue(!offersOwnerAction(SettingsView::class.java) && !offersOwnerAction(ReadOnlySettings::class.java), "the read-only view offers no update")
+        assertTrue(ownerOnly.none { it.isAssignableFrom(ReadOnlySettings::class.java) }, "ReadOnlySettings is not a writer")
+        // An update of a task is not the owner's alone: the orchestrator keeps changing tasks.
+        assertTrue(!offersOwnerAction(TaskRepository::class.java))
+        // Every agent-facing root that reads the settings declares the view, and the walk sees it.
+        for (root in listOf(AgentRunner::class.java, OperatorFacts::class.java, DefaultOrchestrator::class.java, DefaultModelGateway::class.java,
+            DefaultAgentChat::class.java, DefaultRegistryDirectory::class.java, DefaultToolAuthorizer::class.java)) {
+            assertTrue(SettingsView::class.java in reachable(root).keys, "${root.simpleName} reads the settings through SettingsView")
+        }
+        // The walk does find the writer where it is: the owner's agent manager and the memory seeder keep it, and no agent-facing root reaches them.
+        assertTrue(violations(com.aicontrolcenter.framework.agents.DefaultAgentManager::class.java).any { it.endsWith(": SettingsRepository") })
+        assertTrue(violations(com.aicontrolcenter.framework.memory.MemorySeeder::class.java).any { it.endsWith(": SettingsRepository") })
     }
 
     /** Every top-level and nested class of `:core`, read from its classes folder or jar. */
