@@ -151,7 +151,7 @@ fun QuestionScreen(state: QuestionUiState, answer: TextFieldState, actions: Ques
                     verticalArrangement = Arrangement.spacedBy(Spacing.lg),
                 ) {
                     WhoAsks(question, actions)
-                    InfoBanner(title = "Not a permission", text = QuestionTexts.NOT_A_PERMISSION + " " + QuestionTexts.ALLOWS_NOTHING, icon = AppIcons.Help)
+                    InfoBanner(text = QuestionTexts.NOT_A_PERMISSION + " " + QuestionTexts.ALLOWS_NOTHING, icon = AppIcons.Help)
                     TheQuestion(question)
                     if (state.canAnswer) {
                         if (question.options.isNotEmpty()) Suggestions(question, enabled = !state.isBusy, onUse = actions.onUseSuggestion)
@@ -274,7 +274,7 @@ private fun Answer(question: QuestionUi, state: QuestionUiState, answer: TextFie
             label = ANSWER_FIELD,
             modifier = Modifier.fillMaxWidth().semantics { contentDescription = ANSWER_FIELD },
             placeholder = "Write in your own words",
-            supportingText = state.hint?.text ?: "At most ${"%,d".format(QuestionRules.MAX_ANSWER_CHARS)} characters.",
+            supportingText = state.hint?.takeIf { state.refusal == null }?.text ?: "At most ${"%,d".format(QuestionRules.MAX_ANSWER_CHARS)} characters.",
             errorText = state.hint?.takeIf { it == AnswerHint.KEY }?.text,
             singleLine = false,
             minLines = 3,

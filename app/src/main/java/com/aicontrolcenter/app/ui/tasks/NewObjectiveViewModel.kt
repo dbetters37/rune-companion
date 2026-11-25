@@ -160,6 +160,20 @@ class NewObjectiveViewModel(
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), NewObjectiveUiState())
 
+    init {
+        // R8: measure the phone's free room when the form opens (off the main thread in the device layer), so the
+        // banner says how things are now rather than at the last check of the background service.
+        viewModelScope.launch {
+            try {
+                storage.check()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // Not measured: Start measures again and refuses only on an answer.
+            }
+        }
+    }
+
     /** Replaces the objective from code (the field itself is typed into directly). */
     fun setText(value: String) = objective.putText(value)
 
@@ -296,7 +310,8 @@ class NewObjectiveViewModel(
                 note = if (today.reached) {
                     "Today's limit is reached: a new objective pauses at its first step until midnight, or until you raise the limit."
                 } else {
-                    "Answers and tokens are counted for models off this phone. When a limit is reached, objectives pause until midnight."
+                    "Answers and tokens (the pieces of text a model reads and writes) are counted for models off this phone. When a " +
+                        "limit is reached, objectives pause until midnight."
                 },
             )
         }

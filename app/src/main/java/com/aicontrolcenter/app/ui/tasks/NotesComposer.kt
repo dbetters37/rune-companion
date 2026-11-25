@@ -17,6 +17,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -40,15 +41,26 @@ import com.aicontrolcenter.core.tasks.OwnerConversation
 /** What the note field is called for screen readers (and tests). */
 const val NOTE_FIELD = "Note to the team"
 
+/** The composer's name and the button that opens it. */
+const val WRITE_TO_THE_TEAM = "Write to the team"
+
 /**
  * "Write to the team" (C2, Tier B): a note for the Director or for the agent on one unfinished task. Notes reach the
  * team from their next step (stage 2, reaching a step that runs, is not built); they never answer a request and
  * never change a setting. A refusal is shown in the app's own words.
  */
 @Composable
-internal fun NotesComposer(notes: NotesUi, note: TextFieldState, onRecipient: (TaskId?) -> Unit, onSend: () -> Unit) {
+internal fun NotesComposer(notes: NotesUi, note: TextFieldState, onRecipient: (TaskId?) -> Unit, onSend: () -> Unit, onOpen: (Boolean) -> Unit = {}) {
+    if (!notes.isOpen) {
+        // Folded: one button, so the conversation below stays in view.
+        OutlinedButton(onClick = { onOpen(true) }, modifier = Modifier.fillMaxWidth().heightIn(min = Spacing.touchTarget)) {
+            Icon(AppIcons.Edit, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+            Text(WRITE_TO_THE_TEAM, modifier = Modifier.padding(start = Spacing.sm))
+        }
+        return
+    }
     Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-        SectionHeader("Write to the team")
+        SectionHeader(WRITE_TO_THE_TEAM, actionLabel = "Close", onAction = { onOpen(false) })
         AppCard {
             Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 Text("To", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)

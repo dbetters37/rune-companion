@@ -289,6 +289,40 @@ class ObjectiveStatesTest {
         assertNull(list.uiState.value.rows.firstOrNull { it.title == "Objective 99" })
     }
 
+    /** Counts what the screens read of the task store (P1, rule 16: counts, never times). */
+    private class CountingTasks(private val store: com.aicontrolcenter.core.tasks.TaskRepository) : com.aicontrolcenter.core.tasks.TaskRepository by store {
+        val trees = java.util.concurrent.atomic.AtomicInteger()
+        val objectiveLists = java.util.concurrent.atomic.AtomicInteger()
+
+        override fun observeTree(rootId: TaskId) = store.observeTree(rootId).also { trees.incrementAndGet() }
+
+        override fun observeObjectives() = store.observeObjectives().also { objectiveLists.incrementAndGet() }
+    }
+
+    @Test
+    fun `the list, the objective and the task screens read summaries, never whole trees`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.objective(TaskStatus.RUNNING, steps = listOf(app.step("w", TaskStatus.RUNNING)))
+        val counting = CountingTasks(app.graph.tasks)
+        ObjectivesViewModel(counting, app.graph.registryDirectory, app.graph.orchestrator, app.graph.notifications, app.clock, ZoneOffset.UTC)
+            .also { it.uiState.activeIn(backgroundScope) }
+        val objective = ObjectiveViewModel(
+            root, counting, app.graph.messages, app.graph.registryDirectory, app.graph.orchestrator, app.graph.activityLog,
+            app.graph.settingsView, app.clock, ZoneOffset.UTC, ticker = flowOf(Unit),
+        ).also { it.uiState.activeIn(backgroundScope) }
+        val task = TaskDetailViewModel(
+            TaskId("w"), counting, app.graph.messages, app.graph.registryDirectory, app.graph.agentChat, app.graph.toolRegistry,
+            app.graph.orchestrator, app.graph.activityMonitor, app.clock, ZoneOffset.UTC,
+        ).also { it.uiState.activeIn(backgroundScope) }
+        assertNotNull(objective.uiState.value.header)
+        assertNotNull(task.uiState.value.task)
+        // A write to another task: the screens follow it without reading any tree.
+        app.tasks.update(TaskId("w")) { it.copy(statusDetail = "Reading reviews.") }
+        assertEquals("Reading reviews.", objective.uiState.value.plan.single { it.id == TaskId("w") }.statusDetail)
+        assertEquals(0, counting.trees.get(), "no whole tree is observed")
+        assertEquals(0, counting.objectiveLists.get(), "no whole objective list is observed")
+    }
+
     @Test
     fun `the framework's waiting words are the ones the screens recognise`() {
         assertEquals("Waiting:", WaitTexts.WAITING)

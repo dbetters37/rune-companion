@@ -70,6 +70,8 @@ class ObjectiveActions(
     /** The "Write to the team" composer: who the note goes to (null: the Director), and Send. */
     val onNoteRecipient: (TaskId?) -> Unit = {},
     val onSendNote: () -> Unit = {},
+    /** Opens (true) or folds away (false) the composer. */
+    val onOpenNotes: (Boolean) -> Unit = {},
 )
 
 /**
@@ -120,6 +122,7 @@ fun ObjectiveRoute(
             onOpenRoutine = onOpenRoutine,
             onNoteRecipient = viewModel::setNoteRecipient,
             onSendNote = viewModel::sendNote,
+            onOpenNotes = viewModel::openNotes,
         ),
         elapsed = elapsed,
         note = viewModel.note,
@@ -282,7 +285,7 @@ private fun LazyListScope.conversationTab(state: ObjectiveUiState, actions: Obje
     if (state.notes.canWrite) {
         item(key = "notes-composer") {
             Box(Modifier.padding(horizontal = Spacing.screen, vertical = Spacing.md)) {
-                NotesComposer(state.notes, note, onRecipient = actions.onNoteRecipient, onSend = actions.onSendNote)
+                NotesComposer(state.notes, note, onRecipient = actions.onNoteRecipient, onSend = actions.onSendNote, onOpen = actions.onOpenNotes)
             }
         }
     }

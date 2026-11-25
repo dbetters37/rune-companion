@@ -77,9 +77,14 @@ object WaitTexts {
  * A task's status line as the owner reads it. The framework writes it for every reader, agents
  * included ("Waiting for the owner's permission: …"); on the owner's own screens it says "your".
  */
-fun ownerFacing(detail: String): String = OWNER_WAIT.replaceFirst(detail, "Waiting for your $1:")
+fun ownerFacing(detail: String): String {
+    // A question's line carries the agent's own words: shown quoted, as agent text (handoff-wp5.md §3).
+    ANSWER_WAIT.find(detail)?.let { match -> return "Waiting for your answer: “${detail.substring(match.range.last + 1).trim()}”" }
+    return OWNER_WAIT.replaceFirst(detail, "Waiting for your $1:")
+}
 
-private val OWNER_WAIT = Regex("""^Waiting for the owner's (permission|approval|answer):""")
+private val OWNER_WAIT = Regex("""^Waiting for the owner's (permission|approval):""")
+private val ANSWER_WAIT = Regex("""^Waiting for the owner's answer:""")
 
 val TaskKind.label: String
     get() = when (this) {

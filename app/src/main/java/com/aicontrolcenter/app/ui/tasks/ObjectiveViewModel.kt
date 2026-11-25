@@ -158,6 +158,8 @@ data class NoteRecipientUi(val taskId: TaskId?, val label: String)
 data class NotesUi(
     /** The objective is unfinished: notes can be written. */
     val canWrite: Boolean = false,
+    /** The composer is open; closed, it is one button, so the conversation stays in view. */
+    val isOpen: Boolean = false,
     val recipients: List<NoteRecipientUi> = emptyList(),
     /** Who the note goes to now; null is the Director. */
     val to: TaskId? = null,
@@ -253,6 +255,7 @@ class ObjectiveViewModel(
         val deleted: Boolean = false,
         val message: UserMessage? = null,
         val noteTo: TaskId? = null,
+        val noteOpen: Boolean = false,
         val noteSending: Boolean = false,
         val noteRefusal: String? = null,
     )
@@ -341,6 +344,9 @@ class ObjectiveViewModel(
 
     fun setMessageFilter(filter: MessageFilter) = local.update { it.copy(filter = filter) }
 
+    /** "Write to the team": opens the composer, or folds it away again with [open] false (the note typed so far is kept). */
+    fun openNotes(open: Boolean = true) = local.update { it.copy(noteOpen = open) }
+
     /** Who the next note goes to: null for the Director, or the agent on [taskId]. */
     fun setNoteRecipient(taskId: TaskId?) = local.update { it.copy(noteTo = taskId) }
 
@@ -365,7 +371,7 @@ class ObjectiveViewModel(
             when (result) {
                 is OwnerResult.Done -> {
                     note.putText("")
-                    local.update { it.copy(noteSending = false, noteRefusal = null, message = UserMessage(NOTE_SENT, ++messageCounter)) }
+                    local.update { it.copy(noteSending = false, noteOpen = false, noteRefusal = null, message = UserMessage(NOTE_SENT, ++messageCounter)) }
                 }
                 is OwnerResult.Refused -> local.update { it.copy(noteSending = false, noteRefusal = result.reason) }
             }
@@ -496,13 +502,15 @@ class ObjectiveViewModel(
     /** The composer: open while the objective is unfinished; the Director and each unfinished task of the plan can be written to. */
     private fun notesOf(objective: TaskRecord, summaries: List<TaskSummary>, messages: List<AgentMessage>, faces: AgentFaces, local: Local): NotesUi {
         val open = !objective.status.isFinished
-        val director = NoteRecipientUi(null, "The Director" + (faces.of(objective.assignee)?.name?.let { ", $it" } ?: ""))
+        val directorName = faces.of(objective.assignee)?.name?.takeIf { !it.equals("Director", ignoreCase = true) }
+        val director = NoteRecipientUi(null, "The Director" + (directorName?.let { ", $it" } ?: ""))
         val working = summaries.filter { it.kind == TaskKind.WORK && !it.status.isFinished && it.assigneeId != null }
             .sortedWith(compareBy({ it.createdAt }, { it.id.value }))
             .map { task -> NoteRecipientUi(task.id, "${faces.of(task.assigneeId)?.name ?: "An agent"} · ${task.title}") }
         val recipients = listOf(director) + working
         return NotesUi(
             canWrite = open,
+            isOpen = open && local.noteOpen,
             recipients = recipients,
             to = local.noteTo?.takeIf { id -> working.any { it.taskId == id } },
             notesWritten = messages.count { it.type == com.aicontrolcenter.core.tasks.MessageType.GUIDANCE },

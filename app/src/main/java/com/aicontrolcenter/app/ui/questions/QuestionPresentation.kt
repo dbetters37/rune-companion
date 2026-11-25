@@ -146,7 +146,7 @@ fun questionUi(request: OwnerRequest, snapshot: RegistrySnapshot?, now: Long, zo
         whereAnswerGoes = where,
         answerLeavesPhone = leaves,
         hiddenWarning = hiddenCharacterWarning(marked),
-        waitLine = if (open) "If you do not answer within $minutesLeft min, ${agent.name} decides itself." else null,
+        waitLine = if (open) "If you do not answer within ${minutesText(minutesLeft)}, ${agent.name} decides itself." else null,
         taskId = request.taskId,
         rootId = request.rootId,
     )
@@ -187,7 +187,7 @@ fun whereAnswerGoes(request: OwnerRequest, snapshot: RegistrySnapshot?, agentNam
         return "Your answer goes to the model $agentName uses, with its next request. If that model is on the internet, your " +
             "answer leaves this phone. Nothing else is sent by answering." to true
     }
-    val name = "${model.displayName} (${provider.name})"
+    val name = "${model.displayName} from ${provider.name}"
     return when (provider.effectiveLocality) {
         Locality.ON_DEVICE -> "Your answer stays on this phone: $agentName's model, $name, runs here." to false
         Locality.LOCAL_NETWORK ->
@@ -198,6 +198,9 @@ fun whereAnswerGoes(request: OwnerRequest, snapshot: RegistrySnapshot?, agentNam
                 "Nothing else is sent by answering." to true
     }
 }
+
+/** "18 min", "3 h 56 min". */
+private fun minutesText(minutes: Long): String = if (minutes >= 60) "${minutes / 60} h ${minutes % 60} min" else "$minutes min"
 
 /** Text from the request as the screens show it: hidden characters made visible, then named. */
 private fun shown(text: String): String = inWords(visible(text))
