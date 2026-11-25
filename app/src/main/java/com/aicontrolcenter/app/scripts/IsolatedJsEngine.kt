@@ -107,6 +107,7 @@ class IsolatedJsEngine internal constructor(
         val runner = binding.runner.getCompleted()
         val current = ScriptRun(timeoutMs)
         val runHost = host?.let { RunHost(it, limits, pipes, io, current::hostDeadlineMs, ::nowMs) }
+        current.runHost = runHost
         binding.runs += current
         try {
             val pipe = try {
@@ -342,12 +343,17 @@ class IsolatedJsEngine internal constructor(
         @Volatile
         var requestEnd: ParcelFileDescriptor? = null
 
+        /** The run's workspace; ended the moment the script process says the run is done, before any later call of its. */
+        @Volatile
+        var runHost: RunHost? = null
+
         val receiver = object : IScriptResult.Stub() {
             override fun started() {
                 started.complete(nowMs())
             }
 
             override fun done(status: Int, outcome: ParcelFileDescriptor?) {
+                runHost?.end()
                 if (!done.complete(Reply(status, outcome))) outcome?.let(pipes::close)
             }
         }

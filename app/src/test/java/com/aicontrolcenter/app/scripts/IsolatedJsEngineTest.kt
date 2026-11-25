@@ -306,6 +306,33 @@ class IsolatedJsEngineTest {
     }
 
     @Test(timeout = 60_000)
+    fun `a script process that ignores every limit gets twenty files, no big read, and nothing after its answer`() = blocking {
+        val hostile = HostileRunner(pipes)
+        val launcher = DirectLauncher { _, _ -> hostile }
+        val workspace = object : JsHost {
+            val written = CopyOnWriteArrayList<String>()
+            val reads = AtomicInteger()
+            override val canWrite = true
+
+            override fun read(path: String): String = "b".repeat(1_001).also { reads.incrementAndGet() }
+
+            override fun list(path: String): List<Triple<String, Boolean, Long?>> = emptyList()
+
+            override fun write(path: String, text: String): String = path.also { written += it }
+        }
+        val outcome = engine(launcher, jsLimits(maxStringChars = 1_000)).run("1", null, workspace, 5_000)
+        assertEquals(IsolatedJsEngine.UNREADABLE, assertIs<JsOutcome.Stopped>(outcome).reason)
+        withTimeout(10_000) { while (!hostile.finished) delay(20) }
+        val replies = hostile.replies.toList()
+        assertEquals(List(20) { "+h$it.txt" }, replies.take(20))
+        assertEquals(List(5) { "!${RunHost.TOO_MANY_FILES}" }, replies.subList(20, 25))
+        assertEquals("!The file is longer than 1000 characters.", replies[25])
+        assertEquals(List(5) { "!${RunHost.OVER}" } + "!${RunHost.OVER}", replies.drop(26))
+        assertEquals(List(20) { "h$it.txt" }, workspace.written.toList())
+        assertEquals(1, workspace.reads.get(), "the read after the answer never reached the workspace")
+    }
+
+    @Test(timeout = 60_000)
     fun `the script process's ids are never the app's own`() = blocking {
         val launcher = DirectLauncher(makeProcess = honestProcess(pipes, ends))
         val engine = engine(launcher)
