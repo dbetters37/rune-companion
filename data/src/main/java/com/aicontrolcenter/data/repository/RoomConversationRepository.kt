@@ -5,6 +5,7 @@ import com.aicontrolcenter.core.ConversationId
 import com.aicontrolcenter.core.chat.Conversation
 import com.aicontrolcenter.core.chat.ConversationEntry
 import com.aicontrolcenter.core.chat.ConversationRepository
+import com.aicontrolcenter.core.chat.InterruptedTurn
 import com.aicontrolcenter.data.db.AiccDatabase
 import com.aicontrolcenter.data.db.dao.ConversationDao
 import com.aicontrolcenter.data.db.entity.ConversationEntity
@@ -32,6 +33,11 @@ import kotlinx.coroutines.withContext
  * - A conversation is removed together with its entries in one transaction.
  * - Messages of any size can be stored and read back; see [ConversationEntryRow] for why that
  *   needs care.
+ * - A turn in progress is marked on the conversation's row (schema 6, R3) and unmarked when it
+ *   ends; saving the conversation keeps the mark, deleting it removes it.
+ * - Long conversations are read in parts by sequence number, from the primary key (schema 6, P2).
+ * - Deleting a conversation also deletes what its model calls cost (`work_usage`), in the same
+ *   transaction.
  */
 class RoomConversationRepository internal constructor(
     private val dao: ConversationDao,
@@ -68,6 +74,25 @@ class RoomConversationRepository internal constructor(
     override suspend fun appendEntry(entry: ConversationEntry): ConversationEntry = withContext(dispatcher) {
         val seq = requireNotNull(dao.append(entry.toEntity())) { "No such conversation: ${entry.conversationId}" }
         entry.copy(seq = seq)
+    }
+
+    override suspend fun markTurnStarted(id: ConversationId, at: Long) = withContext(dispatcher) { dao.markTurnStarted(id.value, at) }
+
+    override suspend fun markTurnEnded(id: ConversationId) = withContext(dispatcher) { dao.markTurnEnded(id.value) }
+
+    override suspend fun interruptedTurns(): List<InterruptedTurn> = withContext(dispatcher) {
+        dao.interruptedTurns().map { InterruptedTurn(ConversationId(it.id), it.turnStartedAt) }
+    }
+
+    override fun observeLatestSeq(id: ConversationId): Flow<Int?> =
+        dao.observeLatestSeq(id.value).distinctUntilChanged().flowOn(dispatcher)
+
+    override suspend fun entriesAfter(id: ConversationId, seq: Int): List<ConversationEntry> = withContext(dispatcher) {
+        dao.entryRowsAfter(id.value, seq).toEntries()
+    }
+
+    override suspend fun entriesBefore(id: ConversationId, seq: Int, limit: Int): List<ConversationEntry> = withContext(dispatcher) {
+        if (limit <= 0) emptyList() else dao.entryRowsBefore(id.value, seq, limit).asReversed().toEntries()
     }
 
     private suspend fun List<ConversationEntryRow>.toEntries(): List<ConversationEntry> =

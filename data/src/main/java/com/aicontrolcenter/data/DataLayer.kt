@@ -2,6 +2,8 @@ package com.aicontrolcenter.data
 
 import android.content.Context
 import androidx.sqlite.db.SupportSQLiteOpenHelper
+import com.aicontrolcenter.core.Clock
+import com.aicontrolcenter.core.WallClock
 import com.aicontrolcenter.core.activity.ActivityLog
 import com.aicontrolcenter.core.chat.ConversationRepository
 import com.aicontrolcenter.core.memory.MemoryRepository
@@ -9,14 +11,21 @@ import com.aicontrolcenter.core.operator.OperatorAppRepository
 import com.aicontrolcenter.core.operator.OwnerRequestRepository
 import com.aicontrolcenter.core.operator.PermissionRepository
 import com.aicontrolcenter.core.operator.SharedFolderRepository
+import com.aicontrolcenter.core.pickup.PickUpRuleRepository
 import com.aicontrolcenter.core.registry.AgentRepository
 import com.aicontrolcenter.core.registry.AiAppRepository
 import com.aicontrolcenter.core.registry.ModelRepository
 import com.aicontrolcenter.core.registry.ProviderRepository
+import com.aicontrolcenter.core.routines.RoutineRepository
 import com.aicontrolcenter.core.security.SecretVault
 import com.aicontrolcenter.core.settings.SettingsRepository
 import com.aicontrolcenter.core.tasks.MessageRepository
 import com.aicontrolcenter.core.tasks.TaskRepository
+import com.aicontrolcenter.core.usage.ModelPrices
+import com.aicontrolcenter.core.usage.OwnerModelPrices
+import com.aicontrolcenter.core.usage.OwnerUsage
+import com.aicontrolcenter.core.usage.UsageLedger
+import com.aicontrolcenter.core.usage.UsageReports
 import com.aicontrolcenter.data.db.AiccDatabase
 import com.aicontrolcenter.data.db.DeferredOpenHelperFactory
 import com.aicontrolcenter.data.db.SqlCipher
@@ -26,13 +35,19 @@ import com.aicontrolcenter.data.repository.RoomAiAppRepository
 import com.aicontrolcenter.data.repository.RoomConversationRepository
 import com.aicontrolcenter.data.repository.RoomMemoryRepository
 import com.aicontrolcenter.data.repository.RoomMessageRepository
+import com.aicontrolcenter.data.repository.RoomModelPrices
 import com.aicontrolcenter.data.repository.RoomModelRepository
 import com.aicontrolcenter.data.repository.RoomOperatorAppRepository
 import com.aicontrolcenter.data.repository.RoomOwnerRequestRepository
+import com.aicontrolcenter.data.repository.RoomOwnerUsage
 import com.aicontrolcenter.data.repository.RoomPermissionRepository
+import com.aicontrolcenter.data.repository.RoomPickUpRuleRepository
 import com.aicontrolcenter.data.repository.RoomProviderRepository
+import com.aicontrolcenter.data.repository.RoomRoutineRepository
 import com.aicontrolcenter.data.repository.RoomSharedFolderRepository
 import com.aicontrolcenter.data.repository.RoomTaskRepository
+import com.aicontrolcenter.data.repository.RoomUsageLedger
+import com.aicontrolcenter.data.repository.RoomUsageReports
 import com.aicontrolcenter.data.security.AndroidKeystoreVaultCipher
 import com.aicontrolcenter.data.security.DatabaseKeyStore
 import com.aicontrolcenter.data.security.EncryptedFileSecretVault
@@ -47,6 +62,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.NoSuchFileException
+import java.time.ZoneId
 
 /**
  * Everything the app persists on the device, behind the ports of `:core`. The composition
@@ -74,6 +90,8 @@ import java.nio.file.NoSuchFileException
  * @param settingsFileName name of the settings DataStore file.
  * @param vaultCipher encrypts the secret vault. The default uses the AndroidKeyStore; tests on
  *   the JVM, where no keystore exists, pass a software cipher.
+ * @param clock stamps the owner's prices and gives "today" for clearing the usage history.
+ * @param zone the owner's time zone, read at each use (the owner can change it), for "today".
  */
 class DataLayer(
     context: Context,
@@ -82,6 +100,8 @@ class DataLayer(
     private val databaseEncryption: DatabaseEncryption = DatabaseEncryption.Keystore,
     private val settingsFileName: String = DataStoreSettingsRepository.DEFAULT_FILE_NAME,
     private val vaultCipher: VaultCipher = AndroidKeystoreVaultCipher(),
+    private val clock: Clock = WallClock,
+    private val zone: () -> ZoneId = { ZoneId.systemDefault() },
 ) {
     private val appContext = context.applicationContext
     private val settingsJob = SupervisorJob()
@@ -125,6 +145,32 @@ class DataLayer(
 
     /** The apps the owner authorised for screen operation; the screen tools read only this. */
     val operatorApps: OperatorAppRepository by lazy { RoomOperatorAppRepository(database, ioDispatcher) }
+
+    /**
+     * Where the model gateway records every call (schema 6, rule 7: numbers, ids and labels only).
+     * Never handed to anything an agent reaches.
+     */
+    val usageLedger: UsageLedger by lazy { RoomUsageLedger(database, ioDispatcher) }
+
+    /** Usage and costs for the Usage tab, the Dashboard and the daily limiter. */
+    val usageReports: UsageReports by lazy { RoomUsageReports(database, ioDispatcher) }
+
+    /** "Clear usage history" (keeps today). Owner-only: only the Usage tab holds it. */
+    val ownerUsage: OwnerUsage by lazy { RoomOwnerUsage(database, clock, zone, ioDispatcher) }
+
+    private val roomModelPrices by lazy { RoomModelPrices(database, clock, ioDispatcher) }
+
+    /** The owner's prices, read (the daily limiter, the Usage tab). */
+    val modelPrices: ModelPrices get() = roomModelPrices
+
+    /** The owner's prices, written (Settings > Models). Owner-only. Same store as [modelPrices]. */
+    val ownerModelPrices: OwnerModelPrices get() = roomModelPrices
+
+    /** Routines (Appendix A). Owner-capable: only the owner's port and the routine runner may hold it. */
+    val routines: RoutineRepository by lazy { RoomRoutineRepository(database, ioDispatcher) }
+
+    /** Folder pick-up rules and their imports (Appendix A). Owner-capable, like [routines]. */
+    val pickUpRules: PickUpRuleRepository by lazy { RoomPickUpRuleRepository(database, ioDispatcher) }
 
     val settings: SettingsRepository by lazy {
         DataStoreSettingsRepository.create(appContext, CoroutineScope(settingsJob + ioDispatcher), settingsFileName)

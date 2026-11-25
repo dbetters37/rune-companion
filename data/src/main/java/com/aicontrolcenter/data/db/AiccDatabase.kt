@@ -15,9 +15,12 @@ import com.aicontrolcenter.data.db.dao.ModelDao
 import com.aicontrolcenter.data.db.dao.OperatorAppDao
 import com.aicontrolcenter.data.db.dao.OwnerRequestDao
 import com.aicontrolcenter.data.db.dao.PermissionGrantDao
+import com.aicontrolcenter.data.db.dao.PickUpDao
 import com.aicontrolcenter.data.db.dao.ProviderDao
+import com.aicontrolcenter.data.db.dao.RoutineDao
 import com.aicontrolcenter.data.db.dao.SharedFolderDao
 import com.aicontrolcenter.data.db.dao.TaskDao
+import com.aicontrolcenter.data.db.dao.UsageDao
 import com.aicontrolcenter.data.db.entity.ActivityEventEntity
 import com.aicontrolcenter.data.db.entity.AgentEntity
 import com.aicontrolcenter.data.db.entity.AgentMessageEntity
@@ -30,12 +33,19 @@ import com.aicontrolcenter.data.db.entity.MemoryEmbeddingEntity
 import com.aicontrolcenter.data.db.entity.MemoryEntity
 import com.aicontrolcenter.data.db.entity.MemoryLinkEntity
 import com.aicontrolcenter.data.db.entity.ModelEntity
+import com.aicontrolcenter.data.db.entity.ModelPriceEntity
 import com.aicontrolcenter.data.db.entity.OperatorAppEntity
 import com.aicontrolcenter.data.db.entity.OwnerRequestEntity
 import com.aicontrolcenter.data.db.entity.PermissionGrantEntity
+import com.aicontrolcenter.data.db.entity.PickUpImportEntity
+import com.aicontrolcenter.data.db.entity.PickUpRuleEntity
 import com.aicontrolcenter.data.db.entity.ProviderEntity
+import com.aicontrolcenter.data.db.entity.RoutineEntity
+import com.aicontrolcenter.data.db.entity.RoutineRunEntity
 import com.aicontrolcenter.data.db.entity.SharedFolderEntity
 import com.aicontrolcenter.data.db.entity.TaskEntity
+import com.aicontrolcenter.data.db.entity.UsageHourEntity
+import com.aicontrolcenter.data.db.entity.WorkUsageEntity
 import kotlinx.coroutines.CoroutineDispatcher
 
 /**
@@ -43,8 +53,9 @@ import kotlinx.coroutines.CoroutineDispatcher
  * AI applications), the activity log, the conversations with agents, memory (knowledge
  * spaces, memories, the links between them and their embedding vectors), and orchestration
  * (the tasks of the owner's objectives and the messages agents exchange while working on them),
- * and the phone operator's permissions (the owner's grants, the questions put to the owner, the
- * shared folders the owner picked and the apps authorised for screen operation).
+ * the phone operator's permissions (the owner's grants, the questions put to the owner, the
+ * shared folders the owner picked and the apps authorised for screen operation), and from
+ * schema 6 the usage of models with the owner's prices, routines, and folder pick-up rules.
  *
  * The schema is exported to `data/schemas` and versioned with the code. There is no destructive
  * fallback: opening a database whose version has no migration path fails loudly instead of
@@ -72,6 +83,13 @@ import kotlinx.coroutines.CoroutineDispatcher
         OwnerRequestEntity::class,
         SharedFolderEntity::class,
         OperatorAppEntity::class,
+        UsageHourEntity::class,
+        WorkUsageEntity::class,
+        ModelPriceEntity::class,
+        RoutineEntity::class,
+        RoutineRunEntity::class,
+        PickUpRuleEntity::class,
+        PickUpImportEntity::class,
     ],
     version = AiccDatabase.VERSION,
     exportSchema = true,
@@ -90,14 +108,18 @@ abstract class AiccDatabase : RoomDatabase() {
     internal abstract fun ownerRequestDao(): OwnerRequestDao
     internal abstract fun sharedFolderDao(): SharedFolderDao
     internal abstract fun operatorAppDao(): OperatorAppDao
+    internal abstract fun usageDao(): UsageDao
+    internal abstract fun routineDao(): RoutineDao
+    internal abstract fun pickUpDao(): PickUpDao
 
     companion object {
         /**
          * Version 1 was the first release; 2 added conversations, 3 memory, 4 tasks and agent
-         * messages, 5 the operator's grants, owner requests, shared folders and operator apps.
+         * messages, 5 the operator's grants, owner requests, shared folders and operator apps,
+         * 6 (release 0.6.0) usage, prices, routines, folder pick-up and the columns of Phase 6.
          * See [AiccMigrations].
          */
-        const val VERSION = 5
+        const val VERSION = 6
         const val DEFAULT_NAME = "aicc.db"
 
         /**

@@ -61,6 +61,10 @@ internal object MemoryQueryBuilder {
     fun list(filter: MemoryFilter, limit: Int?): MemoryQuery =
         select("SELECT ${MemoryRow.COLUMNS} FROM ${MemoryEntity.TABLE}", conditions(filter), "ORDER BY $NEWEST_FIRST", limit)
 
+    /** How many memories [filter] covers: a `COUNT(*)` with the conditions of [list] (schema 6, rule 16). */
+    fun count(filter: MemoryFilter): MemoryQuery =
+        select("SELECT COUNT(*) FROM ${MemoryEntity.TABLE}", conditions(filter), order = null, limit = null)
+
     /** The memories in [filter] whose search text contains each of [words], newest first. */
     fun search(words: List<String>, filter: MemoryFilter, limit: Int?): MemoryQuery =
         select("SELECT ${MemoryRow.COLUMNS} FROM ${MemoryEntity.TABLE}", conditions(filter) + words.map(::containsWord), "ORDER BY $NEWEST_FIRST", limit)

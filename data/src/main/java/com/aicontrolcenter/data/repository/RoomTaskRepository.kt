@@ -1,12 +1,20 @@
 package com.aicontrolcenter.data.repository
 
+import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.TaskId
+import com.aicontrolcenter.core.tasks.ObjectiveCursor
+import com.aicontrolcenter.core.tasks.ObjectiveRow
+import com.aicontrolcenter.core.tasks.PlanProgress
 import com.aicontrolcenter.core.tasks.TaskRecord
 import com.aicontrolcenter.core.tasks.TaskRepository
 import com.aicontrolcenter.core.tasks.TaskStatus
+import com.aicontrolcenter.core.tasks.TaskSummary
 import com.aicontrolcenter.data.db.AiccDatabase
 import com.aicontrolcenter.data.db.dao.TaskDao
+import com.aicontrolcenter.data.db.entity.ObjectivePageRow
+import com.aicontrolcenter.data.db.entity.ProgressRow
 import com.aicontrolcenter.data.db.entity.TaskEntity
+import com.aicontrolcenter.data.db.entity.TaskSummaryRow
 import com.aicontrolcenter.data.db.mapper.mapReadable
 import com.aicontrolcenter.data.db.mapper.readableOrNull
 import com.aicontrolcenter.data.db.mapper.storedTextBytes
@@ -16,6 +24,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
@@ -34,6 +43,11 @@ import kotlinx.coroutines.withContext
  * - A row that cannot be decoded is treated as absent and reported without its content, like
  *   unreadable rows everywhere in this module. It stays stored until it is written again or
  *   its objective is deleted.
+ * - Lists read summaries (schema 6, rule 16): [observeSummaries], [observeObjectiveRows],
+ *   [observeRecentByAgent] and [observeProgress] are projections and counts made by SQLite from
+ *   the indexes; none reads a task's instructions, result, reviews or usage. They give exactly
+ *   what the defaults build from whole records (`TaskSummaryContract`).
+ * - Deleting a tree also deletes what its model calls cost (`work_usage`), in the same transaction.
  * - No message thrown or logged here contains a task's text; ids and sizes are named.
  *
  * All work, including JSON, runs on [dispatcher].
@@ -100,6 +114,41 @@ class RoomTaskRepository internal constructor(
     }
 
     override suspend fun deleteTree(rootId: TaskId) = withContext(dispatcher) { dao.deleteTree(rootId.value) }
+
+    override fun observeSummaries(rootId: TaskId): Flow<List<TaskSummary>> =
+        dao.observeSummaries(rootId.value).map { rows -> rows.mapReadable(TaskSummaryRow::toDomain) }.distinctUntilChanged().flowOn(dispatcher)
+
+    /** @throws IllegalArgumentException if [limit] is more than [TaskDao.ID_CHUNK] (a page, not the whole list). */
+    override fun observeObjectiveRows(limit: Int, olderThan: ObjectiveCursor?): Flow<List<ObjectiveRow>> {
+        val size = limit.coerceAtLeast(0)
+        require(size <= TaskDao.ID_CHUNK) { "At most ${TaskDao.ID_CHUNK} objectives a page, not $limit." }
+        if (size == 0) return flowOf(emptyList())
+        val page = if (olderThan == null) dao.observeObjectivePage(size) else dao.observeObjectivePageAfter(olderThan.createdAt, olderThan.id.value, size)
+        return page.map { rows -> rows.withParticipants() }.distinctUntilChanged().flowOn(dispatcher)
+    }
+
+    /** The rows of one page with their participants, read by one more query over the page's objectives only. */
+    private suspend fun List<ObjectivePageRow>.withParticipants(): List<ObjectiveRow> {
+        if (isEmpty()) return emptyList()
+        val byObjective = dao.participants(map { it.id }).groupBy({ it.rootId }, { it.assigneeId })
+        return mapReadable { row -> row.toDomain(byObjective[row.id].orEmpty()) }
+    }
+
+    override fun observeRecentByAgent(agentId: AgentId, limit: Int): Flow<List<TaskSummary>> =
+        dao.observeRecentByAgent(agentId.value, limit.coerceAtLeast(0))
+            .map { rows -> rows.mapReadable(TaskSummaryRow::toDomain) }
+            .distinctUntilChanged()
+            .flowOn(dispatcher)
+
+    /** More objectives than [TaskDao.ID_CHUNK] at once are counted by the default, from their trees. */
+    override fun observeProgress(rootIds: Set<TaskId>): Flow<Map<TaskId, PlanProgress>> {
+        if (rootIds.isEmpty()) return flowOf(emptyMap())
+        if (rootIds.size > TaskDao.ID_CHUNK) return super.observeProgress(rootIds)
+        return dao.observeProgress(rootIds.map { it.value })
+            .map { rows -> rows.associate { row -> TaskId(row.rootId) to row.toDomain() } }
+            .distinctUntilChanged()
+            .flowOn(dispatcher)
+    }
 
     private fun TaskRecord.toStorableEntity(): TaskEntity = toEntity().also { entity ->
         val textBytes = entity.storedTextBytes()

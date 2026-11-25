@@ -71,6 +71,13 @@ class RoomMemoryRepository internal constructor(
             .distinctUntilChanged()
             .flowOn(dispatcher)
 
+    /** A `COUNT(*)` with the filter's conditions (schema 6, rule 16): no memory is read. Unreadable rows are counted too. */
+    override fun observeCount(filter: MemoryFilter): Flow<Int> =
+        dao.observeCount(MemoryQueryBuilder.count(filter).toRoomRawQuery()).distinctUntilChanged().flowOn(dispatcher)
+
+    override fun observeCountsBySpace(): Flow<Map<SpaceId, Int>> =
+        dao.observeCountsBySpace().map { rows -> rows.associate { SpaceId(it.spaceId) to it.count } }.distinctUntilChanged().flowOn(dispatcher)
+
     override suspend fun list(filter: MemoryFilter, limit: Int): List<MemoryRecord> = withContext(dispatcher) {
         dao.memories(MemoryQueryBuilder.list(filter, limit).toRoomRawQuery()).mapReadable(MemoryRow::toDomain)
     }

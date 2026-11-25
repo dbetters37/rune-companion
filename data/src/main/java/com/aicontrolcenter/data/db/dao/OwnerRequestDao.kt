@@ -53,12 +53,13 @@ internal interface OwnerRequestDao {
     /**
      * The only way out of `PENDING`: sets the outcome if, and only if, the request is still
      * pending. Returns 1 when this call closed it, 0 when it was missing or already closed.
+     * [answer] is the owner's answer to a QUESTION (schema 6), null for everything else.
      */
     @Query(
-        "UPDATE owner_requests SET status = :status, decided_at = :at, decision_scope = :scope, decision_note = :note " +
-            "WHERE id = :id AND $IS_PENDING",
+        "UPDATE owner_requests SET status = :status, decided_at = :at, decision_scope = :scope, decision_note = :note, " +
+            "answer = :answer WHERE id = :id AND $IS_PENDING",
     )
-    suspend fun closePending(id: String, status: String, at: Long, scope: String?, note: String?): Int
+    suspend fun closePending(id: String, status: String, at: Long, scope: String?, note: String?, answer: String?): Int
 
     /**
      * The newest PERMISSION request of the agent for the capability and target that the owner

@@ -19,6 +19,11 @@ import androidx.room.PrimaryKey
  *   permission that were refused during the cool-down without a new row.
  * - [askAgainAt] is set, on a refused permission request, when the owner let the agent ask
  *   again: the refusal then holds nothing back any more. Null otherwise.
+ * - Schema 6 (an agent's QUESTION to the owner): [question] is the agent's question and
+ *   [optionsJson] the answers it suggests (a JSON array), both set on QUESTION rows only;
+ *   [answer] is the owner's answer, written by the same conditional update that closes the
+ *   question (null on an answered question means "decide yourself"). Appended by
+ *   `Migration5To6`, so declared last.
  *
  * Indexes, one per listing, each in that listing's order: pending `(status, created_at, id)`,
  * a chat `(conversation_id, created_at, id)`, an objective `(root_id, created_at, id)`, the
@@ -61,6 +66,10 @@ internal data class OwnerRequestEntity(
     @ColumnInfo(name = "delegation_chain_json") val delegationChainJson: String,
     @ColumnInfo(name = "asked_again", defaultValue = "0") val askedAgain: Int = 0,
     @ColumnInfo(name = "ask_again_at") val askAgainAt: Long? = null,
+    // Schema 6: appended by Migration5To6, so declared last.
+    val question: String? = null,
+    @ColumnInfo(name = "options_json") val optionsJson: String? = null,
+    val answer: String? = null,
 ) {
     companion object {
         const val TABLE = "owner_requests"
