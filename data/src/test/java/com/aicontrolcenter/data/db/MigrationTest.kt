@@ -4,6 +4,7 @@ import android.content.Context
 import android.database.sqlite.SQLiteConstraintException
 import androidx.room.testing.MigrationTestHelper
 import androidx.sqlite.db.SimpleSQLiteQuery
+import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -12,9 +13,16 @@ import com.aicontrolcenter.core.ConversationId
 import com.aicontrolcenter.core.FolderId
 import com.aicontrolcenter.core.GrantId
 import com.aicontrolcenter.core.MemoryId
+import com.aicontrolcenter.core.MessageId
+import com.aicontrolcenter.core.ModelId
+import com.aicontrolcenter.core.PickUpRuleId
+import com.aicontrolcenter.core.RequestId
+import com.aicontrolcenter.core.RoutineId
 import com.aicontrolcenter.core.SpaceId
+import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.chat.Conversation
 import com.aicontrolcenter.core.chat.ConversationEntry
+import com.aicontrolcenter.core.chat.InterruptedTurn
 import com.aicontrolcenter.core.llm.ChatMessage
 import com.aicontrolcenter.core.memory.KnowledgeSpace
 import com.aicontrolcenter.core.memory.MemoryRepository
@@ -34,11 +42,18 @@ import com.aicontrolcenter.core.operator.ScreenActionPolicy
 import com.aicontrolcenter.core.operator.SharedFolder
 import com.aicontrolcenter.core.operator.SharedFolderRepository
 import com.aicontrolcenter.core.registry.AiApp
+import com.aicontrolcenter.core.tasks.MessageHeader
 import com.aicontrolcenter.core.tasks.MessageRepository
 import com.aicontrolcenter.core.tasks.MessageType
+import com.aicontrolcenter.core.tasks.Participant
+import com.aicontrolcenter.core.tasks.SummaryText
 import com.aicontrolcenter.core.tasks.TaskKind
 import com.aicontrolcenter.core.tasks.TaskRepository
 import com.aicontrolcenter.core.tasks.TaskStatus
+import com.aicontrolcenter.core.tasks.TaskSummary
+import com.aicontrolcenter.core.usage.ModelPrice
+import com.aicontrolcenter.core.usage.UsageRange
+import com.aicontrolcenter.core.usage.WorkKind
 import com.aicontrolcenter.data.DataLayer
 import com.aicontrolcenter.data.DatabaseEncryption
 import com.aicontrolcenter.data.db.entity.ConversationEntryEntity
@@ -48,22 +63,32 @@ import com.aicontrolcenter.data.repository.RoomAiAppRepository
 import com.aicontrolcenter.data.repository.RoomConversationRepository
 import com.aicontrolcenter.data.repository.RoomMemoryRepository
 import com.aicontrolcenter.data.repository.RoomMessageRepository
+import com.aicontrolcenter.data.repository.RoomModelPrices
 import com.aicontrolcenter.data.repository.RoomModelRepository
 import com.aicontrolcenter.data.repository.RoomOperatorAppRepository
 import com.aicontrolcenter.data.repository.RoomOwnerRequestRepository
 import com.aicontrolcenter.data.repository.RoomPermissionRepository
+import com.aicontrolcenter.data.repository.RoomPickUpRuleRepository
 import com.aicontrolcenter.data.repository.RoomProviderRepository
+import com.aicontrolcenter.data.repository.RoomRoutineRepository
 import com.aicontrolcenter.data.repository.RoomSharedFolderRepository
 import com.aicontrolcenter.data.repository.RoomTaskRepository
+import com.aicontrolcenter.data.repository.RoomUsageLedger
+import com.aicontrolcenter.data.repository.RoomUsageReports
 import com.aicontrolcenter.data.security.SoftwareVaultCipher
+import com.aicontrolcenter.data.testing.VersionFiveData
 import com.aicontrolcenter.data.testing.VersionFourData
 import com.aicontrolcenter.data.testing.VersionOneData
 import com.aicontrolcenter.data.testing.VersionThreeData
 import com.aicontrolcenter.data.testing.VersionTwoData
+import com.aicontrolcenter.testkit.FakeClock
 import com.aicontrolcenter.testkit.Samples
 import com.aicontrolcenter.testkit.contract.MemorySamples
 import com.aicontrolcenter.testkit.contract.OperatorSamples
+import com.aicontrolcenter.testkit.contract.QuestionSamples
+import com.aicontrolcenter.testkit.contract.RoutineSamples
 import com.aicontrolcenter.testkit.contract.TaskSamples
+import com.aicontrolcenter.testkit.contract.UsageSamples
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Rule
@@ -77,10 +102,10 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
- * Upgrades of a database that already holds the owner's data. Versions 1 to 4 are on real
+ * Upgrades of a database that already holds the owner's data. Versions 1 to 5 are on real
  * phones, so every test starts from a database created from the exported schema of one of them
  * (never from today's entity classes) and filled with [VersionOneData] and, for the later
- * versions, [VersionTwoData], [VersionThreeData] and [VersionFourData].
+ * versions, [VersionTwoData], [VersionThreeData], [VersionFourData] and [VersionFiveData].
  *
  * Runs on plain SQLite: the SQLCipher native library only exists on a device. Encryption does
  * not change the SQL that a migration executes.
@@ -122,6 +147,108 @@ class MigrationTest {
             VersionThreeData.insertInto(it)
             VersionFourData.insertInto(it)
         }
+    }
+
+    /** What release 0.5.x holds: data in every table of schema version 5. */
+    private fun createVersionFiveDatabase() {
+        helper.createDatabase(NAME, 5).use {
+            VersionOneData.insertInto(it)
+            VersionTwoData.insertInto(it)
+            VersionThreeData.insertInto(it)
+            VersionFourData.insertInto(it)
+            VersionFiveData.insertInto(it)
+        }
+    }
+
+    /** Every record of a version 5 database, read back through the repositories of today. */
+    private suspend fun assertVersionFiveDataIsThere(database: AiccDatabase) {
+        assertVersionFourDataIsThere(database)
+        assertEquals(VersionFiveData.tasks, RoomTaskRepository(database).getTree(VersionFiveData.objective.id))
+        assertEquals(VersionFiveData.messages, RoomMessageRepository(database).list(VersionFiveData.objective.id))
+        val permissions = RoomPermissionRepository(database)
+        VersionFiveData.grants.forEach { assertEquals(it, permissions.get(it.id)) }
+        val requests = RoomOwnerRequestRepository(database)
+        VersionFiveData.requests.forEach { assertEquals(it, requests.get(it.id)) }
+        assertEquals(VersionFiveData.requests.filter { it.status.isPending }, requests.observePending().first())
+        assertEquals(listOf(VersionFiveData.folder), RoomSharedFolderRepository(database).getAll())
+        assertEquals(listOf(VersionFiveData.operatorApp), RoomOperatorAppRepository(database).getAll())
+    }
+
+    /** The text columns of every task, as stored: they must come through the migration byte for byte. */
+    private fun AiccDatabase.storedTaskTexts(): List<List<String?>> =
+        openHelper.readableDatabase.query(
+            SimpleSQLiteQuery(
+                "SELECT id, title, instructions, status_detail, result, error, criteria_json, depends_on_json, delegation_chain_json, " +
+                    "reviews_json, usage_json, options_json, requested_by_json FROM tasks ORDER BY id",
+            ),
+        ).use { cursor -> buildList { while (cursor.moveToNext()) add((0 until cursor.columnCount).map { cursor.getString(it) }) } }
+
+    private fun SupportSQLiteDatabase.storedTaskTexts(): List<List<String?>> =
+        query(
+            "SELECT id, title, instructions, status_detail, result, error, criteria_json, depends_on_json, delegation_chain_json, " +
+                "reviews_json, usage_json, options_json, requested_by_json FROM tasks ORDER BY id",
+        ).use { cursor -> buildList { while (cursor.moveToNext()) add((0 until cursor.columnCount).map { cursor.getString(it) }) } }
+
+    /** `result_chars` of every stored task, by id: the length of its result in characters, 0 without one. */
+    private fun AiccDatabase.storedResultChars(): Map<String, Int> =
+        openHelper.readableDatabase.query(SimpleSQLiteQuery("SELECT id, result_chars FROM tasks")).use { cursor ->
+            buildMap { while (cursor.moveToNext()) put(cursor.getString(0), cursor.getInt(1)) }
+        }
+
+    /**
+     * Uses every table and column schema 6 adds the way the app will: summaries of a stored
+     * objective, a memory shared into a space and its header, an agent's question answered, a
+     * turn marked and found, a model call recorded and priced, a routine with a run, and a
+     * pick-up rule with an import.
+     */
+    private suspend fun assertSchemaSixRecordsCanBeStored(database: AiccDatabase, objective: TaskId?) {
+        if (objective != null) {
+            val tree = RoomTaskRepository(database).getTree(objective)
+            assertEquals(tree.map(TaskSummary::of), RoomTaskRepository(database).observeSummaries(objective).first())
+            val rows = RoomTaskRepository(database).observeObjectiveRows(limit = 10).first()
+            assertTrue(rows.any { it.rootId == objective }, rows.toString())
+        }
+        val messages = RoomMessageRepository(database)
+        val share = TaskSamples.message("msg_space", root = "tsk_root6", at = 50_000, type = MessageType.MEMORY_SHARE)
+            .copy(to = Participant.Space(SpaceId("spc_commons")))
+        messages.append(share)
+        assertEquals(listOf(share), messages.list(TaskId("tsk_root6")))
+        assertEquals(listOf(MessageHeader.of(share)), messages.observeHeaders(TaskId("tsk_root6"), 5).first())
+
+        val requests = RoomOwnerRequestRepository(database)
+        requests.create(QuestionSamples.question("req_q6", at = 50_000))
+        val answered = assertIs<DecideResult.Decided>(requests.decide(RequestId("req_q6"), OwnerDecision.Answer("Berlin"), 50_100, GrantId("grt_q6")))
+        assertEquals("Berlin", requests.get(RequestId("req_q6"))?.answer)
+        assertEquals(null, answered.grant)
+
+        val conversations = RoomConversationRepository(database)
+        conversations.upsertConversation(Conversation(ConversationId("cnv_6"), AgentId("agt_any"), "Chat of 0.6", 50_000, 50_000))
+        conversations.markTurnStarted(ConversationId("cnv_6"), 50_200)
+        conversations.upsertConversation(Conversation(ConversationId("cnv_6"), AgentId("agt_any"), "Renamed", 50_000, 50_300))
+        assertEquals(listOf(InterruptedTurn(ConversationId("cnv_6"), 50_200)), conversations.interruptedTurns())
+        conversations.deleteConversation(ConversationId("cnv_6"))
+        assertEquals(emptyList(), conversations.interruptedTurns())
+
+        val now = UsageSamples.at("2026-11-25T12:00")
+        RoomUsageLedger(database).record(UsageSamples.call(UsageSamples.at("2026-11-25T10:00")))
+        val today = UsageRange.day(now, UsageSamples.berlin)
+        assertEquals(1, RoomUsageReports(database).totals(today).calls)
+        assertEquals(1, RoomUsageReports(database).workUsage(WorkKind.OBJECTIVE, "tsk_root").single().calls)
+        val prices = RoomModelPrices(database, FakeClock(now))
+        prices.set(ModelPrice(ModelId("mdl_grok"), 3_000_000, 15_000_000))
+        assertEquals(now, prices.get(ModelId("mdl_grok"))?.updatedAt)
+
+        val routines = RoomRoutineRepository(database)
+        routines.upsert(RoutineSamples.routine("rtn_6"))
+        routines.appendRun(RoutineSamples.run("rrn_6", "rtn_6", dueAt = 60_000))
+        assertEquals(listOf(RoutineSamples.routine("rtn_6")), routines.getAll())
+        assertEquals(1, routines.runs(RoutineId("rtn_6"), 5).size)
+
+        val pickUp = RoomPickUpRuleRepository(database)
+        pickUp.upsert(RoutineSamples.rule("pku_6"))
+        assertTrue(pickUp.recordImport(RoutineSamples.file("pku_6", 1)))
+        assertEquals(false, pickUp.recordImport(RoutineSamples.file("pku_6", 1)))
+        assertEquals(1, pickUp.observeImports(PickUpRuleId("pku_6"), 5).first().size)
     }
 
     private suspend fun assertVersionFourDataIsThere(database: AiccDatabase) {
@@ -581,6 +708,8 @@ class MigrationTest {
                 setOf(
                     "index_tasks_kind_created_at_id", "index_tasks_root_id_created_at_id", "index_tasks_status_created_at_id",
                     "index_agent_messages_root_id_at_id", "index_agent_messages_at_id",
+                    // Added by the migration to version 6, which opening the database runs too.
+                    "index_tasks_assignee_id_updated_at_id",
                 ),
                 indexes.filterNot { it.startsWith("sqlite_autoindex") }.toSet(),
             )
@@ -658,6 +787,197 @@ class MigrationTest {
         }
     }
 
+    @Test
+    fun `a version 5 database with data in every table migrates to the exported schema 6, keeps its data and measures every result`() = runTest {
+        createVersionFiveDatabase()
+        // The same rows in a second file, to read what version 5 stores without opening the one under test.
+        val before = helper.createDatabase(OTHER, 5).use { other ->
+            VersionOneData.insertInto(other)
+            VersionTwoData.insertInto(other)
+            VersionThreeData.insertInto(other)
+            VersionFourData.insertInto(other)
+            VersionFiveData.insertInto(other)
+            other.storedTaskTexts()
+        }
+
+        // Fails if the migrated tables, columns, defaults or indexes differ from the exported schema 6.
+        helper.runMigrationsAndValidate(NAME, 6, true, *AiccMigrations.all).close()
+
+        val migrated = AiccDatabase.create(context, NAME)
+        try {
+            assertVersionFiveDataIsThere(migrated)
+            // Results, reviews, usage, options and every other text of a task are what version 5 stored, byte for byte.
+            assertEquals(before, migrated.storedTaskTexts())
+            // Every task now carries the length of its result in characters (an emoji or a clef is one), 0 without one.
+            val expected = (VersionFourData.tasks + VersionFiveData.tasks).associate { it.id.value to SummaryText.length(it.result) }
+            assertEquals(expected, migrated.storedResultChars())
+            assertEquals(VersionFiveData.resultChars, migrated.storedResultChars().filterKeys { it in VersionFiveData.resultChars })
+            assertEquals(
+                VersionFiveData.tasks.map(TaskSummary::of),
+                RoomTaskRepository(migrated).observeSummaries(VersionFiveData.objective.id).first(),
+            )
+            // The questions' columns are empty on every request of version 5; the new tables are empty.
+            for (column in listOf("question", "options_json", "answer")) {
+                assertEquals(0, migrated.countWhere("owner_requests", "$column IS NOT NULL"), column)
+            }
+            assertEquals(0, migrated.countWhere("agent_messages", "to_space_id IS NOT NULL"))
+            assertEquals(0, migrated.countWhere("conversations", "turn_started_at IS NOT NULL"))
+            assertEquals(0, migrated.countWhere("tasks", "retry_at IS NOT NULL"))
+            for (table in listOf("usage_hours", "work_usage", "model_prices", "routines", "routine_runs", "pickup_rules", "pickup_imports")) {
+                assertEquals(0, migrated.count(table), table)
+            }
+            assertSchemaSixRecordsCanBeStored(migrated, VersionFiveData.objective.id)
+            assertVersionFiveDataIsThere(migrated)
+        } finally {
+            migrated.close()
+        }
+    }
+
+    @Test
+    fun `a version 1 database migrates through every release to the exported schema 6 and keeps the data of each`() = runTest {
+        createVersionOneDatabase()
+        // Each release upgraded the database and then stored data of its own in it.
+        helper.runMigrationsAndValidate(NAME, 2, true, *AiccMigrations.all).use { VersionTwoData.insertInto(it) }
+        helper.runMigrationsAndValidate(NAME, 3, true, *AiccMigrations.all).use { VersionThreeData.insertInto(it) }
+        helper.runMigrationsAndValidate(NAME, 4, true, *AiccMigrations.all).use { VersionFourData.insertInto(it) }
+        helper.runMigrationsAndValidate(NAME, 5, true, *AiccMigrations.all).use { VersionFiveData.insertInto(it) }
+
+        helper.runMigrationsAndValidate(NAME, 6, true, *AiccMigrations.all).close()
+
+        val migrated = AiccDatabase.create(context, NAME)
+        try {
+            assertVersionFourDataIsThere(migrated)
+            assertEquals(VersionFiveData.tasks, RoomTaskRepository(migrated).getTree(VersionFiveData.objective.id))
+            VersionFiveData.requests.forEach { assertEquals(it, RoomOwnerRequestRepository(migrated).get(it.id)) }
+            VersionFiveData.grants.forEach { assertEquals(it, RoomPermissionRepository(migrated).get(it.id)) }
+            assertEquals(listOf(VersionFiveData.folder), RoomSharedFolderRepository(migrated).getAll())
+            // Release 0.5 copied the authorised AI apps when it upgraded; release 0.5 then authorised one more.
+            assertTrue(VersionFiveData.operatorApp in RoomOperatorAppRepository(migrated).getAll())
+            assertEquals(
+                (VersionFourData.tasks + VersionFiveData.tasks).associate { it.id.value to SummaryText.length(it.result) },
+                migrated.storedResultChars(),
+            )
+            assertSchemaSixRecordsCanBeStored(migrated, VersionFourData.objective.id)
+        } finally {
+            migrated.close()
+        }
+    }
+
+    @Test
+    fun `a version 1 database with data migrates straight to the exported schema 6`() = runTest {
+        createVersionOneDatabase()
+
+        // One upgrade over five versions, as on a phone that skipped every release since the first.
+        helper.runMigrationsAndValidate(NAME, 6, true, *AiccMigrations.all).close()
+
+        val migrated = AiccDatabase.create(context, NAME)
+        try {
+            assertVersionOneDataIsThere(migrated)
+            assertTasksAndMessagesCanBeStored(RoomTaskRepository(migrated), RoomMessageRepository(migrated))
+            assertSchemaSixRecordsCanBeStored(migrated, objective = null)
+        } finally {
+            migrated.close()
+        }
+    }
+
+    @Test
+    fun `the app opening a version 5 database upgrades it in place and can store the records of schema 6 in it`() = runTest {
+        createVersionFiveDatabase()
+
+        val data = DataLayer(
+            context, databaseName = NAME, databaseEncryption = DatabaseEncryption.None, vaultCipher = SoftwareVaultCipher(),
+        )
+        try {
+            assertVersionFiveDataIsThere(data.database)
+            assertEquals(AiccDatabase.VERSION, data.database.openHelper.readableDatabase.version)
+            assertEquals(6, AiccDatabase.VERSION)
+            assertSchemaSixRecordsCanBeStored(data.database, VersionFiveData.objective.id)
+            // The data layer's own members reach the same tables.
+            assertEquals(1, data.usageReports.totals(UsageRange.ALL).calls)
+            assertEquals(1, data.modelPrices.getAll().size)
+            assertEquals(1, data.routines.getAll().size)
+            assertEquals(1, data.pickUpRules.getAll().size)
+            // The data of the earlier releases is untouched by everything done with schema 6.
+            assertVersionFiveDataIsThere(data.database)
+        } finally {
+            data.close()
+        }
+    }
+
+    @Test
+    fun `the tables and columns added by the migration to version 6 have their indexes, keys and defaults`() = runTest {
+        createVersionFiveDatabase()
+        helper.runMigrationsAndValidate(NAME, 6, true, *AiccMigrations.all).close()
+        val migrated = AiccDatabase.create(context, NAME)
+        try {
+            val sqlite = migrated.openHelper.writableDatabase
+            val indexes = sqlite.query(
+                SimpleSQLiteQuery(
+                    "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name IN " +
+                        "('tasks', 'usage_hours', 'work_usage', 'model_prices', 'routines', 'routine_runs', 'pickup_rules', 'pickup_imports')",
+                ),
+            ).use { cursor -> buildSet { while (cursor.moveToNext()) add(cursor.getString(0)) } }
+            assertEquals(
+                setOf(
+                    "index_tasks_kind_created_at_id", "index_tasks_root_id_created_at_id", "index_tasks_status_created_at_id",
+                    "index_tasks_assignee_id_updated_at_id", "index_usage_hours_model_id_hour_start", "index_usage_hours_agent_id_hour_start",
+                    "index_routine_runs_routine_id_due_at_id", "index_pickup_rules_folder_id",
+                    "index_pickup_imports_rule_id_imported_at_content_sha256", "index_pickup_imports_imported_at",
+                ),
+                indexes.filterNot { it.startsWith("sqlite_autoindex") }.toSet(),
+            )
+            // A row written without the new columns, as by an older statement, gets their defaults.
+            sqlite.execSQL(
+                "INSERT INTO tasks (id, root_id, kind, status, sort_order, attempt, revision_round, needs_review, title, instructions, " +
+                    "criteria_json, depends_on_json, delegation_chain_json, reviews_json, usage_json, requested_by_json, created_at, updated_at) " +
+                    "VALUES ('tsk_raw', 'tsk_raw', 'OBJECTIVE', 'QUEUED', 0, 0, 0, 0, 'Raw', '', '[]', '[]', '[]', '[]', '{}', '{\"type\":\"owner\"}', 1, 1)",
+            )
+            assertEquals(0, migrated.storedResultChars().getValue("tsk_raw"))
+            // One rule per folder, one record per rule and content.
+            sqlite.execSQL("INSERT INTO pickup_rules (id, folder_id, space_id, enabled, created_at, updated_at) VALUES ('pku_a', 'fld_a', 'spc_a', 1, 1, 1)")
+            assertFailsWith<SQLiteConstraintException> {
+                sqlite.execSQL("INSERT INTO pickup_rules (id, folder_id, space_id, enabled, created_at, updated_at) VALUES ('pku_b', 'fld_a', 'spc_a', 1, 1, 1)")
+            }
+            val hash = "0".repeat(64)
+            sqlite.execSQL("INSERT INTO pickup_imports (rule_id, content_sha256, document_name, size_bytes, imported_at) VALUES ('pku_a', '$hash', 'a.txt', 1, 1)")
+            assertFailsWith<SQLiteConstraintException> {
+                sqlite.execSQL("INSERT INTO pickup_imports (rule_id, content_sha256, document_name, size_bytes, imported_at) VALUES ('pku_a', '$hash', 'b.txt', 1, 2)")
+            }
+            // Nothing points at a task, chat, routine or rule: rows stand alone, as in the other operator and task tables.
+            for (table in listOf("usage_hours", "work_usage", "model_prices", "routines", "routine_runs", "pickup_rules", "pickup_imports")) {
+                val keys = sqlite.query(SimpleSQLiteQuery("PRAGMA foreign_key_list(`$table`)")).use { it.count }
+                assertEquals(0, keys, table)
+            }
+        } finally {
+            migrated.close()
+        }
+    }
+
+    @Test
+    fun `the migration to version 6 runs only additions and the one backfill`() {
+        for (statement in Migration5To6.statements) {
+            val allowed = statement.startsWith("ALTER TABLE `") && " ADD COLUMN `" in statement ||
+                statement.startsWith("CREATE TABLE IF NOT EXISTS `") ||
+                statement.startsWith("CREATE INDEX IF NOT EXISTS `") ||
+                statement.startsWith("CREATE UNIQUE INDEX IF NOT EXISTS `") ||
+                statement == Migration5To6.BACKFILL_RESULT_CHARS
+            assertTrue(allowed, statement)
+            assertTrue("DROP" !in statement.uppercase() && "DELETE" !in statement.uppercase() && "RENAME" !in statement.uppercase(), statement)
+        }
+        assertEquals(1, Migration5To6.statements.count { it.startsWith("UPDATE") })
+        // The backfill comes after the column it fills, and nothing runs between the additions and it but other additions.
+        assertTrue(
+            Migration5To6.statements.indexOf(Migration5To6.BACKFILL_RESULT_CHARS) >
+                Migration5To6.statements.indexOfFirst { "`result_chars`" in it && it.startsWith("ALTER") },
+        )
+    }
+
+    private fun AiccDatabase.countWhere(table: String, condition: String): Int =
+        openHelper.readableDatabase.query(SimpleSQLiteQuery("SELECT COUNT(*) FROM $table WHERE $condition")).use { cursor ->
+            cursor.moveToFirst()
+            cursor.getInt(0)
+        }
+
     private fun AiccDatabase.count(table: String): Int =
         openHelper.readableDatabase.query(SimpleSQLiteQuery("SELECT COUNT(*) FROM $table")).use { cursor ->
             cursor.moveToFirst()
@@ -666,5 +986,8 @@ class MigrationTest {
 
     private companion object {
         const val NAME = "migration-test.db"
+
+        /** A second file, for reading what an older version stored without touching the one under test. */
+        const val OTHER = "migration-test-copy.db"
     }
 }

@@ -19,8 +19,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    // Room's MigrationTestHelper reads the exported schemas as assets of the test.
+    // Room's MigrationTestHelper reads the exported schemas as assets of the test, on the JVM and
+    // on a device (EncryptedMigrationTest).
     sourceSets.getByName("test").assets.srcDir("$projectDir/schemas")
+    sourceSets.getByName("androidTest").assets.srcDir("$projectDir/schemas")
 
     testOptions {
         unitTests {
@@ -66,5 +68,6 @@ dependencies {
     androidTestImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.room.testing)
     androidTestImplementation("androidx.test:runner:1.7.0")
 }
