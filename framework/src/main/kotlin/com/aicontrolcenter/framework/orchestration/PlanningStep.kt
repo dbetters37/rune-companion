@@ -41,7 +41,7 @@ internal class PlanningStep(private val ctx: OrchestrationContext) {
                 is Readiness.Ready -> readiness
                 is Readiness.NotReady -> {
                     if (!readiness.transient) return failObjective(rt, "The Director cannot plan: ${readiness.reason}.")
-                    if (!waitToPlan(rt, ProviderWaits.named(readiness.provider, "its provider"), null)) return false
+                    if (!waitToPlan(rt, ProviderWaits.named(readiness.provider, "The provider"), null)) return false
                     continue
                 }
             }

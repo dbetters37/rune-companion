@@ -49,7 +49,7 @@ internal class ReviewSteps(private val ctx: OrchestrationContext, private val wo
             is Readiness.Ready -> choice
             is Readiness.NotReady -> {
                 if (choice.transient) {
-                    ctx.waitForProvider(rt, review, ProviderWaits.named(choice.provider, "its provider"), null, setOf(TaskStatus.QUEUED, TaskStatus.RUNNING))
+                    ctx.waitForProvider(rt, review, ProviderWaits.named(choice.provider, "The provider"), null, setOf(TaskStatus.QUEUED, TaskStatus.RUNNING))
                     return
                 }
                 return couldNotReview(rt, review, reviewed, kind, choice.reason)

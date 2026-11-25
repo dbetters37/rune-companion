@@ -29,7 +29,7 @@ internal class SynthesisStep(private val ctx: OrchestrationContext) {
             is Readiness.Ready -> readiness
             is Readiness.NotReady -> {
                 if (readiness.transient && hasTime(objective)) {
-                    ctx.waitForProvider(rt, synthesis, ProviderWaits.named(readiness.provider, "its provider"), null, setOf(TaskStatus.QUEUED))
+                    ctx.waitForProvider(rt, synthesis, ProviderWaits.named(readiness.provider, "The provider"), null, setOf(TaskStatus.QUEUED))
                     return
                 }
                 return fail(rt, synthesis, "The Director cannot write the final result: ${readiness.reason}.", limits.maxTaskAttempts, retry = false)
