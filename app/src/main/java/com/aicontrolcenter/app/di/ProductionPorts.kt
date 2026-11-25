@@ -4,7 +4,15 @@ import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import androidx.core.content.FileProvider
+import com.aicontrolcenter.app.di.wiring.BackgroundPorts
+import com.aicontrolcenter.app.di.wiring.BackgroundWiring
+import com.aicontrolcenter.app.di.wiring.BackupWiring
+import com.aicontrolcenter.app.di.wiring.ModelsWiring
+import com.aicontrolcenter.app.di.wiring.RoutinesWiring
+import com.aicontrolcenter.app.di.wiring.ScriptsWiring
 import com.aicontrolcenter.app.operator.SystemScreens
+import com.aicontrolcenter.core.backup.LocalMaintenanceGate
+import com.aicontrolcenter.core.backup.MaintenanceGate
 import com.aicontrolcenter.core.operator.DeviceAccess
 import com.aicontrolcenter.core.operator.DeviceAccessState
 import com.aicontrolcenter.core.operator.ScreenServiceState
@@ -29,10 +37,19 @@ import java.io.File
  * Android's settings are read in the background.
  *
  * The launcher is passed unwrapped; [AppGraph] adds the activity-log wrapper.
+ *
+ * @param data the process's one data layer, shared with the upkeep job (one Room instance on the encrypted file).
+ * @param background the process's one background port; the application class passes the instance its gate and
+ *   Recovery path use, so the graph shares it.
+ * @param maintenanceGate the process's one maintenance gate, shared with the upkeep job in the same way.
  */
-fun createProductionPorts(context: Context): Ports {
+fun createProductionPorts(
+    context: Context,
+    data: DataLayer,
+    background: BackgroundPorts = BackgroundWiring.production(context.applicationContext, data),
+    maintenanceGate: MaintenanceGate = LocalMaintenanceGate(),
+): Ports {
     val appContext = context.applicationContext
-    val data = DataLayer(appContext)
     val device = DeviceLayer(appContext)
     // Resolved once per process (about a dozen PackageManager queries and an autofill query) on its
     // own thread, and shared by everyone: the screen operator, the broker, the tools, app hand-overs
@@ -87,6 +104,20 @@ fun createProductionPorts(context: Context): Ports {
             systemScreens = AndroidSystemScreens(appContext, phone),
         ),
         packageChanges = device.packageChanges.map { },
+        // Phase 6 (K11): usage and prices live in the same encrypted database. Agent-facing code gets the read-only
+        // price view; the writer and the history's owner side go to the owner's screens only (rule 3).
+        usageLedger = data.usageLedger,
+        usageReports = data.usageReports,
+        modelPrices = data.modelPrices,
+        ownerModelPrices = data.ownerModelPrices,
+        ownerUsage = data.ownerUsage,
+        // One line per wave-2 package: each fills in its own wiring file (di/wiring), not this one.
+        background = background,
+        network = ModelsWiring.network(appContext),
+        scripts = ScriptsWiring.production(appContext),
+        backup = BackupWiring.production(appContext, data, maintenanceGate),
+        routines = RoutinesWiring.production(appContext, data),
+        maintenanceGate = maintenanceGate,
     )
 }
 

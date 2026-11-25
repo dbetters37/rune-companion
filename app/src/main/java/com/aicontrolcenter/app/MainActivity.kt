@@ -5,27 +5,42 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import com.aicontrolcenter.app.health.GateHost
+import com.aicontrolcenter.app.ui.recovery.RecoveryHost
 import com.aicontrolcenter.app.ui.shell.AiControlCenterRoot
 import com.aicontrolcenter.core.RequestId
 import com.aicontrolcenter.core.TaskId
 
-/** The single activity: hosts the Compose shell and tells the graph about process and foreground starts. */
+/**
+ * The single activity: hosts the Compose shell and tells the graph about process and foreground starts.
+ *
+ * It touches the graph only once the app's gate says the data opened (Phase 6, R5): until then nothing builds the
+ * graph, and when the data cannot be opened the Recovery screen shows instead of the shell. No intent opens Recovery,
+ * Backup or Start over (rule 23): the gate alone decides.
+ */
 class MainActivity : ComponentActivity() {
-    private val graph get() = (application as AiControlCenterApp).graph
+    private val app get() = application as AiControlCenterApp
+    private val graph get() = app.graph
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        // Idempotent: seeds the starter team once and begins following package changes.
-        graph.start()
-        if (savedInstanceState == null) openRequestedObjective(intent)
-        setContent { AiControlCenterRoot(graph) }
+        val gate = app.gate
+        val firstCreation = savedInstanceState == null
+        gate.whenOpen {
+            // Idempotent: seeds the starter team once and begins following package changes.
+            graph.start()
+            if (firstCreation) openRequestedObjective(intent)
+        }
+        setContent {
+            GateHost(gate, recovery = { state -> RecoveryHost(state, app.recovery) }) { AiControlCenterRoot(graph) }
+        }
     }
 
     /** A notification (objectives, an approval) was tapped while the activity existed. */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        openRequestedObjective(intent)
+        app.gate.whenOpen { openRequestedObjective(intent) }
     }
 
     private fun openRequestedObjective(intent: Intent?) {
@@ -37,12 +52,13 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         // Package broadcasts are not delivered reliably to a stopped app, so re-check on return.
-        graph.onAppForegrounded()
+        app.gate.whenOpen { graph.onAppForegrounded() }
     }
 
     override fun onStop() {
         super.onStop()
-        graph.onAppBackgrounded()
+        // Never builds the graph: when the gate never opened, there is nothing to tell.
+        app.graphIfBuilt()?.onAppBackgrounded()
     }
 
     companion object {
