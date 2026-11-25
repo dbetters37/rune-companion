@@ -1,5 +1,6 @@
 package com.aicontrolcenter.data.backup
 
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -25,8 +26,9 @@ import kotlin.test.assertTrue
  * The frozen format's test vectors (`phase6-contracts.md` section 4) through the phone's own crypto provider (security
  * review of wave 1, F6): a file the JVM writes must open on the phone and the other way round, so PBKDF2, HKDF, the
  * passphrase's normalisation (the phone's Unicode tables), the key check and AES-GCM must give the same bytes here.
- * Also: the key of a real save (600,000 iterations) is derived on `Dispatchers.Default` within 15 s on the emulator,
- * and the time is logged (tag `BackupVectors`). Method names are camelCase: names with spaces cannot be dexed below API 30.
+ * Also: the key of a real save (600,000 iterations) is derived on `Dispatchers.Default` within 15 s on a phone (within
+ * 10 minutes on the emulator, see [keyBoundMs]), and the time is logged (tag `BackupVectors`). Method names are
+ * camelCase: names with spaces cannot be dexed below API 30.
  */
 @RunWith(AndroidJUnit4::class)
 class BackupVectorsDeviceTest {
@@ -94,13 +96,21 @@ class BackupVectorsDeviceTest {
         assertEquals("hello, backup", opened.plaintext.decodeToString())
     }
 
+    /**
+     * 15 s on a phone. The emulator's CPU may be emulated in software (the device gate's emulator runs without hardware
+     * acceleration): there these 600,000 rounds took 196 s and the platform's own `PBKDF2WithHmacSHA256` 41 s, against
+     * 0.4 s on the JVM, so no implementation could meet 15 s; there the bound only catches a derivation gone far slower
+     * or stuck. The time is logged either way.
+     */
+    private val keyBoundMs = if (Build.HARDWARE in setOf("ranchu", "goldfish")) 600_000L else 15_000L
+
     @Test
-    fun theKeyOfARealSaveIsDerivedWithinFifteenSeconds(): Unit = runBlocking {
+    fun theKeyOfARealSaveIsDerivedWithinFifteenSecondsOnAPhone(): Unit = runBlocking {
         val started = SystemClock.elapsedRealtime()
         val keys = withContext(Dispatchers.Default) { BackupKeys.derive("7KQ2-M9XD-4RTB-8HJN-3VCP", salt, 600_000) }
         val tookMs = SystemClock.elapsedRealtime() - started
         keys.clear()
-        Log.i("BackupVectors", "PBKDF2-HMAC-SHA256, 600,000 iterations, on Dispatchers.Default: $tookMs ms")
-        assertTrue(tookMs <= 15_000, "the key took $tookMs ms")
+        Log.i("BackupVectors", "PBKDF2-HMAC-SHA256, 600,000 iterations, on Dispatchers.Default: $tookMs ms (bound $keyBoundMs ms, hardware ${Build.HARDWARE})")
+        assertTrue(tookMs <= keyBoundMs, "the key took $tookMs ms, more than $keyBoundMs ms")
     }
 }
