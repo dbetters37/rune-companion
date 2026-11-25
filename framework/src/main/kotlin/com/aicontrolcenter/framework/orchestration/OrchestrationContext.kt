@@ -149,12 +149,14 @@ internal class OrchestrationContext(
         val outcome = rt.lock.withLockNonCancellable {
             val objective = tasks.get(rt.rootId)?.takeIf { it.status == TaskStatus.RUNNING } ?: return@withLockNonCancellable null
             val now = clock.now()
-            val changes = tasks.getTree(rt.rootId).filter { it.id != rt.rootId && it.status in WORKING }
+            val tree = tasks.getTree(rt.rootId)
+            val changes = tree.filter { it.id != rt.rootId && it.status in WORKING }
                 .map { it.copy(status = TaskStatus.PAUSED, statusDetail = DailyLimits.PAUSED_TEXT, updatedAt = now) }
             val updated = objective.copy(
                 status = TaskStatus.PAUSED, statusDetail = DailyLimits.PAUSED_TEXT, deadlineAt = rt.deadlineNow(objective.deadlineAt), retryAt = null, updatedAt = now,
             )
-            tasks.upsertAll(changes + updated)
+            // Work that waited for its provider no longer says it tries again at a time that will pass (INT-3).
+            tasks.upsertAll(changes + ProviderWaits.stoppedIn(tree, rt.rootId, now) + updated)
             updated to changes
         } ?: return false
         val (paused, changes) = outcome

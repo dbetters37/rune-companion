@@ -7,6 +7,7 @@ import com.aicontrolcenter.core.registry.ConnectionStatus
 import com.aicontrolcenter.core.registry.ModelCapabilities
 import com.aicontrolcenter.core.registry.ModelDescriptor
 import com.aicontrolcenter.core.registry.ModelProvider
+import com.aicontrolcenter.core.tasks.ObjectiveOptions
 import com.aicontrolcenter.core.tasks.TaskKind
 import com.aicontrolcenter.core.tasks.TaskStatus
 import com.aicontrolcenter.framework.orchestration.TeamFixture.Companion.MINUTE_MS
@@ -15,6 +16,9 @@ import com.aicontrolcenter.framework.orchestration.TeamScript.Companion.task
 import com.aicontrolcenter.testkit.FakeProviderAdapter
 import com.aicontrolcenter.testkit.ScriptStep
 import com.aicontrolcenter.testkit.ScriptedLlmClient
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
@@ -270,5 +274,85 @@ class ProviderWaitTest {
         team.orchestrator.resume(objective.id)
         team.settle(1_000)
         assertEquals(TaskStatus.COMPLETED, team.work(objective.id).single().status, "tried again at once")
+    }
+
+    private val wasWaiting = "Was waiting: Test server on this phone is not answering. Tries again when the objective resumes."
+
+    @Test
+    fun `while the objective is paused, waiting work no longer names a time to try again`() = runTest {
+        // Review of wave 2a, INT-3.
+        val team = TeamFixture(this).setUp()
+        var down = true
+        team.script.work = { if (down) ScriptStep.Fail(LlmException.Server("Service unavailable", 503)) else ScriptStep.Reply("Apps found") }
+        val objective = team.start()
+        team.settle(10_000)
+        team.orchestrator.pause(objective.id)
+        val paused = team.work(objective.id).single()
+        assertEquals(TaskStatus.QUEUED, paused.status)
+        assertEquals(wasWaiting, paused.statusDetail)
+        team.pass(5 * MINUTE_MS)
+        assertEquals(wasWaiting, team.work(objective.id).single().statusDetail, "nothing tried again while paused")
+
+        down = false
+        team.orchestrator.resume(objective.id)
+        team.settle(1_000)
+        assertEquals(TaskStatus.COMPLETED, team.work(objective.id).single().status)
+    }
+
+    @Test
+    fun `an objective paused by today's limit says the same of its waiting work`() = runTest {
+        val team = TeamFixture(this) { copy(maxModelCallsPerDay = 3) }.setUp()
+        val provider = team.world.provider(FakeProviderAdapter(client = team.script.client), baseUrl = "https://api.example.com/v1", name = "Cloud")
+        val cloud = team.world.model(provider, capabilities = ModelCapabilities(toolCalling = true, jsonOutput = true))
+        for (agent in listOf(team.director, team.researcher, team.analyst, team.writer, team.reviewer)) team.world.agents.upsert(team.world.agents.get(agent.id)!!.copy(modelId = cloud.id))
+        // The plan, "Find apps" and the failed call of "Compare apps" are today's three answers; "Price apps" meets the limit.
+        team.script.plan = { _, _ ->
+            ScriptStep.Reply(planJson(listOf(task("a", "Find apps", listOf("research")), task("b", "Compare apps", listOf("analysis")), task("c", "Price apps", listOf("research")))))
+        }
+        team.script.work = { s ->
+            when (TeamScript.titleOf(s.brief)) {
+                "Compare apps" -> ScriptStep.Fail(LlmException.Server("Service unavailable", 503))
+                "Find apps" -> {
+                    // Answers after "Compare apps" failed and went to wait.
+                    kotlinx.coroutines.delay(5_000)
+                    ScriptStep.Reply("Found")
+                }
+                else -> ScriptStep.Reply("Priced")
+            }
+        }
+        val objective = team.start()
+        repeat(3) { team.pass(5_000) }
+        assertEquals(TaskStatus.PAUSED, team.objective(objective.id).status, team.objective(objective.id).statusDetail)
+        val compare = team.byTitle(objective.id, "Compare apps")
+        assertEquals(TaskStatus.QUEUED, compare.status)
+        assertEquals("Was waiting: Cloud is not answering. Tries again when the objective resumes.", compare.statusDetail)
+    }
+
+    @Test
+    fun `an objective whose work waited when the app stopped says so, and it does not count as interrupted while idle`() = runTest {
+        val team = TeamFixture(this).setUp()
+        team.script.work = { ScriptStep.Fail(LlmException.Server("Service unavailable", 503)) }
+        fun appScope() = CoroutineScope(backgroundScope.coroutineContext + Job(backgroundScope.coroutineContext[Job]))
+        var app = appScope()
+        val objective = team.newOrchestrator(app).startObjective("Research note apps", ObjectiveOptions())
+        team.settle(10_000)
+        // Four restarts in a row while its work waits: none counts as "interrupted while no task was running", which
+        // would end it after the third.
+        repeat(4) { round ->
+            assertEquals(TaskStatus.QUEUED, team.work(objective.id).single().status, "round $round")
+            app.cancel() // the app is killed
+            team.settle(10_000)
+            app = appScope()
+            val orchestrator = team.newOrchestrator(app)
+            orchestrator.recoverInterrupted()
+            team.settle(1_000)
+            val interrupted = team.objective(objective.id)
+            assertEquals(TaskStatus.INTERRUPTED, interrupted.status, "round $round")
+            assertEquals("Interrupted while its work waited: Test server on this phone is not answering. Resume it to continue.", interrupted.statusDetail)
+            assertEquals(wasWaiting, team.work(objective.id).single().statusDetail)
+            assertEquals(0, team.work(objective.id).single().attempt, "waiting used no attempt")
+            orchestrator.resume(objective.id)
+            team.settle(10_000)
+        }
     }
 }

@@ -6,6 +6,8 @@ import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.health.TimedWaits
 import com.aicontrolcenter.core.llm.LlmException
 import com.aicontrolcenter.core.registry.Locality
+import com.aicontrolcenter.core.tasks.TaskRecord
+import com.aicontrolcenter.core.tasks.TaskStatus
 import com.aicontrolcenter.core.usage.DailyLimits
 import java.time.Instant
 import java.time.ZoneId
@@ -195,6 +197,22 @@ internal object ProviderWaits {
 
     /** Opens the status line of work waiting for its provider. */
     const val WAITING = "Waiting:"
+
+    /** What [detail], the status line of work waiting for its provider ([text]), says it waits for; null for any other line. */
+    fun waitingFor(detail: String?): String? =
+        detail?.takeIf { it.startsWith(WAITING) }?.removePrefix(WAITING)?.trim()?.substringBefore("; trying again")?.trimEnd('.')?.takeIf { it.isNotEmpty() }
+
+    /**
+     * The status line of [task], waiting for its provider when its objective stopped (paused, by the owner or by today's
+     * limit, or interrupted, INT-3): nothing tries again at the time it named until the objective resumes. Null when
+     * [task] is not such work.
+     */
+    fun stopped(task: TaskRecord): String? =
+        if (task.status == TaskStatus.QUEUED && task.retryAt != null) waitingFor(task.statusDetail)?.let { "Was waiting: $it. Tries again when the objective resumes." } else null
+
+    /** [tree]'s work that waited for its provider, its status line rewritten as [stopped] says, at [now]. */
+    fun stoppedIn(tree: List<TaskRecord>, rootId: TaskId, now: Long): List<TaskRecord> =
+        tree.filter { it.id != rootId }.mapNotNull { task -> stopped(task)?.let { task.copy(statusDetail = it, updatedAt = now) } }
 
     private val CLOCK: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 }

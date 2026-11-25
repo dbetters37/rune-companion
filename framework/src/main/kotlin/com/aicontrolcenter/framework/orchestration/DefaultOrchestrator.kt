@@ -197,11 +197,13 @@ class DefaultOrchestrator(
             val objective = ctx.tasks.get(rootId) ?: throw IllegalArgumentException(GONE)
             if (objective.status != TaskStatus.RUNNING) return@withLockNonCancellable null
             val now = clock.now()
-            val changes = ctx.tasks.getTree(rootId).filter { it.id != rootId && it.status in WORKING }
+            val tree = ctx.tasks.getTree(rootId)
+            val changes = tree.filter { it.id != rootId && it.status in WORKING }
                 .map { it.copy(status = TaskStatus.PAUSED, statusDetail = "Paused by the owner.", updatedAt = now) }
             // The deadline as its running limit has it: time spent waiting for the owner moved it later.
             val updated = objective.copy(status = TaskStatus.PAUSED, statusDetail = "Paused by the owner.", deadlineAt = rt.deadlineNow(objective.deadlineAt), updatedAt = now)
-            ctx.tasks.upsertAll(changes + updated)
+            // Work that waited for its provider no longer says it tries again at a time that will pass (INT-3).
+            ctx.tasks.upsertAll(changes + ProviderWaits.stoppedIn(tree, rootId, now) + updated)
             updated to changes
         } ?: return
         stop(rt)
@@ -429,6 +431,11 @@ class DefaultOrchestrator(
                 val tree = ctx.tasks.getTree(rootId)
                 // Each task that was running used up the attempt the app stopped.
                 val interrupted = tree.filter { it.id != rootId && it.status in WORKING }.map { interrupted(it, limits.maxTaskAttempts, now, cause) }
+                // Work that waited for its provider used no attempt; it no longer names a time to try again (INT-3).
+                val stoppedWaits = ProviderWaits.stoppedIn(tree, rootId, now)
+                // What the objective's work waited for, if it waited: then the app did not stop it while it was idle.
+                val waitedFor = (if (objective.status in WORKING && objective.retryAt != null) ProviderWaits.waitingFor(objective.statusDetail) else null)
+                    ?: tree.firstNotNullOfOrNull { task -> task.takeIf { it.id != rootId && it.status == TaskStatus.QUEUED && it.retryAt != null }?.let { ProviderWaits.waitingFor(it.statusDetail) } }
                 val byId = interrupted.associateBy { it.id }
                 bookkeeping = ObjectiveDriver.onlyBookkeeping(tree.map { byId[it.id] ?: it }, rootId)
                 val waiting = objective.status == TaskStatus.INTERRUPTED
@@ -438,7 +445,8 @@ class DefaultOrchestrator(
                     val stoppedAt = if (objective.status in WORKING) tree.maxOf { it.updatedAt } else objective.updatedAt
                     val remaining = objective.deadlineAt?.let { (it - stoppedAt).coerceIn(0, limits.objectiveTimeoutMs) } ?: limits.objectiveTimeoutMs
                     val planning = objective.status in WORKING && tree.none { it.kind == TaskKind.WORK || it.kind == TaskKind.SYNTHESIS }
-                    val attempt = objective.attempt + if (planning) 1 else 0
+                    // Planning that waited for the Director's provider used no attempt (INT-3).
+                    val attempt = objective.attempt + if (planning && objective.retryAt == null) 1 else 0
                     if (planning && attempt >= limits.maxTaskAttempts) {
                         planningFailed = true
                         val reason = "Planning was interrupted $attempt time(s): the app stopped while the Director was planning, and no attempts are left."
@@ -447,7 +455,7 @@ class DefaultOrchestrator(
                         // Nothing but the objective itself was running (finishing, say, or between two steps): no task's attempt
                         // counts this one, so the interruptions in a row with no progress between them are counted, and capped.
                         // A recovery that died ending it (or finishing it) left it interrupted: that counts as another interruption.
-                        val idle = (objective.status in WORKING || waiting) && !planning && interrupted.isEmpty()
+                        val idle = (objective.status in WORKING || waiting) && !planning && interrupted.isEmpty() && waitedFor == null
                         val inARow = if (idle) idleInterruptions(rootId) + 1 else 0
                         if (inARow > MAX_RESTARTS_WITHOUT_PROGRESS) endEarly = "the objective was interrupted $inARow times in a row without progress"
                         val then = when {
@@ -457,13 +465,15 @@ class DefaultOrchestrator(
                             autoResume -> "Resuming."
                             else -> "Resume it to continue."
                         }
-                        objective.copy(
-                            status = TaskStatus.INTERRUPTED, attempt = attempt, deadlineAt = now + remaining, updatedAt = now, retryAt = null,
-                            statusDetail = if (idle) "$IDLE_INTERRUPTION ($inARow in a row without progress). $then" else "$stopped $then",
-                        )
+                        val detail = when {
+                            idle -> "$IDLE_INTERRUPTION ($inARow in a row without progress). $then"
+                            waitedFor != null && interrupted.isEmpty() -> "Interrupted while its work waited: $waitedFor. $then"
+                            else -> "$stopped $then"
+                        }
+                        objective.copy(status = TaskStatus.INTERRUPTED, attempt = attempt, deadlineAt = now + remaining, updatedAt = now, retryAt = null, statusDetail = detail)
                     }
                 }
-                ctx.tasks.upsertAll(interrupted + updated)
+                ctx.tasks.upsertAll(interrupted + stoppedWaits + updated)
                 interrupted.forEach {
                     if (it.status == TaskStatus.FAILED) {
                         journal.taskChanged(it, "Task failed", Severity.WARNING)
