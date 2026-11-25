@@ -342,6 +342,11 @@ do it.
   drive or a file manager, is different: Android does not tell whether that app also shows your
   phone's own files. If it does, agents could change files there even in folders you made
   read-only. Make such a folder read-only too, or share folders from the phone's storage instead.
+  Folder pick-up is stricter, because it only reads a folder that no change can reach: when the
+  pick-up folder, or a shared folder agents may change, comes from another app, and the other
+  folder comes from somewhere else, the app cannot tell whether they hold the same files. The
+  rule is then not made, or is switched off, and nothing is picked up until that folder agents
+  may change is read-only too or removed.
 
 - **What local-only mode blocks.** Models off this phone, reading web pages, opening links,
   shell and Termux commands, every action on another app's screen, and handing a text, a

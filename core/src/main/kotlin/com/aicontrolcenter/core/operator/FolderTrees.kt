@@ -20,8 +20,8 @@ package com.aicontrolcenter.core.operator
  * (a cloud drive, a file manager, an app's own provider: [otherAppProvider]) count as apart from
  * another provider's: Android does not tell whether such a provider also shows the phone's own
  * files, and counting them as overlapping would stop every change in them while any shared folder
- * is read-only. The Folders screen warns about the ones agents may change instead
- * ([OwnerFolders.fromOtherAppStorage], SEC-W2B-2-R).
+ * is read-only. The Folders screen warns about them instead ([OwnerFolders.fromOtherAppStorage],
+ * SEC-W2B-2-R). Folder pick-up asks [mayShareFiles], which counts them as unknown (B1).
  *
  * Profiles (SEC-W2B-2-R): "primary:" is the storage of the profile the app runs in, which a tree
  * id does not name. "/storage/emulated/0", "/sdcard" and "/storage/self/primary" in a "raw:" path
@@ -87,6 +87,21 @@ object FolderTrees {
         // apart; the Folders screen warns about another app's folder agents may change (OwnerFolders.fromOtherAppStorage).
         if (px == null || py == null) return false
         return overlap(px, py)
+    }
+
+    /**
+     * [overlap] for folder pick-up, which may only read a folder no change can reach (SEC-W2B-2-R, B1): two folders of
+     * different providers of which one is another app's ([otherAppProvider]) are unknown (null) instead of apart, since
+     * that app may show the same files under ids of its own. Changes keep [overlap], where counting them as overlapping
+     * would stop every change in such a folder while any shared folder is read-only.
+     */
+    fun mayShareFiles(a: String, b: String): Boolean? {
+        val overlap = overlap(a, b)
+        if (overlap != false) return overlap
+        val x = parse(a) ?: return null
+        val y = parse(b) ?: return null
+        val otherApp = otherAppProvider(a) != null || otherAppProvider(b) != null
+        return if (x.authority != y.authority && otherApp) null else false
     }
 
     /** Where on the phone's storage a folder is, as far as its id tells. */

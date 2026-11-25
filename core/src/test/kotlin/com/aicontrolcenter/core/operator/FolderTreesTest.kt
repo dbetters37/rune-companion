@@ -133,6 +133,54 @@ class FolderTreesTest {
     }
 
     @Test
+    fun `for folder pick-up another app's folder may hold the same files as a folder of any other provider (B1)`() {
+        // A file manager's provider that names folders by ids of its own may show the phone's storage. Changes stay apart
+        // (the Folders screen warns), but pick-up reads only a folder no change can reach: unknown there.
+        val files = "content://com.example.files.provider/tree/d%3A1234"
+        val inbox = storage("primary:Download/Agents/inbox")
+        assertEquals(false, FolderTrees.overlap(files, inbox))
+        assertNull(FolderTrees.mayShareFiles(files, inbox))
+        assertNull(FolderTrees.mayShareFiles(inbox, files))
+        assertNull(FolderTrees.mayShareFiles(files, downloads("msf:31")))
+        assertNull(FolderTrees.mayShareFiles(files, downloads("raw:/storage/emulated/0/Documents")))
+        assertNull(FolderTrees.mayShareFiles(media("documents_root"), files))
+        assertNull(FolderTrees.mayShareFiles(files, cloud), "a file manager may show a cloud drive too")
+        assertNull(FolderTrees.mayShareFiles(files, "content://10@com.example.files.provider/tree/d%3A99"), "another profile's provider")
+        // One provider tells by its ids; the phone's storage is placed exactly.
+        assertEquals(false, FolderTrees.mayShareFiles(files, "content://com.example.files.provider/tree/d%3A5678"))
+        assertEquals(true, FolderTrees.mayShareFiles(files, "content://com.example.files.provider/tree/d%3A1234%2Finbox"))
+        assertEquals(false, FolderTrees.mayShareFiles(storage("primary:Documents"), inbox))
+        assertEquals(true, FolderTrees.mayShareFiles(storage("primary:Download"), inbox))
+        assertNull(FolderTrees.mayShareFiles(downloads("msf:31"), inbox))
+        assertNull(FolderTrees.mayShareFiles("not a tree", inbox))
+    }
+
+    @Test
+    fun `a pick-up rule beside another app's folder does not run while either may be changed by agents (B1)`() {
+        val files = "content://com.example.files.provider/tree/d%3A1234"
+        // The mirror case: the pick-up folder comes from a file manager, the folder agents may change from the phone's storage.
+        val agents = SharedFolder(FolderId("fld_agents"), storage("primary:Download/Agents"), "Agents", addedAt = 1, readOnly = false)
+        val inbox = SharedFolder(FolderId("fld_inbox"), files, "inbox", addedAt = 2, readOnly = true, readOnlySince = 5)
+        val rule = PickUpRule(PickUpRuleId("pku_1"), inbox.id, SpaceId("spc_1"), enabled = true, createdAt = 1, updatedAt = 1, folderReadOnlySince = 5)
+        assertEquals(PickUpSafety.FOLDER_OTHER_APP_NEAR_WRITABLE, PickUpSafety.folderProblem(inbox, listOf(agents, inbox)))
+        assertEquals(PickUpSafety.RUN_FOLDER_OTHER_APP_NEAR_WRITABLE, PickUpSafety.runProblem(rule, inbox, listOf(agents, inbox), masterSwitchOn = true))
+        assertEquals(true, PickUpSafety.overlapsWritable(inbox, listOf(agents, inbox)))
+        // The other way round: pick-up from the phone's storage, a file manager's folder agents may change.
+        val phoneInbox = inbox.copy(treeUri = storage("primary:Download/Agents/inbox"))
+        val fileManager = agents.copy(treeUri = files)
+        assertEquals(PickUpSafety.FOLDER_OTHER_APP_NEAR_WRITABLE, PickUpSafety.folderProblem(phoneInbox, listOf(fileManager, phoneInbox)))
+        assertEquals(PickUpSafety.RUN_FOLDER_OTHER_APP_NEAR_WRITABLE, PickUpSafety.runProblem(rule, phoneInbox, listOf(fileManager, phoneInbox), masterSwitchOn = true))
+        // A folder that may be the same place keeps its own sentence; read-only folders and the same provider's other
+        // folders do not stop it.
+        val around = agents.copy(id = FolderId("fld_download"), treeUri = storage("primary:Download"))
+        assertEquals(PickUpSafety.FOLDER_OVERLAPS_WRITABLE, PickUpSafety.folderProblem(phoneInbox, listOf(fileManager, around, phoneInbox)))
+        assertNull(PickUpSafety.folderProblem(phoneInbox, listOf(fileManager.copy(readOnly = true, readOnlySince = 1), phoneInbox)))
+        val sameApp = agents.copy(treeUri = "content://com.example.files.provider/tree/d%3A5678")
+        assertNull(PickUpSafety.folderProblem(inbox, listOf(sameApp, inbox)))
+        assertNull(PickUpSafety.runProblem(rule, inbox, listOf(sameApp, inbox), masterSwitchOn = true))
+    }
+
+    @Test
     fun `places the picker names in other ways count as the phone's storage`() {
         // The storage provider's "home" root is the Documents folder; folder names on the phone's storage ignore case.
         assertEquals(true, FolderTrees.overlap(storage("home:Notes"), storage("primary:Documents/Notes/inbox")))

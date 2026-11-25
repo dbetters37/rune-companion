@@ -186,6 +186,39 @@ class OwnerServicesTest {
     }
 
     @Test
+    fun `sharing a folder agents may change switches off pick-up beside a folder of another app (B1)`() = runTest {
+        // A file manager's provider may show the phone's own files under ids of its own: its folder and a folder of the
+        // phone's storage may hold the same files. Both directions; a folder of the same file manager is apart.
+        fun tree(path: String) = "content://${FolderTrees.EXTERNAL_STORAGE}/tree/primary%3A" + path.replace("/", "%2F")
+        val fileManager = "content://com.example.files.provider/tree/d%3A1234"
+        for ((inboxUri, writableUri) in listOf(fileManager to tree("Download/Agents"), tree("Download/Agents/inbox") to fileManager)) {
+            val world = OperatorWorld()
+            val built = Built(world)
+            val rules = InMemoryPickUpRuleRepository()
+            val folders = DefaultOwnerFolders(world.gateway, world.folders, world.grants, world.requests, built.activity, world.ids, world.clock, rules)
+            suspend fun share(uri: String, name: String): SharedFolder {
+                world.gateway.pickable[uri] = name
+                return assertIs<OwnerResult.Done<SharedFolder>>(folders.add(uri)).value
+            }
+            val inbox = share(inboxUri, "inbox")
+            folders.setReadOnly(inbox.id, true)
+            rules.upsert(
+                PickUpRule(
+                    PickUpRuleId("pku_0"), inbox.id, SpaceId("spc_inbox"), enabled = true, createdAt = 1, updatedAt = 1,
+                    folderReadOnlySince = world.folders.get(inbox.id)!!.readOnlySince,
+                ),
+            )
+            if (inboxUri == fileManager) {
+                share("content://com.example.files.provider/tree/d%3A5678", "Other")
+                assertTrue(rules.get(PickUpRuleId("pku_0"))!!.enabled, "the same file manager's folder elsewhere is apart")
+            }
+            share(writableUri, "Agents")
+            assertEquals(false to PickUpSafety.RUN_FOLDER_OTHER_APP_NEAR_WRITABLE, rules.get(PickUpRuleId("pku_0"))!!.let { it.enabled to it.lastResult }, inboxUri)
+            assertTrue(built.log.all.any { it.title == "Folder pick-up switched off: inbox" })
+        }
+    }
+
+    @Test
     fun `every change the owner makes to grants, folders and apps is logged`() = runTest {
         val world = OperatorWorld()
         val built = Built(world)
