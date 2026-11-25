@@ -18,13 +18,16 @@ import com.aicontrolcenter.framework.agents.DefaultAgentActivityMonitor
 import com.aicontrolcenter.framework.chat.DefaultAgentChat
 import com.aicontrolcenter.framework.operator.OperatorTaskHooks
 import com.aicontrolcenter.framework.orchestration.DefaultOrchestrator
+import com.aicontrolcenter.framework.orchestration.OwnerNotes
 import com.aicontrolcenter.framework.orchestration.TeamTools
 import com.aicontrolcenter.framework.tools.CapabilityRegistry
+import java.time.ZoneId
 import kotlinx.coroutines.CoroutineScope
 
 /*
  * The Director and its team, and chat (Phase 6: WP7 owns this file in wave 2; orchestration, teamwork and chat).
- * Moved out of AppGraph unchanged in wave 1 (WP1d); AppGraph keeps its public members as delegates.
+ * Moved out of AppGraph in wave 1 (WP1d); AppGraph keeps its public members as delegates. WP7 wires the re-checks of
+ * providers that are not answering (D28), the timed waits (R4), the maintenance gate (item 11) and the owner's notes (C2).
  */
 
 /**
@@ -58,8 +61,8 @@ class TeamAssembly(
     appScope: CoroutineScope,
     memory: MemoryService,
     operatorHooks: OperatorTaskHooks,
-    @Suppress("UNUSED_PARAMETER") providerRechecks: ProviderRechecks,
-    @Suppress("UNUSED_PARAMETER") maintenanceGate: MaintenanceGate,
+    providerRechecks: ProviderRechecks,
+    maintenanceGate: MaintenanceGate,
 ) {
     /**
      * Runs the owner's objectives: the Director plans, agents work, reviewers check, the Director
@@ -85,6 +88,13 @@ class TeamAssembly(
         memory = memory,
         // A task's permissions end with it, and questions left open when the app stopped are withdrawn at start-up.
         operatorHooks = operatorHooks,
+        // D28: a provider that is not answering is looked at again before work waits for it (agent side only, F3).
+        rechecks = providerRechecks,
+        // D20: the announcement of an objective's end is logged once, however often the app dies around it.
+        activityLog = ports.activityLog,
+        zone = { ZoneId.systemDefault() },
+        // Item 11: no objective starts while a backup is restored.
+        restoring = maintenanceGate.busy,
     ).also {
         // Once, before any agent runs: asking a teammate and delegating are tools like any other.
         TeamTools.registerAll(toolRegistry, capabilities, it)
@@ -104,6 +114,8 @@ class TeamAssembly(
         clock = ports.clock,
         // Turns outlive the screen that started them.
         scope = appScope,
+        rechecks = providerRechecks,
+        restoring = maintenanceGate.busy,
     )
 
     val agentChat: AgentChat = defaultAgentChat
@@ -112,8 +124,17 @@ class TeamAssembly(
     val chatDeletionListener: AgentDeletionListener = defaultAgentChat
 
     /**
-     * Owner-only: the owner's notes to the team during an objective (C2, Tier B). Unavailable until WP7 builds
-     * `OwnerNotes`, and whenever C2 is switched off.
+     * Owner-only: the owner's notes to the team during an objective (C2, Tier B; rule 24). Only the owner's objective
+     * screen holds it: it is built apart from the orchestrator, which never reaches it (both architecture tests walk the
+     * orchestrator from the team tools and the chat). If C2 is switched off after review (Tier B), this becomes
+     * [OwnerConversation.Unavailable].
      */
-    val ownerConversation: OwnerConversation = OwnerConversation.Unavailable
+    val ownerConversation: OwnerConversation = OwnerNotes(
+        tasks = ports.tasks,
+        messages = ports.messages,
+        agents = ReadOnlyRegistry.agents(ports.agents),
+        activity = activity,
+        ids = ports.idGenerator,
+        clock = ports.clock,
+    )
 }

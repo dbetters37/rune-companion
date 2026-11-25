@@ -1,10 +1,12 @@
 package com.aicontrolcenter.framework.orchestration
 
 import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.SpaceId
 import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.ToolId
 import com.aicontrolcenter.core.agents.AgentProfile
 import com.aicontrolcenter.core.activity.Severity
+import com.aicontrolcenter.core.settings.FrameworkSettings
 import com.aicontrolcenter.core.taskId
 import com.aicontrolcenter.core.tasks.MessageType
 import com.aicontrolcenter.core.tasks.Participant
@@ -17,6 +19,8 @@ import com.aicontrolcenter.framework.agents.RunLimits
 import com.aicontrolcenter.framework.agents.TaskCallBudget
 import com.aicontrolcenter.framework.memory.MemoryTools
 import com.aicontrolcenter.framework.orchestration.OrchestrationContext.Companion.WORKING
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * Runs WORK tasks: the planned ones the scheduler starts, and the delegated ones a teammate's
@@ -30,6 +34,12 @@ import com.aicontrolcenter.framework.orchestration.OrchestrationContext.Companio
  *
  * Cancellation (pause, cancel, a time limit of the objective) writes no status here: whoever
  * cancels decides the status, and has written it before cancelling.
+ *
+ * Phase 6: a run stopped by today's limit of model answers, tokens or money pauses the whole
+ * objective and uses no attempt (rule 6); a provider that is only not answering, or asks the app
+ * to slow down, makes the task wait and be tried again later, also without using an attempt
+ * (R4 part 1); an agent that cannot run only because its provider is not answering waits for it
+ * too, never handing its task to an agent farther from the phone (rule 25).
  */
 internal class WorkSteps(private val ctx: OrchestrationContext) {
 
@@ -46,7 +56,13 @@ internal class WorkSteps(private val ctx: OrchestrationContext) {
 
         val ready = when (val choice = chooseAgent(queued, delegated)) {
             is Readiness.Ready -> choice
-            is Readiness.NotReady -> return finalFailure(rt, queued, TaskStatus.FAILED, "No agent could take this task: ${choice.reason}.")
+            is Readiness.NotReady -> {
+                if (choice.transient) {
+                    ctx.waitForProvider(rt, queued, ProviderWaits.named(choice.provider, "its provider"), null, setOf(TaskStatus.QUEUED, TaskStatus.RUNNING))
+                    return
+                }
+                return finalFailure(rt, queued, TaskStatus.FAILED, "No agent could take this task: ${choice.reason}.")
+            }
         }
         val agent = ready.agent
         val conversationId = queued.conversationId ?: ctx.transcripts.open(agent.id, "Task · ${queued.title}")
@@ -56,7 +72,7 @@ internal class WorkSteps(private val ctx: OrchestrationContext) {
         val task = ctx.change(rt, taskId, setOf(TaskStatus.QUEUED, TaskStatus.RUNNING)) {
             it.copy(
                 status = TaskStatus.RUNNING, assignee = agent.id, conversationId = conversationId,
-                startedAt = it.startedAt ?: now, finishedAt = null, deadlineAt = now + timeoutMs,
+                startedAt = it.startedAt ?: now, finishedAt = null, deadlineAt = now + timeoutMs, retryAt = null,
                 statusDetail = "${agent.name} is working, ${ready.destination}.",
             )
         } ?: return
@@ -66,7 +82,7 @@ internal class WorkSteps(private val ctx: OrchestrationContext) {
             ctx.journal.send(task.rootId, task, ctx.assigner(task), Participant.Agent(agent.id), MessageType.ASSIGNMENT, assignmentBody(task))
         }
 
-        val tools = teamTools(agent)
+        val tools = teamTools(agent, settings)
         val brief = ctx.briefs.work(
             WorkBrief(
                 objective = objective, task = task, assignedBy = assignerName(task), delegated = delegated,
@@ -74,6 +90,7 @@ internal class WorkSteps(private val ctx: OrchestrationContext) {
                     .map { SourceResult(it, authorName(it.assignee)) },
                 previousFailure = task.error, feedback = feedback(task),
                 canAsk = TeamTools.ASK_ID in tools, canDelegate = TeamTools.DELEGATE_ID in tools,
+                notes = notesFor(task), canAskOwner = TeamTools.ASK_OWNER_ID in tools,
             ),
             ctx.steps.briefBudget(ready, tools),
         )
@@ -83,11 +100,13 @@ internal class WorkSteps(private val ctx: OrchestrationContext) {
         val result = try {
             ctx.steps.run(
                 ready, task, conversationId, brief, extraTools = tools, callBudget = budget,
-                limits = RunLimits(timeoutMs = timeoutMs),
+                limits = RunLimits(timeoutMs = timeoutMs), screens = objective.options?.screenActionsAllowed ?: true,
                 onTool = { execution ->
                     if (execution.spec?.id == MemoryTools.SHARE_ID && execution.outcome.ok) {
                         // Shared into a knowledge space: every agent the owner lets read it can use it from now on.
-                        ctx.journal.send(task.rootId, task, Participant.Agent(agent.id), Participant.System, MessageType.MEMORY_SHARE, execution.outcome.content)
+                        val space = ((execution.outcome.data as? JsonObject)?.get("spaceId") as? JsonPrimitive)?.takeIf { it.isString }?.content
+                        val to = space?.let { Participant.Space(SpaceId(it)) } ?: Participant.System
+                        ctx.journal.send(task.rootId, task, Participant.Agent(agent.id), to, MessageType.MEMORY_SHARE, execution.outcome.content)
                     }
                 },
             )
@@ -96,27 +115,48 @@ internal class WorkSteps(private val ctx: OrchestrationContext) {
             ctx.runtimes.ended(agent.id, task.id)
         }
         ctx.account(rt, task.id) { it.copy(usage = it.usage + result.usage) }
-        if (result.ok) finished(rt, task, agent, result.text, limits.maxTasks) else failed(rt, task, agent, result, limits.maxTaskAttempts)
+        when (val trouble = Trouble.of(result)) {
+            is Trouble.DailyLimit -> ctx.pauseForDailyLimit(rt, trouble.sentence)
+            is Trouble.Passing -> ctx.waitForProvider(rt, task, ProviderWaits.named(ready.provider, ready.providerName), trouble.error, WORKING)
+            null -> if (result.ok) finished(rt, task, ready, result.text, limits.maxTasks) else failed(rt, task, agent, result, limits.maxTaskAttempts)
+        }
     }
 
-    /** The stored assignee when it can run; otherwise, for planned work, the best other agent. A delegated task keeps the agent it was handed to. */
+    /**
+     * The stored assignee when it can run; otherwise, for planned work, the best other agent. A delegated task keeps the
+     * agent it was handed to. An assignee that cannot run only because its provider is not answering is waited for
+     * (after its provider was checked again, D28): its task is never handed to another agent, which could be farther
+     * from the phone (rule 25).
+     */
     private suspend fun chooseAgent(task: TaskRecord, delegated: Boolean): Readiness {
-        val assigned = task.assignee?.let { ctx.steps.prepare(it) }
+        val assigned = task.assignee?.let { ctx.prepareChecked(it) }
         if (assigned is Readiness.Ready) return assigned
+        if (assigned is Readiness.NotReady && assigned.transient) return assigned
         if (delegated && assigned != null) return assigned
-        val team = ctx.directory.snapshot().agents
-        return when (val selection = ctx.selector.forWork(TaskNeeds(task.title, task.instructions), team, ctx.runtimes.loads(), exclude = setOfNotNull(task.assignee))) {
+        val snapshot = ctx.directory.snapshot()
+        val selection = ctx.selector.forWork(TaskNeeds(task.title, task.instructions), snapshot.agents, ctx.runtimes.loads(), exclude = setOfNotNull(task.assignee), models = snapshot.modelsById)
+        return when (selection) {
             is Selection.Chosen -> ctx.steps.prepare(selection.agent.id)
             is Selection.NoneSuitable -> Readiness.NotReady((assigned as? Readiness.NotReady)?.reason ?: selection.reason)
         }
     }
 
-    private suspend fun finished(rt: ObjectiveRuntime, task: TaskRecord, agent: AgentProfile, text: String, maxTasks: Int) {
+    /** The owner's notes a brief for [task] holds: the objective's, the task's own and its parent's (rule 24). */
+    suspend fun notesFor(task: TaskRecord, also: TaskRecord? = null): List<BriefNote> {
+        val about = setOfNotNull(task.rootId, task.id, task.parentId, also?.id, also?.parentId)
+        return ctx.ownerNotes(task.rootId).filter { it.taskId == null || it.taskId in about }.map { it.id.value to it.body }
+    }
+
+    private suspend fun finished(rt: ObjectiveRuntime, task: TaskRecord, ready: Readiness.Ready, text: String, maxTasks: Int) {
+        val agent = ready.agent
+        rt.waitsSoFar.remove(task.id)
         val objective = ctx.tasks.get(task.rootId) ?: return
         val reviewOn = objective.options?.reviewResults ?: true
         val wantsReview = reviewOn && task.needsReview && task.delegationChain.isEmpty()
         var reviewer: AgentProfile? = null
         var unreviewed: String? = null
+        // C4: the agents that helped the author do not review it, unless nobody else can.
+        val helpers = if (wantsReview) contributors(task) else emptySet()
         val stored = rt.lock.withLockNonCancellable {
             val current = ctx.tasks.get(task.id)?.takeIf { it.status in WORKING } ?: return@withLockNonCancellable null
             val now = ctx.clock.now()
@@ -126,11 +166,17 @@ internal class WorkSteps(private val ctx: OrchestrationContext) {
             val needs = TaskNeeds(current.title, current.instructions)
             // The plan kept a place for this task's first review; later rounds need a free one.
             val limitProblem = if (ctx.committedTasks(tree, current.id) >= maxTasks) "the objective has reached its limit of $maxTasks tasks" else null
-            val selection = ctx.selector.forReview(needs, agent.id, ctx.directory.snapshot().agents, ctx.runtimes.loads())
+            val snapshot = ctx.directory.snapshot()
+            val selection = ctx.selector.forReview(
+                needs, agent.id, snapshot.agents, ctx.runtimes.loads(), contributors = helpers + tree.filter { it.parentId == current.id && it.kind == TaskKind.WORK }.mapNotNull { it.assignee },
+                previousReviewer = current.reviews.lastOrNull()?.reviewer, authorModel = ready.modelId, models = snapshot.modelsById,
+            )
             if (limitProblem == null && selection is Selection.Chosen) {
                 reviewer = selection.agent
+                val same = if (selection.modelId == ready.modelId) SAME_MODEL else ""
                 val review = reviewTask(current, selection.agent, ReviewKind.REVIEW, "Check the result of \"${current.title}\" against its completion criteria.", now)
-                val inReview = withResult.copy(status = TaskStatus.IN_REVIEW, statusDetail = "Waiting for ${selection.agent.name}'s review.")
+                    .let { it.copy(statusDetail = "Waiting to review$same.") }
+                val inReview = withResult.copy(status = TaskStatus.IN_REVIEW, statusDetail = "Waiting for ${selection.agent.name}'s review$same.")
                 ctx.tasks.upsertAll(listOf(inReview, review))
                 inReview
             } else {
@@ -156,7 +202,13 @@ internal class WorkSteps(private val ctx: OrchestrationContext) {
         ctx.journal.countFinished(stored)
     }
 
+    /** The agents that answered [task]'s questions (C4); the assignees of its delegated parts are read with the tree. */
+    private suspend fun contributors(task: TaskRecord): Set<AgentId> =
+        ctx.messages.list(task.rootId).filter { it.taskId == task.id && it.type == MessageType.ASSISTANCE_RESPONSE }
+            .mapNotNull { (it.from as? Participant.Agent)?.agentId }.toSet()
+
     private suspend fun failed(rt: ObjectiveRuntime, task: TaskRecord, agent: AgentProfile, result: StepResult, maxAttempts: Int) {
+        rt.waitsSoFar.remove(task.id)
         val reason = result.failure ?: "The task did not produce a result."
         val timedOut = result.end == StepEnd.TIMED_OUT
         val stored = ctx.change(rt, task.id, WORKING) { current ->
@@ -187,12 +239,12 @@ internal class WorkSteps(private val ctx: OrchestrationContext) {
 
     /**
      * The team tools offered to [agent] in a task, as its delegation policy allows and where they are registered; a
-     * question to the owner while the owner allows agents' questions.
+     * question to the owner while the owner allows agents' questions ([settings]: the run's own reading).
      */
-    private suspend fun teamTools(agent: AgentProfile): Set<ToolId> = buildSet {
+    private fun teamTools(agent: AgentProfile, settings: FrameworkSettings): Set<ToolId> = buildSet {
         if (agent.delegation.canRequestAssistance && ctx.tools.byId(TeamTools.ASK_ID) != null) add(TeamTools.ASK_ID)
         if (agent.delegation.canDelegate && ctx.tools.byId(TeamTools.DELEGATE_ID) != null) add(TeamTools.DELEGATE_ID)
-        if (ctx.tools.byId(TeamTools.ASK_OWNER_ID) != null && ctx.settings.get().agentQuestionsEnabled) add(TeamTools.ASK_OWNER_ID)
+        if (ctx.tools.byId(TeamTools.ASK_OWNER_ID) != null && settings.agentQuestionsEnabled) add(TeamTools.ASK_OWNER_ID)
     }
 
     /** The last verdict, when it asked for changes that this attempt must address. */
@@ -235,6 +287,9 @@ internal class WorkSteps(private val ctx: OrchestrationContext) {
         }
 
         private const val SUMMARY_CHARS = 400
+
+        /** C4: said of a review when the reviewer works on the same model as the author. */
+        const val SAME_MODEL = " (same model as the author)"
     }
 
     /** Builds a REVIEW task: a review by [reviewer], or the Director's arbitration. */

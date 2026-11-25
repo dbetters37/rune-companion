@@ -4,10 +4,14 @@ import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.IdGenerator
 import com.aicontrolcenter.core.TaskId
+import com.aicontrolcenter.core.activity.ActivityLog
 import com.aicontrolcenter.core.activity.ActivityRecorder
 import com.aicontrolcenter.core.activity.Severity
 import com.aicontrolcenter.core.agents.AgentAvailability
+import com.aicontrolcenter.core.backup.MaintenanceGate
 import com.aicontrolcenter.core.chat.ConversationRepository
+import com.aicontrolcenter.core.health.TimedWaits
+import com.aicontrolcenter.core.llm.ProviderRechecks
 import com.aicontrolcenter.core.memory.MemoryService
 import com.aicontrolcenter.core.registry.AgentStatsLog
 import com.aicontrolcenter.core.registry.RegistryDirectory
@@ -29,6 +33,7 @@ import com.aicontrolcenter.framework.agents.DefaultAgentActivityMonitor
 import com.aicontrolcenter.framework.llm.rethrowIfCancelled
 import com.aicontrolcenter.framework.operator.OperatorTaskHooks
 import com.aicontrolcenter.framework.orchestration.OrchestrationContext.Companion.WORKING
+import java.time.ZoneId
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.time.TimeSource
 import kotlinx.coroutines.CoroutineScope
@@ -36,7 +41,9 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 
@@ -73,6 +80,12 @@ import kotlinx.coroutines.launch
  *    withdrawn, its TASK and ONCE grants revoked), and the first recovery at start-up withdraws
  *    every pending request that no live call waits for, since no waiter survived the stop; a
  *    request raised by work restarted before the recovery ran keeps its waiter and stays open.
+ *  - Phase 6 (WP7): today's limit of model answers, tokens or money pauses the objective, never
+ *    fails it, and uses no attempt (rule 6); a provider that is only not answering, or asks the
+ *    app to slow down, makes the work wait and go on by itself ([timedWaits], R4 part 1), never
+ *    moving it to an agent farther from the phone (rule 25); the objective's options are copied
+ *    wherever a record is rebuilt, never made anew (F12); starting an objective is refused while a
+ *    backup is restored ([MaintenanceGate.RESTORING]).
  *
  * Wiring: build it, then register the team tools with [TeamTools.registerAll], then call
  * [recoverInterrupted] once at start-up before objectives are started.
@@ -98,13 +111,28 @@ class DefaultOrchestrator(
     timeSource: TimeSource = TimeSource.Monotonic,
     /** Ends a task's permissions with it and withdraws stale requests at start-up; null without the phone operator. */
     private val operatorHooks: OperatorTaskHooks? = null,
+    /**
+     * Looks again at a provider that is not answering before work waits for it (D28). The agent side only: the
+     * orchestrator never holds the owner's provider manager (security review of wave 1, F3).
+     */
+    rechecks: ProviderRechecks = ProviderRechecks.None,
+    /** The activity log, for the few entries written at most once however often the app dies around them (D20). */
+    activityLog: ActivityLog? = null,
+    /** The owner's time zone, for the clock times in status lines ("trying again at 10:45"). */
+    zone: () -> ZoneId = { ZoneId.systemDefault() },
+    /** True while a backup is restored (the maintenance gate's `busy`): no objective starts meanwhile. */
+    private val restoring: StateFlow<Boolean> = MutableStateFlow(false),
 ) : Orchestrator {
     private val runtimes = Runtimes()
     private val transcripts = TaskTranscripts(conversations, ids, clock)
-    private val journal = ObjectiveJournal(messages, agents, activity, ids, clock)
+    private val journal = ObjectiveJournal(
+        messages, agents, activity, ids, clock,
+        spaceName = { id -> memory?.observeSpaces()?.first()?.firstOrNull { it.id == id }?.name },
+        log = activityLog,
+    )
     private val ctx = OrchestrationContext(
         CappedTaskStore(operatorHooks?.let { TaskEndingStore(tasks, it) } ?: tasks), messages, agents, directory, settings, toolRegistry, memory,
-        monitor, journal, transcripts, StepRunner(runner, directory, transcripts, journal), ids, clock, runtimes, timeSource,
+        monitor, journal, transcripts, StepRunner(runner, directory, transcripts, journal), ids, clock, runtimes, timeSource, rechecks, zone,
     )
 
     /** Whether the start-up withdrawal of pending requests has run: once per process. */
@@ -125,17 +153,26 @@ class DefaultOrchestrator(
     override val running: StateFlow<Set<TaskId>> = runtimes.running
     override val assignments: StateFlow<Map<AgentId, TaskId>> = runtimes.assignments
 
+    /** Work waiting to be tried again after provider trouble (R4): when the next is due, and a way to make it look again. */
+    override val timedWaits: TimedWaits get() = ctx.waits
+
     override suspend fun startObjective(text: String, options: ObjectiveOptions): TaskRecord {
         val objectiveText = text.trim()
         require(objectiveText.isNotEmpty()) { "Describe the objective first." }
         require(options.maxTasks == null || options.maxTasks!! >= 1) { "Allow at least one task." }
+        check(!restoring.value) { MaintenanceGate.RESTORING }
         val current = settings.get()
         val directorId = current.directorAgentId
             ?: throw IllegalStateException("No Director is designated. Designate a Director agent before giving the team an objective.")
-        val director = directory.snapshot().agentsById[directorId]
+        directory.snapshot().agentsById[directorId]
             ?: throw IllegalStateException("The designated Director no longer exists. Designate another Director agent first.")
-        when (val availability = director.availability) {
-            is AgentAvailability.Ready -> Unit
+        // A Director whose provider is only not answering is looked at again first (D28).
+        val director = when (ctx.prepareChecked(directorId)) {
+            is Readiness.Ready -> null
+            is Readiness.NotReady -> directory.snapshot().agentsById[directorId]
+        }
+        when (val availability = director?.availability) {
+            null, is AgentAvailability.Ready -> Unit
             is AgentAvailability.Disabled -> throw IllegalStateException("The Director, ${director.profile.name}, is switched off. Switch it on to give it an objective.")
             is AgentAvailability.Unavailable -> throw IllegalStateException("The Director, ${director.profile.name}, cannot run right now. ${availability.detail}")
         }
@@ -190,19 +227,23 @@ class DefaultOrchestrator(
             if (objective.status !in RESUMABLE) return@withLockNonCancellable null
             val now = clock.now()
             val limits = ctx.limits(objective, settings.get())
-            val changes = ctx.tasks.getTree(rootId).filter { it.id != rootId && (it.status in RESUMABLE + WORKING || it.isDelegated() && it.status == TaskStatus.QUEUED) }.map {
+            val tree = ctx.tasks.getTree(rootId)
+            val changes = tree.filter { it.id != rootId && (it.status in RESUMABLE + WORKING || it.isDelegated() && it.status == TaskStatus.QUEUED) }.map {
                 if (it.isDelegated()) {
                     // Delegated work belongs to its delegating task's run, which restarts from its brief and may delegate again.
                     it.copy(status = TaskStatus.CANCELLED, error = "Its delegating task restarts from its brief.", statusDetail = "Its delegating task restarts from its brief.", finishedAt = now, updatedAt = now)
                 } else {
-                    it.copy(status = TaskStatus.QUEUED, statusDetail = "Resumed; restarts from its brief.", updatedAt = now)
+                    it.copy(status = TaskStatus.QUEUED, statusDetail = "Resumed; restarts from its brief.", retryAt = null, updatedAt = now)
                 }
-            }
+            } + tree.filter { it.id != rootId && it.status == TaskStatus.QUEUED && it.retryAt != null && !it.isDelegated() }
+                // The owner resumed: work that waited for its provider is tried again at once.
+                .map { it.copy(retryAt = null, statusDetail = "Resumed; tries again now.", updatedAt = now) }
             // Time spent stopped does not count, and time already used stays used: the objective gets what it had left.
             val remaining = remainingWhenStopped(objective, limits.objectiveTimeoutMs)
             val detail = if (remaining > 0) "Resumed." else "Resumed with no time left: the final result is written from what exists."
-            val updated = objective.copy(status = TaskStatus.RUNNING, statusDetail = detail, deadlineAt = now + remaining, updatedAt = now)
+            val updated = objective.copy(status = TaskStatus.RUNNING, statusDetail = detail, deadlineAt = now + remaining, retryAt = null, updatedAt = now)
             ctx.tasks.upsertAll(changes + updated)
+            rt.waitsSoFar.clear()
             updated to changes
         } ?: return
         val (resumed, tasks) = outcome
@@ -225,12 +266,12 @@ class DefaultOrchestrator(
             val now = clock.now()
             val tree = ctx.tasks.getTree(rootId)
             val changes = tree.filter { it.id != rootId && !it.status.isFinished }
-                .map { it.copy(status = TaskStatus.CANCELLED, error = CANCELLED_BY_OWNER, statusDetail = CANCELLED_BY_OWNER, finishedAt = now, updatedAt = now) }
+                .map { it.copy(status = TaskStatus.CANCELLED, error = CANCELLED_BY_OWNER, statusDetail = CANCELLED_BY_OWNER, finishedAt = now, updatedAt = now, retryAt = null) }
             // What was produced is kept; a final document exists only if the Director already wrote it.
             val written = tree.firstOrNull { it.kind == TaskKind.SYNTHESIS && it.status == TaskStatus.COMPLETED }?.result
             val updated = objective.copy(
                 status = TaskStatus.CANCELLED, statusDetail = CANCELLED_BY_OWNER, error = CANCELLED_BY_OWNER,
-                result = objective.result ?: written, finishedAt = now, updatedAt = now,
+                result = objective.result ?: written, finishedAt = now, updatedAt = now, retryAt = null,
             )
             ctx.tasks.upsertAll(changes + updated)
             updated to changes
@@ -295,7 +336,7 @@ class DefaultOrchestrator(
             if (current.kind != TaskKind.OBJECTIVE) {
                 changes += current.copy(
                     status = TaskStatus.QUEUED, attempt = if (current.kind == TaskKind.SYNTHESIS) 0 else current.attempt + 1, revisionRound = 0, finishedAt = null, updatedAt = now,
-                    statusDetail = "Runs again at the owner's request.",
+                    statusDetail = "Runs again at the owner's request.", retryAt = null,
                 )
                 // Tasks that never started because this one did not complete get their chance again.
                 val requeued = HashSet<TaskId>().apply { add(current.id) }
@@ -349,7 +390,15 @@ class DefaultOrchestrator(
         journal.ownerAction(rootId, null, "Objective deleted", "${objective.title}: ${tree.size} task(s), their messages and transcripts.")
     }
 
-    override suspend fun recoverInterrupted(): List<TaskId> {
+    override suspend fun recoverInterrupted(): List<TaskId> = recoverInterrupted(null, true)
+
+    /**
+     * R1 (Phase 6, K14): [cause] is the app-written phrase for why the app stopped ("Android closed the app to free
+     * memory"), which the interrupted texts say instead of the general one, or null when it is not known.
+     * [resumeAllowed] false (safe start, rule 10) leaves every objective interrupted until the owner resumes it, whatever
+     * the setting for resuming says: nothing is resumed, finished or ended by itself.
+     */
+    override suspend fun recoverInterrupted(cause: String?, resumeAllowed: Boolean): List<TaskId> {
         // No waiter outlives the app: every question left open by an earlier run is withdrawn, before any task is recovered.
         if (operatorHooks != null && startedUp.compareAndSet(false, true)) {
             try {
@@ -362,7 +411,8 @@ class DefaultOrchestrator(
         val stuck = ctx.tasks.withStatus(WORKING + TaskStatus.INTERRUPTED)
         val roots = stuck.map { it.rootId }.distinct().filter { runtimes.existing(it)?.isDriven != true }
         val current = settings.get()
-        val autoResume = current.autoResumeInterruptedTasks
+        val autoResume = current.autoResumeInterruptedTasks && resumeAllowed
+        val stopped = interruptedText(cause)
         val affected = ArrayList<TaskId>()
         for (rootId in roots) {
             val rt = runtimes.of(rootId)
@@ -377,7 +427,7 @@ class DefaultOrchestrator(
                 val limits = ctx.limits(objective, current)
                 val tree = ctx.tasks.getTree(rootId)
                 // Each task that was running used up the attempt the app stopped.
-                val interrupted = tree.filter { it.id != rootId && it.status in WORKING }.map { interrupted(it, limits.maxTaskAttempts, now) }
+                val interrupted = tree.filter { it.id != rootId && it.status in WORKING }.map { interrupted(it, limits.maxTaskAttempts, now, cause) }
                 val byId = interrupted.associateBy { it.id }
                 bookkeeping = ObjectiveDriver.onlyBookkeeping(tree.map { byId[it.id] ?: it }, rootId)
                 val waiting = objective.status == TaskStatus.INTERRUPTED
@@ -400,14 +450,15 @@ class DefaultOrchestrator(
                         val inARow = if (idle) idleInterruptions(rootId) + 1 else 0
                         if (inARow > MAX_RESTARTS_WITHOUT_PROGRESS) endEarly = "the objective was interrupted $inARow times in a row without progress"
                         val then = when {
+                            !resumeAllowed -> "Resume it to continue."
                             endEarly != null -> ENDING
                             bookkeeping -> "Only bookkeeping is left: finishing it now."
                             autoResume -> "Resuming."
                             else -> "Resume it to continue."
                         }
                         objective.copy(
-                            status = TaskStatus.INTERRUPTED, attempt = attempt, deadlineAt = now + remaining, updatedAt = now,
-                            statusDetail = if (idle) "$IDLE_INTERRUPTION ($inARow in a row without progress). $then" else "$INTERRUPTED $then",
+                            status = TaskStatus.INTERRUPTED, attempt = attempt, deadlineAt = now + remaining, updatedAt = now, retryAt = null,
+                            statusDetail = if (idle) "$IDLE_INTERRUPTION ($inARow in a row without progress). $then" else "$stopped $then",
                         )
                     }
                 }
@@ -432,6 +483,8 @@ class DefaultOrchestrator(
             journal.send(rootId, objective, Participant.System, Participant.Owner, MessageType.STATUS, objective.statusDetail.orEmpty())
             val why = endEarly
             when {
+                // Safe start: the owner decides (rule 10).
+                !resumeAllowed -> Unit
                 why != null -> driver.conclude(rt, why)
                 bookkeeping -> resume(rootId, byOwner = false, atStartUp = true)
                 autoResume -> resume(rootId, byOwner = false)
@@ -502,16 +555,23 @@ class DefaultOrchestrator(
     private fun remainingWhenStopped(objective: TaskRecord, limitMs: Long): Long =
         objective.deadlineAt?.let { (it - objective.updatedAt).coerceIn(0, limitMs) } ?: limitMs
 
-    /** [task] after the app stopped while it ran: the run counts as an attempt; with none left, the task has failed. */
-    private fun interrupted(task: TaskRecord, maxAttempts: Int, now: Long): TaskRecord {
+    /**
+     * [task] after the app stopped while it ran ([cause]: why, when known): the run counts as an attempt; with none
+     * left, the task has failed.
+     */
+    private fun interrupted(task: TaskRecord, maxAttempts: Int, now: Long, cause: String?): TaskRecord {
         val times = (INTERRUPTIONS.find(task.error.orEmpty())?.groupValues?.get(1)?.toIntOrNull() ?: 0) + 1
-        val what = "Interrupted $times time(s): the app stopped while this was running"
+        val what = "Interrupted $times time(s): ${cause?.let { "$it while this was running" } ?: "the app stopped while this was running"}"
         return if (task.attempt + 1 >= maxAttempts) {
             task.copy(status = TaskStatus.FAILED, error = "$what, and no attempts are left.", statusDetail = "$what, and no attempts are left.", finishedAt = now, updatedAt = now)
         } else {
-            task.copy(status = TaskStatus.INTERRUPTED, attempt = task.attempt + 1, error = "$what.", statusDetail = INTERRUPTED, updatedAt = now)
+            task.copy(status = TaskStatus.INTERRUPTED, attempt = task.attempt + 1, error = "$what.", statusDetail = interruptedText(cause), updatedAt = now)
         }
     }
+
+    /** "Interrupted: Android closed the app to free memory." ([cause]), or the general sentence when it is not known. */
+    private fun interruptedText(cause: String?): String =
+        cause?.trim()?.trimEnd('.')?.takeIf { it.isNotEmpty() }?.let { "Interrupted: $it." } ?: INTERRUPTED
 
     private fun TaskRecord.isDelegated() = kind == TaskKind.WORK && delegationChain.isNotEmpty()
 

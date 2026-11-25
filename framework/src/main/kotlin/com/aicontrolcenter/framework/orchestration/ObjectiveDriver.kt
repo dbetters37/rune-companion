@@ -1,5 +1,6 @@
 package com.aicontrolcenter.framework.orchestration
 
+import com.aicontrolcenter.core.EventId
 import com.aicontrolcenter.core.MessageId
 import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.activity.Severity
@@ -24,6 +25,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Drives one objective from its stored state to its end: plan (unless a plan is stored), run
@@ -33,7 +35,9 @@ import kotlinx.coroutines.withContext
  * The scheduler starts the tasks whose dependencies are COMPLETED, at most
  * [com.aicontrolcenter.core.settings.FrameworkSettings.maxConcurrentTasks] of the objective at
  * a time, and cancels tasks whose dependency finally failed. It wakes when a task ends or the
- * owner changes something, never by polling.
+ * owner changes something, never by polling; and (Phase 6, R4) when the earliest task waiting
+ * for its provider ([TaskRecord.retryAt]) is due, or at [TaskWaits.wake], looking at the wall
+ * clock each time: a task whose time has not come is skipped, and it never counts as stuck.
  *
  * The objective's deadline bounds the work: when it passes, unfinished work is cancelled and
  * the Director writes the final document from what exists (allowed one task time limit of its
@@ -88,6 +92,10 @@ internal class ObjectiveDriver(
         } catch (e: Exception) {
             rethrowIfCancelled(e)
             internalFailure(rt, e)
+        } finally {
+            // Nothing of this objective waits once its job is over: a pause, a cancel, its end.
+            rt.clearWaits()
+            ctx.waits.publish()
         }
     }
 
@@ -182,12 +190,21 @@ internal class ObjectiveDriver(
     private fun readyToFinish(tree: List<TaskRecord>): Boolean =
         SynthesisStep.plannedWork(tree).all { it.status.isFinished } && tree.none { it.kind == TaskKind.SYNTHESIS && it.status == TaskStatus.QUEUED }
 
-    /** Runs the plan until every scheduled task has finished. Returns true; the caller's time-out returns null. */
+    /**
+     * Runs the plan until every scheduled task has finished. Returns true; the caller's time-out returns null. Between
+     * looks it waits for a poke, or until the earliest task waiting for its provider is due ([ObjectiveRuntime.scheduledDue]).
+     */
     private suspend fun schedule(rt: ObjectiveRuntime, scope: CoroutineScope): Boolean {
-        while (true) {
-            val keepGoing = rt.lock.withLockNonCancellable { step(rt, scope) }
-            if (!keepGoing) return true
-            rt.wake.receive()
+        try {
+            while (true) {
+                val keepGoing = rt.lock.withLockNonCancellable { step(rt, scope) }
+                if (!keepGoing) return true
+                val due = rt.scheduledDue
+                if (due == null) rt.wake.receive() else withTimeoutOrNull(ctx.waits.lookAfter(due)) { rt.wake.receive() }
+            }
+        } finally {
+            rt.scheduledDue = null
+            ctx.waits.publish()
         }
     }
 
@@ -223,10 +240,14 @@ internal class ObjectiveDriver(
 
         val scheduled = byId.values.filter { it.isScheduled() }
         val active = scheduled.count { it.status in WORKING }
-        val runnable = scheduled.filter { it.status == TaskStatus.QUEUED && it.dependsOn.all { dep -> byId[dep]?.status == TaskStatus.COMPLETED } }
-            .sortedWith(compareBy({ it.order }, { it.createdAt }, { it.id.value }))
+        val ready = scheduled.filter { it.status == TaskStatus.QUEUED && it.dependsOn.all { dep -> byId[dep]?.status == TaskStatus.COMPLETED } }
+        // Waiting for its provider (R4): skipped until its time has come.
+        val waitingForProvider = ready.filter { (it.retryAt ?: Long.MIN_VALUE) > now }
+        val runnable = (ready - waitingForProvider.toSet()).sortedWith(compareBy({ it.order }, { it.createdAt }, { it.id.value }))
+        rt.scheduledDue = waitingForProvider.mapNotNull { it.retryAt }.minOrNull()
+        ctx.waits.publish()
         var starting = emptyList<TaskRecord>()
-        if (runnable.isNotEmpty() && ctx.messages.count(rt.rootId) >= limits.maxMessages) {
+        if (runnable.isNotEmpty() && ctx.countedMessages(rt.rootId, limits.maxMessages) >= limits.maxMessages) {
             val limit = "the objective reached its limit of ${limits.maxMessages} messages"
             stoppedByLimit(byId, scheduled.filter { it.status == TaskStatus.QUEUED }, limit, "Not started: $limit.", now).forEach(::put)
             ctx.tasks.upsertAll(changed)
@@ -247,7 +268,7 @@ internal class ObjectiveDriver(
 
         val waiting = byId.values.filter { it.isScheduled() && !it.status.isFinished }
         if (waiting.isEmpty()) return rt.taskJobs.isNotEmpty()
-        if (starting.isEmpty() && waiting.none { it.status in WORKING } && rt.taskJobs.isEmpty() && runnable.isEmpty()) {
+        if (starting.isEmpty() && waiting.none { it.status in WORKING } && rt.taskJobs.isEmpty() && runnable.isEmpty() && waitingForProvider.isEmpty()) {
             // Nothing runs and nothing can start: the remaining tasks would wait forever.
             val stuck = waiting.filter { it.status != TaskStatus.IN_REVIEW }.map {
                 it.copy(status = TaskStatus.CANCELLED, error = "Could not be scheduled: ${FinalDocument.whyNot(it)}", finishedAt = now, updatedAt = now)
@@ -285,12 +306,21 @@ internal class ObjectiveDriver(
         }
     }
 
-    /** Runs the synthesis task while it is queued (attempts and retries), as a job the owner can cancel. */
+    /**
+     * Runs the synthesis task while it is queued (attempts and retries), as a job the owner can cancel; a synthesis
+     * waiting for the Director's provider ([TaskRecord.retryAt]) runs when its time has come.
+     */
     private suspend fun runSynthesis(rt: ObjectiveRuntime) {
         while (true) {
             val tree = ctx.tasks.getTree(rt.rootId)
             if (SynthesisStep.plannedWork(tree).any { !it.status.isFinished }) return
             val task = tree.firstOrNull { it.kind == TaskKind.SYNTHESIS }?.takeIf { it.status == TaskStatus.QUEUED } ?: return
+            val retryAt = task.retryAt?.takeIf { it > ctx.clock.now() }
+            if (retryAt != null) {
+                ctx.waits.until(rt, task.id, retryAt)
+                if (!isRunning(rt.rootId)) return
+                continue
+            }
             coroutineScope {
                 val job = launch(start = CoroutineStart.LAZY) { synthesis.run(rt, task.id) }
                 rt.taskJobs[task.id] = job
@@ -348,8 +378,12 @@ internal class ObjectiveDriver(
             }
         }
         for (task in open) {
+            // A task that was waiting for its provider says so: the limit stopped the wait.
+            val why = if (task.status == TaskStatus.QUEUED && task.retryAt != null && task.statusDetail?.startsWith(ProviderWaits.WAITING) == true) {
+                "$cancelled It was waiting: ${task.statusDetail!!.removePrefix(ProviderWaits.WAITING).trim().substringBefore("; trying again")}."
+            } else cancelled
             changes[task.id] = if (task.kind == TaskKind.WORK && task.delegationChain.isEmpty() && task.result != null) settled(task)
-            else task.copy(status = TaskStatus.CANCELLED, error = cancelled, statusDetail = cancelled, finishedAt = now, updatedAt = now)
+            else task.copy(status = TaskStatus.CANCELLED, error = why, statusDetail = why, finishedAt = now, updatedAt = now, retryAt = null)
         }
         for (review in open.filter { it.kind == TaskKind.REVIEW }) {
             val reviewed = review.parentId?.let { changes[it] ?: byId[it] } ?: continue
@@ -481,6 +515,8 @@ internal class ObjectiveDriver(
             }
             when {
                 saved == null -> storedNote(objective, document, written, "saving it reached its time limit")
+                // D23: the Director lost the right to write the summary where it is: said, with what the owner can do.
+                saved.refused != null -> storedNote(objective, document, written, saved.refused)
                 saved.error != null -> storedNote(objective, document, written, failedWith(saved.error), errored = true)
                 !written -> storedNote(objective, document, written, NOT_WRITTEN)
                 saved.ownersVersion -> storedNote(objective, document, written, null)
@@ -673,11 +709,13 @@ internal class ObjectiveDriver(
             val id = announcementId(done.rootId, done.attempt)
             if (ctx.messages.list(done.rootId).any { it.id == id }) return
             val director = done.assignee?.let { Participant.Agent(it) } ?: Participant.System
+            // D20: the log entry has an id of its own for the run, so dying between it and the message repeats nothing.
+            val once = EventId(id.value)
             if (done.status == TaskStatus.COMPLETED) {
-                ctx.journal.taskChanged(done, "Objective completed")
+                ctx.journal.taskChanged(done, "Objective completed", once = once)
                 ctx.journal.send(done.rootId, done, director, Participant.Owner, MessageType.COMPLETION, "Final result ready: ${done.title}", id = id)
             } else {
-                ctx.journal.taskChanged(done, "Objective failed", Severity.WARNING)
+                ctx.journal.taskChanged(done, "Objective failed", Severity.WARNING, once = once)
                 ctx.journal.send(done.rootId, done, director, Participant.Owner, MessageType.FAILURE, "${done.title}: ${done.error}", id = id)
             }
         } catch (e: Exception) {

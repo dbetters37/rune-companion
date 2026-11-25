@@ -23,6 +23,11 @@ import com.aicontrolcenter.framework.agents.RunLimits
  * limit is reached), the result is used as it is and the task's status line says that it was
  * not reviewed and why, so the final document can say so. Holding back a finished result
  * because nobody could check it would lose work the owner asked for.
+ *
+ * Phase 6: today's limit reached pauses the objective (rule 6); a reviewer whose provider is not
+ * answering, or asks the app to slow down, waits and is tried again without using an attempt (R4);
+ * the reviewer is chosen as [AgentSelector.forReview] says (C4), and a review by an agent on the
+ * same model as the author says so.
  */
 internal class ReviewSteps(private val ctx: OrchestrationContext, private val work: WorkSteps) {
 
@@ -42,54 +47,87 @@ internal class ReviewSteps(private val ctx: OrchestrationContext, private val wo
 
         val ready = when (val choice = chooseReviewer(review, reviewed, kind)) {
             is Readiness.Ready -> choice
-            is Readiness.NotReady -> return couldNotReview(rt, review, reviewed, kind, choice.reason)
+            is Readiness.NotReady -> {
+                if (choice.transient) {
+                    ctx.waitForProvider(rt, review, ProviderWaits.named(choice.provider, "its provider"), null, setOf(TaskStatus.QUEUED, TaskStatus.RUNNING))
+                    return
+                }
+                return couldNotReview(rt, review, reviewed, kind, choice.reason)
+            }
         }
+        // C4: said when the reviewer thinks with the same model as the author did.
+        val same = if (kind == ReviewKind.REVIEW && sameModel(reviewed, ready)) WorkSteps.SAME_MODEL else ""
         val conversationId = review.conversationId ?: ctx.transcripts.open(ready.agent.id, "${kind.prefix.trim()} ${reviewed.title}")
         val now = ctx.clock.now()
         val started = ctx.change(rt, reviewId, setOf(TaskStatus.QUEUED, TaskStatus.RUNNING)) {
             it.copy(
                 status = TaskStatus.RUNNING, assignee = ready.agent.id, conversationId = conversationId, startedAt = it.startedAt ?: now,
-                deadlineAt = now + limits.taskTimeoutMs, statusDetail = "${ready.agent.name} is reviewing, ${ready.destination}.",
+                deadlineAt = now + limits.taskTimeoutMs, retryAt = null, statusDetail = "${ready.agent.name} is reviewing$same, ${ready.destination}.",
             )
         } ?: return
         ctx.journal.taskChanged(started, if (kind == ReviewKind.REVIEW) "Review started" else "Arbitration started")
         val author = authorName(reviewed.assignee)
         val earlier = reviewed.reviews.map { it to authorName(it.reviewer) }
         val budget = ctx.steps.briefBudget(ready)
+        val notes = work.notesFor(started, also = reviewed)
         val brief = when (kind) {
             ReviewKind.REVIEW -> {
                 val plan = ctx.tasks.getTree(reviewed.rootId).filter { it.kind == TaskKind.WORK && it.delegationChain.isEmpty() }.sortedBy { it.order }
-                ctx.briefs.review(ReviewBrief(objective, reviewed, author, plan.indexOfFirst { it.id == reviewed.id } + 1, plan.size, earlier), budget)
+                ctx.briefs.review(ReviewBrief(objective, reviewed, author, plan.indexOfFirst { it.id == reviewed.id } + 1, plan.size, earlier, notes), budget)
             }
             // Only the framework's own reason goes into the brief's text; what agents wrote is framed there.
-            ReviewKind.ARBITRATION -> ctx.briefs.arbitration(ArbitrationBrief(objective, reviewed, author, earlier, arbitrationWhy(review)), budget)
+            ReviewKind.ARBITRATION -> ctx.briefs.arbitration(ArbitrationBrief(objective, reviewed, author, earlier, arbitrationWhy(review), notes), budget)
         }
         ctx.runtimes.started(ready.agent.id, started.id)
         val result = try {
             ctx.steps.run(
                 ready, started, conversationId, brief, json = true, limits = RunLimits(timeoutMs = limits.taskTimeoutMs),
-                purpose = "a result of another agent for review",
+                purpose = "a result of another agent for review", screens = objective.options?.screenActionsAllowed ?: true,
             )
         } finally {
             ctx.runtimes.ended(ready.agent.id, started.id)
         }
         ctx.account(rt, started.id) { it.copy(usage = it.usage + result.usage) }
+        when (val trouble = Trouble.of(result)) {
+            is Trouble.DailyLimit -> return run { ctx.pauseForDailyLimit(rt, trouble.sentence) }
+            is Trouble.Passing -> return run { ctx.waitForProvider(rt, started, ProviderWaits.named(ready.provider, ready.providerName), trouble.error, setOf(TaskStatus.RUNNING)) }
+            null -> Unit
+        }
+        rt.waitsSoFar.remove(started.id)
         if (!result.ok) return runFailed(rt, started, reviewed, kind, result, limits.maxTaskAttempts)
         when (kind) {
-            ReviewKind.REVIEW -> applyVerdict(rt, started, ready.agent, VerdictParser.review(result.text), limits.maxRevisionRounds, limits.maxTaskAttempts, limits.maxTasks)
+            ReviewKind.REVIEW -> applyVerdict(rt, started, ready.agent, VerdictParser.review(result.text), limits.maxRevisionRounds, limits.maxTaskAttempts, limits.maxTasks, same)
             ReviewKind.ARBITRATION -> applyArbitration(rt, started, ready.agent, VerdictParser.arbitration(result.text))
         }
     }
 
+    /**
+     * The assigned reviewer when it can run, or waits for its provider (rule 25: never another agent then); otherwise the
+     * best other reviewer (C4). An arbitration is the Director's.
+     */
     private suspend fun chooseReviewer(review: TaskRecord, reviewed: TaskRecord, kind: ReviewKind): Readiness {
-        val assigned = review.assignee?.let { ctx.steps.prepare(it) }
+        val assigned = review.assignee?.let { ctx.prepareChecked(it) }
         if (assigned is Readiness.Ready || kind == ReviewKind.ARBITRATION) return assigned ?: Readiness.NotReady("the Director is not known")
-        val team = ctx.directory.snapshot().agents.filter { it.profile.id != review.assignee }
-        return when (val selection = ctx.selector.forReview(TaskNeeds(reviewed.title, reviewed.instructions), reviewed.assignee, team, ctx.runtimes.loads())) {
+        if (assigned is Readiness.NotReady && assigned.transient) return assigned
+        val snapshot = ctx.directory.snapshot()
+        val team = snapshot.agents.filter { it.profile.id != review.assignee }
+        val tree = ctx.tasks.getTree(reviewed.rootId)
+        val helpers = ctx.messages.list(reviewed.rootId).filter { it.taskId == reviewed.id && it.type == MessageType.ASSISTANCE_RESPONSE }
+            .mapNotNull { (it.from as? Participant.Agent)?.agentId } + tree.filter { it.parentId == reviewed.id && it.kind == TaskKind.WORK }.mapNotNull { it.assignee }
+        val authorModel = reviewed.assignee?.let { (ctx.steps.prepare(it) as? Readiness.Ready)?.modelId }
+        val selection = ctx.selector.forReview(
+            TaskNeeds(reviewed.title, reviewed.instructions), reviewed.assignee, team, ctx.runtimes.loads(),
+            contributors = helpers.toSet(), previousReviewer = reviewed.reviews.lastOrNull()?.reviewer, authorModel = authorModel, models = snapshot.modelsById,
+        )
+        return when (selection) {
             is Selection.Chosen -> ctx.steps.prepare(selection.agent.id)
             is Selection.NoneSuitable -> Readiness.NotReady(selection.reason)
         }
     }
+
+    /** The reviewer works on the model the author works on now (C4). */
+    private suspend fun sameModel(reviewed: TaskRecord, reviewer: Readiness.Ready): Boolean =
+        reviewed.assignee?.let { (ctx.steps.prepare(it) as? Readiness.Ready)?.modelId } == reviewer.modelId
 
     private suspend fun applyVerdict(
         rt: ObjectiveRuntime,
@@ -99,6 +137,8 @@ internal class ReviewSteps(private val ctx: OrchestrationContext, private val wo
         maxRounds: Int,
         maxAttempts: Int,
         maxTasks: Int,
+        /** [WorkSteps.SAME_MODEL] when the reviewer works on the author's model, else empty. */
+        same: String = "",
     ) {
         val now = ctx.clock.now()
         val unreadable = reading is VerdictReading.Unreadable
@@ -121,7 +161,7 @@ internal class ReviewSteps(private val ctx: OrchestrationContext, private val wo
             val judged = reviewed.copy(reviews = reviewed.reviews + verdict, updatedAt = now)
             var arbitration: TaskRecord? = null
             val next = when (step) {
-                ReviewStep.Accept -> judged.copy(status = TaskStatus.COMPLETED, finishedAt = now, statusDetail = "Approved by ${reviewer.name}.")
+                ReviewStep.Accept -> judged.copy(status = TaskStatus.COMPLETED, finishedAt = now, statusDetail = "Approved by ${reviewer.name}$same.")
                 is ReviewStep.Revise -> judged.copy(status = TaskStatus.QUEUED, revisionRound = step.round, error = null, statusDetail = "${reviewer.name} asked for revision ${step.round}.")
                 is ReviewStep.NewAttempt -> judged.copy(status = TaskStatus.QUEUED, attempt = step.attempt, revisionRound = 0, error = null, statusDetail = "${reviewer.name} rejected the result; attempt ${step.attempt + 1} follows.")
                 is ReviewStep.Arbitrate -> {

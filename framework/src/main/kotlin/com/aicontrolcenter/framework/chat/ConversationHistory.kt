@@ -42,4 +42,19 @@ internal object ConversationHistory {
         answerLeftovers()
         return messages
     }
+
+    /**
+     * What a model is sent to answer the owner's last message again ("Send again", R3): the history as [toMessages]
+     * rebuilds it, so tool calls already made are not made again, except that a reply the agent had finished after
+     * that message (a turn that failed after it, or was cut off at the output limit) is left out, so the model answers
+     * the owner's message rather than its own reply.
+     */
+    fun forSendAgain(entries: List<ConversationEntry>): List<ChatMessage> {
+        val messages = toMessages(entries)
+        val lastOwner = messages.indexOfLast { it.role == ChatRole.USER }
+        val last = messages.lastOrNull() ?: return messages
+        return if (lastOwner >= 0 && lastOwner < messages.lastIndex && last.role == ChatRole.ASSISTANT && last.toolCalls.isEmpty()) {
+            messages.subList(0, lastOwner + 1).toList()
+        } else messages
+    }
 }

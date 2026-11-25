@@ -32,6 +32,10 @@ import java.util.concurrent.ConcurrentHashMap
  *  - [limit] is the objective's time limit while its plan runs: the deadline it started from and
  *    its [WaitClock], whose paused time (waiting for the owner) moves the deadline later
  *    ([deadlineNow]).
+ *  - [scheduledDue] and [dueAt] are when work that waits to be tried again (Phase 6, R4: a provider
+ *    not answering, "slow down" answers) is due: the earliest planned task the scheduler skips for
+ *    now, and the planning, synthesis or delegated work waiting in a step of its own, by task id.
+ *    [waitsSoFar] counts each task's waits in a row, which make the next one longer.
  */
 internal class ObjectiveRuntime(val rootId: TaskId) {
     val lock = Mutex()
@@ -65,6 +69,22 @@ internal class ObjectiveRuntime(val rootId: TaskId) {
     fun deadlineNow(stored: Long?): Long? = limit?.let { it.deadline + it.clock.pausedMs() } ?: stored
 
     val isDriven: Boolean get() = driving && job?.isActive == true
+
+    @Volatile
+    var scheduledDue: Long? = null
+
+    val dueAt = ConcurrentHashMap<TaskId, Long>()
+
+    val waitsSoFar = ConcurrentHashMap<TaskId, Int>()
+
+    /** When the earliest wait of this objective is due; null when nothing of it waits. */
+    fun nextDueAt(): Long? = listOfNotNull(scheduledDue, dueAt.values.minOrNull()).minOrNull()
+
+    /** Nothing of this objective waits any more: its job ended. */
+    fun clearWaits() {
+        scheduledDue = null
+        dueAt.clear()
+    }
 }
 
 /** The runtimes of all objectives, and the live views derived from them. */
@@ -86,6 +106,12 @@ internal class Runtimes {
     fun remove(rootId: TaskId) {
         byRoot.remove(rootId)
     }
+
+    /** Tells every objective's scheduler to look again (a timed wait may be due, [TaskWaits.wake]). */
+    fun pokeAll() = byRoot.values.forEach { it.poke() }
+
+    /** When the earliest wait of any objective is due, or null. */
+    fun nextDueAt(): Long? = byRoot.values.mapNotNull { it.nextDueAt() }.minOrNull()
 
     fun setRunning(rootId: TaskId, running: Boolean) =
         runningState.update { if (running) it + rootId else it - rootId }

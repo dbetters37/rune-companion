@@ -73,9 +73,10 @@ internal class KnowledgeKeeper(private val ctx: OrchestrationContext) {
     /**
      * What an attempt to save did: whether the summary holds the owner's version (left as it
      * is), and the first store error it met ([save] went on with the rest after it), if any. A
-     * permission refusal is not such an error: it is logged only.
+     * permission refusal is not such an error: it is logged, and when it kept the summary from
+     * being saved, [refused] says why in words for the objective's status (D23).
      */
-    class Saved(val ownersVersion: Boolean, val error: Exception?)
+    class Saved(val ownersVersion: Boolean, val error: Exception?, val refused: String? = null)
 
     /**
      * Saves what the objective taught the team, its final document being [document], in the
@@ -100,6 +101,7 @@ internal class KnowledgeKeeper(private val ctx: OrchestrationContext) {
             if (e !is MemoryPermissionException && error == null) error = e
         }
         var owners = false
+        var refused: String? = null
         if (written) {
             try {
                 owners = saveSummary(objective, director, summary(objective, document), result, startRevision)
@@ -107,6 +109,8 @@ internal class KnowledgeKeeper(private val ctx: OrchestrationContext) {
                 rethrowIfCancelled(e)
                 ctx.journal.warn(objective.id, objective, "Knowledge not saved", refusal(e), directorId)
                 failed(e)
+                // D23: a summary the Director may no longer write is named in the objective's status, with what to do.
+                if (e is MemoryPermissionException) refused = refusedSentence(objective)
             }
         }
         for ((task, agent) in keptWork(objective)) {
@@ -118,7 +122,13 @@ internal class KnowledgeKeeper(private val ctx: OrchestrationContext) {
                 failed(e)
             }
         }
-        return Saved(owners, error)
+        return Saved(owners, error, refused)
+    }
+
+    /** D23: "the Director may no longer write to the shared space "Team notes". Allow it in Memory > Spaces" (no full stop). */
+    private suspend fun refusedSentence(objective: TaskRecord): String {
+        val place = orNull { savedSummary(objective) }?.let { orNull { placeOf(it.scope, "its own memory") } } ?: "the space it saves summaries to"
+        return "the Director may no longer write to $place. Allow it in Memory > Spaces"
     }
 
     /**
@@ -158,15 +168,16 @@ internal class KnowledgeKeeper(private val ctx: OrchestrationContext) {
     }
 
     /**
-     * The owner changed [summary]'s content since its Director last wrote it (its history, in
-     * order, says so; its first version is the Director's). Only edits that changed the content
-     * count: an owner who only changed its importance, tags, title or tier left the Director's
-     * text, which is then kept up to date. An edit whose note does not name its fields counts.
+     * The owner changed [summary]'s content since anyone else last did (its history, in order,
+     * says so; its first version is the Director's): the last edit of its content is the owner's
+     * (D22: another agent's later edit makes it no longer the owner's version, and the Director
+     * then keeps it up to date again). Only edits that changed the content count: an owner who
+     * only changed its importance, tags, title or tier left the text as it was. An edit whose note
+     * does not name its fields counts. [directorId] is kept for the callers' sake.
      */
-    private fun ownersVersion(summary: MemoryRecord, directorId: AgentId): Boolean {
-        val edits = summary.history.filter { it.action == ProvenanceAction.EDITED && it.changedContent() }
-        return edits.indexOfLast { it.byOrigin == ProvenanceOrigin.OWNER } > edits.indexOfLast { it.byOrigin == ProvenanceOrigin.AGENT && it.byAgentId == directorId }
-    }
+    @Suppress("UNUSED_PARAMETER")
+    private fun ownersVersion(summary: MemoryRecord, directorId: AgentId): Boolean =
+        summary.history.lastOrNull { it.action == ProvenanceAction.EDITED && it.changedContent() }?.byOrigin == ProvenanceOrigin.OWNER
 
     private fun ProvenanceEvent.changedContent(): Boolean = changedFields().let { it.isEmpty() || CONTENT in it }
 

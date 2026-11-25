@@ -64,7 +64,9 @@ class TeamToolsTest {
         team.settle()
         val work = team.work(objective.id).single()
         assertEquals(TaskStatus.COMPLETED, work.status)
-        assertTrue(work.result!!.contains("Analyst answered:\nBeta is cheapest."), work.result)
+        // C7: the teammate's answer comes back framed as data.
+        assertTrue(work.result!!.contains("Analyst answered. ${TeamDesk.FRAMED}"), work.result)
+        assertEquals("Beta is cheapest.", DataBlock.parseAll(work.result!!).single { it.label == "Answer from Analyst" }.content)
         val request = team.messagesOf(objective.id, MessageType.ASSISTANCE_REQUEST).single()
         assertEquals(Participant.Agent(team.researcher.id), request.from)
         assertEquals(Participant.Agent(team.analyst.id), request.to)
