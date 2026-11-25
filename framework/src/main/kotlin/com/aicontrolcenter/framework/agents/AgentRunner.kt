@@ -15,22 +15,26 @@ import com.aicontrolcenter.core.llm.LlmException
 import com.aicontrolcenter.core.llm.ModelGateway
 import com.aicontrolcenter.core.llm.TokenUsage
 import com.aicontrolcenter.core.llm.ToolCallRequest
-import com.aicontrolcenter.core.llm.ToolDefinition
 import com.aicontrolcenter.core.operator.OwnerRequest
 import com.aicontrolcenter.core.operator.ScreenOperator
 import com.aicontrolcenter.core.registry.AgentStatsLog
 import com.aicontrolcenter.core.settings.FrameworkSettings
 import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.tasks.withPausableTimeout
+import com.aicontrolcenter.core.tools.CapabilityConstraint
 import com.aicontrolcenter.core.tools.ToolContext
 import com.aicontrolcenter.core.tools.ToolRegistry
 import com.aicontrolcenter.core.tools.ToolSpec
 import com.aicontrolcenter.framework.llm.RecalledMemoriesBlock
 import com.aicontrolcenter.framework.llm.TokenEstimator
+import com.aicontrolcenter.framework.llm.rethrowIfCancelled
 import com.aicontrolcenter.framework.memory.AutoRecall
 import com.aicontrolcenter.framework.memory.MemoryReferences
 import com.aicontrolcenter.framework.operator.OwnerWaits
+import com.aicontrolcenter.framework.tools.ToolCallEnd
+import com.aicontrolcenter.framework.tools.ToolExecution
 import com.aicontrolcenter.framework.tools.ToolExecutor
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.time.TimeSource
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
@@ -49,7 +53,8 @@ import kotlinx.coroutines.withContext
  *  - Model failures and limits end the run with a result, never with an exception. Only
  *    cancellation of the caller propagates, after what was produced has been handed over.
  *  - Tool results go back to the model as tool messages and nowhere else: they cannot change
- *    limits, the tool list or the system prompt.
+ *    limits, the tool list or the system prompt. The tool list changes only when the model opens
+ *    one of the agent's own tool families ([ToolMenu]), and then only by appending that family.
  *  - What the owner changes about the agent takes effect within the turn: the agent is read
  *    again before every model call and every tool call. Each call is authorised against the
  *    agent as it is then, so a tool switched off mid-turn is refused; an agent switched off or
@@ -75,6 +80,20 @@ import kotlinx.coroutines.withContext
  *    that one may be operating an app, and ends the indicator itself when it ends (or the
  *    indicator ends [ScreenOperator.SESSION_IDLE_MS] after the last screen call). A run that never
  *    touched the screen ends nothing.
+ *  - While a screen tool's call waits for the owner to answer a request about one app, the
+ *    agent's session in that app is held ([ScreenOperator.holdSession], keyed by the request id;
+ *    Phase 6, D4, rule 12), from the moment it waits until the call has ended, so the banner and
+ *    Stop stay while the owner answers and while the approved action waits for its app to come
+ *    back ([com.aicontrolcenter.core.tools.PreparedAction.changedSinceOwnerAnswered]). Every hold
+ *    is released when the call ends, however it ends.
+ *  - Lean requests (Phase 6, WP15, rule 28): an agent whose tools would take more than
+ *    [ToolMenu.THRESHOLD_TOKENS] estimated tokens is offered a [ToolMenu] (its always-on tools
+ *    and `tools_open`) instead of every tool; opened families are appended for the rest of the
+ *    run. The system prompt and every definition already offered stay byte-identical from call to
+ *    call, so providers' prompt caches apply. The menu offers only the agent's own tools and the
+ *    run's extra tools, and authorises nothing: every call goes to the tool executor as before.
+ *  - Every model call names the run's agent, task, objective and chat ([CallContext]), so the
+ *    gateway counts its tokens and cost against them (Phase 6, K8, K11).
  *
  * A request can narrow a run, never widen it: [AgentRunRequest.limits] lowers the model call,
  * tool call and time limits for one run (a teammate's short answer, a task with little time
@@ -98,8 +117,10 @@ class AgentRunner(
     private val recall: AutoRecall? = null,
     /** Measures the run's time limit; tests pass the test scheduler's (`testTimeSource`). */
     private val timeSource: TimeSource = TimeSource.Monotonic,
-    /** Ends the agent's "operating" indicator when a run ends; null without screen operation. */
+    /** Ends the agent's "operating" indicator when a run ends, and holds it while a screen action waits; null without screen operation. */
     private val screen: ScreenOperator? = null,
+    /** Above this many estimated tokens of tool definitions a run offers a [ToolMenu]; tests may lower it. */
+    private val toolMenuThresholdTokens: Int = ToolMenu.THRESHOLD_TOKENS,
 ) {
     /** How memory tool results are stored and written out again; shared with the chat, which shows them. */
     internal val references = MemoryReferences(tools)
@@ -148,15 +169,18 @@ class AgentRunner(
 
     /**
      * Roughly how many tokens the first model call of [request] would send: system prompt,
-     * conversation and tool definitions. Lets a caller refuse a conversation that cannot fit
-     * the model before anything is sent.
+     * conversation and the tool definitions it offers (with a [ToolMenu], the always-on tools,
+     * `tools_open` and the families the conversation already used; a family opened later adds
+     * its definitions to the calls after it). Lets a caller refuse a conversation that cannot
+     * fit the model before anything is sent.
      */
     fun estimatePromptTokens(request: AgentRunRequest): Int {
         val offered = offeredTools(request)
-        val system = ChatMessage.system(prompts.compose(request.agent, offered))
+        val menu = menuFor(request, offered)
+        val system = ChatMessage.system(prompts.compose(request.agent, offered, menu))
         // A stored memory search result is a reference here; it is counted at the most it can take once written out.
         val referenced = request.messages.sumOf { references.renderedCharsAtMost(it) }
-        return TokenEstimator.tokens(listOf(system) + request.messages, offered.map(::definition)) +
+        return TokenEstimator.tokens(listOf(system) + request.messages, menu?.definitions ?: offered.map(::definition)) +
             (referenced + LATIN_CHARS_PER_TOKEN - 1) / LATIN_CHARS_PER_TOKEN
     }
 
@@ -168,7 +192,14 @@ class AgentRunner(
     private fun offeredTools(request: AgentRunRequest): List<ToolSpec> =
         (request.agent.toolIds + request.extraToolIds).mapNotNull { tools.byId(it)?.spec }.sortedBy { it.functionName }
 
-    private fun definition(spec: ToolSpec) = ToolDefinition(spec.functionName, spec.description, spec.parameters)
+    /**
+     * The menu of a run that offers [offered], with the families the conversation already used
+     * open from the first call, or null when every tool is offered at once ([ToolMenu.of]).
+     */
+    private fun menuFor(request: AgentRunRequest, offered: List<ToolSpec>): ToolMenu? =
+        ToolMenu.of(offered, request.extraToolIds, tools, toolMenuThresholdTokens)?.also { it.openUsedIn(request.messages) }
+
+    private fun definition(spec: ToolSpec) = ToolMenu.definition(spec)
 
     private class Ending(val end: RunEnd, val notice: String?, val error: LlmException? = null)
 
@@ -185,13 +216,16 @@ class AgentRunner(
 
         private val agent = request.agent
         private val offered: List<ToolSpec> = offeredTools(request)
-        private val definitions = offered.map(::definition)
+
+        /** Offers the agent's tools by family when they are many (rule 28); null: every tool on every call, as before. */
+        private val menu: ToolMenu? = menuFor(request, offered)
+        private val allDefinitions = if (menu == null) offered.map(::definition) else emptyList()
         private val transcript = ArrayList<ChatMessage>().apply {
-            add(ChatMessage.system(prompts.compose(agent, offered)))
+            add(ChatMessage.system(prompts.compose(agent, offered, menu)))
             addAll(request.messages)
         }
         private val produced = ArrayList<ChatMessage>()
-        private var callContext = CallContext(agent.id, request.taskId, request.rootTaskId, request.purpose)
+        private var callContext = CallContext(agent.id, request.taskId, request.rootTaskId, request.purpose, request.conversationId)
         private val maxModelCalls = limits.maxModelCallsPerTask.coerceAtLeast(1).let { cap -> request.limits.maxModelCalls?.coerceIn(1, cap) ?: cap }
         private val maxToolCalls = limits.maxToolCallsPerTask.coerceAtLeast(0).let { cap -> request.limits.maxToolCalls?.coerceIn(0, cap) ?: cap }
         private val budget = request.callBudget?.also { it.limits(maxModelCalls, maxToolCalls) }
@@ -253,7 +287,7 @@ class AgentRunner(
             report("Waiting for the model")
             listener.onModelCall(modelCalls)
             val chatRequest = ChatRequest(
-                messages = transcript.toList(), tools = definitions,
+                messages = transcript.toList(), tools = menu?.definitions ?: allDefinitions,
                 temperature = agent.generation.temperature, maxOutputTokens = agent.generation.maxOutputTokens,
                 jsonOutput = request.jsonOutput,
             )
@@ -330,14 +364,20 @@ class AgentRunner(
         /** Runs the calls in order. Returns an ending when the tool budget ran out, or the agent was stopped, before all of them ran. */
         private suspend fun runTools(calls: List<ToolCallRequest>): Ending? {
             for (call in calls) {
+                // Opening a family of the menu is not a tool call: it acts on nothing and counts against no tool limit.
+                val opening = menu?.answers(call) == true
                 val chargedToolCalls = budget?.chargedToolCalls ?: 0
-                if (toolCalls + chargedToolCalls >= maxToolCalls) {
+                if (!opening && toolCalls + chargedToolCalls >= maxToolCalls) {
                     val helpers = if (chargedToolCalls > 0) " and $chargedToolCalls by teammates answering its questions" else ""
                     return Ending(RunEnd.TOOL_CALL_LIMIT, "Stopped after $toolCalls tool calls$helpers, the limit for one task.")
                 }
                 val profile = when (val now = current()) {
                     is Outcome.Stop -> return now.ending
                     is Outcome.Go -> now.agent
+                }
+                if (opening) {
+                    openFamily(call, checkNotNull(menu))
+                    continue
                 }
                 val spec = tools.byFunctionName(call.name)?.spec
                 if (spec?.id?.value?.startsWith(SCREEN_TOOL_PREFIX) == true) usedScreen = true
@@ -347,9 +387,17 @@ class AgentRunner(
                 budget?.ownToolCall()
                 executing = call
                 val turn = AgentTurnInfo(request.modelId, modelName, request.conversationId, request.extraToolIds)
-                val execution = withContext(turn + Waits(spec?.title ?: call.name.take(MAX_TOOL_NAME_SHOWN))) {
-                    executor.execute(call, ToolContext(profile, request.taskId, request.rootTaskId, request.delegationChain, request.conversationId))
+                val waits = Waits(spec?.title ?: call.name.take(MAX_TOOL_NAME_SHOWN), screenTool = spec?.id?.value?.startsWith(SCREEN_TOOL_PREFIX) == true)
+                val execution = try {
+                    withContext(turn + waits) {
+                        executor.execute(call, ToolContext(profile, request.taskId, request.rootTaskId, request.delegationChain, request.conversationId))
+                    }
+                } finally {
+                    // The hold covered the owner's answer, the action's wait for its app and the action itself (D4).
+                    waits.releaseHolds()
                 }
+                // A tool of a family the menu has not opened yet ran as usual (the executor decided it); its family is offered from now on.
+                menu?.openFamilyOf(call.name)
                 executing = null
                 if (!execution.outcome.ok) toolErrors++
                 unanswered.remove(call)
@@ -399,11 +447,53 @@ class AgentRunner(
         private fun report(detail: String, activity: AgentActivity = AgentActivity.WORKING) =
             monitor.report(agent.id, activity, request.activityLabel?.let { "$it · $detail" } ?: detail, request.taskId)
 
-        /** Shows a tool call's wait for the owner as the agent's activity and tells the listener. */
-        private inner class Waits(private val tool: String) : OwnerWaits() {
+        /**
+         * Answers a `tools_open` call from the menu: the family's tools are offered from the next
+         * model call on. Nothing is run, asked or stored but the answer in the transcript.
+         */
+        private suspend fun openFamily(call: ToolCallRequest, menu: ToolMenu) {
+            listener.onToolStarted(call, ToolMenu.SPEC)
+            val outcome = menu.open(call)
+            unanswered.remove(call)
+            append(ChatMessage.toolResult(call.id, call.name, outcome.content, isError = !outcome.ok), null, null)
+            listener.onToolFinished(ToolExecution(call, ToolMenu.SPEC, outcome, if (outcome.ok) ToolCallEnd.OK else ToolCallEnd.REJECTED, 0))
+        }
+
+        /**
+         * Shows a tool call's wait for the owner as the agent's activity and tells the listener.
+         * For a screen tool's request about one app ([screenTool]), it also holds the agent's
+         * session in that app until [releaseHolds] (D4).
+         */
+        private inner class Waits(private val tool: String, private val screenTool: Boolean) : OwnerWaits() {
+            /** The ids of the holds this call took, released when it ends. */
+            private val holds = CopyOnWriteArrayList<String>()
+
             override suspend fun waiting(request: OwnerRequest) {
+                val app = request.constraint as? CapabilityConstraint.App
+                if (screenTool && app != null && screen != null) {
+                    val holdId = request.id.value
+                    try {
+                        screen.holdSession(holdId, agent.name, app.packageName)
+                        holds.addIfAbsent(holdId)
+                    } catch (e: Exception) {
+                        // Only the banner depends on it; the wait itself goes on.
+                        rethrowIfCancelled(e)
+                    }
+                }
                 report("Waiting for your answer: $tool", AgentActivity.WAITING_FOR_APPROVAL)
                 listener.onWaitingForOwner(request)
+            }
+
+            /** Ends every hold this call took; not suspending, so it also runs while the run is being cancelled. */
+            fun releaseHolds() {
+                for (holdId in holds) {
+                    try {
+                        screen?.releaseSession(holdId)
+                    } catch (e: Exception) {
+                        // The device ends a hold with Stop, and its session ends by itself after a while.
+                    }
+                }
+                holds.clear()
             }
 
             override suspend fun answered(request: OwnerRequest) {
