@@ -7,6 +7,7 @@ import com.aicontrolcenter.core.llm.ToolCallRequest
 import com.aicontrolcenter.core.llm.ToolChoice
 import com.aicontrolcenter.core.llm.ToolDefinition
 import com.aicontrolcenter.core.llm.ToolResultContent
+import com.aicontrolcenter.framework.orchestration.DataBlock
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -93,10 +94,14 @@ internal object PromptedToolsFormat {
         "<tool_result name=\"$name\"$status>\n${quote(result.content)}\n</tool_result>"
     }
 
-    /** [text] with its call and result tags and bracket markers defused, and nothing else changed. */
+    /**
+     * [text] with its call and result tags and bracket markers defused, and the owner notes' tag name and label made
+     * inert (rule 24: tool output, which this path puts into a user message, can never pass for a note from the owner;
+     * [DataBlock.neutralise]), and nothing else changed.
+     */
     fun quote(text: String): String {
         val out = CALL_TAG.replace(text) { "&lt;" + it.groupValues[1] + it.groupValues[2] }
-        return BRACKET_MARKER.replace(out, "&#91;")
+        return DataBlock.neutralise(BRACKET_MARKER.replace(out, "&#91;"))
     }
 
     private const val MAX_NAME_LENGTH = 64
