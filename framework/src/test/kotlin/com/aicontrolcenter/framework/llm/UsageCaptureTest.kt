@@ -251,4 +251,28 @@ class UsageCaptureTest {
         assertNull(metered.usage.byModel(UsageRange.ALL).firstOrNull { it.totals.substituted > 0 && it.modelId == dated.id })
         assertNotNull(metered.usage.byModel(UsageRange.ALL).firstOrNull { it.totals.substituted > 0 && it.modelId == other.id })
     }
+
+    @Test
+    fun `day and month sums follow the owner's zone, cut at whole UTC hours in a half-hour zone`() = runTest {
+        // Calls recorded by the gateway at 23:00 and 23:45 on 30 November and at 00:30 on 1 December, local time.
+        suspend fun sums(zone: java.time.ZoneId): List<Long> {
+            val metered = MeteredWorld(this, zone = zone, start = java.time.ZonedDateTime.of(2026, 11, 30, 23, 0, 0, 0, zone).toInstant().toEpochMilli())
+            val model = metered.cloud(ScriptedLlmClient.replies("ok"))
+            for (minutes in listOf(0L, 45L, 90L)) {
+                metered.shift = minutes * 60_000L
+                metered.gateway.chat(model.id, ask)
+            }
+            val november = metered.start
+            val december = metered.start + 90 * 60_000L
+            return listOf(
+                metered.usage.totals(UsageRange.day(november, zone)).calls, metered.usage.totals(UsageRange.day(december, zone)).calls,
+                metered.usage.totals(UsageRange.month(november, zone)).calls, metered.usage.totals(UsageRange.month(december, zone)).calls,
+            )
+        }
+
+        // Paris (a whole hour from UTC): exactly the local day and month.
+        assertEquals(listOf(2L, 1L, 2L, 1L), sums(java.time.ZoneId.of("Europe/Paris")))
+        // Kolkata (UTC+5:30): the day and the month start with the UTC hour that holds local midnight, 23:30 local.
+        assertEquals(listOf(1L, 2L, 1L, 2L), sums(java.time.ZoneId.of("Asia/Kolkata")))
+    }
 }

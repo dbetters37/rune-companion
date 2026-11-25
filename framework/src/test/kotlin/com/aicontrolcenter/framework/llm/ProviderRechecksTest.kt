@@ -20,6 +20,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.testTimeSource
 import org.junit.Test
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
@@ -54,7 +55,9 @@ class ProviderRechecksTest {
         var slept = 0L
         val clock = Clock { START + test.testScheduler.currentTime + slept }
         val connections = ProviderConnections(world.providers, world.vault, world.factories.values.toList(), clock)
-        val rechecks = DefaultProviderRechecks(world.providers, world.settings, connections, world.activity, clock, test.backgroundScope, network)
+        val rechecks = DefaultProviderRechecks(
+            world.providers, world.settings, connections, world.activity, clock, test.backgroundScope, network, timeSource = test.testTimeSource,
+        )
 
         suspend fun provider(health: Health, baseUrl: String = "https://api.example.com/v1", status: ConnectionStatus = ConnectionStatus.OFFLINE): ModelProvider {
             val registered = world.provider(health, baseUrl = baseUrl)

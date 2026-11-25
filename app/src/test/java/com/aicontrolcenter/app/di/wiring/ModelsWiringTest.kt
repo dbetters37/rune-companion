@@ -12,13 +12,11 @@ import com.aicontrolcenter.core.llm.ProviderAdapter
 import com.aicontrolcenter.core.llm.ProviderHealth
 import com.aicontrolcenter.core.llm.RemoteModel
 import com.aicontrolcenter.framework.llm.DefaultProviderRechecks
-import com.aicontrolcenter.framework.llm.RecheckSchedule
 import com.aicontrolcenter.framework.llm.VaultKeyCheck
 import com.aicontrolcenter.testkit.FakeProviderAdapter
 import com.aicontrolcenter.testkit.Samples
 import com.aicontrolcenter.testkit.ScriptedLlmClient
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
@@ -28,7 +26,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
-import kotlin.test.assertNull
+import kotlin.test.assertNotNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
@@ -83,7 +81,7 @@ class ModelsWiringTest {
     }
 
     @Test
-    fun `the provider re-checks run in the app, and give up after the hour`() = runTest {
+    fun `the provider re-checks run in the app on their own time, and the wake alarm runs what is due by the wall clock`() = runTest {
         val app = TestApp(backgroundScope)
         val rechecks = app.graph.providerRechecks
         assertIs<DefaultProviderRechecks>(rechecks)
@@ -102,16 +100,20 @@ class ModelsWiringTest {
         app.cloudModel()
         app.adaptersByUrl["https://api.example.com/v1"] = down
         app.providers.upsert(app.providers.get(Samples.provider(id = "prv_cloud").id)!!.copy(status = ConnectionStatus.OFFLINE))
-
-        runCurrent()
-        assertTrue(checks.get() >= 1, "checked again")
-        // The test app's clock moves 37 seconds at every reading, so the hour of re-checks passes quickly; slots it
-        // passed are not made up. After it, nothing more.
-        advanceTimeBy(2 * 60 * 60_000L)
         runCurrent()
 
-        assertTrue(checks.get() in 1..RecheckSchedule.DEFAULT_OFFSETS_MS.size, "at most as often as the schedule says (${checks.get()})")
-        assertNull(rechecks.timedWaits.nextDueAt.value)
+        // The test app's clock moves 37 seconds at every reading; the schedule runs on its own time, so nothing is
+        // checked before a minute has really passed, and the wake alarm's time is published.
+        val due = assertNotNull(rechecks.timedWaits.nextDueAt.value)
+        assertEquals(0, checks.get())
+        assertTrue(due > TestApp.START_TIME)
+
+        // The phone slept for two minutes, then the wake alarm rings: by the wall clock the first check is due, so it runs.
+        app.clock.advance(2 * 60_000L)
+        rechecks.timedWaits.wake()
+        runCurrent()
+
+        assertEquals(1, checks.get())
     }
 
     @Test

@@ -15,22 +15,27 @@ import com.aicontrolcenter.core.settings.SettingsView
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.onTimeout
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 
 /**
  * Looks again at providers that stopped answering (Phase 6, D28; K15; security review of wave 1, F3).
@@ -44,8 +49,12 @@ import kotlinx.coroutines.withTimeoutOrNull
  *  - Never a provider whose key was rejected (AUTH_ERROR: the owner must fix it), a disabled one, or, while
  *    local-only mode is on, one off this phone (a check sends the key to it). While the phone has no network,
  *    scheduled checks of providers off the phone are skipped (they could not succeed); the network's return checks them.
- *  - [timedWaits] tells the background service when the next check is due (rule 5), and its wake alarm calls
- *    [TimedWaits.wake], after which the due checks run against the wall clock ([clock]).
+ *
+ * Time: the schedule runs on [timeSource] (monotonic: a change of the phone's clock moves nothing). [timedWaits]
+ * publishes the next check as a wall-clock time ([clock]) for the background service (rule 5); when the phone slept
+ * through a wait, its wake alarm calls [TimedWaits.wake], and then every check whose time has come by the wall clock
+ * runs too. Slots that passed while nothing ran are not made up. The wall clock is read only while a provider is in
+ * trouble.
  *
  * It holds neither the owner's provider manager nor the vault nor the provider store: it reads providers through the
  * read-only [ProviderDirectory] and checks them through [ProviderChecks] over [ProviderConnections], the one holder
@@ -63,23 +72,33 @@ class DefaultProviderRechecks(
     private val scope: CoroutineScope,
     private val network: NetworkStatus = NetworkStatus.AlwaysOn,
     private val schedule: RecheckSchedule = RecheckSchedule(),
+    private val timeSource: TimeSource = TimeSource.Monotonic,
 ) : ProviderRechecks {
     private val checks = ProviderChecks(settings, connections, activity)
 
-    /** A provider in trouble: since when this noticed it ([windowStart], moved by [recheckIfStale]) and the next slot. */
-    private class Trouble(var windowStart: Long, var next: Int, var now: Boolean = false)
+    /**
+     * A provider in trouble: when this noticed it (or [recheckIfStale] asked again), on the wall clock ([startedAt])
+     * and on the schedule's time source ([started]); the next slot of the schedule ([next]); [now] when it is to be
+     * checked at once (the network came back).
+     */
+    private class Trouble(var startedAt: Long, var started: TimeMark, var next: Int = 0, var now: Boolean = false)
 
     private val lock = Mutex()
     private val troubles = HashMap<ProviderId, Trouble>()
     private val running = HashMap<ProviderId, Deferred<ProviderHealth?>>()
     private val due = MutableStateFlow<Long?>(null)
-    private val signal = Channel<Unit>(Channel.CONFLATED)
+
+    /** Something changed: look at the schedule again. */
+    private val changed = Channel<Unit>(Channel.CONFLATED)
+
+    /** The wake alarm rang: run what is due by the wall clock. */
+    private val woken = Channel<Unit>(Channel.CONFLATED)
 
     override val timedWaits: TimedWaits = object : TimedWaits {
         override val nextDueAt: StateFlow<Long?> = due.asStateFlow()
 
         override fun wake() {
-            signal.trySend(Unit)
+            woken.trySend(Unit)
         }
     }
 
@@ -101,13 +120,15 @@ class DefaultProviderRechecks(
         // Asked again: the hour of scheduled checks starts again from now.
         lock.withLock {
             troubles[providerId]?.let {
-                it.windowStart = clock.now()
+                it.startedAt = clock.now()
+                it.started = timeSource.markNow()
                 it.next = 0
+                publish()
             }
         }
-        signal.trySend(Unit)
-        val health = check(providerId) ?: return null
-        return providers.get(providerId)?.status ?: health.status
+        changed.trySend(Unit)
+        check(providerId) ?: return null
+        return providers.get(providerId)?.status
     }
 
     /** Can this provider be checked by itself now? Never a rejected key, a disabled provider, or one local-only mode keeps away. */
@@ -147,20 +168,25 @@ class DefaultProviderRechecks(
 
     /** Tracks which providers are in trouble, as the store and the settings say. */
     private suspend fun followProviders() {
-        combine(providers.observeAll(), settings.settings) { all, current -> all to current.localOnlyMode }
+        combine(providers.observeAll(), settings.settings) { all, current ->
+            all.filter { p ->
+                p.enabled && (p.status == ConnectionStatus.OFFLINE || p.status == ConnectionStatus.ERROR) &&
+                    !(current.localOnlyMode && p.effectiveLocality.leavesDevice)
+            }.map { it.id }.toSet()
+        }
             .distinctUntilChanged()
-            .collect { (all, localOnly) ->
-                val now = clock.now()
+            .collect { inTrouble ->
                 lock.withLock {
-                    val inTrouble = all.filter { p ->
-                        p.enabled && (p.status == ConnectionStatus.OFFLINE || p.status == ConnectionStatus.ERROR) &&
-                            !(localOnly && p.effectiveLocality.leavesDevice)
-                    }.map { it.id }.toSet()
                     troubles.keys.retainAll(inTrouble)
-                    for (id in inTrouble) troubles.getOrPut(id) { Trouble(windowStart = now, next = 0) }
+                    val added = inTrouble - troubles.keys
+                    if (added.isNotEmpty()) {
+                        val startedAt = clock.now()
+                        val started = timeSource.markNow()
+                        for (id in added) troubles[id] = Trouble(startedAt, started)
+                    }
                     publish()
                 }
-                signal.trySend(Unit)
+                changed.trySend(Unit)
             }
     }
 
@@ -173,49 +199,68 @@ class DefaultProviderRechecks(
                     troubles.values.forEach { it.now = true }
                     publish()
                 }
-                signal.trySend(Unit)
+                changed.trySend(Unit)
             }
             had = has
         }
     }
 
-    /** Runs the checks as they come due, and waits for the next one, a change, or [TimedWaits.wake]. */
+    /**
+     * Runs the checks as they come due on the schedule's time source, or by the wall clock after [TimedWaits.wake],
+     * and waits for the next one or a change.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
     private suspend fun runSchedule() {
+        var byWallClock = false
         while (true) {
-            val now = clock.now()
-            val dueNow = lock.withLock { troubles.filterValues { it.now || dueAt(it)?.let { at -> at <= now } == true }.keys.toList() }
+            val wallNow = if (byWallClock) clock.now() else null
+            byWallClock = false
+            val dueNow = lock.withLock { troubles.filterValues { isDue(it, wallNow) }.keys.toList() }
             for (id in dueNow) {
                 val provider = providers.get(id)
-                val offline = !network.available.value && provider?.effectiveLocality?.leavesDevice == true
                 val immediate = lock.withLock { troubles[id]?.now == true }
-                if (provider != null && (!offline || immediate)) check(id)
-                lock.withLock {
-                    troubles[id]?.let { trouble ->
-                        trouble.now = false
-                        val after = clock.now()
-                        while (trouble.next < schedule.offsetsMs.size && trouble.windowStart + schedule.offsetsMs[trouble.next] <= after) trouble.next++
-                    }
-                }
+                val unreachable = !network.available.value && provider?.effectiveLocality?.leavesDevice == true
+                if (provider != null && (immediate || !unreachable)) check(id)
+                lock.withLock { troubles[id]?.let { pastSlots(it) } }
             }
-            val next = lock.withLock { publish() }
-            val wait = next?.let { (it - clock.now()).coerceAtLeast(0) }
-            if (wait == null) {
-                signal.receive()
-            } else if (wait > 0) {
-                withTimeoutOrNull(wait) { signal.receive() }
+            val wait = lock.withLock {
+                publish()
+                troubles.values.mapNotNull { remainingMs(it) }.minOrNull()
+            }
+            select {
+                changed.onReceive { }
+                woken.onReceive { byWallClock = true }
+                if (wait != null) onTimeout(wait.coerceAtLeast(0)) { }
             }
         }
     }
 
-    /** Under the lock: the time [trouble]'s next scheduled check is due, or null when its hour is over. */
-    private fun dueAt(trouble: Trouble): Long? = schedule.offsetsMs.getOrNull(trouble.next)?.let { trouble.windowStart + it }
+    /** Under the lock: is [trouble]'s next check due, by the schedule's time or, after a wake, by the wall clock? */
+    private fun isDue(trouble: Trouble, wallNow: Long?): Boolean {
+        if (trouble.now) return true
+        val offset = schedule.offsetsMs.getOrNull(trouble.next) ?: return false
+        return trouble.started.elapsedNow().inWholeMilliseconds >= offset || (wallNow != null && wallNow - trouble.startedAt >= offset)
+    }
 
-    /** Under the lock: publishes and returns the earliest due time. */
-    private fun publish(): Long? {
-        val now = clock.now()
-        val next = troubles.values.mapNotNull { if (it.now) now else dueAt(it) }.minOrNull()
-        due.value = next
-        return next
+    /** Under the lock: after a check, the next slot is the first still ahead by both clocks; missed ones are not made up. */
+    private fun pastSlots(trouble: Trouble) {
+        trouble.now = false
+        val elapsed = maxOf(trouble.started.elapsedNow().inWholeMilliseconds, clock.now() - trouble.startedAt)
+        while (trouble.next < schedule.offsetsMs.size && schedule.offsetsMs[trouble.next] <= elapsed) trouble.next++
+    }
+
+    /** Under the lock: how long until [trouble]'s next check on the schedule's time, or null when its hour is over. */
+    private fun remainingMs(trouble: Trouble): Long? {
+        if (trouble.now) return 0
+        val offset = schedule.offsetsMs.getOrNull(trouble.next) ?: return null
+        return offset - trouble.started.elapsedNow().inWholeMilliseconds
+    }
+
+    /** Under the lock: publishes the wall-clock time of the next check, or null when nothing is due. */
+    private fun publish() {
+        val immediate = troubles.values.any { it.now }
+        val scheduled = troubles.values.mapNotNull { t -> schedule.offsetsMs.getOrNull(t.next)?.let { t.startedAt + it } }.minOrNull()
+        due.value = if (immediate) clock.now() else scheduled
     }
 }
 
