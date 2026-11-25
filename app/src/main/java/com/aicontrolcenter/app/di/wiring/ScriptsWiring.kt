@@ -1,17 +1,18 @@
 package com.aicontrolcenter.app.di.wiring
 
 import android.content.Context
-import com.aicontrolcenter.app.Phase6Stub
+import com.aicontrolcenter.app.scripts.IsolatedJsEngine
 import com.aicontrolcenter.framework.operator.JsEngine
 import com.aicontrolcenter.framework.operator.JsLimits
 
 /*
- * Scripts in their own process (Phase 6, WP6 owns this file in wave 2; rules 11 and 31).
+ * Scripts in their own process (Phase 6, WP6; D1-D3, rules 11 and 31).
  *
- * Wave 1 (WP1d) leaves the in-process JavaScript sandbox in place: with no [ScriptsPorts.engine], the operator's
- * `scripts.run_js` tool runs on `JsSandbox` exactly as in 0.5.2. WP6 returns an engine that runs each script in the
- * isolated `:scripts` process (app/scripts/ScriptProcessService) and keeps every limit that protects the app in this
- * process.
+ * Production: the operator's `scripts.run_js` tool runs every script in the isolated `:scripts` process
+ * (app/scripts/ScriptProcessService) through `IsolatedJsEngine`, which keeps every limit that protects the app in this
+ * process and lets go of a script process that does not stop. When Android refuses to start that process at all, the
+ * engine runs the script in this process's Rhino sandbox and says so in the answer. Tests (`TestApp`) keep the
+ * in-process sandbox: no engine here.
  */
 
 /**
@@ -21,8 +22,10 @@ import com.aicontrolcenter.framework.operator.JsLimits
  */
 class ScriptsPorts(val engine: ((JsLimits) -> JsEngine)? = null)
 
-@Phase6Stub("WP6")
 object ScriptsWiring {
-    /** The production scripts port; called once per process by `createProductionPorts`. */
-    fun production(@Suppress("UNUSED_PARAMETER") context: Context): ScriptsPorts = ScriptsPorts()
+    /** The production scripts port; called once per process by `createProductionPorts`. Nothing is bound until a script runs. */
+    fun production(context: Context): ScriptsPorts {
+        val app = context.applicationContext ?: context
+        return ScriptsPorts(engine = { limits -> IsolatedJsEngine(app, limits) })
+    }
 }

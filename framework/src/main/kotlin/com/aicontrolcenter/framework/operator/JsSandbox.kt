@@ -55,10 +55,19 @@ data class JsLimits(
     val maxHeapGrowthBytes: Long = 96L * 1024 * 1024,
     /** Java stack of the script thread. */
     val threadStackBytes: Long = 4L * 1024 * 1024,
+    /**
+     * Phase 6 (D2): how long getting the engine ready may take (a thread, Rhino's context and the sandbox's guards), on
+     * top of the script's own time, which starts at its own code. A run not ready by then is stopped with nothing of the
+     * script run. A cold start of the script process on a slow phone takes seconds (up to 29 s on the software emulator).
+     */
+    val engineStartMs: Long = 30_000,
+    /** Phase 6: how long starting the script's own process may take, for an engine that runs scripts in one. */
+    val bindTimeoutMs: Long = 30_000,
 ) {
     init {
         require(maxCodeChars > 0 && maxInputChars > 0 && maxInstructions > 0 && timeoutMs > 0 && maxStackDepth > 0) { "limits must be positive" }
         require(maxResultChars > 0 && maxLogChars > 0 && maxLogLines > 0 && maxStringChars > 0 && maxArrayLength > 0) { "limits must be positive" }
+        require(engineStartMs > 0 && bindTimeoutMs > 0) { "limits must be positive" }
     }
 
     /**
@@ -96,6 +105,26 @@ data class JsLimits(
         /** Collections a run may ask for at once, and the time that earns it one more ([collectionDue]). */
         internal const val FREE_COLLECTIONS = 4L
         internal const val COLLECTION_INTERVAL_NANOS = 500_000_000L
+    }
+}
+
+/**
+ * What a caller of [JsSandbox.run] learns while a run goes (Phase 6: the script process passes these on to the app,
+ * which bounds the script's time and ends the process from its side). Called on the script's thread or the caller's;
+ * each at most once per run, and quickly: a callback that throws is ignored.
+ */
+interface JsRunEvents {
+    /** The script's own code begins now; its time limit counts from here (D2). */
+    fun codeStarted() {}
+
+    /**
+     * The run was given up while its thread still runs (its time was up, or getting ready took too long, or the caller
+     * was cancelled): the thread ends at its next check, or, caught in native code, only with the process.
+     */
+    fun abandoned() {}
+
+    companion object {
+        val None: JsRunEvents = object : JsRunEvents {}
     }
 }
 
@@ -153,7 +182,13 @@ data class JsLimits(
  * interrupted, so a host function that still waits gives up and does nothing afterwards, and a
  * run that is over makes no further host calls.
  */
-class JsSandbox(private val limits: JsLimits = JsLimits()) : JsEngine {
+class JsSandbox internal constructor(
+    private val limits: JsLimits,
+    /** Runs on the script's thread just before its own code (tests: a slow engine start, D2). */
+    private val beforeCode: () -> Unit,
+) : JsEngine {
+    constructor(limits: JsLimits = JsLimits()) : this(limits, {})
+
     private val stuck = AtomicInteger(0)
     private val counter = AtomicLong(0)
 
@@ -161,7 +196,16 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) : JsEngine {
     suspend fun run(code: String, inputJson: String?, host: JsHost?): JsOutcome = run(code, inputJson, host, limits.timeoutMs)
 
     /** Runs [code] with [inputJson] as `input`; [timeoutMs] overrides the limit for this run. */
-    override suspend fun run(code: String, inputJson: String?, host: JsHost?, timeoutMs: Long): JsOutcome {
+    override suspend fun run(code: String, inputJson: String?, host: JsHost?, timeoutMs: Long): JsOutcome = run(code, inputJson, host, timeoutMs, JsRunEvents.None)
+
+    /**
+     * Runs [code] as [run] does and tells [events] when the script's own code begins and when the run is given up
+     * while its thread still runs.
+     *
+     * Phase 6 (D2): the script's time limit counts from its own code. Getting ready before it (the thread, Rhino's
+     * context and the guards, which take seconds on a slow phone) is bounded by [JsLimits.engineStartMs] on its own.
+     */
+    suspend fun run(code: String, inputJson: String?, host: JsHost?, timeoutMs: Long, events: JsRunEvents): JsOutcome {
         require(timeoutMs > 0) { "timeoutMs must be positive" }
         val limits = if (timeoutMs == this.limits.timeoutMs) this.limits else this.limits.copy(timeoutMs = timeoutMs)
         if (code.length > limits.maxCodeChars) return JsOutcome.Stopped("The script is longer than ${limits.maxCodeChars} characters.", emptyList(), false)
@@ -176,19 +220,36 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) : JsEngine {
                 false,
             )
         }
-        val run = ScriptRun(code, inputJson, host, limits)
+        val run = ScriptRun(code, inputJson, host, limits, beforeCode, events)
         val done = CompletableDeferred<JsOutcome>()
         val thread = Thread(null, {
-            val outcome = run.execute()
+            val outcome = try {
+                run.execute()
+            } finally {
+                // Ready or not: a run that ended before its code began ends the wait for its start too.
+                run.started.complete(Unit)
+            }
             if (!run.state.compareAndSet(RUNNING, FINISHED)) stuck.decrementAndGet()
             done.complete(outcome)
         }, "aicc-js-${counter.incrementAndGet()}", limits.threadStackBytes)
         thread.isDaemon = true
         thread.priority = Thread.NORM_PRIORITY - 1
+        // Rhino finds its regular-expression engine with the context class loader of the thread that first loads it. A
+        // thread started from a binder thread (the script process, Phase 6) would inherit none, and every script would
+        // then fail with "Regular expressions are not available." (spike F-B).
+        thread.contextClassLoader = JsSandbox::class.java.classLoader
         try {
             thread.start()
-            return withTimeoutOrNull(limits.timeoutMs + GRACE_MS) { done.await() }
-                ?: run.logOutcome { log, cut -> JsOutcome.Stopped(if (run.inHostCall) WAITED_FOR_HOST else "The script did not stop within its time limit and was abandoned.", log, cut) }
+            // D2: getting ready has its own bound; the script's own time starts at its code.
+            if (withTimeoutOrNull(limits.engineStartMs) { run.started.await() } == null) {
+                return run.logOutcome { log, cut -> JsOutcome.Stopped(engineSlow(limits.engineStartMs), log, cut) }
+            }
+            if (done.isCompleted) return done.getCompleted()
+            val codeAt = run.codeStartNanos
+            val sinceCode = if (codeAt == 0L) 0L else (System.nanoTime() - codeAt) / 1_000_000
+            val left = (limits.timeoutMs + GRACE_MS - sinceCode).coerceAtLeast(1)
+            return withTimeoutOrNull(left) { done.await() }
+                ?: run.logOutcome { log, cut -> JsOutcome.Stopped(if (run.inHostCall) WAITED_FOR_HOST else ABANDONED_TEXT, log, cut) }
         } finally {
             run.cancelled = true
             if (!done.isCompleted) {
@@ -196,6 +257,7 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) : JsEngine {
                     stuck.incrementAndGet()
                     // Given up: from now on the thread gets the processor only when nothing else wants it.
                     runCatching { thread.priority = Thread.MIN_PRIORITY }
+                    runCatching { events.abandoned() }
                 }
                 // A host function may be waiting: for the workspace's change lock, as long as a shell command runs. The run is
                 // over for its caller (its time is up, or the call was stopped), so the wait is given up and what it was
@@ -209,10 +271,31 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) : JsEngine {
     /** Thrown from the instruction observer; a [java.lang.Error], so scripts cannot catch it. */
     private class BudgetExceeded(message: String) : Error(message)
 
-    private class ScriptRun(val code: String, val inputJson: String?, val host: JsHost?, val limits: JsLimits) {
+    private class ScriptRun(
+        val code: String,
+        val inputJson: String?,
+        val host: JsHost?,
+        val limits: JsLimits,
+        private val beforeCode: () -> Unit,
+        private val events: JsRunEvents,
+    ) {
         val state = AtomicInteger(RUNNING)
 
         @Volatile var cancelled = false
+
+        /** Completed when the script's own code begins, or when the run ends before it does. */
+        val started = CompletableDeferred<Unit>()
+
+        /** When getting ready began, and when the script's own code began (0 until then): its time counts from there (D2). */
+        val readyNanos = System.nanoTime()
+
+        @Volatile var codeStartNanos = 0L
+
+        /**
+         * The run's instructions so far ([Factory]), the sandbox's setup included, as before D2: the budget is a count of
+         * work, and only the time limit moved to the script's own code.
+         */
+        var instructions = 0L
 
         /** True while the script's thread is inside a host function, which may be waiting for the workspace. */
         @Volatile var inHostCall = false
@@ -266,6 +349,7 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) : JsEngine {
             val jsonObject = ScriptableObject.getProperty(scope, "JSON") as Scriptable
             val guarded = ScriptableObject.getProperty(jsonObject, "stringify") as org.mozilla.javascript.Function
             stringify = { c, s, value -> guarded.call(c, s, jsonObject, arrayOf(value)) }
+            codeStarts()
             val result = cx.evaluateString(scope, code, "script", 1, null)
             if (result is CharSequence && result.length > limits.maxResultChars) {
                 return logOutcome { log, cut -> JsOutcome.Finished(null, true, log, cut) }
@@ -276,25 +360,36 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) : JsEngine {
             return logOutcome { log, logCut -> JsOutcome.Finished(if (cut) text.take(limits.maxResultChars) else text, cut, log, logCut) }
         }
 
-        fun observe(instructionsSoFar: Long, startNanos: Long, heapBase: Long) {
+        /** D2: the script's own code begins now. Its time counts from here; the caller hears of it. */
+        private fun codeStarts() {
+            beforeCode()
+            if (cancelled) throw BudgetExceeded("The script was stopped.")
+            runCatching { events.codeStarted() }
+            codeStartNanos = System.nanoTime()
+            started.complete(Unit)
+        }
+
+        fun observe(instructionsSoFar: Long, heapBase: Long) {
             // A run that was stopped stays stopped: the interpreter asks again while it unwinds, and gets the same answer
             // without another measurement. The answer is a new exception each time: a built-in that closes an iterator
             // on the way out adds what the closing threw to what it is passing on, and Java refuses to add an exception
             // to itself.
             stoppedBecause?.let { throw BudgetExceeded(it) }
             try {
-                check(instructionsSoFar, startNanos, heapBase)
+                check(instructionsSoFar, heapBase)
             } catch (e: BudgetExceeded) {
                 stoppedBecause = e.message
                 throw e
             }
         }
 
-        private fun check(instructionsSoFar: Long, startNanos: Long, heapBase: Long) {
+        private fun check(instructionsSoFar: Long, heapBase: Long) {
             if (cancelled) throw BudgetExceeded("The script was stopped.")
             if (instructionsSoFar > limits.maxInstructions) throw BudgetExceeded("The script used more than ${limits.maxInstructions} instructions.")
-            val elapsed = System.nanoTime() - startNanos
-            if (elapsed > limits.timeoutMs * 1_000_000) throw BudgetExceeded("The script ran longer than ${limits.timeoutMs} ms.")
+            // Before the script's own code, getting ready is bounded by the caller (JsLimits.engineStartMs), which then stops the run.
+            val codeAt = codeStartNanos
+            val elapsed = System.nanoTime() - (if (codeAt == 0L) readyNanos else codeAt)
+            if (codeAt != 0L && elapsed > limits.timeoutMs * 1_000_000) throw BudgetExceeded("The script ran longer than ${limits.timeoutMs} ms.")
             if (tooMuchMemory(heapBase)) {
                 // The number counts garbage that is not collected yet, and a loop that allocates much (a long sort with a
                 // comparator) shows more of it than the limit many times a second. So before a script is stopped for memory
@@ -580,8 +675,6 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) : JsEngine {
     }
 
     private class Factory(private val run: ScriptRun) : ContextFactory() {
-        private var instructions = 0L
-
         /**
          * What is in use before the script begins, measured after a collection: left as it is, the number would count
          * the garbage of whatever ran before, and a script could then keep that much more than its limit before the
@@ -592,7 +685,6 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) : JsEngine {
             collect()
             runtime.totalMemory() - runtime.freeMemory()
         }
-        private val start = System.nanoTime()
 
         override fun makeContext(): Context = super.makeContext().apply {
             isInterpretedMode = true
@@ -613,51 +705,73 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) : JsEngine {
         }
 
         override fun observeInstructionCount(cx: Context, instructionCount: Int) {
-            instructions += instructionCount
-            run.observe(instructions, start, heapBase)
+            run.instructions += instructionCount
+            run.observe(run.instructions, heapBase)
         }
     }
 
-    private companion object {
-        const val RUNNING = 0
-        const val FINISHED = 1
-        const val ABANDONED = 2
+    companion object {
+        /**
+         * Loads Rhino on the calling thread, once per process. Phase 6 (spike F-B): Rhino finds its regular-expression
+         * engine once, with the context class loader of the thread that first loads it, and binder threads have none;
+         * the script process calls this on its main thread when it starts, before any binder call can run a script.
+         * (Each script thread also gets this class's loader as its context class loader, so a process that forgets this
+         * still works.)
+         */
+        fun prepareOnThisThread() {
+            Context.getCurrentContext()
+        }
+
+        /** What a run that did not stop within its time limit and grace is told. */
+        const val ABANDONED_TEXT = "The script did not stop within its time limit and was abandoned."
+
+        /** What a run is told whose engine was not ready within [JsLimits.engineStartMs] (D2). */
+        fun engineSlow(engineStartMs: Long): String =
+            "The script engine did not get ready within ${(engineStartMs + 999) / 1000} s; the phone may be busy. Nothing of the script ran."
+
+        /** How long a run may overrun its time limit before the caller is answered without it. */
         const val GRACE_MS = 2_000L
+
+        /** The most files one run may create. */
+        const val MAX_FILES_WRITTEN = 20
+
+        private const val RUNNING = 0
+        private const val FINISHED = 1
+        private const val ABANDONED = 2
 
         /**
          * Collects the heap now. Through [Runtime], not `System.gc()`: Android's `System.gc()` only notes the wish and
          * collects at the next `runFinalization`, so there it would measure the same garbage again.
          */
-        fun collect() = Runtime.getRuntime().gc()
+        private fun collect() = Runtime.getRuntime().gc()
 
         /** What a run is told that was still inside a host function when its time was up. */
-        const val WAITED_FOR_HOST = "The script waited for the workspace longer than its time limit (a shell command may be running, and " +
+        private const val WAITED_FOR_HOST = "The script waited for the workspace longer than its time limit (a shell command may be running, and " +
             "changes wait until it has ended). It was stopped, and a change that was still waiting was not made. Try again later."
-        const val MAX_STUCK = 2
-        const val MAX_FILES_WRITTEN = 20
+        private const val MAX_STUCK = 2
 
         /** What the native helpers charge the script's instruction budget: per step of a native iterator, */
-        const val ITERATOR_STEP_COST = 2
+        private const val ITERATOR_STEP_COST = 2
 
         /** per [COPY_PER_UNIT] elements copied by concat, */
-        const val COPY_PER_UNIT = 8
+        private const val COPY_PER_UNIT = 8
 
         /** per comparison of a sort, */
-        const val COMPARE_COST = 1
+        private const val COMPARE_COST = 1
 
         /** and per value copied for JSON.stringify on the quick way. */
-        const val PLAIN_COPY_COST = 2
+        private const val PLAIN_COPY_COST = 2
 
         /** A native loop charges at least this often (in elements), so the observer is reached while it runs. */
-        const val CHARGE_EVERY = 512
+        private const val CHARGE_EVERY = 512
 
         /** Nesting the quick copy for JSON.stringify follows; deeper values are walked in script code. */
-        const val MAX_PLAIN_DEPTH = 200
+        private const val MAX_PLAIN_DEPTH = 200
 
-        val DENY_ALL = ClassShutter { false }
+        private val DENY_ALL = ClassShutter { false }
 
         /** What every entry into a function of the script is charged ([COUNT_ENTRIES]). */
-        const val FUNCTION_ENTRY_COST = 1
+        private const val FUNCTION_ENTRY_COST = 1
 
         /**
          * Counts every entry into a function of the script, whoever calls it.
@@ -679,7 +793,7 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) : JsEngine {
          * built-in function, such as `Object`). No function of the script is entered there, and Rhino offers no hook for
          * calls between built-ins.
          */
-        val COUNT_ENTRIES = object : Debugger {
+        private val COUNT_ENTRIES = object : Debugger {
             override fun getFrame(cx: Context, fnOrScript: DebuggableScript?): DebugFrame? {
                 ScriptRuntime.addInstructionCount(cx, FUNCTION_ENTRY_COST)
                 return null
@@ -697,7 +811,7 @@ class JsSandbox(private val limits: JsLimits = JsLimits()) : JsEngine {
          * here, in script code the budget reaches, into a real array of at most MAX_ARR elements, and the built-in works
          * on that copy; the built-ins that change an array in place take real arrays only.
          */
-        val GUARDS = """
+        private val GUARDS = """
             (function (isRealArray, native) {
               "use strict";
               var MAXS = MAX_STR, MAXA = MAX_ARR;

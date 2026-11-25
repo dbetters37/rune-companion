@@ -61,7 +61,9 @@ internal class ScriptsRunJs(private val d: OperatorToolDependencies, private val
     }
 
     private fun answer(outcome: JsOutcome): ToolOutcome {
-        val log = if (outcome.log.isEmpty()) "" else "\n--- console ---\n" + outcome.log.joinToString("\n") + if (outcome.logTruncated) "\n[console output cut]" else ""
+        val console = if (outcome.log.isEmpty()) "" else "\n--- console ---\n" + outcome.log.joinToString("\n") + if (outcome.logTruncated) "\n[console output cut]" else ""
+        // Phase 6: where the script ran, when the engine has something to say about it (the in-process fallback).
+        val log = console + (outcome.note?.let { "\n($it)" } ?: "")
         return when (outcome) {
             is JsOutcome.Finished -> ToolOutcome.success(
                 when {
