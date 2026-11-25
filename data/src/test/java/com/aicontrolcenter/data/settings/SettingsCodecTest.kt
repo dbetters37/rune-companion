@@ -84,7 +84,7 @@ class SettingsCodecTest {
     fun `any single field may be unreadable without costing the others, least of all local-only mode`() {
         val defaults = FrameworkSettings()
         val fields = SettingsCodec.encode(customised).removeSurrounding("{", "}").split(",")
-        assertEquals(20, fields.size)
+        assertEquals(31, fields.size)
         for (broken in fields) {
             val name = broken.substringBefore(':').trim('"')
             val stored = "{" + fields.joinToString(",") { if (it == broken) "\"$name\":[\"unreadable\"]" else it } + "}"
@@ -114,6 +114,8 @@ class SettingsCodecTest {
                 "onboardingCompleted" -> customised.copy(onboardingCompleted = defaults.onboardingCompleted)
                 "seedVersion" -> customised.copy(seedVersion = defaults.seedVersion)
                 "memorySeedVersion" -> customised.copy(memorySeedVersion = defaults.memorySeedVersion)
+                // Phase 6 (WP1a): `customised` keeps these at their defaults, so an unreadable one changes nothing.
+                in PHASE6_FIELDS -> customised
                 else -> error("FrameworkSettings has a field this test does not know: $name")
             }
             assertEquals(expected, decoded.settings, "with $name unreadable")
@@ -138,5 +140,14 @@ class SettingsCodecTest {
             assertEquals(setOf(SettingsCodec.WHOLE_VALUE), decoded.unreadableFields)
             assertFalse(decoded.complete)
         }
+    }
+
+    private companion object {
+        /** The fields Phase 6 added (WP1a). */
+        val PHASE6_FIELDS = setOf(
+            "keepAwakeWhileAgentsWork", "notifyWhenWorkEnds", "maxModelCallsPerDay", "maxTokensPerDay", "maxSpendPerDayMicros",
+            "agentQuestionsEnabled", "ownerQuestionTimeoutMinutes", "usageRetentionDays", "calmMotion", "routinesEnabled",
+            "folderPickUpEnabled",
+        )
     }
 }
