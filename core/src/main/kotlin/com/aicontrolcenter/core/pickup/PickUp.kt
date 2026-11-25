@@ -149,7 +149,9 @@ interface OwnerPickUpRules {
      * Creates a rule, switched on, from a shared folder the owner added to a memory space.
      * Refused, with a sentence, when the folder or the space does not exist, the folder is not
      * read-only for agents ([PickUpSafety.FOLDER_NOT_READ_ONLY]) or lies inside, or holds, a
-     * shared folder agents may change ([PickUpSafety.FOLDER_OVERLAPS_WRITABLE]), the folder already
+     * shared folder agents may change ([PickUpSafety.FOLDER_OVERLAPS_WRITABLE]; or may, where this
+     * app cannot tell: [PickUpSafety.FOLDER_DOWNLOADS_ENTRY_NEAR_WRITABLE],
+     * [PickUpSafety.FOLDER_PLACE_UNKNOWN_NEAR_WRITABLE], [PickUpSafety.FOLDER_OTHER_APP_NEAR_WRITABLE]), the folder already
      * has a rule, or [PickUpLimits.MAX_RULES] exist. It runs only while the master switch is on.
      *
      * The files already in the folder are recorded as seen ([PickUpSafety.baseline],
@@ -259,6 +261,40 @@ object PickUpSafety {
             "switched off. Make that folder read-only in Tools > Folders, then switch the rule on."
 
     /**
+     * Why a rule is not made or switched on when its folder, or a shared folder agents may change, came through the folder
+     * picker's Downloads entry and the two may be the same place ([FolderTrees.overlap] cannot tell,
+     * [FolderTrees.fromDownloadsEntryUnplaced]; device gate of wave 2b). It does not say that one holds the other.
+     */
+    const val FOLDER_DOWNLOADS_ENTRY_NEAR_WRITABLE: String =
+        "This folder may be inside another shared folder agents may change, or hold one: Android does not tell this app " +
+            "where a folder shared through the folder picker's Downloads entry is. In Tools > Folders, make that other folder " +
+            "read-only too, or remove the folder from the Downloads entry and share it again through the phone's storage " +
+            "entry. Then try again."
+
+    /** What a run stores when the rule's folder and a folder agents may change may be the same place through the Downloads entry. */
+    const val RUN_FOLDER_DOWNLOADS_ENTRY_NEAR_WRITABLE: String =
+        "Nothing was picked up: this folder may be inside another shared folder agents may change, or hold one, because " +
+            "Android does not tell this app where a folder shared through the folder picker's Downloads entry is. So the rule " +
+            "was switched off. Make that other folder read-only in Tools > Folders, or remove the folder from the Downloads " +
+            "entry and share it again through the phone's storage entry, then switch the rule on."
+
+    /**
+     * Why a rule is not made or switched on when this app cannot tell where its folder, or a shared folder agents may
+     * change, is for another reason ([FolderTrees.overlap] is null: another profile's folder, the media list).
+     */
+    const val FOLDER_PLACE_UNKNOWN_NEAR_WRITABLE: String =
+        "This folder may be inside another shared folder agents may change, or hold one: one of them comes from another " +
+            "profile on this phone or the media list, and this app cannot tell where it is. In Tools > Folders, make that " +
+            "other folder read-only too, or remove it. Then try again."
+
+    /** What a run stores when this app cannot tell where the rule's folder, or a folder agents may change, is. */
+    const val RUN_FOLDER_PLACE_UNKNOWN_NEAR_WRITABLE: String =
+        "Nothing was picked up: this folder may be inside another shared folder agents may change, or hold one, because " +
+            "one of them comes from another profile on this phone or the media list and this app cannot tell where it is. So " +
+            "the rule was switched off. Make that other folder read-only in Tools > Folders, or remove it, then switch the " +
+            "rule on."
+
+    /**
      * Why a rule is not made or switched on when its folder, or a shared folder agents may change, comes from another
      * app (a file manager, a cloud drive) and the two may hold the same files ([FolderTrees.mayShareFiles], B1).
      */
@@ -283,17 +319,13 @@ object PickUpSafety {
      * Why [folder] cannot feed a pick-up rule (a sentence for the owner), or null when it can: it
      * exists, is read-only for agents, and no other shared folder in [allFolders] that agents may
      * change is the same place, inside it or around it ([FolderTrees.overlap]; one whose place
-     * cannot be told counts as overlapping), or may show the same files through another app
-     * ([FolderTrees.mayShareFiles], B1).
+     * cannot be told counts as overlapping, with its own sentence), or may show the same files
+     * through another app ([FolderTrees.mayShareFiles], B1).
      */
     fun folderProblem(folder: SharedFolder?, allFolders: List<SharedFolder>): String? = when {
         folder == null -> FOLDER_GONE
         !folder.readOnly -> FOLDER_NOT_READ_ONLY
-        else -> when (nearWritable(folder, allFolders)) {
-            Near.SAME_PLACE -> FOLDER_OVERLAPS_WRITABLE
-            Near.OTHER_APP -> FOLDER_OTHER_APP_NEAR_WRITABLE
-            null -> null
-        }
+        else -> nearWritable(folder, allFolders)?.refusal
     }
 
     /**
@@ -309,38 +341,41 @@ object PickUpSafety {
      */
     fun runProblemBeside(folder: SharedFolder, writable: SharedFolder): String? = when {
         folder.id == writable.id -> RUN_FOLDER_NOT_READ_ONLY
-        else -> when (near(folder, writable)) {
-            Near.SAME_PLACE -> RUN_FOLDER_OVERLAPS_WRITABLE
-            Near.OTHER_APP -> RUN_FOLDER_OTHER_APP_NEAR_WRITABLE
-            null -> null
-        }
+        else -> near(folder, writable)?.runResult
     }
 
-    /** How a folder agents may change stands to a pick-up folder: the same place (or may be), or maybe the same files through another app. */
-    private enum class Near { SAME_PLACE, OTHER_APP }
-
-    private fun nearWritable(folder: SharedFolder, allFolders: List<SharedFolder>): Near? {
-        var found: Near? = null
-        for (other in allFolders) {
-            if (other.id == folder.id || other.readOnly) continue
-            when (near(folder, other)) {
-                Near.SAME_PLACE -> return Near.SAME_PLACE
-                Near.OTHER_APP -> found = Near.OTHER_APP
-                null -> Unit
-            }
-        }
-        return found
+    /**
+     * How a folder agents may change stands to a pick-up folder, most certain first: the same place, inside or around it;
+     * maybe so, because one came through the Downloads entry, or for another reason this app cannot tell; or maybe the
+     * same files through another app. Each with what the owner is told.
+     */
+    private enum class Near(val refusal: String, val runResult: String) {
+        SAME_PLACE(FOLDER_OVERLAPS_WRITABLE, RUN_FOLDER_OVERLAPS_WRITABLE),
+        DOWNLOADS_ENTRY(FOLDER_DOWNLOADS_ENTRY_NEAR_WRITABLE, RUN_FOLDER_DOWNLOADS_ENTRY_NEAR_WRITABLE),
+        PLACE_UNKNOWN(FOLDER_PLACE_UNKNOWN_NEAR_WRITABLE, RUN_FOLDER_PLACE_UNKNOWN_NEAR_WRITABLE),
+        OTHER_APP(FOLDER_OTHER_APP_NEAR_WRITABLE, RUN_FOLDER_OTHER_APP_NEAR_WRITABLE),
     }
 
-    private fun near(folder: SharedFolder, other: SharedFolder): Near? = when {
-        FolderTrees.overlap(folder.treeUri, other.treeUri) != false -> Near.SAME_PLACE
-        FolderTrees.mayShareFiles(folder.treeUri, other.treeUri) != false -> Near.OTHER_APP
-        else -> null
+    /** The most certain way any folder of [allFolders] that agents may change stands to [folder], or null when all are apart. */
+    private fun nearWritable(folder: SharedFolder, allFolders: List<SharedFolder>): Near? =
+        allFolders.asSequence()
+            .filter { it.id != folder.id && !it.readOnly }
+            .mapNotNull { near(folder, it) }
+            .minOrNull()
+
+    private fun near(folder: SharedFolder, other: SharedFolder): Near? = when (FolderTrees.overlap(folder.treeUri, other.treeUri)) {
+        true -> Near.SAME_PLACE
+        // Unknown counts as overlapping; the sentence says why it cannot be told, not that one holds the other.
+        null -> if (FolderTrees.fromDownloadsEntryUnplaced(folder.treeUri) || FolderTrees.fromDownloadsEntryUnplaced(other.treeUri)) {
+            Near.DOWNLOADS_ENTRY
+        } else {
+            Near.PLACE_UNKNOWN
+        }
+        false -> if (FolderTrees.mayShareFiles(folder.treeUri, other.treeUri) != false) Near.OTHER_APP else null
     }
 
     /** True when a run that gave [problem] switches its rule off: the folder, or one beside it agents may change, is the reason. */
-    fun switchesRuleOff(problem: String): Boolean =
-        problem == RUN_FOLDER_NOT_READ_ONLY || problem == RUN_FOLDER_OVERLAPS_WRITABLE || problem == RUN_FOLDER_OTHER_APP_NEAR_WRITABLE
+    fun switchesRuleOff(problem: String): Boolean = problem == RUN_FOLDER_NOT_READ_ONLY || Near.entries.any { it.runResult == problem }
 
     /**
      * Why this run of [rule] imports nothing (the sentence stored as its last result), or null
@@ -356,11 +391,7 @@ object PickUpSafety {
         rule == null || !rule.enabled -> RUN_RULE_OFF
         folder == null || folder.id != rule.folderId -> FOLDER_GONE
         !folder.readOnly || folder.readOnlySince != rule.folderReadOnlySince -> RUN_FOLDER_NOT_READ_ONLY
-        else -> when (nearWritable(folder, allFolders)) {
-            Near.SAME_PLACE -> RUN_FOLDER_OVERLAPS_WRITABLE
-            Near.OTHER_APP -> RUN_FOLDER_OTHER_APP_NEAR_WRITABLE
-            null -> null
-        }
+        else -> nearWritable(folder, allFolders)?.runResult
     }
 
     /** The content hash a rule records for a file: SHA-256 of its bytes, lower-case hex. */

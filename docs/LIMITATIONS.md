@@ -335,7 +335,10 @@ do it.
   manager, that names its folders by their place on the phone. Where it cannot tell exactly
   where such a folder is (a folder picked through "Downloads", or one of a work profile or
   another user on the phone), it plays safe: agents cannot change it while a read-only folder
-  might be inside it or around it, and the message says why.
+  might be inside it or around it, and the message says why. A folder picked through
+  "Downloads" is always somewhere in a Download folder, so this only affects shared folders in
+  or around Download; folders elsewhere, such as Documents, are not held up by it. Picking that
+  folder through the phone's storage entry instead lets the app tell exactly where it is.
 - **The "Downloads" top folder on Android 9 and 10.** There the picker also lets you pick the
   "Downloads" entry's top folder itself. It lists every file the phone downloaded, wherever it
   was saved, so it counts as possibly holding any folder on the phone. While it is shared and
@@ -354,7 +357,10 @@ do it.
   the pick-up folder, or a shared folder agents may change, comes from another app and the other
   folder comes from somewhere else, the app cannot tell whether they hold the same files. The
   rule is then not made, or is switched off, and nothing is picked up until that folder agents
-  may change is read-only too or removed.
+  may change is read-only too or removed. The same holds when one of the two was picked through
+  "Downloads" and the other is in or around a Download folder, or comes from another profile on
+  the phone: the message then says that the app cannot tell where that folder is, and picking
+  it through the phone's storage entry instead helps for "Downloads".
 
 - **What local-only mode blocks.** Models off this phone, reading web pages, opening links,
   shell and Termux commands, every action on another app's screen, and handing a text, a

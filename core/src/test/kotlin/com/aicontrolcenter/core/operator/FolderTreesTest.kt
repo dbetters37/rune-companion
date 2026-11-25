@@ -7,13 +7,16 @@ import com.aicontrolcenter.core.pickup.PickUpRule
 import com.aicontrolcenter.core.pickup.PickUpSafety
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * Security review of wave 1 (F1, second review) and of wave 2b (SEC-W2B-2): whether two shared folders may be the same
  * place on the phone, however the folder picker named them. The picker's "Downloads" entry gives trees of the downloads
- * provider ("downloads", "msf:<n>"), which are folders inside the phone's Download folder, a place the phone's storage
- * entry names as "primary:Download/...". Unknown (null) counts as overlapping wherever it protects something.
+ * provider ("downloads", "msd:<n>" as the device gate of wave 2b saw on Android 14, "msf:<n>" for files), which are
+ * folders inside the phone's Download folder, a place the phone's storage entry names as "primary:Download/...". Unknown
+ * (null) counts as overlapping wherever it protects something.
  */
 class FolderTreesTest {
     private fun storage(id: String) = "content://${FolderTrees.EXTERNAL_STORAGE}/tree/" + id.replace(":", "%3A").replace("/", "%2F")
@@ -83,6 +86,102 @@ class FolderTreesTest {
         assertNull(FolderTrees.overlap(storage("primary:Music"), otherProfile))
         assertNull(FolderTrees.overlap("content://10@${FolderTrees.DOWNLOADS}/tree/msf%3A31", storage("primary:Documents")))
         assertEquals(true, FolderTrees.overlap(otherProfile, otherProfile))
+    }
+
+    @Test
+    fun `a folder the Downloads entry gives on Android 11 and later (msd) lies in a Download folder (device gate, wave 2b)`() {
+        // On Android 14 the picker's Downloads entry names a folder MediaStore has indexed "msd:<n>" (a MediaStore folder;
+        // "msf:<n>" are files and never come back as a folder). These are the exact tree URIs the device gate measured:
+        // GateDL in Download through the Downloads entry, its inner folder, and Documents/Notes through the storage entry.
+        val gateDl = "content://com.android.providers.downloads.documents/tree/msd%3A1000000019"
+        val notes = "content://com.android.externalstorage.documents/tree/primary%3ADocuments%2FNotes"
+        val inner = "content://com.android.externalstorage.documents/tree/primary%3ADownload%2FGateDL%2FInner"
+        assertEquals(false, FolderTrees.overlap(gateDl, notes), "Documents/Notes is outside every Download folder")
+        assertEquals(false, FolderTrees.overlap(notes, gateDl))
+        assertNull(FolderTrees.overlap(gateDl, inner), "GateDL may hold Download/GateDL/Inner")
+        assertNull(FolderTrees.overlap(inner, gateDl))
+        // In or around a Download folder: unknown, as for msf. Elsewhere, and other providers: apart.
+        assertNull(FolderTrees.overlap(downloads("msd:1000000019"), storage("primary:Download")))
+        assertNull(FolderTrees.overlap(downloads("msd:1000000019"), storage("primary:")))
+        assertNull(FolderTrees.overlap(downloads("msd:1000000019"), storage("1234-ABCD:Download/x")), "a memory card has a Download folder too")
+        assertEquals(false, FolderTrees.overlap(downloads("msd:1000000019"), storage("1234-ABCD:Music")))
+        assertEquals(false, FolderTrees.overlap(downloads("msd:1000000019"), storage("primary:Pictures")))
+        assertEquals(false, FolderTrees.overlap(downloads("msd:1000000019"), storage("primary:Downloads2")))
+        assertEquals(false, FolderTrees.overlap(downloads("msd:1000000019"), downloads("raw:/storage/emulated/0/Documents/Notes")))
+        assertEquals(false, FolderTrees.overlap(downloads("msd:1000000019"), cloud))
+        assertNull(FolderTrees.overlap(downloads("msd:1000000019"), downloads("raw:/storage/emulated/0/Download/GateDL")))
+        // Within the downloads provider: two MediaStore folders may be one inside the other (GateDL and its Inner).
+        assertNull(FolderTrees.overlap(downloads("msd:1000000019"), downloads("msd:1000000020")))
+        assertNull(FolderTrees.overlap(downloads("msd:1000000019"), downloads("msf:31")))
+        assertNull(FolderTrees.overlap(downloads("downloads"), downloads("msd:1000000019")))
+        assertEquals(true, FolderTrees.overlap(gateDl, gateDl))
+        // For folder pick-up the same, and the Folders screen does not count it as another app's folder.
+        assertEquals(false, FolderTrees.mayShareFiles(gateDl, notes))
+        assertNull(FolderTrees.mayShareFiles(gateDl, inner))
+        assertNull(FolderTrees.otherAppProvider(gateDl))
+        assertEquals(true, FolderTrees.fromDownloadsEntryUnplaced(gateDl))
+        assertEquals(false, FolderTrees.fromDownloadsEntryUnplaced(downloads("raw:/storage/emulated/0/Download/GateDL")))
+    }
+
+    @Test
+    fun `pick-up beside a writable Downloads-entry folder stops only in or around Download, and says why truthfully (device gate, wave 2b)`() {
+        // The device gate's scenarios A and D with the ids Android 14 gives. A: GateDL through the Downloads entry, writable;
+        // Inner (in GateDL) and the unrelated Documents/Notes read-only, each with a pick-up rule.
+        val gateDl = SharedFolder(FolderId("fld_gatedl"), downloads("msd:1000000019"), "GateDL", addedAt = 1, readOnly = false)
+        val inner = SharedFolder(FolderId("fld_inner"), storage("primary:Download/GateDL/Inner"), "Inner", addedAt = 2, readOnly = true, readOnlySince = 5)
+        val notes = SharedFolder(FolderId("fld_notes"), storage("primary:Documents/Notes"), "Notes", addedAt = 3, readOnly = true, readOnlySince = 5)
+        fun rule(folder: SharedFolder) =
+            PickUpRule(PickUpRuleId("pku_" + folder.id.value), folder.id, SpaceId("spc_1"), enabled = true, createdAt = 1, updatedAt = 1, folderReadOnlySince = 5)
+        val all = listOf(gateDl, inner, notes)
+        assertNull(PickUpSafety.folderProblem(notes, all), "a rule on Documents/Notes stays possible")
+        assertNull(PickUpSafety.runProblem(rule(notes), notes, all, masterSwitchOn = true), "a rule on Documents/Notes stays on")
+        assertNull(PickUpSafety.runProblemBeside(notes, gateDl))
+        assertEquals(false, PickUpSafety.overlapsWritable(notes, all))
+        // Inner may be inside GateDL: refused and switched off, with a sentence that says Android does not tell where the
+        // Downloads-entry folder is, not that Inner is inside it.
+        val refusal = PickUpSafety.folderProblem(inner, all)!!
+        val run = PickUpSafety.runProblem(rule(inner), inner, all, masterSwitchOn = true)!!
+        val beside = PickUpSafety.runProblemBeside(inner, gateDl)!!
+        for (sentence in listOf(refusal, run, beside)) {
+            assertTrue("Downloads entry" in sentence, sentence)
+            assertTrue("may be inside" in sentence, sentence)
+            assertFalse("This folder is inside" in sentence || "this folder is inside" in sentence, sentence)
+        }
+        assertEquals(run, beside)
+        assertEquals(PickUpSafety.FOLDER_DOWNLOADS_ENTRY_NEAR_WRITABLE, refusal)
+        assertEquals(PickUpSafety.RUN_FOLDER_DOWNLOADS_ENTRY_NEAR_WRITABLE, run)
+        assertTrue(PickUpSafety.switchesRuleOff(run))
+        // D: the Downloads-entry folder is the read-only one with the rule, Inner writable: the same sentence.
+        val readOnlyDl = gateDl.copy(readOnly = true, readOnlySince = 5)
+        val writableInner = inner.copy(readOnly = false, readOnlySince = null)
+        assertEquals(refusal, PickUpSafety.folderProblem(readOnlyDl, listOf(readOnlyDl, writableInner, notes)))
+        assertEquals(run, PickUpSafety.runProblem(rule(readOnlyDl), readOnlyDl, listOf(readOnlyDl, writableInner, notes), masterSwitchOn = true))
+        assertNull(PickUpSafety.folderProblem(readOnlyDl, listOf(readOnlyDl, notes.copy(readOnly = false, readOnlySince = null))))
+    }
+
+    @Test
+    fun `pick-up beside a folder whose place cannot be told for another reason says so, not that one holds the other`() {
+        // Another profile's folder and the media list: unknown, counted as overlapping, with its own sentence.
+        val inbox = SharedFolder(FolderId("fld_inbox"), storage("primary:Documents/Inbox"), "Inbox", addedAt = 2, readOnly = true, readOnlySince = 5)
+        val rule = PickUpRule(PickUpRuleId("pku_1"), inbox.id, SpaceId("spc_1"), enabled = true, createdAt = 1, updatedAt = 1, folderReadOnlySince = 5)
+        for (uri in listOf("content://10@${FolderTrees.EXTERNAL_STORAGE}/tree/primary%3ADocuments", media("documents_root"))) {
+            val other = SharedFolder(FolderId("fld_other"), uri, "Other", addedAt = 1, readOnly = false)
+            val refusal = PickUpSafety.folderProblem(inbox, listOf(other, inbox))!!
+            val run = PickUpSafety.runProblem(rule, inbox, listOf(other, inbox), masterSwitchOn = true)!!
+            for (sentence in listOf(refusal, run)) {
+                assertTrue("cannot tell" in sentence, sentence)
+                assertTrue("another profile on this phone" in sentence, sentence)
+                assertFalse("This folder is inside" in sentence || "this folder is inside" in sentence, sentence)
+                assertFalse("Downloads" in sentence, sentence)
+            }
+            assertEquals(PickUpSafety.FOLDER_PLACE_UNKNOWN_NEAR_WRITABLE, refusal, uri)
+            assertEquals(PickUpSafety.RUN_FOLDER_PLACE_UNKNOWN_NEAR_WRITABLE, run, uri)
+            assertTrue(PickUpSafety.switchesRuleOff(run), uri)
+            assertEquals(run, PickUpSafety.runProblemBeside(inbox, other))
+        }
+        // A folder that is certainly around it keeps the certain sentence.
+        val docs = SharedFolder(FolderId("fld_docs"), storage("primary:Documents"), "Documents", addedAt = 1, readOnly = false)
+        assertEquals(PickUpSafety.FOLDER_OVERLAPS_WRITABLE, PickUpSafety.folderProblem(inbox, listOf(docs, inbox)))
     }
 
     @Test
@@ -223,9 +322,12 @@ class FolderTreesTest {
         val root = SharedFolder(FolderId("fld_root"), downloads("downloads"), "Downloads", addedAt = 1, readOnly = false)
         val inbox = SharedFolder(FolderId("fld_inbox"), storage("primary:Download/Agents/inbox"), "inbox", addedAt = 2, readOnly = true, readOnlySince = 5)
         val rule = PickUpRule(PickUpRuleId("pku_1"), inbox.id, SpaceId("spc_1"), enabled = true, createdAt = 1, updatedAt = 1, folderReadOnlySince = 5)
-        assertEquals(PickUpSafety.RUN_FOLDER_OVERLAPS_WRITABLE, PickUpSafety.runProblem(rule, inbox, listOf(agents, inbox), masterSwitchOn = true))
-        assertEquals(PickUpSafety.RUN_FOLDER_OVERLAPS_WRITABLE, PickUpSafety.runProblem(rule, inbox, listOf(root, inbox), masterSwitchOn = true))
-        assertEquals(PickUpSafety.FOLDER_OVERLAPS_WRITABLE, PickUpSafety.folderProblem(inbox, listOf(agents, inbox)))
+        // Unknown counts as overlapping; since the device gate of wave 2b the sentence says that Android does not tell where
+        // the Downloads-entry folder is, not that one holds the other.
+        assertEquals(PickUpSafety.RUN_FOLDER_DOWNLOADS_ENTRY_NEAR_WRITABLE, PickUpSafety.runProblem(rule, inbox, listOf(agents, inbox), masterSwitchOn = true))
+        assertEquals(PickUpSafety.RUN_FOLDER_DOWNLOADS_ENTRY_NEAR_WRITABLE, PickUpSafety.runProblem(rule, inbox, listOf(root, inbox), masterSwitchOn = true))
+        assertEquals(PickUpSafety.FOLDER_DOWNLOADS_ENTRY_NEAR_WRITABLE, PickUpSafety.folderProblem(inbox, listOf(agents, inbox)))
+        assertTrue(PickUpSafety.switchesRuleOff(PickUpSafety.RUN_FOLDER_DOWNLOADS_ENTRY_NEAR_WRITABLE))
         // A writable folder elsewhere does not stop it.
         val elsewhere = SharedFolder(FolderId("fld_docs"), storage("primary:Documents"), "Documents", addedAt = 1, readOnly = false)
         assertNull(PickUpSafety.runProblem(rule, inbox, listOf(elsewhere, inbox), masterSwitchOn = true))

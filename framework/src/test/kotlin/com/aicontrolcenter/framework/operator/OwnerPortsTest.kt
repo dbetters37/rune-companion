@@ -33,6 +33,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -181,8 +182,39 @@ class OwnerServicesTest {
             )
         }
         share("content://${FolderTrees.DOWNLOADS}/tree/msf%3A31", "Agents")
-        assertEquals(false to PickUpSafety.RUN_FOLDER_OVERLAPS_WRITABLE, rules.get(PickUpRuleId("pku_0"))!!.let { it.enabled to it.lastResult })
+        assertEquals(false to PickUpSafety.RUN_FOLDER_DOWNLOADS_ENTRY_NEAR_WRITABLE, rules.get(PickUpRuleId("pku_0"))!!.let { it.enabled to it.lastResult })
         assertTrue(rules.get(PickUpRuleId("pku_1"))!!.enabled, "Documents/Notes is outside every Download folder")
+    }
+
+    @Test
+    fun `sharing a folder through the Downloads entry as Android 14 names it switches off pick-up only in or around Download (device gate, wave 2b)`() = runTest {
+        // Android 14's Downloads entry names a folder "msd:<n>" (the device gate measured msd:1000000019 for Download/GateDL).
+        // It lies in a Download folder: a rule on Download/GateDL/Inner stops, a rule on Documents/Notes stays on.
+        val world = OperatorWorld()
+        val built = Built(world)
+        val rules = InMemoryPickUpRuleRepository()
+        val folders = DefaultOwnerFolders(world.gateway, world.folders, world.grants, world.requests, built.activity, world.ids, world.clock, rules)
+        fun tree(path: String) = "content://${FolderTrees.EXTERNAL_STORAGE}/tree/primary%3A" + path.replace("/", "%2F")
+        suspend fun share(uri: String, name: String): SharedFolder {
+            world.gateway.pickable[uri] = name
+            return assertIs<OwnerResult.Done<SharedFolder>>(folders.add(uri)).value
+        }
+        val inner = share(tree("Download/GateDL/Inner"), "Inner")
+        val notes = share(tree("Documents/Notes"), "Notes")
+        for ((n, folder) in listOf(inner, notes).withIndex()) {
+            folders.setReadOnly(folder.id, true)
+            rules.upsert(
+                PickUpRule(
+                    PickUpRuleId("pku_$n"), folder.id, SpaceId("spc_inbox"), enabled = true, createdAt = 1, updatedAt = 1,
+                    folderReadOnlySince = world.folders.get(folder.id)!!.readOnlySince,
+                ),
+            )
+        }
+        share("content://${FolderTrees.DOWNLOADS}/tree/msd%3A1000000019", "GateDL")
+        assertEquals(false to PickUpSafety.RUN_FOLDER_DOWNLOADS_ENTRY_NEAR_WRITABLE, rules.get(PickUpRuleId("pku_0"))!!.let { it.enabled to it.lastResult })
+        assertTrue(rules.get(PickUpRuleId("pku_1"))!!.enabled, "Documents/Notes is outside every Download folder")
+        assertTrue(built.log.all.any { it.title == "Folder pick-up switched off: Inner" })
+        assertFalse(built.log.all.any { it.title == "Folder pick-up switched off: Notes" })
     }
 
     @Test
