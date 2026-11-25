@@ -63,7 +63,8 @@ class OperatorDependencyTest {
      * What agents run through: the executor, the broker, every registered tool, and (security review of wave 1, F10)
      * the chat, the model gateway and the registry directory, whose held objects nothing else reaches. Wave 2a adds the
      * provider re-checks (agent side, WP4) and the agent's side of a question to the owner (WP5), so neither can come to
-     * hold an owner-only port unseen; WP8 adds the script host (WP6).
+     * hold an owner-only port unseen. The script host (WP6) is made per run and is a binder, so `ProductionGraphDependencyTest`
+     * walks it under Robolectric (wave 3, WP8).
      */
     private fun roots(): List<Pair<Any, String>> =
         listOf(
@@ -71,6 +72,7 @@ class OperatorDependencyTest {
             app.graph.modelGateway to "model gateway", app.graph.registryDirectory to "registry directory",
             app.graph.providerRechecks to "provider re-checks", app.graph.operatorAssembly.ownerQuestions to "questions to the owner (agent side)",
         ) + app.graph.toolRegistry.all().map { it to "tool ${it.spec.id.value}" }
+
 
     @Test
     fun `nothing reachable from the executor, the broker or any registered tool reaches an owner-only port`() {

@@ -21,7 +21,6 @@ import com.aicontrolcenter.framework.orchestration.DefaultOrchestrator
 import com.aicontrolcenter.framework.orchestration.OwnerNotes
 import com.aicontrolcenter.framework.orchestration.TeamTools
 import com.aicontrolcenter.framework.tools.CapabilityRegistry
-import java.time.ZoneId
 import kotlinx.coroutines.CoroutineScope
 
 /*
@@ -92,7 +91,8 @@ class TeamAssembly(
         rechecks = providerRechecks,
         // D20: the announcement of an objective's end is logged once, however often the app dies around it.
         activityLog = ports.activityLog,
-        zone = { ZoneId.systemDefault() },
+        // One owner zone for "today" (wave 3): the same as the daily limiter's and the usage screens'.
+        zone = ports.zone,
         // Item 11: no objective starts while a backup is restored.
         restoring = maintenanceGate.busy,
     ).also {

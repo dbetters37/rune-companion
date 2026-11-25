@@ -11,7 +11,6 @@ import com.aicontrolcenter.core.WallClock
 import com.aicontrolcenter.core.activity.ActivityLog
 import com.aicontrolcenter.core.backup.LocalMaintenanceGate
 import com.aicontrolcenter.core.backup.MaintenanceGate
-import com.aicontrolcenter.core.backup.OwnerBackup
 import com.aicontrolcenter.core.chat.ConversationRepository
 import com.aicontrolcenter.core.device.DeviceInspector
 import com.aicontrolcenter.core.health.NetworkStatus
@@ -50,11 +49,17 @@ import com.aicontrolcenter.core.usage.OwnerModelPrices
 import com.aicontrolcenter.core.usage.OwnerUsage
 import com.aicontrolcenter.core.usage.UsageLedger
 import com.aicontrolcenter.core.usage.UsageReports
+import com.aicontrolcenter.data.backup.DetailedOwnerBackup
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.emptyFlow
+import java.time.ZoneId
 
 /**
- * Everything the app needs from outside the framework, expressed only as `:core` interfaces.
+ * Everything the app needs from outside the framework, expressed as `:core` interfaces (and, since wave 3, the data
+ * module's detailed backup port, which extends core's `OwnerBackup`).
  *
  * This is the seam between the app and its platform: production fills it with the Room,
  * DataStore, Keystore and PackageManager implementations (see `createProductionPorts`), tests
@@ -119,8 +124,12 @@ data class Ports(
     val network: NetworkStatus = NetworkStatus.AlwaysOn,
     /** Where JavaScript runs (WP6): in this process unless the scripts package provides an engine. */
     val scripts: ScriptsPorts = ScriptsPorts(),
-    /** Owner-only: the backup file (WP3, Tier B). Null: no backup in this build. */
-    val backup: OwnerBackup? = null,
+    /**
+     * Owner-only: the backup file (WP3, Tier B). Null: no backup in this build. Typed as the data module's detailed port
+     * (wave 3, WP8): the Save and Restore screens need its notes, the settings kept back and a refusal known before the
+     * owner confirms, which core's `OwnerBackup` results do not carry.
+     */
+    val backup: DetailedOwnerBackup? = null,
     /** The stores of routines and folder pick-up (WP17, Tier B). */
     val routines: RoutinesPorts = RoutinesPorts(),
     /**
@@ -128,6 +137,11 @@ data class Ports(
      * Production passes the application's own, which the upkeep job shares.
      */
     val maintenanceGate: MaintenanceGate = LocalMaintenanceGate(),
+    /**
+     * The owner's time zone, read at each use (the owner can travel): one zone for "today" everywhere (wave 3, WP8), the
+     * daily limiter's, the orchestrator's, the usage screens' and the routines'. Tests pin it with the usage store's.
+     */
+    val zone: () -> ZoneId = { ZoneId.systemDefault() },
 )
 
 /** Stands in for the owner's price port where no store was given: nothing is saved. */
@@ -194,4 +208,10 @@ class OperatorPorts(
     val refreshScreenState: () -> Unit = {},
     /** Android's settings screens and share sheet, for the owner's Tools and Workspace screens only. */
     val systemScreens: SystemScreens,
+    /**
+     * Owner-only, for Tools › Screen control (D7, wave 3): why screen control is off when Android switched it off after
+     * the app was stopped, in plain words, or null. Production: the device layer's sentence ("…after the app was
+     * force-stopped…" on Android 15 and later when Android says so).
+     */
+    val screenSwitchedOffSentence: StateFlow<String?> = MutableStateFlow<String?>(null).asStateFlow(),
 )

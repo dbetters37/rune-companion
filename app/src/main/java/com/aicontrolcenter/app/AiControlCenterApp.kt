@@ -12,6 +12,7 @@ import com.aicontrolcenter.app.di.wiring.RoutinesWiring
 import com.aicontrolcenter.app.health.AppGate
 import com.aicontrolcenter.app.operator.PickUpFoldersView
 import com.aicontrolcenter.app.operator.SharedFolderFilesView
+import com.aicontrolcenter.app.usage.DayChanges
 import com.aicontrolcenter.app.work.AndroidNotificationAccess
 import com.aicontrolcenter.app.work.AppProcessHooks
 import com.aicontrolcenter.app.work.ScreenSessionNotifications
@@ -72,6 +73,9 @@ class AiControlCenterApp : Application(), UpkeepHost {
         // The isolated script process gets this application object too, with no access to system services, files
         // or the database: nothing below may run there (a notification call already throws in it).
         if (Process.isIsolated()) return
+        // Debug builds only (D45): every disk read or write on the main thread, and every leak StrictMode sees, is
+        // written to the log (never a crash, never a dialog), so main-thread work at a start is found.
+        DebugStrictMode.install()
         // Screen sessions live in this process only: an "is operating" notification still showing now was left by a
         // process that died mid-session, and nothing is operating any more.
         ScreenSessionNotifications.cancel(this)
@@ -144,7 +148,9 @@ class AiControlCenterApp : Application(), UpkeepHost {
      */
     val gate: AppGate
         get() = installedGate ?: synchronized(this) {
-            installedGate ?: AppGate(recovery, appScope).also { installedGate = it }
+            // Once the data opened, the graph is built off the main thread before the gate opens (wave 3, D45): the main
+            // thread then finds it built instead of wiring every service itself at a cold start.
+            installedGate ?: AppGate(recovery, appScope, prepare = { graph }).also { installedGate = it }
         }
 
     /**
@@ -163,6 +169,8 @@ class AiControlCenterApp : Application(), UpkeepHost {
                 notifications = AndroidNotificationAccess(this),
                 memoryService = sharedMemory,
                 embedder = embedder,
+                // Screens that show "today" move on at the owner's midnight (wave 3).
+                dayChanges = DayChanges.daily(WallClock) { ZoneId.systemDefault() },
             ).also {
                 installedGraph = it
                 AppProcessHooks.onGraphBuilt(this, it, appScope)

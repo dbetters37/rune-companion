@@ -73,6 +73,30 @@
         </activity>
 
         <!--
+             Phase 6 (owner request #43, rule 34, Tier B; WP16): text another app shares lands here, never in the main
+             activity (rule 23). Exported, because other apps' share sheets start it; only ACTION_SEND and
+             ACTION_SEND_MULTIPLE of text types. It passes the app's gate, starts no work, calls no model, and stores
+             nothing until the owner picks a memory space or the workspace and taps Save on its own screen. Rule 22 lists
+             it among the exported components; it is removed (with this entry) if WP16 does not ship.
+        -->
+        <activity
+            android:name=".share.ShareReceiverActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/*" />
+            </intent-filter>
+        </activity>
+
+        <!--
              Keeps the owner's agents running while they answer a chat or work on an objective (Phase 6 widens it
              from objectives to chat replies, A2).
         -->

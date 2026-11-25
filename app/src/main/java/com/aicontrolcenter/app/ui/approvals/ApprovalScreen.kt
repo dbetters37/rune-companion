@@ -1,5 +1,6 @@
 package com.aicontrolcenter.app.ui.approvals
 
+import com.aicontrolcenter.app.Phase6Stub
 import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
@@ -87,6 +88,11 @@ class ApprovalActions(
     val onLetAskAgain: () -> Unit = {},
 )
 
+/**
+ * Wave 3 (WP11a): a QUESTION opened here (its notification opens the Approval route with the request's id) is handed to
+ * its own screen with [onOpenQuestion] (rule 13).
+ */
+@Phase6Stub("WP11a")
 @Composable
 fun ApprovalRoute(
     requestId: RequestId,
@@ -95,6 +101,7 @@ fun ApprovalRoute(
     onOpenObjective: (TaskId) -> Unit,
     onOpenConversation: (ConversationId) -> Unit,
     onOpenRequest: (RequestId) -> Unit = {},
+    @Suppress("UNUSED_PARAMETER") onOpenQuestion: (RequestId) -> Unit = {},
 ) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel(key = "approval-${requestId.value}") {

@@ -161,6 +161,13 @@ interface Orchestrator {
     /** Stops dispatching new work and interrupts running tasks; they resume on [resume]. */
     suspend fun pause(rootId: TaskId)
 
+    /**
+     * Pauses as [pause] does, for the app rather than the owner (wave 3, WP8): the objective and its paused tasks say
+     * [reason] (an app-written sentence such as "Paused: the phone is almost full. …") instead of "Paused by the owner.",
+     * and it is not logged as the owner's action. The default pauses as the owner would (stand-ins and fakes).
+     */
+    suspend fun pause(rootId: TaskId, reason: String) = pause(rootId)
+
     suspend fun resume(rootId: TaskId)
 
     /** Cancels the objective and every unfinished task. What was produced is kept. */

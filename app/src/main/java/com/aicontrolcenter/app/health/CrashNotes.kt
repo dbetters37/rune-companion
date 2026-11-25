@@ -13,7 +13,15 @@ import java.io.IOException
  * only, which the app's own code wrote. At most [MAX_NOTES] notes are kept. Not installed in the script process (its
  * application object returns before any hook there).
  */
-class CrashNotes(private val file: File) {
+class CrashNotes(fileOf: () -> File) {
+    /** The notes in [file]. */
+    constructor(file: File) : this({ file })
+
+    /**
+     * Found on first use (wave 3, D45): the application installs the handler at every start on the main thread, and
+     * asking Android for `noBackupFilesDir` there touches the disk (Android makes the folder if it is missing).
+     */
+    private val file: File by lazy(fileOf)
     private val lock = Any()
 
     /** One crash: when, the exception's class (and its causes' classes), and where in the app's own code. */
@@ -81,6 +89,9 @@ class CrashNotes(private val file: File) {
 
         /** The app's crash notes in [noBackupFilesDir]. */
         fun inFolder(noBackupFilesDir: File): CrashNotes = CrashNotes(File(noBackupFilesDir, PATH))
+
+        /** The app's crash notes in the folder [noBackupFilesDir] gives, asked for only when a note is read or written. */
+        fun inFolder(noBackupFilesDir: () -> File): CrashNotes = CrashNotes { File(noBackupFilesDir(), PATH) }
 
         @Volatile
         private var installed: CrashNotes? = null

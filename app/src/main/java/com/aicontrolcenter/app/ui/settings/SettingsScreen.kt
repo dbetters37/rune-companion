@@ -61,8 +61,38 @@ class SettingsActions(
     val onScreenControlEnabledChange: (Boolean) -> Unit = {},
 )
 
+/** Where the Settings section leads (supplied by the navigation shell; wave 3). */
+class SettingsNavigation(
+    val onOpenDailyLimits: () -> Unit = {},
+    val onSaveBackup: () -> Unit = {},
+    val onRestoreBackup: () -> Unit = {},
+    val onOpenRoutines: () -> Unit = {},
+    val onOpenPickUpRules: () -> Unit = {},
+)
+
+/**
+ * The Settings section's Phase 6 parts, each owned by its package and placed by [SettingsScreen] (wave 3, WP8): null
+ * shows nothing, which is what previews and the existing screenshots use.
+ */
+class SettingsSlots(
+    /** Daily limits (WP10a). */
+    val dailyLimits: (@Composable () -> Unit)? = null,
+    /** Usage history: keep for, clear (WP10a). */
+    val usageHistory: (@Composable () -> Unit)? = null,
+    /** Questions from agents and their time-out (WP10b, Tier B). */
+    val questions: (@Composable () -> Unit)? = null,
+    /** Working in the background (WP10b). */
+    val background: (@Composable () -> Unit)? = null,
+    /** Routines and folder pick-up, the two master switches (WP10c, Tier B). */
+    val routines: (@Composable () -> Unit)? = null,
+    /** Backup (WP10b, Tier B). */
+    val backup: (@Composable () -> Unit)? = null,
+    /** Appearance: Calm (WP10b). */
+    val motion: (@Composable () -> Unit)? = null,
+)
+
 @Composable
-fun SettingsRoute() {
+fun SettingsRoute(navigation: SettingsNavigation = SettingsNavigation()) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel {
         SettingsViewModel(
@@ -77,6 +107,25 @@ fun SettingsRoute() {
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    // Phase 6 (wave 3): each section's own view model, with the narrow ports it may use.
+    val dailyLimits = viewModel { DailyLimitsViewModel(graph.settings, graph.todayUsage) }
+    val usageHistory = viewModel { UsageHistoryViewModel(graph.settings, graph.ownerUsage) }
+    val questions = viewModel { QuestionSettingsViewModel(graph.settings) }
+    val background = viewModel { BackgroundSectionViewModel(graph.backgroundHealth, graph.backgroundScreens, graph.settings) }
+    val motion = viewModel { MotionSettingsViewModel(graph.settings) }
+    val routinesPort = graph.ownerRoutines
+    val pickUpPort = graph.ownerPickUpRules
+    val routines = if (routinesPort != null || pickUpPort != null) viewModel { RoutinesSettingsViewModel(graph.settings, routinesPort, pickUpPort) } else null
+    val hasBackup = graph.ownerBackup != null
+    val slots = SettingsSlots(
+        dailyLimits = { DailyLimitsSection(dailyLimits, navigation.onOpenDailyLimits) },
+        usageHistory = { UsageHistorySection(usageHistory) },
+        questions = { QuestionTimeoutSection(questions) },
+        background = { BackgroundSection(background) },
+        routines = routines?.let { { RoutinesSection(it, navigation.onOpenRoutines, navigation.onOpenPickUpRules) } },
+        backup = if (hasBackup) ({ BackupSection(navigation.onSaveBackup, navigation.onRestoreBackup) }) else null,
+        motion = { MotionSection(motion) },
+    )
     SettingsScreen(
         state = state,
         actions = SettingsActions(
@@ -90,11 +139,12 @@ fun SettingsRoute() {
             onOperatorEnabledChange = viewModel::setOperatorEnabled,
             onScreenControlEnabledChange = viewModel::setScreenControlEnabled,
         ),
+        slots = slots,
     )
 }
 
 @Composable
-fun SettingsScreen(state: SettingsUiState, actions: SettingsActions) {
+fun SettingsScreen(state: SettingsUiState, actions: SettingsActions, slots: SettingsSlots = SettingsSlots()) {
     var confirmClear by rememberSaveable { mutableStateOf(false) }
     ScreenScaffold(title = "Settings", message = state.message, onMessageShown = actions.onMessageShown) { padding ->
         if (state.isLoading) {
@@ -111,9 +161,17 @@ fun SettingsScreen(state: SettingsUiState, actions: SettingsActions) {
             verticalArrangement = Arrangement.spacedBy(Spacing.md),
         ) {
             PrivacySection(state.settings, state.localOnlyEffect, actions, onClearRequested = { confirmClear = true })
+            // Cost first among the Phase 6 parts: the owner's spending and its history (goals 1-2).
+            slots.dailyLimits?.invoke()
+            slots.usageHistory?.invoke()
             PhoneOperatorSection(state.settings, actions)
+            slots.questions?.invoke()
+            slots.background?.invoke()
+            slots.routines?.invoke()
             state.memory?.let { MemorySection(it) }
             OrchestrationSection(state.settings, actions)
+            slots.backup?.invoke()
+            slots.motion?.invoke()
             DeviceSection(state.device, actions.onRefreshDevice)
             AboutSection(state.appVersion)
         }

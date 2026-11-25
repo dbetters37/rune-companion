@@ -1,5 +1,6 @@
 package com.aicontrolcenter.app.ui.dashboard
 
+import com.aicontrolcenter.app.Phase6Stub
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -64,6 +65,7 @@ private val ViewportSaver = Saver<Viewport, List<Float>>(
  * The agent network with its controls: zoom buttons (the accessible alternative to pinching),
  * a legend that explains every glyph and line style, and a card for the selected agent.
  */
+@Phase6Stub("WP9")
 @Composable
 internal fun NetworkCard(
     network: AgentNetwork,
@@ -72,6 +74,8 @@ internal fun NetworkCard(
     onOpenAgent: (AgentId) -> Unit,
     onNewAgent: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Wave 3 (WP9): the card's way into the Team view. */
+    @Suppress("UNUSED_PARAMETER") onOpenTeam: () -> Unit = {},
 ) {
     var viewport by rememberSaveable(stateSaver = ViewportSaver) { mutableStateOf(Viewport()) }
     var viewSize by remember { mutableStateOf(IntSize.Zero) }

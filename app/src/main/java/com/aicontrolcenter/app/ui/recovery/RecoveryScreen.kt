@@ -24,12 +24,20 @@ import com.aicontrolcenter.core.health.OwnerRecovery
  * Wave 1 stub: the gate never shows it (it is always open), and it only says what went wrong. WP10 adds Start over
  * (a typed word in a secure field), "Close and try later" and `FLAG_SECURE`.
  *
+ * Wave 3 (WP8): the final signature. WP10b fills it with [RecoveryViewModel] (`viewModel { RecoveryViewModel(state,
+ * recovery) }`), `RecoveryActions.startOverAndRestart`, and [onTryAgain] for "Try again".
+ *
  * @param state why the data could not be opened.
  * @param recovery the owner's way out (Start over); null when this build has none.
+ * @param onTryAgain looks again whether the data opens (the gate's `recheck`; the gate itself never reaches this screen).
  */
-@Phase6Stub("WP10")
+@Phase6Stub("WP10b")
 @Composable
-fun RecoveryHost(state: DatabaseState, @Suppress("UNUSED_PARAMETER") recovery: OwnerRecovery?) {
+fun RecoveryHost(
+    state: DatabaseState,
+    @Suppress("UNUSED_PARAMETER") recovery: OwnerRecovery?,
+    @Suppress("UNUSED_PARAMETER") onTryAgain: () -> Unit = {},
+) {
     AppTheme(isSystemInDarkTheme()) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {

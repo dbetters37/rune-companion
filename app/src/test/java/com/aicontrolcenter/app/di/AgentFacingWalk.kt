@@ -195,6 +195,13 @@ internal class AgentFacingWalk(
             // code reads them through `ReadOnlyRegistry`'s views.
             com.aicontrolcenter.core.registry.AgentRepository::class.java, com.aicontrolcenter.core.registry.ProviderRepository::class.java,
             com.aicontrolcenter.core.registry.ModelRepository::class.java, com.aicontrolcenter.core.registry.AiAppRepository::class.java,
+            // Wave 3 (WP8; WP17's hand-off): what starts routine runs and picks up files is the owner's, named here so a holder
+            // fails with the reason (they hold owner-only stores, so one failed before too), and the owner's read of the
+            // pick-up imports and choice to leave safe start.
+            com.aicontrolcenter.framework.routines.WaitingRoutines::class.java, com.aicontrolcenter.framework.routines.RoutineRunner::class.java,
+            com.aicontrolcenter.framework.pickup.PickUpRunner::class.java, com.aicontrolcenter.framework.routines.DefaultOwnerRoutines::class.java,
+            com.aicontrolcenter.framework.pickup.DefaultOwnerPickUpRules::class.java, com.aicontrolcenter.app.di.wiring.PickUpImports::class.java,
+            com.aicontrolcenter.app.health.SafeStartControl::class.java,
         )
 
         val VIEWS: List<Class<*>> = listOf(

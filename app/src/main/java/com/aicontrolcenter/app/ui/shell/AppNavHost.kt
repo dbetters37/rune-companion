@@ -12,7 +12,23 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.toRoute
+import com.aicontrolcenter.app.ui.activity.ActivityNavigation
 import com.aicontrolcenter.app.ui.activity.ActivityRoute as ActivityScreenRoute
+import com.aicontrolcenter.app.ui.activity.ActivityTab
+import com.aicontrolcenter.app.ui.backup.BackupRestoreRoute as BackupRestoreScreenRoute
+import com.aicontrolcenter.app.ui.backup.BackupSaveRoute as BackupSaveScreenRoute
+import com.aicontrolcenter.app.ui.pickup.PickUpNavigation
+import com.aicontrolcenter.app.ui.pickup.PickUpRuleEditorRoute as PickUpRuleEditorScreenRoute
+import com.aicontrolcenter.app.ui.pickup.PickUpRulesRoute as PickUpRulesScreenRoute
+import com.aicontrolcenter.app.ui.questions.QuestionRoute as QuestionScreenRoute
+import com.aicontrolcenter.app.ui.routines.RoutineEditorRoute as RoutineEditorScreenRoute
+import com.aicontrolcenter.app.ui.routines.RoutinesNavigation
+import com.aicontrolcenter.app.ui.routines.RoutinesRoute as RoutinesScreenRoute
+import com.aicontrolcenter.app.ui.routines.WaitingRoutinesRoute as WaitingRoutinesScreenRoute
+import com.aicontrolcenter.app.ui.settings.DailyLimitsRoute as DailyLimitsScreenRoute
+import com.aicontrolcenter.app.ui.settings.SettingsNavigation
+import com.aicontrolcenter.app.ui.team.TeamNavigation
+import com.aicontrolcenter.app.ui.team.TeamRoute as TeamScreenRoute
 import com.aicontrolcenter.app.ui.approvals.ApprovalRoute as ApprovalScreenRoute
 import com.aicontrolcenter.app.ui.approvals.ApprovalsRoute as ApprovalsScreenRoute
 import com.aicontrolcenter.app.ui.agents.AgentDetailRoute as AgentDetailScreenRoute
@@ -57,6 +73,9 @@ import com.aicontrolcenter.app.ui.workspace.WorkspaceTrashRoute as WorkspaceTras
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.AiAppId
 import com.aicontrolcenter.core.ConversationId
+import com.aicontrolcenter.core.FolderId
+import com.aicontrolcenter.core.PickUpRuleId
+import com.aicontrolcenter.core.RoutineId
 import com.aicontrolcenter.core.MemoryId
 import com.aicontrolcenter.core.SpaceId
 import com.aicontrolcenter.core.TaskId
@@ -101,6 +120,24 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
     val openObjective: (TaskId) -> Unit = { navController.open(ObjectiveRoute(it.value)) }
     val openTask: (TaskId) -> Unit = { navController.open(TaskRoute(it.value)) }
     val openRequest: (RequestId) -> Unit = { navController.open(ApprovalRoute(it.value)) }
+    // Phase 6 (wave 3): a question has its own screen (rule 13). From an Approval screen (its notification opens one) the
+    // question replaces it, so Back does not return to an approval screen for a question.
+    val openQuestion: (RequestId) -> Unit = { navController.open(QuestionRoute(it.value)) }
+    val questionInsteadOfApproval: (RequestId) -> Unit = { id ->
+        navController.navigate(QuestionRoute(id.value)) {
+            popUpTo<ApprovalRoute> { inclusive = true }
+            launchSingleTop = true
+        }
+    }
+    val openTeam: (TaskId?) -> Unit = { navController.open(TeamRoute(it?.value)) }
+    val openUsage: () -> Unit = { navController.navigateToSection(ActivityRoute(ActivityTab.USAGE), restore = false) }
+    val openDailyLimits: () -> Unit = { navController.open(DailyLimitsRoute) }
+    val openSettings: () -> Unit = { navController.navigateToSection(SettingsRoute) }
+    val openRoutines: () -> Unit = { navController.open(RoutinesRoute) }
+    val openRoutine: (RoutineId) -> Unit = { navController.open(RoutineEditorRoute(it.value)) }
+    val openPickUpRules: () -> Unit = { navController.open(PickUpRulesRoute) }
+    val newPickUpRule: (FolderId?) -> Unit = { navController.open(PickUpRuleEditorRoute(folderId = it?.value)) }
+    val openFolders: () -> Unit = { navController.navigateToSection(ToolsRoute(ToolsTab.FOLDERS), restore = false) }
     val openWorkspace: () -> Unit = { navController.open(WorkspaceRoute()) }
     // Opened on top of the screen that asked (an agent's editor keeps its draft), not as a section switch.
     val openAgentPermissions: (AgentId) -> Unit = { navController.open(ToolsRoute(ToolsTab.PERMISSIONS, it.value)) }
@@ -136,11 +173,17 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                     onOpenModels = { navController.navigateToSection(ModelsRoute(ModelsTab.MODELS), restore = false) },
                     onOpenProviders = { navController.navigateToSection(ModelsRoute(ModelsTab.PROVIDERS), restore = false) },
                     onOpenApps = { navController.navigateToSection(ModelsRoute(ModelsTab.APPS), restore = false) },
-                    onSeeAllActivity = { navController.navigateToSection(ActivityRoute) },
+                    onSeeAllActivity = { navController.navigateToSection(ActivityRoute()) },
                     onAddProvider = addProvider,
                     onOpenProvider = openProvider,
                     onOpenMemory = { navController.navigateToSection(MemoryRoute(MemoryTab.EXPLORER), restore = false) },
                     onOpenTask = openTask,
+                    onOpenUsage = openUsage,
+                    onOpenDailyLimits = openDailyLimits,
+                    onOpenSettings = openSettings,
+                    onOpenConcepts = { navController.open(ConceptsRoute) },
+                    onOpenObjective = openObjective,
+                    onOpenTeam = openTeam,
                 ),
             )
         }
@@ -206,6 +249,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                 onBack = back,
                 onOpenProvider = openProvider,
                 onOpenRequest = openRequest,
+                onOpenDailyLimits = openDailyLimits,
             )
         }
         composable<ModelsRoute> { entry ->
@@ -255,7 +299,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
             )
         }
         composable<ModelEditorRoute> { entry ->
-            ModelEditorScreenRoute(modelId = ModelId(entry.toRoute<ModelEditorRoute>().modelId), onBack = back)
+            ModelEditorScreenRoute(modelId = ModelId(entry.toRoute<ModelEditorRoute>().modelId), onBack = back, onOpenUsage = openUsage)
         }
         composable<AiAppDetailRoute> { entry ->
             AiAppDetailScreenRoute(appId = AiAppId(entry.toRoute<AiAppDetailRoute>().appId), onBack = back)
@@ -285,6 +329,8 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                         launchSingleTop = true
                     }
                 },
+                onOpenDailyLimits = openDailyLimits,
+                onOpenSettings = openSettings,
             )
         }
         composable<ObjectiveRoute> { entry ->
@@ -293,6 +339,10 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                 onBack = back,
                 onOpenTask = openTask,
                 onOpenRequest = openRequest,
+                onOpenQuestion = openQuestion,
+                onOpenTeam = openTeam,
+                onOpenDailyLimits = openDailyLimits,
+                onOpenRoutine = openRoutine,
             )
         }
         composable<TaskRoute> { entry ->
@@ -302,12 +352,13 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                 onOpenTask = openTask,
                 onOpenObjective = openObjective,
                 onOpenRequest = openRequest,
+                onOpenQuestion = openQuestion,
             )
         }
         composable<ApprovalsRoute> {
             // On a wide screen the list is the rail's Approvals destination, like a section: no back arrow.
             val onRail = LocalConfiguration.current.screenWidthDp.dp >= WideLayoutMinWidth
-            ApprovalsScreenRoute(onBack = if (onRail) null else back, onOpenRequest = openRequest)
+            ApprovalsScreenRoute(onBack = if (onRail) null else back, onOpenRequest = openRequest, onOpenQuestion = openQuestion)
         }
         composable<ApprovalRoute> { entry ->
             ApprovalScreenRoute(
@@ -317,6 +368,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                 onOpenObjective = openObjective,
                 onOpenConversation = openConversation,
                 onOpenRequest = openRequest,
+                onOpenQuestion = questionInsteadOfApproval,
             )
         }
         composable<MemoryRoute> { entry ->
@@ -394,6 +446,10 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                     onOpenSettings = { navController.navigateToSection(SettingsRoute) },
                     // Opened from an agent, on top of its screen: Back returns there.
                     onBack = if (route.agentId != null) back else null,
+                    onOpenRoutines = openRoutines,
+                    onOpenPickUpRules = openPickUpRules,
+                    onNewPickUpRule = { newPickUpRule(it) },
+                    onOpenQuestion = openQuestion,
                 ),
             )
         }
@@ -414,7 +470,103 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
         }
         composable<WorkspaceFileRoute> { entry -> WorkspaceFileScreenRoute(path = entry.toRoute<WorkspaceFileRoute>().path, onBack = back) }
         composable<WorkspaceTrashRoute> { WorkspaceTrashScreenRoute(onBack = back) }
-        composable<ActivityRoute> { ActivityScreenRoute() }
-        composable<SettingsRoute> { SettingsScreenRoute() }
+        composable<ActivityRoute> { entry ->
+            val route = entry.toRoute<ActivityRoute>()
+            ActivityScreenRoute(
+                initialTab = route.tab,
+                initialAgent = route.agentId?.let(::AgentId),
+                initialText = route.text,
+                navigation = ActivityNavigation(
+                    onOpenAgent = openAgent,
+                    onOpenObjective = openObjective,
+                    onOpenTask = openTask,
+                    onOpenModel = openModel,
+                    onOpenRequest = openRequest,
+                    onOpenDailyLimits = openDailyLimits,
+                    onOpenSettings = openSettings,
+                ),
+            )
+        }
+        composable<SettingsRoute> {
+            SettingsScreenRoute(
+                SettingsNavigation(
+                    onOpenDailyLimits = openDailyLimits,
+                    onSaveBackup = { navController.open(BackupSaveRoute) },
+                    onRestoreBackup = { navController.open(BackupRestoreRoute) },
+                    onOpenRoutines = openRoutines,
+                    onOpenPickUpRules = openPickUpRules,
+                ),
+            )
+        }
+
+        // --- Phase 6 (wave 3): the owner's new screens; scratchpad/phase6/wave3-ownership.md says who builds each. ---
+        composable<TeamRoute> { entry ->
+            TeamScreenRoute(
+                objectiveId = entry.toRoute<TeamRoute>().objectiveId?.let(::TaskId),
+                navigation = TeamNavigation(
+                    onBack = back,
+                    onOpenAgent = openAgent,
+                    onOpenTask = openTask,
+                    onOpenObjective = openObjective,
+                    onOpenRequest = openRequest,
+                    onOpenQuestion = openQuestion,
+                    onOpenSpace = openSpace,
+                ),
+            )
+        }
+        composable<QuestionRoute> { entry ->
+            QuestionScreenRoute(
+                requestId = RequestId(entry.toRoute<QuestionRoute>().requestId),
+                onBack = back,
+                onOpenTask = openTask,
+                onOpenObjective = openObjective,
+            )
+        }
+        composable<DailyLimitsRoute> { DailyLimitsScreenRoute(onBack = back) }
+        composable<BackupSaveRoute> { BackupSaveScreenRoute(onBack = back) }
+        composable<BackupRestoreRoute> { BackupRestoreScreenRoute(onBack = back) }
+        composable<RoutinesRoute> {
+            RoutinesScreenRoute(
+                RoutinesNavigation(
+                    onBack = back,
+                    onNewRoutine = { navController.open(RoutineEditorRoute()) },
+                    onOpenRoutine = openRoutine,
+                    onOpenWaiting = { navController.open(WaitingRoutinesRoute) },
+                    onOpenObjective = openObjective,
+                    onOpenSettings = openSettings,
+                ),
+            )
+        }
+        composable<RoutineEditorRoute> { entry ->
+            RoutineEditorScreenRoute(
+                routineId = entry.toRoute<RoutineEditorRoute>().routineId?.let(::RoutineId),
+                onClose = back,
+                onSaved = { navController.popBackStack() },
+                onOpenObjective = openObjective,
+            )
+        }
+        composable<WaitingRoutinesRoute> { WaitingRoutinesScreenRoute(onBack = back, onOpenObjective = openObjective) }
+        composable<PickUpRulesRoute> {
+            PickUpRulesScreenRoute(
+                PickUpNavigation(
+                    onBack = back,
+                    onNewRule = newPickUpRule,
+                    onOpenRule = { navController.open(PickUpRuleEditorRoute(ruleId = it.value)) },
+                    onOpenFolders = openFolders,
+                    onOpenSpace = openSpace,
+                    onOpenSettings = openSettings,
+                ),
+            )
+        }
+        composable<PickUpRuleEditorRoute> { entry ->
+            val route = entry.toRoute<PickUpRuleEditorRoute>()
+            PickUpRuleEditorScreenRoute(
+                ruleId = route.ruleId?.let(::PickUpRuleId),
+                folderId = route.folderId?.let(::FolderId),
+                onClose = back,
+                onSaved = { navController.popBackStack() },
+                onOpenFolders = openFolders,
+            )
+        }
     }
 }

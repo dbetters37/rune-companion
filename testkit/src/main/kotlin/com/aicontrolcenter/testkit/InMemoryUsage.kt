@@ -48,8 +48,13 @@ class InMemoryUsageStore(
         val providerLabel: String,
         val locality: Locality,
         val totals: UsageTotals,
-        /** When it was last added to, in recording order, to pick the newest labels. */
+        /** When it was last added to, in recording order: the tie-break between rows with the same [lastCallAt]. */
         val seq: Long,
+        /**
+         * The time of the newest call in the row, as Room's `usage_hours.last_call_at`: a model's or provider's labels are
+         * those of its row with the newest call (wave 3, WP8; WP1b's hand-off), also when calls are recorded out of order.
+         */
+        val lastCallAt: Long = Long.MIN_VALUE,
     )
 
     private data class WorkKey(val kind: WorkKind, val id: String, val modelId: ModelId)
@@ -69,8 +74,12 @@ class InMemoryUsageStore(
     override suspend fun record(sample: ModelCallSample) = state.update { current ->
         val seq = current.seq + 1
         val key = HourKey(sample.hourStart, sample.modelId, sample.agentId, sample.source)
-        val before = current.hours[key]?.totals ?: UsageTotals()
-        val row = HourRow(sample.modelLabel, sample.providerId, sample.providerLabel, sample.locality, before + UsageTotals.of(sample), seq)
+        val stored = current.hours[key]
+        val before = stored?.totals ?: UsageTotals()
+        val row = HourRow(
+            sample.modelLabel, sample.providerId, sample.providerLabel, sample.locality, before + UsageTotals.of(sample), seq,
+            lastCallAt = maxOf(stored?.lastCallAt ?: sample.at, sample.at),
+        )
         val work = current.work.toMutableMap()
         for (item in sample.workItems) {
             val workKey = WorkKey(item.kind, item.id, sample.modelId)
@@ -122,7 +131,7 @@ class InMemoryUsageStore(
 
     private fun State.byModelIn(range: UsageRange): List<ModelUsage> =
         inRange(range).entries.groupBy { it.key.modelId }.map { (modelId, rows) ->
-            val newest = rows.maxWith(compareBy({ it.key.hourStart }, { it.value.seq })).value
+            val newest = rows.maxWith(compareBy({ it.value.lastCallAt }, { it.value.seq })).value
             ModelUsage(modelId, newest.modelLabel, newest.providerId, newest.providerLabel, newest.locality, rows.sumTotals())
         }.sortedWith(compareByDescending<ModelUsage> { it.totals.calls }.thenBy { it.modelId.value })
 
@@ -142,7 +151,7 @@ class InMemoryUsageStore(
 
     override suspend fun byProvider(range: UsageRange): List<ProviderUsage> =
         state.value.inRange(range).entries.groupBy { it.value.providerId }.map { (providerId, rows) ->
-            val newest = rows.maxWith(compareBy({ it.key.hourStart }, { it.value.seq })).value
+            val newest = rows.maxWith(compareBy({ it.value.lastCallAt }, { it.value.seq })).value
             ProviderUsage(providerId, newest.providerLabel, newest.locality, rows.sumTotals())
         }.sortedWith(compareByDescending<ProviderUsage> { it.totals.calls }.thenBy { it.providerId.value })
 

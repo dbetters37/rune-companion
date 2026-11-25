@@ -1,5 +1,6 @@
 package com.aicontrolcenter.app.ui.tasks
 
+import com.aicontrolcenter.app.Phase6Stub
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -57,8 +58,23 @@ class ObjectiveActions(
     val onOpenRequest: (RequestId) -> Unit = {},
 )
 
+/**
+ * Wave 3 (WP11a): [onOpenTeam] is the header's "Team view", [onOpenQuestion] a question one of its tasks waits on,
+ * [onOpenDailyLimits] the way to raise today's limit when it paused the objective, [onOpenRoutine] the routine that
+ * started it ("Started by routine '<title>'").
+ */
+@Phase6Stub("WP11a")
 @Composable
-fun ObjectiveRoute(objectiveId: TaskId, onBack: () -> Unit, onOpenTask: (TaskId) -> Unit, onOpenRequest: (RequestId) -> Unit = {}) {
+fun ObjectiveRoute(
+    objectiveId: TaskId,
+    onBack: () -> Unit,
+    onOpenTask: (TaskId) -> Unit,
+    onOpenRequest: (RequestId) -> Unit = {},
+    @Suppress("UNUSED_PARAMETER") onOpenQuestion: (RequestId) -> Unit = {},
+    @Suppress("UNUSED_PARAMETER") onOpenTeam: (TaskId) -> Unit = {},
+    @Suppress("UNUSED_PARAMETER") onOpenDailyLimits: () -> Unit = {},
+    @Suppress("UNUSED_PARAMETER") onOpenRoutine: (com.aicontrolcenter.core.RoutineId) -> Unit = {},
+) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel(key = "objective-${objectiveId.value}") {
         ObjectiveViewModel(

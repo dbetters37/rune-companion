@@ -5,7 +5,9 @@ import com.aicontrolcenter.app.di.Ports
 import com.aicontrolcenter.app.operator.PickUpFoldersView
 import com.aicontrolcenter.app.routines.AndroidRoutineAlarms
 import com.aicontrolcenter.app.routines.AndroidRoutineNotices
+import com.aicontrolcenter.app.work.SafetyCollectors
 import com.aicontrolcenter.app.work.UpkeepStep
+import com.aicontrolcenter.core.PickUpRuleId
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.activity.ActivityRecorder
 import com.aicontrolcenter.core.backup.MaintenanceGate
@@ -13,6 +15,7 @@ import com.aicontrolcenter.core.memory.MemoryService
 import com.aicontrolcenter.core.pickup.OwnerPickUpRules
 import com.aicontrolcenter.core.pickup.PickUpFolders
 import com.aicontrolcenter.core.pickup.PickUpRuleRepository
+import com.aicontrolcenter.core.pickup.PickedUpFile
 import com.aicontrolcenter.core.registry.ReadOnlyRegistry
 import com.aicontrolcenter.core.routines.OwnerRoutines
 import com.aicontrolcenter.core.routines.RoutineRepository
@@ -30,6 +33,7 @@ import com.aicontrolcenter.framework.routines.RoutineRunner
 import com.aicontrolcenter.framework.routines.UsageDailyLimitCheck
 import com.aicontrolcenter.framework.routines.WaitingRoutines
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -80,6 +84,8 @@ class RoutinesPorts(
  * @param memory the one memory service of the process (the spaces a pick-up rule may point at).
  * @param activity where every change and every run is logged.
  * @param appScope lives as long as the process.
+ * @param safeStartOn whether the app is in safe start (rule 10; wave 3): a routine due on time then waits for the
+ *   owner's tap instead of starting from its alarm.
  */
 class RoutinesAssembly(
     ports: Ports,
@@ -88,6 +94,7 @@ class RoutinesAssembly(
     memory: MemoryService,
     activity: ActivityRecorder,
     appScope: CoroutineScope,
+    safeStartOn: () -> Boolean = { false },
 ) {
     private val store: RoutineRepository? = ports.routines.routines
     private val alarms: RoutineAlarmPort = ports.routines.alarms
@@ -121,8 +128,12 @@ class RoutinesAssembly(
             clock = clock,
             ids = ports.idGenerator,
             notices = notices,
+            safeStartOn = safeStartOn,
         )
     }
+
+    /** Owner-only, read only: what each pick-up rule imported or saw, for the Folder pick-up screen (wave 3). */
+    val pickUpImports: PickUpImports? = ports.routines.pickUpRules?.let(::PickUpImportsView)
 
     /**
      * Owner-only: the runs waiting for the owner's tap, for the in-app banner (`app/routines/WaitingRoutinesBanner`):
@@ -134,8 +145,13 @@ class RoutinesAssembly(
         val runner = runner
         val store = store
         if (runner != null && store != null) {
-            appScope.launch { keepAndroidInStep(runner, store, settings) }
-            appScope.launch {
+            // Supervised (rule 26, wave 3): a failing read restarts the collector with a growing wait and logs a warning,
+            // instead of leaving the alarm and the receivers out of step until the next start.
+            // Restarts are timed on the real clock: how long a collector ran is no time the owner sees, and the graph's
+            // clock may be a test's, which moves on with every reading.
+            val safety = SafetyCollectors(appScope, activity, com.aicontrolcenter.core.WallClock)
+            safety.supervise(KEEPING_IN_STEP) { keepAndroidInStep(runner, store, settings) }
+            safety.supervise(WAITING_NOTICE) {
                 runner.observeWaiting().map { it.isEmpty() }.distinctUntilChanged().collect { none -> if (none) notices.noneWaiting() }
             }
         }
@@ -175,6 +191,25 @@ class RoutinesAssembly(
     suspend fun catchUp() {
         runner?.catchUp()
     }
+
+    companion object {
+        /** The collectors' names in the log, in plain words. */
+        const val KEEPING_IN_STEP: String = "Keeping the routines' alarm in step"
+        const val WAITING_NOTICE: String = "The \"routine waiting to start\" notice"
+    }
+}
+
+/**
+ * Owner-only, read only (wave 3, WP8): the files a folder pick-up rule imported, or saw when it was switched on, newest
+ * first. For the Folder pick-up screen; it cannot change a rule or an import.
+ */
+interface PickUpImports {
+    fun observeImports(ruleId: PickUpRuleId, limit: Int): Flow<List<PickedUpFile>>
+}
+
+/** [PickUpImports] over the store: its reading of imports alone. */
+class PickUpImportsView(private val store: PickUpRuleRepository) : PickUpImports {
+    override fun observeImports(ruleId: PickUpRuleId, limit: Int): Flow<List<PickedUpFile>> = store.observeImports(ruleId, limit)
 }
 
 /**

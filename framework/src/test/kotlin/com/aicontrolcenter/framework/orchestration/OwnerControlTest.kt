@@ -16,6 +16,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -59,6 +60,35 @@ class OwnerControlTest {
         assertTrue(transcript.any { it.error == "Restarted from its brief." })
         val statuses = team.messagesOf(objective.id, MessageType.STATUS).filter { it.from == Participant.Owner }.map { it.body }
         assertEquals(listOf("Paused by the owner.", "Resumed."), statuses)
+    }
+
+    @Test
+    fun `the app pausing with its own reason says that reason, not the owner's pause, and resumes like any pause`() = runTest {
+        // Wave 3 (WP8; WP2's storage pause): "Paused: the phone is almost full" is the objective's own text and the
+        // team's message, from the system, and the log has no owner action for it.
+        val team = TeamFixture(this).setUp()
+        team.script.plan = { _, _ -> ScriptStep.Reply(planJson(listOf(task("a", "Find apps", listOf("research"))))) }
+        var hold = true
+        team.script.work = { s -> if (hold) awaitCancellation() else ScriptStep.Reply("Done: ${TeamScript.titleOf(s.brief)}") }
+        val objective = team.start()
+        team.settle(MINUTE_MS)
+        val reason = "Paused: the phone is almost full. Free some room, then resume it."
+        team.orchestrator.pause(objective.id, reason)
+        val paused = team.objective(objective.id)
+        assertEquals(TaskStatus.PAUSED, paused.status)
+        assertEquals(reason, paused.statusDetail)
+        assertEquals(reason, team.work(objective.id)[0].statusDetail)
+        assertTrue(team.orchestrator.running.value.isEmpty())
+        val statuses = team.messagesOf(objective.id, MessageType.STATUS)
+        assertEquals(listOf(reason), statuses.filter { it.from == Participant.System && it.body == reason }.map { it.body })
+        assertTrue(statuses.none { it.body == "Paused by the owner." })
+        val logged = team.world.log.observe(limit = 200).first()
+        assertTrue(logged.none { it.type == com.aicontrolcenter.core.activity.ActivityType.USER_ACTION && it.title == "Objective paused" }, "not the owner's action")
+        assertTrue(logged.any { it.title.startsWith("Objective paused") && it.type == com.aicontrolcenter.core.activity.ActivityType.TASK }, "the change itself is still logged")
+        hold = false
+        team.orchestrator.resume(objective.id)
+        team.settle()
+        assertEquals(TaskStatus.COMPLETED, team.objective(objective.id).status)
     }
 
     @Test

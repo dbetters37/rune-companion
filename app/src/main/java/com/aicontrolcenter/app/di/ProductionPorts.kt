@@ -15,6 +15,7 @@ import com.aicontrolcenter.core.backup.LocalMaintenanceGate
 import com.aicontrolcenter.core.backup.MaintenanceGate
 import com.aicontrolcenter.core.operator.DeviceAccess
 import com.aicontrolcenter.core.operator.DeviceAccessState
+import com.aicontrolcenter.core.operator.FolderTrees
 import com.aicontrolcenter.core.operator.ScreenServiceState
 import com.aicontrolcenter.data.DataLayer
 import com.aicontrolcenter.device.DeviceLayer
@@ -105,6 +106,8 @@ fun createProductionPorts(
             // Called from the main thread (the app coming to the front, the Screen control screen): read off it.
             refreshScreenState = { screen.refreshStateInBackground() },
             systemScreens = AndroidSystemScreens(appContext, phone),
+            // Owner-only (D7): only the owner's Screen control screen reads it, through AppGraph.
+            screenSwitchedOffSentence = screen.switchedOffSentence,
         ),
         packageChanges = device.packageChanges.map { },
         // Phase 6 (K11): usage and prices live in the same encrypted database. Agent-facing code gets the read-only
@@ -142,6 +145,19 @@ private class AndroidSystemScreens(private val context: Context, private val pho
 
     override fun appInfo(): Intent = ScreenOperatorLayer.appInfoIntent(context)
 
+    override fun storageAppName(treeUri: String): String? {
+        val authority = FolderTrees.otherAppProvider(treeUri) ?: return null
+        return try {
+            val manager = context.packageManager
+            val provider = manager.resolveContentProvider(authority, 0) ?: return null
+            (provider.loadLabel(manager)?.toString()?.takeIf { it.isNotBlank() } ?: provider.applicationInfo?.loadLabel(manager)?.toString())
+                ?.lineSequence()?.firstOrNull()?.trim()?.take(MAX_APP_NAME)?.takeIf { it.isNotBlank() }
+        } catch (_: RuntimeException) {
+            // Package visibility, a provider that went away, or a PackageManager that failed: Android does not tell it.
+            null
+        }
+    }
+
     override fun shareFile(file: File, mimeType: String, title: String): Intent {
         val uri = FileProvider.getUriForFile(context, WorkspaceFileProvider.authority(context), file)
         val send = Intent(Intent.ACTION_SEND).apply {
@@ -154,3 +170,6 @@ private class AndroidSystemScreens(private val context: Context, private val pho
         return Intent.createChooser(send, "Share $title").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
 }
+
+/** The longest app name the Folders note shows (the note cuts it to one line of at most 60 characters too). */
+private const val MAX_APP_NAME = 60

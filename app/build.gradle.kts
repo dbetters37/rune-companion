@@ -1,3 +1,5 @@
+import com.android.build.api.artifact.SingleArtifact
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -73,6 +75,34 @@ android {
     }
 
     packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
+}
+
+/*
+ * Phase 6 (rules 22 and 23; wave 3, WP8): the unit tests read the merged manifests of both build types, so
+ * `MergedManifestTest` checks what each APK really declares (permissions, exported components, the main activity's one
+ * filter) with the libraries' entries included. The release one matters most: the debug one also merges an exported test
+ * activity (ui-test-manifest) and the debug-only script probe. AGP builds unit tests for debug only, so the release
+ * manifest is handed to them here; asking for it makes Gradle merge it first.
+ */
+val mergedManifests = mapOf("release" to objects.fileProperty(), "debug" to objects.fileProperty())
+androidComponents {
+    onVariants { variant -> mergedManifests[variant.buildType]?.set(variant.artifacts.get(SingleArtifact.MERGED_MANIFEST)) }
+}
+
+/** Hands a merged manifest's path to the tests, as an input of the test task (so a manifest change runs them again). */
+class MergedManifestArgument(
+    @get:Input val buildType: String,
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE) val manifest: Provider<RegularFile>,
+) : CommandLineArgumentProvider {
+    override fun asArguments(): Iterable<String> = listOf("-Daicc.mergedManifest.$buildType=${manifest.get().asFile.absolutePath}")
+}
+
+// The stub gate of wave 3 (Phase6StubGateTest): `-Paicc.stubGate=final` asks for the final gate, no stub left at all.
+val stubGate: String = providers.gradleProperty("aicc.stubGate").getOrElse("")
+
+tasks.withType<Test>().configureEach {
+    mergedManifests.forEach { (buildType, file) -> jvmArgumentProviders.add(MergedManifestArgument(buildType, file)) }
+    systemProperty("aicc.stubGate", stubGate)
 }
 
 kotlin {
