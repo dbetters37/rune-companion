@@ -1,6 +1,5 @@
 package com.aicontrolcenter.app.ui.chat
 
-import com.aicontrolcenter.app.Phase6Stub
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -8,6 +7,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -33,7 +34,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.material3.Surface
@@ -85,6 +88,7 @@ import com.aicontrolcenter.app.ui.approvals.RequestCard
 import com.aicontrolcenter.core.ConversationId
 import com.aicontrolcenter.core.ProviderId
 import com.aicontrolcenter.core.RequestId
+import com.aicontrolcenter.core.usage.WorkKind
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.ui.text.style.TextAlign
 
@@ -99,17 +103,26 @@ class ChatActions(
     val onMessageShown: () -> Unit,
     /** Opens the Approval screen of a request raised in this chat. */
     val onOpenRequest: (RequestId) -> Unit = {},
+    /** Runs the owner's last message again after a failed or cut-off turn (R3). */
+    val onSendAgain: () -> Unit = {},
+    /** Reads the messages before the ones shown (P5). */
+    val onShowEarlier: () -> Unit = {},
+    /** Opens Settings › Daily limits, from today's limit sentence. */
+    val onOpenDailyLimits: () -> Unit = {},
 )
 
-/** Wave 3 (WP11b): the limit sentence links to [onOpenDailyLimits]; the cost line uses `graph.usageReports`. */
-@Phase6Stub("WP11b")
+/**
+ * One conversation. The newest messages are read from the store in parts ([ConversationPages]); the cost line reads
+ * this chat's usage and the owner's prices (`graph.usageReports`, `graph.modelPrices`), and today's limit sentence
+ * (`graph.todayUsage`) links to [onOpenDailyLimits].
+ */
 @Composable
 fun ChatRoute(
     conversationId: ConversationId,
     onBack: () -> Unit,
     onOpenProvider: (ProviderId) -> Unit,
     onOpenRequest: (RequestId) -> Unit = {},
-    @Suppress("UNUSED_PARAMETER") onOpenDailyLimits: () -> Unit = {},
+    onOpenDailyLimits: () -> Unit = {},
 ) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel {
@@ -119,6 +132,11 @@ fun ChatRoute(
             capabilityInfo = graph.capabilities::info,
             clock = graph.clock,
             awaitStartup = graph::awaitStartup,
+            zone = graph.zone(),
+            pages = ConversationPages.of(graph.ports.conversations),
+            usage = graph.usageReports.observeWorkUsage(WorkKind.CHAT, conversationId.value),
+            prices = graph.modelPrices.observeAll(),
+            today = graph.todayUsage.observe(),
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -136,6 +154,9 @@ fun ChatRoute(
             onOpenProvider = onOpenProvider,
             onMessageShown = viewModel::messageShown,
             onOpenRequest = onOpenRequest,
+            onSendAgain = viewModel::sendAgain,
+            onShowEarlier = viewModel::showEarlier,
+            onOpenDailyLimits = onOpenDailyLimits,
         ),
     )
 }
@@ -227,9 +248,12 @@ fun ChatScreen(state: ChatUiState, draft: TextFieldState, actions: ChatActions) 
 private fun Transcript(state: ChatUiState, actions: ChatActions, modifier: Modifier = Modifier) {
     val listState = rememberLazyListState()
     val itemCount = state.items.size + (if (state.live != null) 1 else 0)
-    // Follow the conversation as it grows, including while a reply streams in.
-    LaunchedEffect(itemCount, state.live?.partialText?.length, state.live?.phase) {
-        if (itemCount > 0) listState.scrollToItem(itemCount)
+    // The list's last item ("end"): after "Show earlier", the intro, the items, the live reply and the cost line.
+    val endIndex = (if (state.hasEarlier) 1 else 0) + (if (itemCount == 0) 1 else 0) + itemCount + (if (state.cost != null && state.live == null) 1 else 0)
+    // Follow the conversation as it grows at its end, including while a reply streams in; earlier
+    // messages read with "Show earlier" come in above and leave the place being read where it is.
+    LaunchedEffect(state.items.lastOrNull()?.key, state.live?.partialText?.length, state.live?.phase, state.cost?.line) {
+        if (itemCount > 0) listState.scrollToItem(endIndex)
     }
     LazyColumn(
         state = listState,
@@ -237,6 +261,9 @@ private fun Transcript(state: ChatUiState, actions: ChatActions, modifier: Modif
         contentPadding = PaddingValues(horizontal = Spacing.screen, vertical = Spacing.md),
         verticalArrangement = Arrangement.spacedBy(Spacing.md),
     ) {
+        if (state.hasEarlier) {
+            item(key = "earlier") { ShowEarlier(state.isLoadingEarlier, actions.onShowEarlier) }
+        }
         if (state.items.isEmpty() && state.live == null) {
             item(key = "intro") { Intro(state) }
         }
@@ -245,7 +272,7 @@ private fun Transcript(state: ChatUiState, actions: ChatActions, modifier: Modif
                 is TranscriptItem.Owner -> OwnerBubble(item.text)
                 // One avatar per run of agent messages, so a turn with tool calls reads as one speaker.
                 is TranscriptItem.Agent -> AgentTurn(state.agentName, state.agentColorIndex, item, showAvatar = state.items.getOrNull(index - 1) !is TranscriptItem.Agent)
-                is TranscriptItem.Notice -> NoticeRow(item, state, actions, isLast = item === state.items.last())
+                is TranscriptItem.Notice -> NoticeRow(item, state, actions, isLast = item === state.items.lastOrNull { it !is TranscriptItem.Request })
                 // Answered on its Approval screen only, never in the chat.
                 is TranscriptItem.Request -> RequestCard(item.request, onOpen = { actions.onOpenRequest(item.request.id) })
             }
@@ -253,7 +280,38 @@ private fun Transcript(state: ChatUiState, actions: ChatActions, modifier: Modif
         state.live?.let { live ->
             item(key = "live") { LiveReply(state, live, showAvatar = state.items.lastOrNull() !is TranscriptItem.Agent) }
         }
+        state.cost?.let { cost ->
+            if (state.live == null) item(key = "cost") { CostLine(cost) }
+        }
         item(key = "end") { Spacer(Modifier.size(1.dp)) }
+    }
+}
+
+/** At the top of a long chat: reads the messages before the ones shown. */
+@Composable
+private fun ShowEarlier(loading: Boolean, onShowEarlier: () -> Unit) {
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        OutlinedButton(onClick = onShowEarlier, enabled = !loading, modifier = Modifier.heightIn(min = 48.dp)) {
+            if (loading) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            } else {
+                Icon(AppIcons.ExpandLess, contentDescription = null, modifier = Modifier.size(18.dp))
+            }
+            Text(if (loading) "Reading earlier messages…" else "Show earlier messages", modifier = Modifier.padding(start = 8.dp))
+        }
+    }
+}
+
+/** Under the transcript: what the chat used so far and, with the owner's prices, what it cost (rule 29). */
+@Composable
+internal fun CostLine(cost: ChatCostUi) {
+    Column(
+        modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) {},
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(cost.line, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+        Text(cost.explanation, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
     }
 }
 
@@ -283,10 +341,40 @@ private fun Intro(state: ChatUiState) {
 private fun NoticeRow(item: TranscriptItem.Notice, state: ChatUiState, actions: ChatActions, isLast: Boolean) {
     Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
         TranscriptNotice(item)
-        if (isLast && state.checkProviderId != null && state.blockedReason == null) {
-            ProviderActions(state, actions)
+        if (isLast) {
+            if (state.checkProviderId != null && state.blockedReason == null) ProviderActions(state, actions)
+            NoticeActions(item, state, actions)
         }
     }
+}
+
+/** Under the last notice: "Send again" when the agent could answer now, and the way to today's limits after a limit refusal. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun NoticeActions(item: TranscriptItem.Notice, state: ChatUiState, actions: ChatActions) {
+    val limit = item.kind == NoticeKind.LIMIT
+    if (!state.canSendAgain && !limit) return
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+        verticalArrangement = Arrangement.spacedBy(Spacing.xs),
+    ) {
+        if (limit) {
+            FilledTonalButton(onClick = actions.onOpenDailyLimits, modifier = Modifier.heightIn(min = 48.dp)) { Text("Daily limits") }
+        }
+        if (state.canSendAgain) {
+            if (limit) {
+                OutlinedButton(onClick = actions.onSendAgain, modifier = Modifier.heightIn(min = 48.dp)) { SendAgainLabel() }
+            } else {
+                FilledTonalButton(onClick = actions.onSendAgain, modifier = Modifier.heightIn(min = 48.dp)) { SendAgainLabel() }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SendAgainLabel() {
+    Icon(AppIcons.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+    Text("Send again", modifier = Modifier.padding(start = 8.dp))
 }
 
 /** Check the provider again (a stale or passing problem), or open it (a key to replace, an address to fix). */
@@ -295,7 +383,7 @@ private fun ProviderActions(state: ChatUiState, actions: ChatActions) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
         CheckProviderButton(state, actions, Modifier.weight(1f, fill = false))
         state.checkProviderId?.let { id ->
-            androidx.compose.material3.TextButton(onClick = { actions.onOpenProvider(id) }) { Text("Open provider") }
+            TextButton(onClick = { actions.onOpenProvider(id) }) { Text("Open provider") }
         }
     }
 }
@@ -349,6 +437,7 @@ private fun Composer(state: ChatUiState, draft: TextFieldState, actions: ChatAct
                     InfoBanner(title = "Cannot send", text = blocked, tone = StatusTone.UNAVAILABLE)
                     if (state.checkProviderId != null) ProviderActions(state, actions)
                 } else {
+                    state.limitReached?.let { LimitLine(it, actions.onOpenDailyLimits) }
                     InputRow(state, draft, actions)
                 }
             }
@@ -392,6 +481,13 @@ internal fun DestinationLine(destination: DestinationUi?) {
             if (destination.isSimulator) TintedChip(SIMULATOR_LABEL, appColors.attention)
         }
     }
+}
+
+/** Today's limit is reached and this chat's text would leave the phone: the limit's sentence, with the way to raise it. */
+@Composable
+private fun LimitLine(sentence: String, onOpenDailyLimits: () -> Unit) {
+    InfoBanner(title = "Today's limit is reached", text = sentence, tone = StatusTone.ATTENTION)
+    TextButton(onClick = onOpenDailyLimits, modifier = Modifier.heightIn(min = 48.dp)) { Text("Daily limits") }
 }
 
 @Composable

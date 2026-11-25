@@ -6,11 +6,17 @@ import com.aicontrolcenter.app.ui.components.formatCount
 import com.aicontrolcenter.core.chat.ConversationEntry
 import com.aicontrolcenter.core.chat.LiveTurn
 import com.aicontrolcenter.core.chat.TurnPhase
+import com.aicontrolcenter.core.llm.ChatMessage
 import com.aicontrolcenter.core.llm.ChatRole
 import com.aicontrolcenter.core.llm.TokenUsage
 import com.aicontrolcenter.core.llm.ToolCallRequest
 import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.tools.RiskLevel
+import com.aicontrolcenter.core.usage.DailyLimitKind
+import com.aicontrolcenter.core.usage.DailyLimits
+import com.aicontrolcenter.framework.agents.ToolMenu
+import com.aicontrolcenter.framework.chat.DefaultAgentChat
+import com.aicontrolcenter.framework.llm.ModelNames
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -62,7 +68,31 @@ data class ReplyFooterUi(
     val differs: Boolean get() = assignedModel != null
 }
 
-enum class NoticeKind { FAILURE, CUT_OFF }
+/**
+ * What a notice in a transcript says happened: the turn failed; the reply stopped before its end
+ * (the model's length limit); the app stopped before the reply was finished (R3, "Send again");
+ * today's limit stopped the turn (rule 6).
+ */
+enum class NoticeKind { FAILURE, CUT_OFF, APP_STOPPED, LIMIT }
+
+/** The kind of a stored failure note [text] that follows [previous] (null at the start of a transcript). */
+internal fun noticeKindOf(text: String, previous: ChatMessage?): NoticeKind = when {
+    isAppStoppedNotice(text) -> NoticeKind.APP_STOPPED
+    isLimitNotice(text) -> NoticeKind.LIMIT
+    previous != null && previous.role == ChatRole.ASSISTANT && previous.toolCalls.isEmpty() && previous.text.isNotBlank() -> NoticeKind.CUT_OFF
+    else -> NoticeKind.FAILURE
+}
+
+private val APP_STOPPED_PARTS = DefaultAgentChat.cutOff("\u0000").split("\u0000")
+
+/** The note the chat stores for a reply the app stopped in the middle of ([DefaultAgentChat.cutOff]), whatever the agent's name. */
+internal fun isAppStoppedNotice(text: String): Boolean =
+    text.length > APP_STOPPED_PARTS[0].length + APP_STOPPED_PARTS[1].length && text.startsWith(APP_STOPPED_PARTS[0]) && text.endsWith(APP_STOPPED_PARTS[1])
+
+private val LIMIT_ENDING = " is reached. " + DailyLimits(1, null, null).sentence(DailyLimitKind.CALLS).substringAfter(" is reached. ")
+
+/** A refusal for today's limit: the limit's own sentence ([DailyLimits.sentence]) or the pause line ([DailyLimits.PAUSED_TEXT]). */
+internal fun isLimitNotice(text: String): Boolean = text.endsWith(LIMIT_ENDING) || text == DailyLimits.PAUSED_TEXT
 
 @Immutable
 sealed interface TranscriptItem {
@@ -150,8 +180,7 @@ fun transcriptOf(
         when {
             entry.error != null -> {
                 val previous = entries.getOrNull(index - 1)?.message
-                val cutOff = previous != null && previous.role == ChatRole.ASSISTANT && previous.toolCalls.isEmpty() && previous.text.isNotBlank()
-                items += TranscriptItem.Notice(key, entry.error!!, if (cutOff) NoticeKind.CUT_OFF else NoticeKind.FAILURE)
+                items += TranscriptItem.Notice(key, entry.error!!, noticeKindOf(entry.error!!, previous))
             }
             message.role == ChatRole.USER -> {
                 turnStart = index
@@ -164,7 +193,7 @@ fun transcriptOf(
                     text = message.text,
                     reasoning = message.reasoning?.takeIf { it.isNotBlank() },
                     toolCalls = message.toolCalls.map { call ->
-                        toolCallUi(call, tools(call.name), results[call.id]?.let { it.content to it.isError }, call.id == activeToolCallId)
+                        toolCallUi(call, toolInfoOf(call.name, tools), results[call.id]?.let { it.content to it.isError }, call.id == activeToolCallId)
                     },
                     footer = if (isTurnEnd) footerFor(entries, turnStart, index, assignedModelName) else null,
                 )
@@ -178,7 +207,7 @@ fun transcriptOf(
                         key = key, text = "", reasoning = null, footer = null,
                         toolCalls = listOf(
                             ToolCallUi(
-                                result.callId, tools(result.toolName)?.title ?: result.toolName, "Arguments not recorded", "",
+                                result.callId, toolInfoOf(result.toolName, tools)?.title ?: result.toolName, "Arguments not recorded", "",
                                 if (result.isError) ToolOutcomeUi.Failed(result.content) else ToolOutcomeUi.Succeeded(result.content),
                             ),
                         ),
@@ -191,6 +220,13 @@ fun transcriptOf(
     }
     return items
 }
+
+/**
+ * What the registry knows about [functionName], or, for the runner's own "open more tools" call
+ * (`tools_open`, not a registered tool), its plain title ([ToolMenu.TITLE]) instead of the raw name.
+ */
+fun toolInfoOf(functionName: String, tools: (String) -> ToolInfo?): ToolInfo? =
+    tools(functionName) ?: if (functionName == ToolMenu.FUNCTION_NAME) ToolInfo(ToolMenu.TITLE, RiskLevel.SAFE) else null
 
 private fun toolCallUi(call: ToolCallRequest, info: ToolInfo?, result: Pair<String, Boolean>?, running: Boolean) = ToolCallUi(
     callId = call.id,
@@ -210,19 +246,9 @@ private fun footerFor(entries: List<ConversationEntry>, from: Int, to: Int, assi
     val answeredBy = turn.lastOrNull { it.modelName != null }?.modelName
     return ReplyFooterUi(
         answeredBy = answeredBy,
-        assignedModel = assigned?.takeIf { answeredBy != null && !sameModel(answeredBy, it) },
+        assignedModel = assigned?.takeIf { answeredBy != null && !ModelNames.sameModel(answeredBy, it) },
         usage = usage?.let(::formatUsage),
     )
-}
-
-/**
- * True when [answered] is the assigned model: the same name, or the dated version a provider
- * resolves an alias to ("gpt-4o" answered as "gpt-4o-2024-08-06").
- */
-internal fun sameModel(answered: String, assigned: String): Boolean {
-    val a = answered.trim().lowercase().substringAfterLast('/')
-    val b = assigned.trim().lowercase().substringAfterLast('/')
-    return a == b || a.startsWith("$b-") || a.startsWith("$b@") || a.startsWith("$b:")
 }
 
 /** "1,234 tokens in · 56 out", with cached input when the provider reported it. */
@@ -254,7 +280,7 @@ fun LiveTurn.toUi(toolTitle: (String) -> String?): LiveTurnUi = LiveTurnUi(
         TurnPhase.PREPARING -> "Preparing"
         TurnPhase.WAITING_FOR_MODEL -> if (modelCalls > 1) "Waiting for the model (step $modelCalls)" else "Waiting for the model"
         TurnPhase.RECEIVING -> if (partialText.isEmpty() && partialReasoning.isNotEmpty()) "Thinking" else "Writing the reply"
-        TurnPhase.RUNNING_TOOL -> "Running tool: " + (activeTool?.let { toolTitle(it.name) ?: it.name } ?: "…")
+        TurnPhase.RUNNING_TOOL -> "Running tool: " + (activeTool?.let { toolTitle(it.name) ?: toolInfoOf(it.name) { null }?.title ?: it.name } ?: "…")
     },
     partialText = partialText,
     partialReasoning = partialReasoning,
