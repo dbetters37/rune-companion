@@ -1,5 +1,8 @@
 package com.aicontrolcenter.framework.orchestration
 
+import com.aicontrolcenter.core.agents.AgentKind
+import com.aicontrolcenter.core.agents.DelegationPolicy
+import com.aicontrolcenter.core.registry.ModelCapabilities
 import com.aicontrolcenter.core.tasks.MessageType
 import com.aicontrolcenter.core.tasks.ObjectiveOptions
 import com.aicontrolcenter.core.tasks.Participant
@@ -9,7 +12,12 @@ import com.aicontrolcenter.framework.orchestration.TeamScript.Companion.planJson
 import com.aicontrolcenter.framework.orchestration.TeamScript.Companion.task
 import com.aicontrolcenter.framework.orchestration.TeamScript.Companion.verdict
 import com.aicontrolcenter.testkit.ScriptStep
+import com.aicontrolcenter.testkit.ScriptedLlmClient
+import com.aicontrolcenter.testkit.ScriptedLlmClient.Companion.call
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.TestScope
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import kotlin.test.assertEquals
@@ -144,5 +152,55 @@ class ReviewFlowTest {
         assertEquals(1, team.reviews(objective.id).size)
         assertTrue(team.limitMessages(objective.id).single().body.contains("used without review"))
         assertEquals(Participant.System, team.limitMessages(objective.id).single().from)
+    }
+
+    // ---- C4 ----
+
+    @Test
+    fun `C4 - a review by an agent on the author's model says so, while it waits and once approved`() = runTest {
+        val team = reviewed(verdict("approved", "Good"))
+        val hold = CompletableDeferred<Unit>()
+        team.script.review = { hold.await(); ScriptStep.Reply(verdict("approved", "Good")) }
+        val objective = team.start()
+        team.settle(60_000)
+        val waiting = team.work(objective.id).single()
+        assertEquals("Waiting for Reviewer's review (same model as the author).", waiting.statusDetail)
+        val review = team.reviews(objective.id).single()
+        assertTrue(review.statusDetail!!.startsWith("Reviewer is reviewing (same model as the author),"), review.statusDetail)
+        hold.complete(Unit)
+        team.settle()
+        assertEquals("Approved by Reviewer (same model as the author).", team.work(objective.id).single().statusDetail)
+    }
+
+    @Test
+    fun `C4 - a reviewer on another model than the author's is chosen over one on the same model, and nothing is said then`() = runTest {
+        val team = reviewed(verdict("approved", "Good"))
+        val other = team.world.serve(ScriptedLlmClient { _, _ -> ScriptStep.Reply(verdict("approved", "Good, on another model")) }, ModelCapabilities(toolCalling = true, jsonOutput = true))
+        val zed = team.agent("Zed", AgentKind.REVIEWER, setOf("review", "fact-checking"), "Checks results against criteria.", model = other)
+        val objective = team.start()
+        team.settle()
+        val work = team.work(objective.id).single()
+        assertEquals(TaskStatus.COMPLETED, work.status)
+        assertEquals(zed.id, team.reviews(objective.id).single().assignee, "another model wins over the alphabet")
+        assertEquals("Approved by Zed.", work.statusDetail)
+    }
+
+    @Test
+    fun `C4 - the teammate that answered the author's question does not review its result`() = runTest {
+        val team = reviewed(verdict("approved", "Good"))
+        team.world.agents.upsert(team.researcher.copy(delegation = DelegationPolicy(canRequestAssistance = true)))
+        team.script.work = { s ->
+            if (!team.script.afterTools(s)) ScriptStep.Calls(listOf(call("q1", "team_ask_agent", buildJsonObject {
+                put("agent", "Reviewer")
+                put("question", "Which sources are reliable?")
+            })))
+            else ScriptStep.Reply("Draft with sources")
+        }
+        val objective = team.start()
+        team.settle()
+        assertEquals(1, team.messagesOf(objective.id, MessageType.ASSISTANCE_RESPONSE).count { it.from == Participant.Agent(team.reviewer.id) })
+        val review = team.reviews(objective.id).single()
+        assertTrue(review.assignee != team.reviewer.id, "the Reviewer helped the author, so another agent reviews")
+        assertEquals(TaskStatus.COMPLETED, team.work(objective.id).single().status)
     }
 }

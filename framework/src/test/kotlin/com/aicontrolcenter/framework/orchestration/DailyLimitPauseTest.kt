@@ -78,7 +78,7 @@ class DailyLimitPauseTest {
     }
 
     @Test
-    fun `a limit met by a review pauses the objective; the review runs on resume`() = runTest {
+    fun `a limit met by a review pauses the objective, and the review runs on resume`() = runTest {
         pausesThenFinishes { limit ->
             script.plan = { _, _ -> ScriptStep.Reply(planJson(listOf(task("t1", "Research the subject", skills = listOf("research"), needsReview = true)))) }
             script.review = { limit.or { ScriptStep.Reply(TeamScript.verdict("approved", "Meets the criteria.")) } }
@@ -86,7 +86,7 @@ class DailyLimitPauseTest {
     }
 
     @Test
-    fun `a limit met while the final result is written pauses the objective; the Director writes it on resume`() = runTest {
+    fun `a limit met while the final result is written pauses the objective, and the Director writes it on resume`() = runTest {
         val (team, id) = pausesThenFinishes { limit ->
             script.synthesis = { limit.or { ScriptStep.Reply("# Final\nAll done.") } }
         }

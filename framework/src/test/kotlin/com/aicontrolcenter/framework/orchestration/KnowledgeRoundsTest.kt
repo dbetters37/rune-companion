@@ -241,7 +241,10 @@ class KnowledgeRoundsTest {
         messages: MessageRepository = this.messages,
         memory: MemoryService = world.memory,
         clock: Clock = world.clock,
-    ) = DefaultOrchestrator(tasks, messages, world.conversations, world.agents, world.directory, world.settings, world.runner, world.toolRegistry, world.monitor, world.activity, world.ids, clock, scope, memory, timeSource = world.time)
+    ) = DefaultOrchestrator(
+        tasks, messages, world.conversations, world.agents, world.directory, world.settings, world.runner, world.toolRegistry, world.monitor, world.activity, world.ids, clock, scope, memory,
+        timeSource = world.time, activityLog = world.log,
+    )
 
     /**
      * An objective of two tasks that saves knowledge (unless [save] is off), its work leaving task
@@ -605,8 +608,9 @@ class KnowledgeRoundsTest {
             val case = "$point, saving ${if (save) "on" else "off"}"
             assertEquals("Completed: 2 of 2 tasks produced results.", team.objective(id).statusDetail, case)
             assertEquals(1, team.ends(id), case)
-            // The log entry is written before the message: a death between the two repeats it rather than losing it.
-            assertTrue(team.logged(id, "Objective completed") in (if (point == Point.ANNOUNCING) 1..2 else 1..1), case)
+            // D20: the log entry is written before the message, under an id of its own for the run: a death between the two
+            // neither loses it nor, written again, repeats it.
+            assertEquals(1, team.logged(id, "Objective completed"), case)
         }
     }
 
@@ -989,6 +993,59 @@ class KnowledgeRoundsTest {
             }
             assertEquals(4, team.promoted().size, case)
         }
+    }
+
+    // D22, D23: whose version the summary holds, and a summary the Director may no longer write.
+
+    /** A shared space "Team" the Director saves summaries to, which [also] may write too. */
+    private suspend fun TeamFixture.teamSpace(vararg also: com.aicontrolcenter.core.agents.AgentProfile): com.aicontrolcenter.core.SpaceId {
+        val space = world.memory.createSpace(MemoryActor.Owner, "Team")
+        for (agent in listOf(director) + also) {
+            world.agents.upsert(agent.copy(memory = agent.memory.copy(readableSpaces = setOf(space.id), writableSpaces = setOf(space.id))))
+        }
+        return space.id
+    }
+
+    @Test
+    fun `D22 - a summary the owner edited and another agent edited after is not the owner's version, and is brought up to date`() = runTest {
+        val team = TeamFixture(this).setUp()
+        val space = team.teamSpace(team.analyst)
+        val allow = team.writerFailsFirst()
+        val orchestrator = team.orchestrator(backgroundScope, tasks = WorkingNotes(team.tasks, team.world.memory))
+        val objective = orchestrator.startObjective("Research note apps", ObjectiveOptions(saveKnowledge = true))
+        team.settle()
+        val summary = team.summaries().single()
+        assertEquals(MemoryScope.Shared(space), summary.scope)
+        // Three edits of its content: the Director's (its first version), the owner's, then another agent's.
+        team.world.memory.update(MemoryActor.Owner, summary.id, MemoryChange(content = "The owner's own words."))
+        team.world.memory.update(MemoryActor.Agent(team.world.agents.get(team.analyst.id)!!), summary.id, MemoryChange(content = "The Analyst's words."))
+        allow()
+        orchestrator.retryTask(team.byTitle(objective.id, "Write notes").id)
+        team.settle()
+        val done = team.objective(objective.id)
+        assertEquals("Completed: 2 of 2 tasks produced results.", done.statusDetail)
+        assertTrue(team.summaries().single().content.endsWith("# Final v2"), "the Director keeps it up to date again")
+    }
+
+    @Test
+    fun `D23 - a summary the Director may no longer write is named in the objective's status, with what to do`() = runTest {
+        val team = TeamFixture(this).setUp()
+        team.teamSpace()
+        val allow = team.writerFailsFirst()
+        val orchestrator = team.orchestrator(backgroundScope, tasks = WorkingNotes(team.tasks, team.world.memory))
+        val objective = orchestrator.startObjective("Research note apps", ObjectiveOptions(saveKnowledge = true))
+        team.settle()
+        val summary = team.summaries().single()
+        // The owner takes the space away from the Director.
+        val director = team.world.agents.get(team.director.id)!!
+        team.world.agents.upsert(director.copy(memory = director.memory.copy(writableSpaces = emptySet())))
+        allow()
+        orchestrator.retryTask(team.byTitle(objective.id, "Write notes").id)
+        team.settle()
+        val status = team.objective(objective.id).statusDetail.orEmpty()
+        assertTrue(status.contains("the Director may no longer write to the shared space \"Team\". Allow it in Memory > Spaces."), status)
+        assertTrue(status.contains("(memory ${summary.id.value})"), status)
+        assertTrue(team.summaries().single().content.endsWith("# Final v1"), "the summary was left as it was")
     }
 
     // 6. A store error never costs a finished objective its result (probe verify4e, storeErrors).
