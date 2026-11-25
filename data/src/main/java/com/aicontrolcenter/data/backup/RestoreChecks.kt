@@ -28,7 +28,7 @@ import java.util.Locale
  * Each check returns what is wrong in plain words for [com.aicontrolcenter.core.backup.BackupProblem.Invalid]
  * ("The backup holds something this app cannot accept (<what>), so nothing was restored."), never the offending text.
  */
-internal object RestoreChecks {
+object RestoreChecks {
     /** DefaultAgentManager.MAX_NAME_LENGTH. */
     const val AGENT_NAME_CHARS = 40
 
@@ -194,13 +194,17 @@ internal object RestoreChecks {
     /** An Android package name: dot-separated Java identifiers, at least two segments. */
     private val PACKAGE_NAME = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")
 
-    /** MemoryRules.spaceName and spaceDescription. */
-    fun space(space: KnowledgeSpace): String? {
+    /** The key two spaces' names are compared by (KnowledgeSpaces.requireUniqueName). */
+    fun spaceNameKey(name: String): String = name.trim().lowercase(Locale.ROOT)
+
+    /** MemoryRules.spaceName and spaceDescription, and no two spaces of one name; [others] are the keys of the file's spaces before it. */
+    fun space(space: KnowledgeSpace, others: Collection<String>): String? {
         id(space.id.value, "a space")?.let { return it }
         val name = space.name.trim()
         return when {
             name.isEmpty() -> "a space without a name"
             name.length > SPACE_NAME_CHARS -> "a space name longer than $SPACE_NAME_CHARS characters"
+            spaceNameKey(name) in others -> "two spaces with the same name"
             space.description.trim().length > SPACE_DESCRIPTION_CHARS -> "a space description that is too long"
             else -> null
         }

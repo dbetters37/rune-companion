@@ -69,6 +69,7 @@ internal class RestorePass(
     /** Package names of the file's AI apps: a scan's entry for the same app is replaced by the file's. */
     val appPackages = HashSet<String>()
     val spaces = LinkedHashSet<SpaceId>()
+    private val spaceNames = HashSet<String>()
     private val memoryIds = HashSet<MemoryId>()
     private val keptMemories = HashSet<MemoryId>()
     private var memoryRecords = 0
@@ -193,8 +194,9 @@ internal class RestorePass(
     private suspend fun space(record: BackupRecord.Space) {
         val space = record.space
         if (space.id in spaces) invalid("the same space twice")
-        RestoreChecks.space(space)?.let(::invalid)
+        RestoreChecks.space(space, spaceNames)?.let(::invalid)
         spaces += space.id
+        spaceNames += RestoreChecks.spaceNameKey(space.name)
         stores?.memories?.upsertSpace(space)
     }
 
