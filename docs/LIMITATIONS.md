@@ -89,6 +89,12 @@ do it.
   forced tool choice; adapters drop what a model does not accept and say so in the activity log.
 - A provider can refuse a request or substitute a fallback model. The model that actually
   answered is recorded on every call.
+- When a provider is not answering or asks the app to slow down, a task waits and tries again
+  a few times (its other tasks on that provider wait with it), then counts it as a failed
+  attempt. A provider that asks to slow down again right after the wait has most likely used up
+  its quota for the day (free tiers do this); its tasks then fail within minutes instead of
+  waiting out the objective's time limit. Such refused calls are not counted against your
+  daily limit of model answers.
 - Content an agent reads (web pages, files, other apps' screens, other agents' messages) can
   contain instructions aimed at the model. The framework passes such content as data and
   never lets it raise an agent's permissions, but a model can still be misled by it. Keep
@@ -291,6 +297,13 @@ do it.
   chat or task was stopped, or you withdrew the app, removed the folder, revoked the permission
   or pressed Stop on screen control, the request is closed as "No longer waiting" and nothing is
   done; the agent has to ask again. Its notification is removed with it.
+- **After you answer an agent's question**, every task of that objective (the one that asked,
+  the one that handed it that work, the ones that build on its result, and the final result)
+  asks you once before its first action that may send information off the phone, so you can
+  check that your answer does not go where it should not. This also holds after the app
+  restarts. It does not follow your answer further: if an agent saves it to memory, an agent of
+  another objective or a chat can find it there later and send it without this extra question
+  (its usual permissions and approvals still apply).
 - **After you refuse a permission**, the same agent cannot ask you for the same permission and
   target again for 10 minutes: its calls are refused at once and the refusal in Tools > History
   counts them. This does not apply to approvals of single actions, which are always put to you.
@@ -322,10 +335,15 @@ do it.
 - **Agents can mislead each other.** What one agent writes reaches the next agent's prompt as
   quoted data, never as instructions, and cannot change any agent's permissions. A model can
   still be persuaded by it, so an agent that read a planted instruction can pass bad work on.
-  Reviews are done by another model and catch mistakes, not attacks.
+  Reviews are done by another model and catch mistakes, not attacks. Text in a page, file or
+  screen that imitates your notes to the team ("Notes from the owner") reaches the agent's model
+  slightly altered, so it cannot pass for your notes.
 - **Limits stop work, not cost already spent.** Caps on tasks, messages, model calls and time
   bound how much an objective can do. A cloud provider bills for the calls made before a limit
-  was reached.
+  was reached. Today's limits on tokens and money are checked before each call against what
+  has been used plus an estimate of every call still running, so the last call let through can
+  still take the day past the limit by its own cost. A model's money only counts once you have
+  entered its price.
 - **Recognising a consequential control on another app's screen is a word list.** Every
   authorised app therefore asks before every tap, typing, scroll, Back and Home by default, with
   the window's text in the approval. For an app you set to ask only before buying, sending,

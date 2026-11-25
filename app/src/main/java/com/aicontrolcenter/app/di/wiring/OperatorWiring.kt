@@ -135,8 +135,11 @@ class OperatorAssembly(
     /** How long agents waited for the owner (D12): the bulk rule's window does not run on while they wait. */
     private val ownerWaits = OwnerWaitLedger()
 
-    /** The tasks whose agent got the owner's answer to a question (rule 32): their next call off the phone asks first. */
-    private val answeredQuestions = AnsweredQuestions()
+    /**
+     * The tasks and objectives whose agents got the owner's answer to a question (rule 32): their next call off the
+     * phone asks first. After a restart, an objective's stored answers count again (read once per objective).
+     */
+    private val answeredQuestions = AnsweredQuestions(messages)
 
     /** The owner's folders and authorised apps, read only, for the permission checks and the tools. */
     private val folderDirectory = FolderDirectoryView(ports.operator.sharedFolders)

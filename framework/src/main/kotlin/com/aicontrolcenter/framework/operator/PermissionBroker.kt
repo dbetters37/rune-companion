@@ -106,8 +106,8 @@ class PermissionBroker(
     /** Where the time calls waited for the owner is noted, for the bulk rule's window (D12); null: nowhere. */
     ownerWaits: OwnerWaitLedger? = null,
     /**
-     * The tasks whose agent got the owner's answer to a question (rule 32): their next call that
-     * may send information off the phone asks the owner first. Shared with the question tool.
+     * The tasks and objectives whose agents got the owner's answer to a question (rule 32): their
+     * next call that may send information off the phone asks the owner first. Shared with the question tool.
      */
     private val answeredQuestions: AnsweredQuestions = AnsweredQuestions(),
 ) : ToolAuthorizer, EarlyRefusal {
@@ -144,8 +144,10 @@ class PermissionBroker(
         // learns nothing of other calls. Given back by the tool executor when the call ends, however it ends.
         call.assessment.prepared?.beforeOwnerAsked()?.let { return Authorization.Denied(it) }
         // Phase 6 (rule 32): the first call of a task that may send information off the phone after the owner answered
-        // one of its questions asks the owner, whatever its risk, so nothing the owner wrote leaves unseen.
-        val afterAnswer = if (tool.sendsDataOffDevice) answeredQuestions.flagged(context.taskId, tasks) else null
+        // a question of it, of a task under it, or of any task of its objective (the answer reaches a delegating parent,
+        // the tasks that depend on the one that asked, and the synthesis) asks the owner, whatever its risk, so nothing
+        // the owner wrote leaves unseen.
+        val afterAnswer = if (tool.sendsDataOffDevice) answeredQuestions.flagged(context.taskId, context.rootTaskId, tasks) else null
         if (call.risk == RiskLevel.CONSEQUENTIAL || afterAnswer != null) {
             when (val asked = ask(call, OwnerRequestKind.APPROVAL, info, afterAnswer = afterAnswer != null)) {
                 is Asked.Refused -> return Authorization.Denied(asked.reason)
@@ -155,7 +157,7 @@ class PermissionBroker(
             if (reliesOnGrant && !covered(call)) {
                 return Authorization.Denied("The permission \"${info.title}\" was withdrawn while the owner was being asked to approve, so \"${tool.title}\" was not run.")
             }
-            // The owner saw this call after their answer: later calls of the task go as usual.
+            // The owner saw this call after their answer: later calls of the task go as usual, until another answer.
             afterAnswer?.let { answeredQuestions.clear(it) }
         }
         return if (answered.isEmpty()) Authorization.Allowed else Authorization.AllowedByOwner(answered)

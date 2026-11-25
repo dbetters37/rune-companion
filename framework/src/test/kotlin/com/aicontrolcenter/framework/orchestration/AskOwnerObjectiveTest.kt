@@ -7,7 +7,6 @@ import com.aicontrolcenter.core.operator.OwnerResult
 import com.aicontrolcenter.core.tasks.MessageType
 import com.aicontrolcenter.core.tasks.Participant
 import com.aicontrolcenter.core.tasks.TaskStatus
-import com.aicontrolcenter.framework.operator.AnsweredQuestions
 import com.aicontrolcenter.framework.operator.OperatorFixture.Companion.json
 import com.aicontrolcenter.framework.operator.OwnerAttentionGate
 import com.aicontrolcenter.framework.operator.OwnerQuestions
@@ -37,7 +36,7 @@ class AskOwnerObjectiveTest {
         val world = team.world
         val questions = OwnerQuestions(
             world.requests, world.waiters, world.tasks, team.messages, world.facts, world.activity, world.ids, world.clock,
-            OwnerAttentionGate(world.requests, world.waiters, world.activity), OwnerWaitLedger(), AnsweredQuestions(),
+            OwnerAttentionGate(world.requests, world.waiters, world.activity), OwnerWaitLedger(), world.answeredQuestions,
         )
         TeamTools.registerAskOwner(world.toolRegistry, world.capabilities, questions)
         team.script.plan = { _, _ -> ScriptStep.Reply(planJson(listOf(task("t", "Find apps", listOf("research"))))) }
@@ -102,5 +101,34 @@ class AskOwnerObjectiveTest {
         assertEquals(OwnerRequestStatus.CANCELLED, team.world.requests.get(question.id)!!.status)
         assertTrue(team.world.ownerRequests.answer(question.id, "Both") is OwnerResult.Refused)
         assertTrue(team.messages.list(objective.id).none { it.type == MessageType.ANSWER })
+    }
+
+    @Test
+    fun `a question withdrawn by a pause is asked again after Resume, and the answer reaches the agent`() = runTest {
+        // Review of wave 2a, INT-2: the owner never had the chance to answer it, so it does not count as asked.
+        val team = team()
+        val objective = team.start()
+        repeat(2) { round ->
+            advanceTimeBy(5_000)
+            runCurrent()
+            val question = team.world.requests.observePending().first().single()
+            assertEquals(OwnerRequestKind.QUESTION, question.kind, "round $round")
+            team.orchestrator.pause(objective.id)
+            runCurrent()
+            assertEquals(OwnerRequestStatus.CANCELLED, team.world.requests.get(question.id)!!.status)
+            team.orchestrator.resume(objective.id)
+        }
+        // Withdrawn twice, and still not refused as a third question of the task or a near-identical one.
+        advanceTimeBy(5_000)
+        runCurrent()
+        val third = team.world.requests.observePending().first().single()
+        assertEquals("Should I include paid apps?", third.question)
+        assertEquals(OwnerResult.Done(Unit), team.world.ownerRequests.answer(third.id, "Both"))
+        team.settle()
+        val work = team.work(objective.id).single()
+        assertEquals(TaskStatus.COMPLETED, work.status, work.statusDetail)
+        assertTrue("The owner answered, in their own words:" in work.result.orEmpty(), work.result)
+        val answer = team.messages.list(objective.id).single { it.type == MessageType.ANSWER }
+        assertEquals(third.question, team.messages.list(objective.id).single { it.id == answer.replyTo }.body.substringBefore("\n"))
     }
 }

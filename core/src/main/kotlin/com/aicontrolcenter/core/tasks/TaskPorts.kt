@@ -105,6 +105,16 @@ interface MessageRepository {
     /** The newest [limit] messages across all objectives, newest first (for the dashboard and the network view). */
     fun observeRecent(limit: Int): Flow<List<AgentMessage>>
     suspend fun list(rootId: TaskId): List<AgentMessage>
+
+    /**
+     * The messages of objective [rootId] whose type is one of [types], only those about [taskId] when it is set, in
+     * sending order (time, then id). The orchestrator reads the owner's notes and a task's answers this way instead of
+     * every message of the objective for every brief (review of wave 2a, INT-4). The default filters [list]; Room
+     * reads only the matching rows.
+     */
+    suspend fun listOfTypes(rootId: TaskId, types: Set<MessageType>, taskId: TaskId? = null): List<AgentMessage> =
+        list(rootId).filter { it.type in types && (taskId == null || it.taskId == taskId) }
+
     suspend fun count(rootId: TaskId): Int
     suspend fun deleteFor(rootId: TaskId)
 

@@ -150,6 +150,27 @@ abstract class MessageRepositoryContract {
     }
 
     @Test
+    fun `lists one objective's messages of some types, and of one task, in sending order`() = runTest {
+        // Review of wave 2a, INT-4: the orchestrator reads the owner's notes and a task's answers this way.
+        val repo = createRepository()
+        val note = TaskSamples.message("msg_note", at = 300, type = MessageType.GUIDANCE).copy(taskId = null, from = Participant.Owner)
+        val answer = TaskSamples.message("msg_ans", at = 200, type = MessageType.ASSISTANCE_RESPONSE).copy(taskId = TaskId("tsk_a"))
+        val otherTask = TaskSamples.message("msg_ans2", at = 250, type = MessageType.ASSISTANCE_RESPONSE).copy(taskId = TaskId("tsk_b"))
+        val tie = TaskSamples.message("msg_tie", at = 200, type = MessageType.GUIDANCE).copy(taskId = TaskId("tsk_a"), from = Participant.Owner)
+        val assignment = TaskSamples.message("msg_assign", at = 100).copy(taskId = TaskId("tsk_a"))
+        val elsewhere = TaskSamples.message("msg_far", root = "tsk_other", at = 150, type = MessageType.GUIDANCE)
+        listOf(note, answer, otherTask, tie, assignment, elsewhere).forEach { repo.append(it) }
+        val root = TaskId("tsk_root")
+        assertEquals(listOf(tie, note), repo.listOfTypes(root, setOf(MessageType.GUIDANCE)))
+        assertEquals(listOf(answer, tie, otherTask, note), repo.listOfTypes(root, setOf(MessageType.GUIDANCE, MessageType.ASSISTANCE_RESPONSE)))
+        assertEquals(listOf(answer), repo.listOfTypes(root, setOf(MessageType.ASSISTANCE_RESPONSE), TaskId("tsk_a")))
+        assertEquals(listOf(answer, tie), repo.listOfTypes(root, setOf(MessageType.ASSISTANCE_RESPONSE, MessageType.GUIDANCE), TaskId("tsk_a")))
+        assertTrue(repo.listOfTypes(root, emptySet()).isEmpty())
+        assertTrue(repo.listOfTypes(root, setOf(MessageType.QUESTION)).isEmpty())
+        assertEquals(listOf(elsewhere), repo.listOfTypes(TaskId("tsk_other"), setOf(MessageType.GUIDANCE)))
+    }
+
+    @Test
     fun `concurrent appends are all kept and observers see them`() = runTest {
         val repo = createRepository()
         val seen = collectIn(backgroundScope, repo.observe(TaskId("tsk_root")))

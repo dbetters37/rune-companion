@@ -31,6 +31,7 @@ import com.aicontrolcenter.framework.llm.rethrowIfCancelled
 import com.aicontrolcenter.framework.memory.AutoRecall
 import com.aicontrolcenter.framework.memory.MemoryReferences
 import com.aicontrolcenter.framework.operator.OwnerWaits
+import com.aicontrolcenter.framework.orchestration.DataBlock
 import com.aicontrolcenter.framework.tools.ToolCallEnd
 import com.aicontrolcenter.framework.tools.ToolExecution
 import com.aicontrolcenter.framework.tools.ToolExecutor
@@ -401,9 +402,10 @@ class AgentRunner(
                 executing = null
                 if (!execution.outcome.ok) toolErrors++
                 unanswered.remove(call)
-                val result = ChatMessage.toolResult(call.id, call.name, execution.outcome.content, isError = !execution.outcome.ok)
+                // Rule 24: a page, file or screen text a tool returns can never pass for the owner's notes, on any path.
+                val result = ChatMessage.toolResult(call.id, call.name, DataBlock.neutralise(execution.outcome.content), isError = !execution.outcome.ok)
                 // The model reads the result itself for the rest of the turn; a memory search result is stored as a reference.
-                val stored = references.storedForm(execution)?.let { ChatMessage.toolResult(call.id, call.name, it, isError = false) } ?: result
+                val stored = references.storedForm(execution)?.let { ChatMessage.toolResult(call.id, call.name, DataBlock.neutralise(it), isError = false) } ?: result
                 append(result, null, null, stored)
                 listener.onToolFinished(execution)
             }

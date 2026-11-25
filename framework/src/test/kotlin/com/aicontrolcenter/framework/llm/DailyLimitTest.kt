@@ -143,6 +143,87 @@ class DailyLimitTest {
         assertEquals(10, client.requests.size)
     }
 
+    /** A request of about 100,000 estimated tokens (400,000 characters) leaving room for a 20,000-token answer. */
+    private val big = ChatRequest(messages = listOf(ChatMessage.user("a".repeat(400_000))), maxOutputTokens = 20_000)
+
+    @Test
+    fun `calls in flight count with their estimated tokens and money, so calls started together cannot all pass`() = runTest {
+        // Security review of wave 2a, SEC-W2A-4: each answer costs US$0.60 at US$3 / US$15 per million (100,000 in, 20,000 out).
+        val metered = MeteredWorld(this)
+        metered.settings { it.copy(maxTokensPerDay = 100_000_000L, maxSpendPerDayMicros = 1_000_000L) }
+        val client = ScriptedLlmClient { _, _ ->
+            kotlinx.coroutines.delay(2_000)
+            ScriptStep.Reply("ok", TokenUsage(100_000, 20_000))
+        }
+        val model = metered.cloud(client)
+        metered.price(model.id, inputUsdPerMTok = 3.0, outputUsdPerMTok = 15.0)
+
+        val results = (1..3).map { async { runCatching { metered.gateway.chat(model.id, big) } } }.awaitAll()
+
+        // The first reserves about US$0.60; the second sees that, under US$1.00, and goes; the third sees about US$1.20.
+        assertEquals(listOf(true, true, false), results.map { it.isSuccess })
+        assertTrue(results.last().exceptionOrNull() is LlmException.DailyLimitReached)
+        assertEquals(2, client.requests.size, "nothing was sent for the refused call")
+        assertEquals(1_200_000, metered.limiter.today().spendMicros, "settled at the reported tokens, the estimates gone")
+        assertFailsWith<LlmException.DailyLimitReached> { metered.gateway.chat(model.id, big) }
+    }
+
+    @Test
+    fun `calls in flight count with their estimated tokens against the token limit too, and a retry does not count its own`() = runTest {
+        val metered = MeteredWorld(this)
+        metered.settings { it.copy(maxTokensPerDay = 150_000L) }
+        val gate = CompletableDeferred<Unit>()
+        var first = true
+        val client = ScriptedLlmClient { _, _ ->
+            if (first) {
+                first = false
+                ScriptStep.Fail(LlmException.Server("Busy", 503))
+            } else {
+                gate.await()
+                ScriptStep.Reply("ok", TokenUsage(100_000, 20_000))
+            }
+        }
+        val model = metered.cloud(client)
+        // Each call reserves about 120,000 tokens (100,000 estimated in, 20,000 of room for the answer).
+        // The first fails once and waits a second before its retry.
+        val a = async { runCatching { metered.gateway.chat(model.id, big) } }
+        runCurrent()
+        // A second call meanwhile sees the first's 120,000 reserved, under 150,000, and goes.
+        val b = async { runCatching { metered.gateway.chat(model.id, big) } }
+        runCurrent()
+        // The first one's retry sees the second's 120,000 but not its own, and goes too.
+        advanceTimeBy(5_000)
+        runCurrent()
+        // A third sees 240,000 reserved and is refused before anything is sent.
+        val c = async { runCatching { metered.gateway.chat(model.id, big) } }
+        runCurrent()
+        gate.complete(Unit)
+        val results = listOf(a.await(), b.await(), c.await())
+        assertEquals(listOf(true, true, false), results.map { it.isSuccess })
+        assertTrue(results.last().exceptionOrNull() is LlmException.DailyLimitReached)
+        assertEquals(240_000, metered.limiter.today().tokens)
+    }
+
+    @Test
+    fun `a call that ended because the provider asked the app to slow down is not one of today's answers`() = runTest {
+        // Review of wave 2a, INT-1: a used-up quota answers nothing and costs nothing; it must not use up the other providers' answers.
+        val metered = MeteredWorld(this)
+        metered.settings { it.copy(maxModelCallsPerDay = 2) }
+        val usedUp = metered.cloud(ScriptedLlmClient { _, _ -> ScriptStep.Fail(LlmException.RateLimited("Quota exceeded for today", retryAfterMs = 3_600_000L)) })
+        repeat(5) { assertFailsWith<LlmException.RateLimited> { metered.gateway.chat(usedUp.id, ask) } }
+        assertEquals(0, metered.limiter.today().calls)
+        // The usage records say the same, as the screens read them and as a restarted limiter does.
+        val rows = metered.usage.byModel(UsageRange.day(metered.clock.now(), metered.zone))
+        assertEquals(5, rows.sumOf { it.totals.failed })
+        assertEquals(0, DailyUse.of(rows, emptyMap()).calls)
+        val restarted = DailyLimiter(metered.usage, metered.ownerPrices, metered.world.settings, metered.clock) { metered.zone }
+        assertEquals(0, restarted.today().calls)
+        // Another provider still gets the day's two answers.
+        val healthy = metered.cloud(ScriptedLlmClient.replies("ok"))
+        repeat(2) { metered.gateway.chat(healthy.id, ask) }
+        assertFailsWith<LlmException.DailyLimitReached> { metered.gateway.chat(healthy.id, ask) }
+    }
+
     @Test
     fun `raising the limit lets the next call go at once`() = runTest {
         val metered = MeteredWorld(this)

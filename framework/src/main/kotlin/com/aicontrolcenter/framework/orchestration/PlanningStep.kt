@@ -45,9 +45,22 @@ internal class PlanningStep(private val ctx: OrchestrationContext) {
                     continue
                 }
             }
+            val name = ProviderWaits.named(ready.provider, ready.providerName)
+            // The Director's provider asked the app to slow down for another step: planning waits with it (INT-1).
+            val held = ctx.slowDowns.heldUntil(ready.provider?.id, ctx.clock.now())
+            if (held != null) {
+                if (!waitToPlan(rt, name, held.second, at = held.first)) return false
+                continue
+            }
             when (val outcome = planWith(rt, objective, directorId, ready)) {
                 is Planned.Done -> return outcome.stored
-                is Planned.Wait -> if (!waitToPlan(rt, ProviderWaits.named(ready.provider, ready.providerName), outcome.error)) return false
+                is Planned.Wait -> {
+                    // A few waits at most; then, or for a used-up quota, the objective cannot be planned (INT-1).
+                    if (!ctx.mayWait(rt, rt.rootId, ready.provider, outcome.error)) {
+                        return failObjective(rt, "The Director could not plan: ${ProviderWaits.what(name, outcome.error)}, and waiting for it did not help. Try again later.")
+                    }
+                    if (!waitToPlan(rt, name, outcome.error)) return false
+                }
             }
         }
     }
@@ -63,15 +76,15 @@ internal class PlanningStep(private val ctx: OrchestrationContext) {
      * Waits for the Director's provider ([provider], [error] as for [OrchestrationContext.waitForProvider]): the
      * objective, still running, says until when and carries the time as its retryAt. False when it is no longer running.
      */
-    private suspend fun waitToPlan(rt: ObjectiveRuntime, provider: String, error: LlmException?): Boolean {
+    private suspend fun waitToPlan(rt: ObjectiveRuntime, provider: String, error: LlmException?, at: Long? = null): Boolean {
         val earlier = rt.waitsSoFar[rt.rootId] ?: 0
-        val at = ctx.clock.now() + ProviderWaits.waitMs(earlier, error)
+        val until = at ?: (ctx.clock.now() + ProviderWaits.waitMs(earlier, error))
         val waiting = ctx.change(rt, rt.rootId, setOf(TaskStatus.RUNNING)) {
-            it.copy(retryAt = at, statusDetail = ProviderWaits.text(provider, error, at, ctx.zone()))
+            it.copy(retryAt = until, statusDetail = ProviderWaits.text(provider, error, until, ctx.zone()))
         } ?: return false
-        rt.waitsSoFar[rt.rootId] = earlier + 1
+        if (at == null) rt.waitsSoFar[rt.rootId] = earlier + 1
         ctx.journal.taskChanged(waiting, "Planning waits for its provider")
-        ctx.waits.until(rt, rt.rootId, at)
+        ctx.waits.until(rt, rt.rootId, until)
         return ctx.change(rt, rt.rootId, setOf(TaskStatus.RUNNING)) { it.copy(retryAt = null) } != null
     }
 
@@ -115,7 +128,10 @@ internal class PlanningStep(private val ctx: OrchestrationContext) {
                     return Planned.Done(false)
                 }
                 is Trouble.Passing -> return Planned.Wait(trouble.error)
-                null -> rt.waitsSoFar.remove(rt.rootId)
+                null -> {
+                    rt.waitsSoFar.remove(rt.rootId)
+                    ctx.providerAnswered(rt, rt.rootId, ready.provider)
+                }
             }
             problems = if (result.ok) {
                 when (val reading = PlanParser.read(result.text, limits.maxTasks, reviewOn)) {

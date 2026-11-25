@@ -35,7 +35,8 @@ import java.util.concurrent.ConcurrentHashMap
  *  - [scheduledDue] and [dueAt] are when work that waits to be tried again (Phase 6, R4: a provider
  *    not answering, "slow down" answers) is due: the earliest planned task the scheduler skips for
  *    now, and the planning, synthesis or delegated work waiting in a step of its own, by task id.
- *    [waitsSoFar] counts each task's waits in a row, which make the next one longer.
+ *    [waitsSoFar] counts each task's waits in a row, which make the next one longer; [failedWaits] those
+ *    after a model call that failed, which are bounded.
  */
 internal class ObjectiveRuntime(val rootId: TaskId) {
     val lock = Mutex()
@@ -76,6 +77,12 @@ internal class ObjectiveRuntime(val rootId: TaskId) {
     val dueAt = ConcurrentHashMap<TaskId, Long>()
 
     val waitsSoFar = ConcurrentHashMap<TaskId, Int>()
+
+    /**
+     * How many times in a row each step's model call failed in a way that passes and the step waited for it (INT-1):
+     * bounded by [ProviderWaits.MAX_WAITS_AFTER_FAILURE]. Ends when its provider answers, and when the owner resumes.
+     */
+    val failedWaits = ConcurrentHashMap<TaskId, Int>()
 
     /** When the earliest wait of this objective is due; null when nothing of it waits. */
     fun nextDueAt(): Long? = listOfNotNull(scheduledDue, dueAt.values.minOrNull()).minOrNull()

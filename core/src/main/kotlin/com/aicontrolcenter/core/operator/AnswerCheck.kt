@@ -15,10 +15,11 @@ enum class AnswerRisk {
 
     /**
      * A 4 to 8 digit code: an answer that is nothing but 4 to 8 digits (written as figures or as
-     * words, with or without spaces, dots, commas, dashes or underscores between them), whatever
-     * the question says, or one that holds such a code in answer to a question that mentions a
-     * code, a text message, a verification, a PIN, a password or the like. Sent only when the
-     * owner taps "Send it anyway" a second time (rule 32).
+     * words, with or without spaces, dots, commas, dashes or underscores between them), or one that
+     * holds a code standing on its own ("482913", "G-482913", "482 913"), whatever the question
+     * says; or one that holds a shorter or looser code in answer to a question that mentions a
+     * code, a text message, a verification, a PIN, a password, a notification, what a screen shows
+     * or the like. Sent only when the owner taps "Send it anyway" a second time (rule 32).
      */
     CODE,
 
@@ -58,6 +59,14 @@ object AnswerCheck {
         "digit", "number", "2fa", "two-factor", "two factor", "authenticat", "security", "log in", "login", "sign in", "sign-in", "bank", "confirm",
     )
 
+    /**
+     * Words that make a short number in the answer a likely code when the question uses them (case
+     * ignored; a word may go on): the agent words the question, so asking for "the six characters
+     * your latest notification shows" counts as asking for a code. Only the question is read for
+     * these: in the owner's own sentence ("show the 2024 figures") they are ordinary words.
+     */
+    val QUESTION_CODE_WORDS: List<String> = listOf("notification", "show", "character", "screen", "receiv", "display", "appear")
+
     /** The shortest key after a known prefix that counts: shorter ones are ordinary words ("sk-ip"). */
     const val MIN_KEY_BODY_CHARS: Int = 12
 
@@ -83,6 +92,20 @@ object AnswerCheck {
 
     /** A code of letters and digits under a code word: 5 to 8 of them, with at least two digits and one letter ("K7Q2M9"). */
     private val mixedCode = Regex("(?<![\\p{L}0-9])(?=(?:[A-Za-z]*[0-9]){2})(?=[0-9]*[A-Za-z])[A-Za-z0-9]{5,8}(?![\\p{L}0-9])")
+
+    /**
+     * A code standing on its own in the answer, whatever the question says (security review of wave
+     * 2a, SEC-W2A-3: the question's wording is the agent's): 6 to 8 digits in one run ("482913"), a
+     * short letter prefix, a dash and 5 to 8 digits ("G-482913", "FB-48291"), or two groups of 3 or 4
+     * digits split by one space or dash ("482 913", "4829-1300"). Never touching a letter or a digit,
+     * nor another group of digits one space, dot or dash away, so a phone number in groups, a longer
+     * number or a year is no code.
+     */
+    private val standaloneCode = Regex(
+        "(?<![\\p{L}\\p{N}])(?<![\\p{N}][ .\\-])" +
+            "(?:[0-9]{6,8}|[A-Za-z]{1,3}-[0-9]{5,8}|[0-9]{3,4}[ \\-][0-9]{3,4})" +
+            "(?![\\p{L}\\p{N}])(?![ .\\-][\\p{N}])",
+    )
 
     /** What may surround a bare code: separators only. */
     private val separatorsOnly = Regex("[\\s.,_\\-]*")
@@ -152,22 +175,25 @@ object AnswerCheck {
 
     /**
      * True when [answer] is a bare code (4 to 8 digits and separators only, figures or number
-     * words, digits of any script), whatever [question] says; or when [question] or [answer]
-     * mentions a code word and [answer] holds a run of 4 to 8 digits (any one to three non-letters,
-     * or an "x", between them; number words read as digits) or a code of 5 to 8 letters and digits.
+     * words, digits of any script) or holds a code standing on its own ([standaloneCode]), whatever
+     * [question] says; or when [question] or [answer] mentions a code word ([CODE_WORDS], and
+     * [QUESTION_CODE_WORDS] in the question) and [answer] holds a run of 4 to 8 digits (any one to
+     * three non-letters, or an "x", between them; number words read as digits) or a code of 5 to 8
+     * letters and digits.
      */
     fun looksLikeCode(question: String, answer: String): Boolean {
         val digits = spelledAsDigits(asciiDigits(answer))
         if (separatorsOnly.replace(digits, "").all { it in '0'..'9' } && digits.count { it in '0'..'9' } in CODE_DIGITS) return true
-        if (!mentionsCode(question) && !mentionsCode(answer)) return false
+        if (standaloneCode.containsMatchIn(digits)) return true
+        if (!mentionsCode(question, CODE_WORDS + QUESTION_CODE_WORDS) && !mentionsCode(answer, CODE_WORDS)) return false
         if (looseDigitRun.findAll(digits).any { run -> run.value.count { it in '0'..'9' } in CODE_DIGITS }) return true
         return mixedCode.containsMatchIn(digits)
     }
 
-    /** True when [text] holds one of [CODE_WORDS] (case ignored). */
-    private fun mentionsCode(text: String): Boolean {
+    /** True when [text] holds one of [words] (case ignored). */
+    private fun mentionsCode(text: String, words: List<String>): Boolean {
         val lower = Normalizer.normalize(text, Normalizer.Form.NFKC).lowercase()
-        return CODE_WORDS.any { word -> Regex("(?<![a-z])" + Regex.escape(word)).containsMatchIn(lower) }
+        return words.any { word -> Regex("(?<![a-z])" + Regex.escape(word)).containsMatchIn(lower) }
     }
 
     /** [text] in NFKC (full-width "４" is "4"), with every other decimal digit of any script ("٤") written as an ASCII digit. */

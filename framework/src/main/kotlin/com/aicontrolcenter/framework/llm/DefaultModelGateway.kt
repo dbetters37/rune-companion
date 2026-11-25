@@ -255,7 +255,9 @@ class DefaultModelGateway(
         val call = route.call
         if (call.attempts > 0) confirmRetry(route, modelId)
         call.ticket = try {
-            limiter.reserve(call.model.id, route.lease.provider.effectiveLocality, held = call.ticket)
+            // The first attempt reserves the call's estimated tokens too, so calls in flight together count (SEC-W2A-4).
+            val estimate = if (call.ticket == null) estimate(route.request) else null
+            limiter.reserve(call.model.id, route.lease.provider.effectiveLocality, held = call.ticket, estimate = estimate)
         } catch (refused: LlmException.DailyLimitReached) {
             val sentence = refused.message.orEmpty()
             if (call.attempts == 0) {
@@ -268,15 +270,24 @@ class DefaultModelGateway(
         }
     }
 
+    /** What [request] is expected to use: its estimated input, and the answer's room (or [DailyLimiter.DEFAULT_ANSWER_ESTIMATE]). */
+    private fun estimate(request: ChatRequest): TokenCounts = TokenCounts(
+        TokenEstimator.tokens(request.messages, request.tools).toLong().coerceAtLeast(0),
+        (request.maxOutputTokens?.toLong() ?: DailyLimiter.DEFAULT_ANSWER_ESTIMATE).coerceAtLeast(0),
+    )
+
     /** Waits [pauseMs] before the next attempt, as the provider or the retry policy asked. */
     private suspend fun waitBeforeRetry(call: ModelCall, pauseMs: Long) {
         call.retryWaitMs += pauseMs
         delay(pauseMs)
     }
 
-    /** Ends the call's place in today's limits: it counts, with the tokens reported (none when it failed). Never throws. */
-    private suspend fun settleLimits(call: ModelCall, used: TokenCounts?, at: Long = clock.now()) {
-        call.ticket?.let { limiter.settle(it, call.model.id, used, at) }
+    /**
+     * Ends the call's place in today's limits: it counts, with the tokens reported (none when it failed), unless
+     * [counted] is false. Never throws.
+     */
+    private suspend fun settleLimits(call: ModelCall, used: TokenCounts?, at: Long = clock.now(), counted: Boolean = true) {
+        call.ticket?.let { limiter.settle(it, call.model.id, used, at, counted) }
     }
 
     private suspend fun retryRefusal(route: Route, modelId: ModelId): String? {
@@ -351,7 +362,8 @@ class DefaultModelGateway(
     /** Logs a final failure and returns it for the caller to throw. */
     private suspend fun fail(call: ModelCall, error: LlmException): LlmException {
         val at = clock.now()
-        settleLimits(call, used = null, at)
+        // A "slow down" answer (a used-up quota, INT-1) answered nothing and costs nothing: it is not one of today's answers.
+        settleLimits(call, used = null, at, counted = error !is LlmException.RateLimited)
         bestEffort {
             if (error is LlmException.Authentication) {
                 connections.storeStatus(call.provider.id, ConnectionStatus.AUTH_ERROR, error.message)

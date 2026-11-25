@@ -41,6 +41,7 @@ import com.aicontrolcenter.framework.operator.DefaultCapabilityRequester
 import com.aicontrolcenter.framework.operator.DefaultOwnerRequests
 import com.aicontrolcenter.framework.operator.OperatorFacts
 import com.aicontrolcenter.framework.operator.OperatorTaskHooks
+import com.aicontrolcenter.framework.operator.AnsweredQuestions
 import com.aicontrolcenter.framework.operator.PermissionBroker
 import com.aicontrolcenter.framework.operator.RequestWaiters
 import com.aicontrolcenter.framework.operator.asAuthorisedApps
@@ -151,7 +152,9 @@ class TestWorld(
     val facts = OperatorFacts(agents, settings, capabilities, folders.asDirectory(), operatorApps.asAuthorisedApps(), screenStopped) { protectedPackages }
     /** Which requests a live call (or an ask of this "process") waits for; shared by the broker, the requester, the hooks and the owner. */
     val waiters = RequestWaiters()
-    val broker = PermissionBroker(facts, requests, grants, waiters, tasks, activity, ids, clock)
+    /** The tasks and objectives whose agents got the owner's answer to a question (rule 32), shared with a question tool a test adds. */
+    val answeredQuestions = AnsweredQuestions()
+    val broker = PermissionBroker(facts, requests, grants, waiters, tasks, activity, ids, clock, answeredQuestions = answeredQuestions)
     val requester = DefaultCapabilityRequester(facts, requests, grants, waiters, activity, ids, clock)
     val operatorHooks = OperatorTaskHooks(requests, grants, waiters, activity, clock)
 

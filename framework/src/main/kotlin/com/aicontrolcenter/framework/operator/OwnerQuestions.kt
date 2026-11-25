@@ -2,6 +2,7 @@ package com.aicontrolcenter.framework.operator
 
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.IdGenerator
+import com.aicontrolcenter.core.MessageId
 import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.activity.ActivityRecorder
 import com.aicontrolcenter.core.activity.ActivityType
@@ -26,6 +27,7 @@ import com.aicontrolcenter.core.tasks.TaskStatus
 import com.aicontrolcenter.core.tools.RiskLevel
 import com.aicontrolcenter.core.tools.ToolContext
 import com.aicontrolcenter.core.tools.ToolOutcome
+import com.aicontrolcenter.framework.llm.rethrowIfCancelled
 import com.aicontrolcenter.framework.orchestration.DataBlock
 import com.aicontrolcenter.framework.orchestration.TeamTools
 import kotlinx.serialization.json.buildJsonObject
@@ -60,7 +62,8 @@ import kotlinx.serialization.json.put
  * What the model reads back: the owner's answer framed as quoted data ("The owner answered, in
  * their own words:" and a [DataBlock]); "decide yourself"; or, at the time-out, "Make the most
  * reasonable choice, say which one in your result, and go on." After any answer the task's next
- * call that may send information off the phone asks the owner first ([AnsweredQuestions], rule 32).
+ * call that may send information off the phone asks the owner first, and so does the first such call
+ * of every other task of the objective ([AnsweredQuestions], rule 32).
  */
 class OwnerQuestions(
     private val requests: OwnerRequestQueue,
@@ -105,11 +108,13 @@ class OwnerQuestions(
             createdAt = now, expiresAt = now + minutes * MINUTE_MS, agentName = agent.name, toolTitle = TITLE,
             delegationChain = context.delegationChain, question = text, options = suggested,
         )
+        // The question's message, which the answer (or "no answer in time") replies to.
+        var asked: MessageId? = null
         return waiting.ask(
             request, context, OwnerRequestWait.line("Waiting for the owner's answer: $text", MAX_DETAIL),
             admit = { live -> refusal(context, task, objective, text, live) },
-            afterRaise = { send(task, Participant.Agent(agent.id), Participant.Owner, MessageType.QUESTION, questionBody(text, suggested), "Question") },
-            use = { closed -> outcome(closed, task) },
+            afterRaise = { asked = send(task, Participant.Agent(agent.id), Participant.Owner, MessageType.QUESTION, questionBody(text, suggested), "Question") },
+            use = { closed -> outcome(closed, task, asked) },
             finished = { closed, _ -> logEnd(closed) },
             refused = { reason ->
                 waiting.attention.tellOwnerOnce(context, "ask you a question", reason)
@@ -126,7 +131,7 @@ class OwnerQuestions(
         if (live.count { it.taskId == task.id && it.kind == OwnerRequestKind.QUESTION } >= OwnerAttention.MAX_OPEN_QUESTIONS_PER_TASK) {
             return "Your earlier question in this task still waits for the owner. $DECIDE"
         }
-        val asked = messages.list(objective.id).filter { it.type == MessageType.QUESTION && it.to == Participant.Owner }
+        val asked = countedQuestions(messages.listOfTypes(objective.id, setOf(MessageType.QUESTION, MessageType.ANSWER, MessageType.STATUS)), live)
         val ofTask = asked.filter { it.taskId == task.id }
         if (ofTask.size >= OwnerAttention.MAX_QUESTIONS_PER_TASK) {
             return "This task already asked the owner ${OwnerAttention.MAX_QUESTIONS_PER_TASK} questions, the most one task may ask. $DECIDE"
@@ -140,24 +145,45 @@ class OwnerQuestions(
         return waiting.attention.agentRequestRefusal(context, live)
     }
 
+    /**
+     * The questions of [all] (an objective's messages) that count against rule 13's caps and the near-identical check
+     * (review of wave 2a, INT-2): those the owner answered, those that ran out of time, and those still waiting ([live]).
+     * A question withdrawn before the owner could answer (its call was stopped by a pause, a cancel, today's limit, or
+     * the app stopping) gave the owner no chance: it does not count, and the agent may ask it again after a Resume.
+     */
+    private fun countedQuestions(all: List<AgentMessage>, live: List<OwnerRequest>): List<AgentMessage> {
+        val replied = all.filter { it.replyTo != null && (it.type == MessageType.ANSWER || (it.type == MessageType.STATUS && it.body.startsWith(NO_ANSWER_PREFIX))) }
+            .mapNotNull { it.replyTo }.toSet()
+        val waiting = live.filter { it.kind == OwnerRequestKind.QUESTION }.mapNotNull { it.taskId }.toSet()
+        val questions = all.filter { it.type == MessageType.QUESTION && it.to == Participant.Owner }
+        // A task has one question open at most: its newest unanswered one is the one still waiting.
+        val open = questions.filter { it.id !in replied && it.taskId in waiting }.groupBy { it.taskId }.mapNotNull { (_, of) -> of.maxByOrNull { it.at }?.id }.toSet()
+        return questions.filter { it.id in replied || it.id in open }
+    }
+
     /** What the closed question means for the model. */
-    private suspend fun outcome(closed: OwnerRequest, task: TaskRecord): ToolOutcome {
+    private suspend fun outcome(closed: OwnerRequest, task: TaskRecord, question: MessageId?): ToolOutcome {
         val minutes = ((closed.expiresAt - closed.createdAt) / MINUTE_MS).coerceAtLeast(1)
         return when (closed.status) {
             OwnerRequestStatus.APPROVED -> {
-                // Rule 32: the owner's words may now be in what the agent sends; its next call off the phone asks first.
-                answered.mark(task.id)
+                // Rule 32: the owner's words may now be in what the agent sends, and in what any task of its objective reads
+                // (a delegating parent, a task that depends on it, the synthesis): their next call off the phone asks first.
+                answered.mark(task.id, task.rootId)
                 val words = closed.answer
-                send(task, Participant.Owner, Participant.Agent(closed.agentId), MessageType.ANSWER, words ?: DECIDE_YOURSELF_BODY, "Answer")
+                send(task, Participant.Owner, Participant.Agent(closed.agentId), MessageType.ANSWER, words ?: DECIDE_YOURSELF_BODY, "Answer", replyTo = question)
                 if (words == null) {
                     ToolOutcome.success("The owner asked you to decide yourself. Make the most reasonable choice, say which one in your result, and go on.")
                 } else {
                     ToolOutcome.success("The owner answered, in their own words:\n" + DataBlock.frame(words, "The owner's answer"))
                 }
             }
-            OwnerRequestStatus.EXPIRED -> ToolOutcome.success(
-                "The owner did not answer within $minutes minutes. Make the most reasonable choice, say which one in your result, and go on.",
-            )
+            OwnerRequestStatus.EXPIRED -> {
+                // The owner had the chance: the question counts against the caps (INT-2), unlike one withdrawn before.
+                send(task, Participant.System, Participant.Agent(closed.agentId), MessageType.STATUS, "$NO_ANSWER_PREFIX $minutes minutes.", "Question", replyTo = question, log = false)
+                ToolOutcome.success(
+                    "The owner did not answer within $minutes minutes. Make the most reasonable choice, say which one in your result, and go on.",
+                )
+            }
             OwnerRequestStatus.CANCELLED, OwnerRequestStatus.PENDING, OwnerRequestStatus.DENIED -> ToolOutcome.success(
                 "The question was withdrawn (${closed.decisionNote ?: PermissionBroker.CANCELLED_NOTE}). Make the most reasonable choice, " +
                     "say which one in your result, and go on.",
@@ -166,16 +192,27 @@ class OwnerQuestions(
     }
 
     /**
-     * Stores a message of the question's objective and logs it. The log names the question's first
-     * line, never the owner's words (the answer stays in the objective's messages only).
+     * Stores a message of the question's objective and logs it (unless [log] is false). The log names the question's
+     * first line, never the owner's words (the answer stays in the objective's messages only). Returns the stored
+     * message's id, or null when it could not be stored.
      */
-    private suspend fun send(task: TaskRecord, from: Participant, to: Participant, type: MessageType, body: String, label: String) {
+    private suspend fun send(
+        task: TaskRecord,
+        from: Participant,
+        to: Participant,
+        type: MessageType,
+        body: String,
+        label: String,
+        replyTo: MessageId? = null,
+        log: Boolean = true,
+    ): MessageId? {
         val message = AgentMessage(
             id = ids.messageId(), rootId = task.rootId, taskId = task.id, from = from, to = to, type = type,
-            body = body.trim().take(MAX_BODY), at = clock.now(),
+            body = body.trim().take(MAX_BODY), replyTo = replyTo, at = clock.now(),
         )
         // A message that cannot be stored costs the objective's record a line, never the answer the agent waits for.
-        orNull { messages.append(message) } ?: return
+        orNull { messages.append(message) } ?: return null
+        if (!log) return message.id
         val agentId = (from as? Participant.Agent)?.agentId ?: (to as? Participant.Agent)?.agentId
         val name = agentId?.let { facts.agent(it)?.name } ?: "An agent"
         logSafely {
@@ -191,6 +228,7 @@ class OwnerQuestions(
                 },
             )
         }
+        return message.id
     }
 
     private suspend fun logEnd(closed: OwnerRequest) = logSafely {
@@ -227,6 +265,9 @@ class OwnerQuestions(
         private const val DECIDE_LOWER = "make the most reasonable choice, say in your result what you chose and what still needs the owner, and go on."
         private const val DECIDE = "Nothing was asked. Make the most reasonable choice, say in your result what you chose and what still needs the owner, and go on."
         private const val DECIDE_YOURSELF_BODY = "The owner asked you to decide yourself."
+
+        /** How the note that a question ran out of time starts: such a question counts against the caps (INT-2). */
+        const val NO_ANSWER_PREFIX = "The owner did not answer this question within"
         private const val SUGGESTED = "\n\nSuggested answers:\n"
         private const val MINUTE_MS = 60_000L
         private const val MAX_DETAIL = 300
@@ -249,41 +290,128 @@ class OwnerQuestions(
 }
 
 /**
- * The tasks whose agent got the owner's answer to a question (Phase 6, rule 32, second part):
- * until the owner has approved one call of such a task (or of a task under it) that may send
- * information off the phone, every such call asks the owner first ([PermissionBroker]), with a
- * preview that says it is asked after an answer. In memory, one flag per task, bounded; after a
- * restart a task starts afresh and asks anew.
+ * Where the owner's answers to questions may have gone (Phase 6, rule 32, second part), so that
+ * nothing the owner wrote leaves the phone unseen. The answer leaves the task that asked: a
+ * delegating parent gets the asking task's result through `team_delegate`, a task that depends on
+ * it gets it in its brief, the Director's synthesis reads every result, and teammates read shared
+ * results. So an answer flags both the task that asked and its whole objective:
+ *  - a call of the asking task, or of a task under it, that may send information off the phone
+ *    asks the owner first, until the owner approved one such call of the task or of a task under it;
+ *  - a call of any other task of the objective (or of the objective itself: planning, synthesis)
+ *    that may send information off the phone asks the owner first, until the owner approved one
+ *    such call of that very task since the objective's latest answer. Every new answer asks each
+ *    task once more.
+ * The [PermissionBroker] reads [flagged] and, once the owner approved such a call, [clear]s it.
+ *
+ * Kept in memory, bounded. After a restart of the app, an objective whose stored messages hold an
+ * answer of the owner ([messages], read once per objective) counts as answered again, so every
+ * task of it asks once more before its first such call. An answer an agent saves to memory is not
+ * followed beyond its objective (docs/LIMITATIONS.md).
  */
-class AnsweredQuestions(private val maxTasks: Int = 1_000) {
+class AnsweredQuestions(
+    /** The objectives' messages, to find answers given before a restart; null: none are looked up. */
+    private val messages: MessageRepository? = null,
+    private val maxTasks: Int = 1_000,
+    private val maxObjectives: Int = 200,
+) {
     private val flags = object : LinkedHashMap<TaskId, Unit>(16, 0.75f, false) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<TaskId, Unit>): Boolean = size > maxTasks
     }
 
-    /** The owner answered a question of [task]. */
-    @Synchronized
-    fun mark(task: TaskId) {
-        flags[task] = Unit
+    /** One objective: how many answers it got, and per task how many there were when the owner last approved its call. */
+    private class Answers(maxTasks: Int) {
+        var answers = 0L
+
+        /** Whether its stored messages were looked up for answers given before a restart. */
+        var looked = false
+        val cleared = object : LinkedHashMap<TaskId, Long>(16, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<TaskId, Long>): Boolean = size > maxTasks
+        }
     }
 
-    /** Ends [task]'s flag: the owner approved a call after the answer. */
+    private val objectives = object : LinkedHashMap<TaskId, Answers>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<TaskId, Answers>): Boolean = size > maxObjectives
+    }
+
+    /**
+     * Why a call is asked first: [task] is the flagged task it is or works under (null when only its
+     * objective is flagged), and [caller] the task the call belongs to in [root], which had seen
+     * [answers] answers of it when the call was decided.
+     */
+    class Flag internal constructor(val task: TaskId?, internal val root: TaskId?, internal val caller: TaskId?, internal val answers: Long)
+
+    /** The owner answered a question of [task], of the objective [root]. */
     @Synchronized
-    fun clear(task: TaskId) {
-        flags.remove(task)
+    fun mark(task: TaskId, root: TaskId? = null) {
+        flags[task] = Unit
+        if (root != null) objective(root).answers++
+    }
+
+    /**
+     * The owner approved a call decided with [flag]: the flagged task's flag ends, and the call's
+     * task is clear of the answers its objective had then (not of a later one).
+     */
+    @Synchronized
+    fun clear(flag: Flag) {
+        flag.task?.let(flags::remove)
+        val root = flag.root ?: return
+        val caller = flag.caller ?: return
+        val answers = objectives[root] ?: return
+        if ((answers.cleared[caller] ?: 0L) < flag.answers) answers.cleared[caller] = flag.answers
     }
 
     @Synchronized
     fun isMarked(task: TaskId): Boolean = task in flags
 
     @Synchronized
-    private fun none(): Boolean = flags.isEmpty()
+    private fun none(): Boolean = flags.isEmpty() && objectives.values.none { it.answers > 0 }
+
+    @Synchronized
+    private fun objective(root: TaskId): Answers = objectives.getOrPut(root) { Answers(maxTasks) }
+
+    /** What [root] holds now: its answers, and whether [caller] was cleared of them all. Null when it needs a look-up. */
+    @Synchronized
+    private fun state(root: TaskId, caller: TaskId, lookUp: Boolean): Pair<Long, Boolean>? {
+        val answers = objectives[root]
+        if (lookUp && answers?.looked != true) return null
+        answers ?: return 0L to true
+        return answers.answers to ((answers.cleared[caller] ?: 0L) >= answers.answers)
+    }
+
+    @Synchronized
+    private fun looked(root: TaskId, answeredBefore: Boolean) {
+        val answers = objective(root)
+        answers.looked = true
+        if (answeredBefore && answers.answers == 0L) answers.answers = 1
+    }
 
     /**
-     * The flagged task that [taskId] is or works under (its parents, for a delegated task), read in
-     * [tasks]; null when none is flagged or there is no task.
+     * Why a call of [taskId] in the objective [rootTaskId] that may send information off the phone
+     * must ask the owner first; null when it need not. Its own task or one it works under (its
+     * parents, read in [tasks]) is flagged, or its objective got an answer since the owner last
+     * approved such a call of this task.
      */
-    suspend fun flagged(taskId: TaskId?, tasks: TaskRepository?): TaskId? {
+    suspend fun flagged(taskId: TaskId?, rootTaskId: TaskId?, tasks: TaskRepository?): Flag? {
+        val caller = taskId ?: rootTaskId
+        val root = rootTaskId
+        if (root != null && caller != null && messages != null && state(root, caller, lookUp = true) == null) {
+            // Once per objective and process: an answer given before a restart still counts. A failed read counts as one.
+            val before = try {
+                messages.list(root).any { it.type == MessageType.ANSWER && it.from == Participant.Owner }
+            } catch (e: Exception) {
+                rethrowIfCancelled(e)
+                true
+            }
+            looked(root, before)
+        }
         if (none()) return null
+        val task = flaggedTask(taskId, tasks)
+        val (answers, clear) = if (root != null && caller != null) state(root, caller, lookUp = false) ?: (0L to true) else 0L to true
+        return if (task != null || !clear) Flag(task, root, caller, answers) else null
+    }
+
+    /** The flagged task that [taskId] is or works under, read in [tasks]; null when none is. */
+    private suspend fun flaggedTask(taskId: TaskId?, tasks: TaskRepository?): TaskId? {
         var current = taskId ?: return null
         repeat(MAX_WALK) {
             if (isMarked(current)) return current

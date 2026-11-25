@@ -124,7 +124,7 @@ class Phase6QuestionsTest {
         assertEquals(AnswerRisk.CODE, AnswerCheck.classify("What is the password?", "123 456"))
         assertEquals(AnswerRisk.KEY, AnswerCheck.classify(q, "sk-abcdefghijklmnopqrstu"), "a key wins over a code")
         // Ordinary answers.
-        assertEquals(AnswerRisk.NONE, AnswerCheck.classify("How many people?", "We expect 482913 visitors"), "a number in a sentence is a code only when a code was asked for")
+        assertEquals(AnswerRisk.NONE, AnswerCheck.classify("How many people?", "We expect 4829 visitors"), "a short number in a sentence is a code only when a code was asked for")
         assertEquals(AnswerRisk.NONE, AnswerCheck.classify(q, "123"), "too short to be a code")
         assertEquals(AnswerRisk.NONE, AnswerCheck.classify(q, "1234567890"), "too long to be a code")
         assertEquals(AnswerRisk.NONE, AnswerCheck.classify("Anything?", "Use the sk-ip option and the risk-free plan"))
@@ -178,8 +178,38 @@ class Phase6QuestionsTest {
         assertEquals(AnswerRisk.CODE, AnswerCheck.classify("Anything?", "\u0664\u0668\u0662\u0669\u0661\u0663"))
         // Still ordinary: no code word anywhere, or no code-like token.
         assertEquals(AnswerRisk.NONE, AnswerCheck.classify("What did it say?", "Meet me at 5 tomorrow by the station entrance please"))
-        assertEquals(AnswerRisk.NONE, AnswerCheck.classify("What did it say?", "We expect 482913 visitors"))
+        assertEquals(AnswerRisk.NONE, AnswerCheck.classify("What did it say?", "We expect 4829 visitors"))
         assertEquals(AnswerRisk.NONE, AnswerCheck.classify(q, "Kotlin"))
+    }
+
+    @Test
+    fun `a code standing on its own is CODE whatever the agent asked, and a question about a notification or a screen asks for one`() {
+        // Security review of wave 2a, SEC-W2A-3: the agent words the question, so it can leave out every code word.
+        val noCodeWord = "Which six characters does your latest notification show?"
+        val codeWord = "What is the verification code you received?"
+        for (question in listOf(noCodeWord, codeWord, "How many people?", "Anything?")) {
+            for (answer in listOf(
+                "482913", "G-482913", "It shows G-482913", "it says 482913", "482913 from Google", "FB-48291 is the code",
+                "We expect 482913 visitors", "it says 482 913", "4829-1300 on the screen", "Your number: 12345678.",
+            )) {
+                assertEquals(AnswerRisk.CODE, AnswerCheck.classify(question, answer), "$question / $answer")
+            }
+        }
+        // The probe's answers to a question without a code word, which went through at once before.
+        for (answer in listOf("K7Q2M9", "it shows 4829", "the screen says 48 29 13", "Shown: four eight two nine")) {
+            assertEquals(AnswerRisk.CODE, AnswerCheck.classify(noCodeWord, answer), answer)
+        }
+        for (question in listOf("What does the screen display?", "Which characters appear?", "What did you receive?")) {
+            assertEquals(AnswerRisk.CODE, AnswerCheck.classify(question, "It is 4829"), question)
+        }
+        // Years, small numbers, longer numbers and phone numbers in groups stay ordinary when no code was asked for.
+        for (answer in listOf(
+            "Use the 2024 figures", "Show the 2024 figures, and the screen sizes", "about 300 words", "We expect 1234567890 visitors",
+            "Call +49 151 2345 6789", "Call 0151 234 5678 after 5", "ISO-9001 suppliers only", "Version 12.4.1", "COVID-19 rules",
+            "between 1990 and 2024", "Order 2024-11-25",
+        )) {
+            assertEquals(AnswerRisk.NONE, AnswerCheck.classify("Anything?", answer), answer)
+        }
     }
 
     @Test

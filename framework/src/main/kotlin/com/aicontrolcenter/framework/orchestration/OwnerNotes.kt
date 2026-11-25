@@ -54,7 +54,7 @@ class OwnerNotes(
             val task = toTaskId?.takeIf { it != rootId }?.let { id ->
                 tasks.get(id)?.takeIf { it.rootId == rootId && !it.status.isFinished } ?: return@withLock OwnerResult.Refused(NO_TASK)
             }
-            if (messages.list(rootId).count { isNote(it) } >= OwnerConversation.MAX_NOTES_PER_OBJECTIVE) {
+            if (messages.listOfTypes(rootId, TYPES).count { isNote(it) } >= OwnerConversation.MAX_NOTES_PER_OBJECTIVE) {
                 return@withLock OwnerResult.Refused(TOO_MANY)
             }
             val to = (task?.assignee ?: objective.assignee)?.let { Participant.Agent(it) } ?: Participant.System
@@ -72,6 +72,9 @@ class OwnerNotes(
         const val FINISHED = "This objective has finished, so a note can no longer reach the team."
         const val NO_TASK = "That task is not one of this objective's unfinished tasks."
         const val TOO_MANY = "This objective already holds 10 notes, the most it can take."
+
+        /** The message types a note can have: what the briefs read the notes from (INT-4), then checked with [isNote]. */
+        val TYPES: Set<MessageType> = setOf(MessageType.GUIDANCE)
 
         /** [message] is a note of the owner's (C2): GUIDANCE from the owner. Nothing else is read as one (rule 24). */
         fun isNote(message: AgentMessage): Boolean = message.type == MessageType.GUIDANCE && message.from == Participant.Owner

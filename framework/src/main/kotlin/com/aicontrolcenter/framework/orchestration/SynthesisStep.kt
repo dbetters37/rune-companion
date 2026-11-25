@@ -35,6 +35,8 @@ internal class SynthesisStep(private val ctx: OrchestrationContext) {
                 return fail(rt, synthesis, "The Director cannot write the final result: ${readiness.reason}.", limits.maxTaskAttempts, retry = false)
             }
         }
+        // The Director's provider asked the app to slow down for another step: the synthesis waits with it (INT-1).
+        if (hasTime(objective) && ctx.waitIfHeld(rt, synthesis, ready.provider, ready.providerName, setOf(TaskStatus.QUEUED))) return
         val conversationId = synthesis.conversationId ?: ctx.transcripts.open(directorId, "Final result · ${objective.title}")
         val now = ctx.clock.now()
         val started = ctx.change(rt, synthesisId, setOf(TaskStatus.QUEUED)) {
@@ -68,11 +70,12 @@ internal class SynthesisStep(private val ctx: OrchestrationContext) {
         ctx.account(rt, started.id) { it.copy(usage = it.usage + result.usage) }
         when (val trouble = Trouble.of(result)) {
             is Trouble.DailyLimit -> return run { ctx.pauseForDailyLimit(rt, trouble.sentence) }
-            is Trouble.Passing -> if (hasTime(objective)) {
+            // Waits a few times at most while the objective has time; then, or for a used-up quota, it is a failed run (INT-1).
+            is Trouble.Passing -> if (hasTime(objective) && ctx.mayWait(rt, started.id, ready.provider, trouble.error)) {
                 ctx.waitForProvider(rt, started, ProviderWaits.named(ready.provider, ready.providerName), trouble.error, setOf(TaskStatus.RUNNING))
                 return
             }
-            null -> Unit
+            null -> ctx.providerAnswered(rt, started.id, ready.provider)
         }
         rt.waitsSoFar.remove(started.id)
         if (!result.ok) return fail(rt, started, result.failure ?: "The final result could not be written.", limits.maxTaskAttempts, retry = true)
