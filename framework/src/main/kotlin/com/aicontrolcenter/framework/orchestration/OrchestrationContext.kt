@@ -58,6 +58,45 @@ internal class OrchestrationContext(
     /** Work waiting to be tried again, published for the background service ([com.aicontrolcenter.core.tasks.Orchestrator.timedWaits]). */
     val waits = TaskWaits(runtimes, clock)
 
+    /** Providers that asked the app to slow down: their work waits together, and a used-up quota is not waited for (INT-1). */
+    val slowDowns = ProviderSlowDowns()
+
+    /**
+     * Whether step [key] of [rt], whose model call to [provider] failed with [error] in a way that passes, may wait and
+     * be tried again (INT-1). Not when it already waited [ProviderWaits.MAX_WAITS_AFTER_FAILURE] times in a row after
+     * such failures, when the provider asked for a pause longer than [ProviderWaits.MAX_WAIT_MS], or when the provider's
+     * quota looks used up ([ProviderSlowDowns]: it asked the app to slow down again after its wait): the failure then
+     * counts as an ordinary failed attempt. When it may wait, the wait is counted; a "slow down" answer also holds the
+     * provider's other work until then.
+     */
+    fun mayWait(rt: ObjectiveRuntime, key: TaskId, provider: Readiness.ProviderSide?, error: LlmException): Boolean {
+        val earlier = rt.failedWaits[key] ?: 0
+        var may = earlier < ProviderWaits.MAX_WAITS_AFTER_FAILURE
+        if (error is LlmException.RateLimited) {
+            may = may && (error.retryAfterMs ?: 0) <= ProviderWaits.MAX_WAIT_MS
+            val now = clock.now()
+            may = slowDowns.slowedDown(provider?.id, error, now, now + ProviderWaits.waitMs(rt.waitsSoFar[key] ?: 0, error), may)
+        }
+        if (may) rt.failedWaits[key] = earlier + 1
+        return may
+    }
+
+    /** Step [key]'s provider answered (whatever the answer said): its waits after failures start afresh, and so does a "slow down". */
+    fun providerAnswered(rt: ObjectiveRuntime, key: TaskId, provider: Readiness.ProviderSide?) {
+        rt.failedWaits.remove(key)
+        slowDowns.answered(provider?.id)
+    }
+
+    /**
+     * When work on [provider] is held because it asked the app to slow down (INT-1): stores [task] as waiting until then
+     * (as [waitForProvider], without counting a wait) and returns true; false when it is not held.
+     */
+    suspend fun waitIfHeld(rt: ObjectiveRuntime, task: TaskRecord, provider: Readiness.ProviderSide?, providerName: String, expected: Set<TaskStatus>): Boolean {
+        val (until, error) = slowDowns.heldUntil(provider?.id, clock.now()) ?: return false
+        waitForProvider(rt, task, ProviderWaits.named(provider, providerName), error, expected, at = until)
+        return true
+    }
+
     /**
      * [agentId]'s readiness. When it cannot run only because its provider is not answering, that provider is first
      * checked again if its status is older than [ProviderWaits.STALE_MS] (D28), and the answer is read afresh.
@@ -80,12 +119,20 @@ internal class OrchestrationContext(
      * wait in a row is longer ([ProviderWaits.waitMs]). Only while the task's status is one of [expected]; returns the
      * stored task, or null when the owner changed it meanwhile.
      */
-    suspend fun waitForProvider(rt: ObjectiveRuntime, task: TaskRecord, provider: String, error: LlmException?, expected: Set<TaskStatus>): TaskRecord? {
+    suspend fun waitForProvider(
+        rt: ObjectiveRuntime,
+        task: TaskRecord,
+        provider: String,
+        error: LlmException?,
+        expected: Set<TaskStatus>,
+        /** Until when, when the provider's work is held ([waitIfHeld]): then the wait does not count as one in a row. */
+        at: Long? = null,
+    ): TaskRecord? {
         val earlier = rt.waitsSoFar[task.id] ?: 0
-        val at = clock.now() + ProviderWaits.waitMs(earlier, error)
-        val text = ProviderWaits.text(provider, error, at, zone())
-        val stored = change(rt, task.id, expected) { it.copy(status = TaskStatus.QUEUED, retryAt = at, statusDetail = text) } ?: return null
-        rt.waitsSoFar[task.id] = earlier + 1
+        val until = at ?: (clock.now() + ProviderWaits.waitMs(earlier, error))
+        val text = ProviderWaits.text(provider, error, until, zone())
+        val stored = change(rt, task.id, expected) { it.copy(status = TaskStatus.QUEUED, retryAt = until, statusDetail = text) } ?: return null
+        if (at == null) rt.waitsSoFar[task.id] = earlier + 1
         journal.taskChanged(stored, "Task waits for its provider")
         rt.poke()
         return stored

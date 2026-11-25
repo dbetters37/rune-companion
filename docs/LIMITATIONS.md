@@ -89,6 +89,12 @@ do it.
   forced tool choice; adapters drop what a model does not accept and say so in the activity log.
 - A provider can refuse a request or substitute a fallback model. The model that actually
   answered is recorded on every call.
+- When a provider is not answering or asks the app to slow down, a task waits and tries again
+  a few times (its other tasks on that provider wait with it), then counts it as a failed
+  attempt. A provider that asks to slow down again right after the wait has most likely used up
+  its quota for the day (free tiers do this); its tasks then fail within minutes instead of
+  waiting out the objective's time limit. Such refused calls are not counted against your
+  daily limit of model answers.
 - Content an agent reads (web pages, files, other apps' screens, other agents' messages) can
   contain instructions aimed at the model. The framework passes such content as data and
   never lets it raise an agent's permissions, but a model can still be misled by it. Keep

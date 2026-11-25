@@ -55,6 +55,8 @@ internal class ReviewSteps(private val ctx: OrchestrationContext, private val wo
                 return couldNotReview(rt, review, reviewed, kind, choice.reason)
             }
         }
+        // Its provider asked the app to slow down for another step: this one waits with it (INT-1).
+        if (ctx.waitIfHeld(rt, review, ready.provider, ready.providerName, setOf(TaskStatus.QUEUED, TaskStatus.RUNNING))) return
         // C4: said when the reviewer thinks with the same model as the author did.
         val same = if (kind == ReviewKind.REVIEW && sameModel(reviewed, ready)) WorkSteps.SAME_MODEL else ""
         val conversationId = review.conversationId ?: ctx.transcripts.open(ready.agent.id, "${kind.prefix.trim()} ${reviewed.title}")
@@ -90,8 +92,11 @@ internal class ReviewSteps(private val ctx: OrchestrationContext, private val wo
         ctx.account(rt, started.id) { it.copy(usage = it.usage + result.usage) }
         when (val trouble = Trouble.of(result)) {
             is Trouble.DailyLimit -> return run { ctx.pauseForDailyLimit(rt, trouble.sentence) }
-            is Trouble.Passing -> return run { ctx.waitForProvider(rt, started, ProviderWaits.named(ready.provider, ready.providerName), trouble.error, setOf(TaskStatus.RUNNING)) }
-            null -> Unit
+            // Waits a few times at most; then, or for a used-up quota, it is an ordinary failed run (INT-1).
+            is Trouble.Passing -> if (ctx.mayWait(rt, started.id, ready.provider, trouble.error)) {
+                return run { ctx.waitForProvider(rt, started, ProviderWaits.named(ready.provider, ready.providerName), trouble.error, setOf(TaskStatus.RUNNING)) }
+            }
+            null -> ctx.providerAnswered(rt, started.id, ready.provider)
         }
         rt.waitsSoFar.remove(started.id)
         if (!result.ok) return runFailed(rt, started, reviewed, kind, result, limits.maxTaskAttempts)

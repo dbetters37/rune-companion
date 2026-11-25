@@ -7,12 +7,14 @@ import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.usage.CostEstimate
 import com.aicontrolcenter.core.usage.DailyLimitKind
+import com.aicontrolcenter.core.usage.ErrorClass
 import com.aicontrolcenter.core.usage.ModelPrice
 import com.aicontrolcenter.core.usage.ModelPrices
 import com.aicontrolcenter.core.usage.ModelUsage
 import com.aicontrolcenter.core.usage.TokenCounts
 import com.aicontrolcenter.core.usage.UsageRange
 import com.aicontrolcenter.core.usage.UsageReports
+import com.aicontrolcenter.core.usage.UsageTotals
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
@@ -23,7 +25,9 @@ import java.time.ZoneId
 /**
  * What today's daily limits count (Phase 6, rule 6, Q2): the model answers, tokens and estimated money of calls to
  * providers that are not on this phone. [calls] counts every call that sent at least one request (answered, failed
- * or stopped); a call the app refused before sending anything does not count. [spendMicros] is the tokens of each
+ * or stopped), except a call that ended because the provider asked the app to slow down (a used-up quota answers
+ * nothing and costs nothing, so it never uses up the owner's answers for the other providers, INT-1); a call the app
+ * refused before sending anything does not count either. [spendMicros] is the tokens of each
  * model at the price the owner entered for it now; models without a price add nothing ([priced] is false when no
  * model used today has one). The Usage screen and the New objective form show the same numbers as the limiter with
  * [of] over `UsageReports.byModel(UsageRange.day(now, zone))` and the owner's prices.
@@ -38,12 +42,16 @@ data class DailyUse(val calls: Long, val tokens: Long, val spendMicros: Long, va
             val limited = rows.filter { it.locality.leavesDevice }
             val tokens = limited.associate { it.modelId to TokenCounts(it.totals.inputTokens, it.totals.outputTokens, it.totals.cachedInputTokens) }
             return DailyUse(
-                calls = limited.sumOf { it.totals.ok + it.totals.failed + it.totals.cancelled },
+                calls = limited.sumOf { counted(it.totals) },
                 tokens = tokens.values.sumOf { it.total },
                 spendMicros = spend(tokens, prices),
                 priced = tokens.keys.any { it in prices },
             )
         }
+
+        /** The calls of [totals] the limits count: those that sent a request, but not those a "slow down" answer ended. */
+        fun counted(totals: UsageTotals): Long =
+            (totals.ok + totals.failed + totals.cancelled - (totals.errors[ErrorClass.RATE_LIMITED] ?: 0)).coerceAtLeast(0)
 
         internal fun spend(tokens: Map<ModelId, TokenCounts>, prices: Map<ModelId, ModelPrice>): Long =
             tokens.entries.fold(0L) { sum, (model, counts) ->
@@ -160,10 +168,11 @@ class DailyLimiter(
 
     /**
      * Ends [ticket]'s call: it counts as one call of today's (the day holding [at]) with the tokens the provider
-     * reported ([used], null when none were), at [modelId]'s price. Safe to call more than once and when cancelled;
-     * never throws.
+     * reported ([used], null when none were), at [modelId]'s price; not as a call when [counted] is false (it ended
+     * because the provider asked the app to slow down, see [DailyUse]). Safe to call more than once and when
+     * cancelled; never throws.
      */
-    suspend fun settle(ticket: Ticket, modelId: ModelId, used: TokenCounts?, at: Long) {
+    suspend fun settle(ticket: Ticket, modelId: ModelId, used: TokenCounts?, at: Long, counted: Boolean = true) {
         if (!ticket.end() || !ticket.limited) return
         withContext(NonCancellable) {
             val seed = try {
@@ -180,7 +189,7 @@ class DailyLimiter(
                     if (left.total == 0L && left.cachedInput == 0L) reserved.remove(model) else reserved[model] = left
                 }
                 enterDay(at, seed)
-                calls++
+                if (counted) calls++
                 if (used != null) tokens[modelId] = (tokens[modelId] ?: TokenCounts(0, 0)).let {
                     TokenCounts(it.input + used.input, it.output + used.output, it.cachedInput + used.cachedInput)
                 }
@@ -231,7 +240,7 @@ class DailyLimiter(
             return
         }
         val limited = rows.filter { it.locality.leavesDevice }
-        calls = limited.sumOf { it.totals.ok + it.totals.failed + it.totals.cancelled }
+        calls = limited.sumOf { DailyUse.counted(it.totals) }
         limited.forEach { tokens[it.modelId] = TokenCounts(it.totals.inputTokens, it.totals.outputTokens, it.totals.cachedInputTokens) }
         day = range
     }

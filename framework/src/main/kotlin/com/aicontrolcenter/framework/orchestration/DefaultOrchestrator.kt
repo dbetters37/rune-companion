@@ -244,6 +244,7 @@ class DefaultOrchestrator(
             val updated = objective.copy(status = TaskStatus.RUNNING, statusDetail = detail, deadlineAt = now + remaining, retryAt = null, updatedAt = now)
             ctx.tasks.upsertAll(changes + updated)
             rt.waitsSoFar.clear()
+            rt.failedWaits.clear()
             updated to changes
         } ?: return
         val (resumed, tasks) = outcome

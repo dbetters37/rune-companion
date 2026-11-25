@@ -64,6 +64,8 @@ internal class WorkSteps(private val ctx: OrchestrationContext) {
                 return finalFailure(rt, queued, TaskStatus.FAILED, "No agent could take this task: ${choice.reason}.")
             }
         }
+        // Its provider asked the app to slow down for another step: this one waits with it instead of probing it (INT-1).
+        if (ctx.waitIfHeld(rt, queued, ready.provider, ready.providerName, setOf(TaskStatus.QUEUED, TaskStatus.RUNNING))) return
         val agent = ready.agent
         val conversationId = queued.conversationId ?: ctx.transcripts.open(agent.id, "Task · ${queued.title}")
         if (queued.conversationId != null) ctx.transcripts.note(conversationId, restartNote(queued))
@@ -117,8 +119,17 @@ internal class WorkSteps(private val ctx: OrchestrationContext) {
         ctx.account(rt, task.id) { it.copy(usage = it.usage + result.usage) }
         when (val trouble = Trouble.of(result)) {
             is Trouble.DailyLimit -> ctx.pauseForDailyLimit(rt, trouble.sentence)
-            is Trouble.Passing -> ctx.waitForProvider(rt, task, ProviderWaits.named(ready.provider, ready.providerName), trouble.error, WORKING)
-            null -> if (result.ok) finished(rt, task, ready, result.text, limits.maxTasks) else failed(rt, task, agent, result, limits.maxTaskAttempts)
+            // Waits a few times at most; then, or for a used-up quota, it is an ordinary failed attempt (INT-1).
+            is Trouble.Passing ->
+                if (ctx.mayWait(rt, task.id, ready.provider, trouble.error)) {
+                    ctx.waitForProvider(rt, task, ProviderWaits.named(ready.provider, ready.providerName), trouble.error, WORKING)
+                } else {
+                    failed(rt, task, agent, result, limits.maxTaskAttempts)
+                }
+            null -> {
+                ctx.providerAnswered(rt, task.id, ready.provider)
+                if (result.ok) finished(rt, task, ready, result.text, limits.maxTasks) else failed(rt, task, agent, result, limits.maxTaskAttempts)
+            }
         }
     }
 
