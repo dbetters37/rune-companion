@@ -25,6 +25,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOf
@@ -172,17 +173,32 @@ class ApprovalNotifier(
     private val remind: (RequestId, OwnerRequest, Long) -> Boolean = { id, request, now ->
         ApprovalNotifications.post(context, id, ApprovalNotifications.build(context, request, now, reminder = true))
     },
+    /** Wakes the phone at the next reminder's wall-clock time, which a delay does not do while it sleeps (AND-W2B-3). */
+    private val reminderAlarm: ReminderAlarm = ReminderAlarm.Android(context),
+    /** Emits when the phone was woken for the waits or the reminders: the reminders look at the wall clock again. */
+    private val wakes: Flow<Long> = WakeSignals.signals,
 ) {
     /** Starts [run] on the scope (tests; the app runs it under `SafetyCollectors`). */
     fun start(): Job = scope.launch { run() }
 
-    /** Keeps the notifications in step with the waiting requests until cancelled. */
+    /**
+     * Keeps the notifications in step with the waiting requests until cancelled.
+     *
+     * One reminder per shown request, 5 minutes before it expires by the wall clock; none for one that goes sooner. It
+     * is checked against the wall clock whenever anything changes, when a timer for the next one ends (the phone awake),
+     * and when [reminderAlarm] woke the phone for it ([wakes]): a delay alone stops while the phone sleeps (AND-W2B-3).
+     */
     suspend fun run() = coroutineScope {
         ApprovalNotifications.ensureChannel(context)
         var shown = leftover()
-        val reminders = HashMap<RequestId, Job>()
+        // Per shown request, the wall-clock time of its reminder still to come; and those reminded, or with no room for it.
+        val planned = HashMap<RequestId, Long>()
+        val settled = HashSet<RequestId>()
+        val ticks = MutableStateFlow(0L)
+        var timer: Job? = null
+        var alarmAt: Long? = null
         try {
-            combine(pending, enabled.distinctUntilChanged()) { requests, allowed -> requests to allowed }.collect { (requests, allowed) ->
+            combine(pending, enabled.distinctUntilChanged(), wakes, ticks) { requests, allowed, _, _ -> requests to allowed }.collect { (requests, allowed) ->
                 val now = clock.now()
                 val open = requests.filter { it.isOpenAt(now) }
                 val (toPost, toCancel) = changes(shown, open)
@@ -190,21 +206,33 @@ class ApprovalNotifier(
                 // Only what Android took counts as shown; the rest is posted again once notifications are allowed.
                 val posted = if (allowed) toPost.filter { post(it.id, it, now) }.mapTo(HashSet()) { it.id } else emptySet()
                 shown = open.mapNotNullTo(HashSet()) { request -> request.id.takeIf { it in shown || it in posted } }
-                // One reminder per shown request, 5 minutes before it expires; none for one that goes sooner.
                 val shownNow = shown
-                reminders.keys.filter { it !in shownNow }.forEach { reminders.remove(it)?.cancel() }
+                planned.keys.retainAll(shownNow)
+                settled.retainAll(shownNow)
                 for (request in open) {
-                    if (request.id !in shownNow || request.id in reminders) continue
+                    if (request.id !in shownNow || request.id in planned || request.id in settled) continue
                     val at = request.expiresAt - ApprovalNotifications.REMINDER_BEFORE_MS
-                    if (at <= now) continue
-                    reminders[request.id] = launch {
-                        delay(at - now)
-                        remind(request.id, request, clock.now())
-                    }
+                    if (at <= now) settled += request.id else planned[request.id] = at
                 }
+                // Due by the wall clock, and the request still open: reminded, once.
+                for (request in open) {
+                    val at = planned[request.id] ?: continue
+                    if (at > now) continue
+                    planned.remove(request.id)
+                    settled += request.id
+                    remind(request.id, request, now)
+                }
+                val next = planned.values.minOrNull()
+                if (next != alarmAt) {
+                    alarmAt = next
+                    if (next == null) reminderAlarm.cancel() else reminderAlarm.set(next)
+                }
+                timer?.cancel()
+                timer = next?.let { at -> launch { delay(at - now); ticks.value += 1 } }
             }
         } finally {
-            reminders.values.forEach { it.cancel() }
+            timer?.cancel()
+            if (alarmAt != null) reminderAlarm.cancel()
         }
     }
 

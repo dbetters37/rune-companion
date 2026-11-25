@@ -9,6 +9,7 @@ import androidx.core.app.ServiceCompat
 import com.aicontrolcenter.app.AiControlCenterApp
 import com.aicontrolcenter.app.di.AppGraph
 import com.aicontrolcenter.app.di.wiring.RoutinesWiring
+import com.aicontrolcenter.app.health.AppGate
 import com.aicontrolcenter.core.ConversationId
 import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.activity.ActivityType
@@ -54,10 +55,15 @@ import kotlinx.coroutines.launch
  *
  * The objectives themselves run in the application scope, not here: this service only holds the process up and reports.
  * Its notification's buttons only pause objectives or stop chat answers (rule 4); nothing in them answers or approves.
+ *
+ * Started while the app's graph is not built (a routine's alarm with the app closed), it builds the graph only once the
+ * app's data opened ([AiControlCenterApp.gate]; rule 9, R5): while the data cannot be opened nothing runs and the service
+ * stops; the Recovery screen shows when the owner opens the app. A failure nothing else caught is logged where the log
+ * can be reached, and the process goes on (AND-W2B-2).
  */
 class ObjectiveWorkService : Service() {
     private val graph: AppGraph get() = (application as AiControlCenterApp).graph
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val scope by lazy { CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate + AppProcessHooks.scopeContext(application)) }
     private var watching: Job? = null
     private var latest: Shown = Shown.STARTING
 
@@ -81,7 +87,31 @@ class ObjectiveWorkService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // Every start through startForegroundService must be answered with startForeground, first.
         goForeground()
-        when (intent?.action) {
+        val action = intent?.action
+        val app = application as AiControlCenterApp
+        if (app.graphIfBuilt() != null) {
+            begin(action)
+        } else {
+            // Not built yet (a routine's alarm with the app closed): only once the data opened, never while it cannot be.
+            waitingForData += 1
+            scope.launch {
+                val opened = try {
+                    app.gate.state.first { it != AppGate.State.Checking } == AppGate.State.Open
+                } finally {
+                    waitingForData -= 1
+                }
+                if (opened) begin(action) else if (watching == null && waitingForData == 0) stop()
+            }
+        }
+        return START_NOT_STICKY
+    }
+
+    /** Starts waiting for the data to open; the service stops when none of them opened it. Main thread only. */
+    private var waitingForData = 0
+
+    /** Does what [action] asked, and watches the work, once the graph may be used. */
+    private fun begin(action: String?) {
+        when (action) {
             ACTION_PAUSE_ALL -> pauseAll()
             ACTION_STOP_CHATS -> stopChats()
             RoutinesWiring.ACTION_RUN_DUE_ROUTINES -> runDueRoutines()
@@ -91,7 +121,6 @@ class ObjectiveWorkService : Service() {
             scope.launch { keepAwake() }
             scope.launch { watchStorage() }
         }
-        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
@@ -99,6 +128,17 @@ class ObjectiveWorkService : Service() {
         if (::alarms.isInitialized) alarms.cancel()
         scope.cancel()
         super.onDestroy()
+    }
+
+    /** A log line that cannot be written (the data no longer opens) is left out; it never ends the service's work. */
+    private suspend fun logSafely(block: suspend () -> Unit) {
+        try {
+            block()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Nowhere to report to.
+        }
     }
 
     /** What the notification shows. */
@@ -122,7 +162,8 @@ class ObjectiveWorkService : Service() {
         } catch (refused: IllegalStateException) {
             // Android refused to make it a foreground service (started from the background through
             // a stale notification). Whatever was asked (a pause) still happens; then it stops.
-            if (graph.orchestrator.running.value.isEmpty() && graph.agentChat.liveTurns.value.isEmpty()) stopSelf()
+            val built = (application as AiControlCenterApp).graphIfBuilt()
+            if (built == null || built.orchestrator.running.value.isEmpty() && built.agentChat.liveTurns.value.isEmpty()) stopSelf()
         }
     }
 
@@ -223,14 +264,16 @@ class ObjectiveWorkService : Service() {
             } catch (_: Exception) {
                 continue
             }
-            graph.activityRecorder.record(
-                type = ActivityType.SYSTEM,
-                title = WorkResult.STORAGE_FULL,
-                detail = "The phone has less than 100 MB free, so the app paused this objective before it runs out of room. " +
-                    "Free some room, then resume it.",
-                severity = Severity.WARNING,
-                rootTaskId = id,
-            )
+            logSafely {
+                graph.activityRecorder.record(
+                    type = ActivityType.SYSTEM,
+                    title = WorkResult.STORAGE_FULL,
+                    detail = "The phone has less than 100 MB free, so the app paused this objective before it runs out of room. " +
+                        "Free some room, then resume it.",
+                    severity = Severity.WARNING,
+                    rootTaskId = id,
+                )
+            }
             if (!graph.isInForeground.value && graph.settingsView.get().notifyWhenWorkEnds) {
                 ResultNotifications.post(this, WorkResult.storageFull(id, titles[id] ?: "An objective"))
             }
@@ -268,12 +311,14 @@ class ObjectiveWorkService : Service() {
                     throw cancelled
                 } catch (failure: Exception) {
                     // Gone or already finished: nothing to pause. Anything else is worth a log line.
-                    graph.activityRecorder.record(
-                        type = ActivityType.ERROR,
-                        title = "Could not pause an objective from the notification",
-                        detail = failure.message ?: failure.javaClass.simpleName,
-                        severity = Severity.WARNING,
-                    )
+                    logSafely {
+                        graph.activityRecorder.record(
+                            type = ActivityType.ERROR,
+                            title = "Could not pause an objective from the notification",
+                            detail = failure.message ?: failure.javaClass.simpleName,
+                            severity = Severity.WARNING,
+                        )
+                    }
                 }
             }
         }
@@ -302,12 +347,14 @@ class ObjectiveWorkService : Service() {
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
-                graph.activityRecorder.record(
-                    type = ActivityType.ERROR,
-                    title = "Could not run the routines that were due",
-                    detail = failure.javaClass.simpleName,
-                    severity = Severity.WARNING,
-                )
+                logSafely {
+                    graph.activityRecorder.record(
+                        type = ActivityType.ERROR,
+                        title = "Could not run the routines that were due",
+                        detail = failure.javaClass.simpleName,
+                        severity = Severity.WARNING,
+                    )
+                }
             }
         }
     }

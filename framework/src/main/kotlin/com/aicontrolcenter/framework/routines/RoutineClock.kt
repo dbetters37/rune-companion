@@ -13,7 +13,9 @@ import java.time.ZoneId
  * travels. The arithmetic is [RoutineSchedule.nextAfter]'s: a local time the clocks skip (02:30 on the night they go
  * forward) is due when the skipped hour is over (03:30); a local time that happens twice (the night they go back) is
  * due the first time only. A stored next due time is an instant, so when the zone changes ([zone] reads the phone's
- * zone each time) [realigned] moves it to the routine's local time in the new zone.
+ * zone each time) [realigned] moves it to the routine's local time in the new zone: one still to come before its time,
+ * and one whose instant has come (the alarm set in the old zone goes off at the old zone's local time) instead of being
+ * run, when it is not one of the routine's local due times in the zone of now (AND-W2B-5).
  */
 class RoutineClock(private val clock: Clock, private val zone: () -> ZoneId = { ZoneId.systemDefault() }) {
     fun now(): Long = clock.now()
@@ -52,15 +54,22 @@ class RoutineClock(private val clock: Clock, private val zone: () -> ZoneId = { 
     }
 
     /**
-     * The next due time [routine] should have at [nowMs] when its stored one is still to come but was computed in another
-     * time zone, or null when it is right as it is (or the routine is off, or due already).
+     * The next due time [routine] should have at [nowMs] when its stored one was computed in another time zone, or null
+     * when it is right as it is (or the routine is off). One still to come moves to the routine's next local due time
+     * after now. One that has come is run only when it is one of the routine's local due times in the zone of now;
+     * otherwise (7:00 in Berlin is 1:00 in the night in New York) it moves to the routine's first local due time after
+     * it, which may have come too (the phone was off), and is then run or counted from there.
      */
     fun realigned(routine: Routine, nowMs: Long): Long? {
         val stored = routine.nextRunAt ?: return null
-        if (!routine.enabled || stored <= nowMs) return null
+        if (!routine.enabled) return null
+        if (stored <= nowMs) return if (isDueTime(routine.schedule, stored)) null else nextDue(routine.schedule, stored)
         val expected = nextDue(routine.schedule, nowMs)
         return expected.takeIf { it != stored }
     }
+
+    /** Whether [atMs] is one of [schedule]'s due times in the zone of now. */
+    fun isDueTime(schedule: RoutineSchedule, atMs: Long): Boolean = nextDue(schedule, atMs - 1) == atMs
 
     /** Due times that came while no run happened: [count] of them (at most [MAX_COUNTED]), from [first] to [latest]. */
     data class Overdue(val count: Int, val first: Long, val latest: Long)

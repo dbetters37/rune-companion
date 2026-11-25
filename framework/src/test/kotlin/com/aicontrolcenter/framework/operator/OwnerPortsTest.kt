@@ -156,6 +156,36 @@ class OwnerServicesTest {
     }
 
     @Test
+    fun `sharing a folder through the Downloads entry for agents to change switches off pick-up from a Download folder (SEC-W2B-2)`() = runTest {
+        // The picker's Downloads entry names folders inside the phone's Download folder by a number ("msf:31"); the
+        // phone's storage entry names the same places by their path. Which one msf:31 is cannot be told: it may be around
+        // Download/Agents/inbox. A folder outside every Download folder is apart from it.
+        val world = OperatorWorld()
+        val built = Built(world)
+        val rules = InMemoryPickUpRuleRepository()
+        val folders = DefaultOwnerFolders(world.gateway, world.folders, world.grants, world.requests, built.activity, world.ids, world.clock, rules)
+        fun tree(path: String) = "content://${FolderTrees.EXTERNAL_STORAGE}/tree/primary%3A" + path.replace("/", "%2F")
+        suspend fun share(uri: String, name: String): SharedFolder {
+            world.gateway.pickable[uri] = name
+            return assertIs<OwnerResult.Done<SharedFolder>>(folders.add(uri)).value
+        }
+        val inbox = share(tree("Download/Agents/inbox"), "inbox")
+        val notes = share(tree("Documents/Notes"), "Notes")
+        for ((n, folder) in listOf(inbox, notes).withIndex()) {
+            folders.setReadOnly(folder.id, true)
+            rules.upsert(
+                PickUpRule(
+                    PickUpRuleId("pku_$n"), folder.id, SpaceId("spc_inbox"), enabled = true, createdAt = 1, updatedAt = 1,
+                    folderReadOnlySince = world.folders.get(folder.id)!!.readOnlySince,
+                ),
+            )
+        }
+        share("content://${FolderTrees.DOWNLOADS}/tree/msf%3A31", "Agents")
+        assertEquals(false to PickUpSafety.RUN_FOLDER_OVERLAPS_WRITABLE, rules.get(PickUpRuleId("pku_0"))!!.let { it.enabled to it.lastResult })
+        assertTrue(rules.get(PickUpRuleId("pku_1"))!!.enabled, "Documents/Notes is outside every Download folder")
+    }
+
+    @Test
     fun `every change the owner makes to grants, folders and apps is logged`() = runTest {
         val world = OperatorWorld()
         val built = Built(world)

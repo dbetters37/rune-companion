@@ -87,6 +87,28 @@ class AgentManagerTest {
     }
 
     @Test
+    fun `a designated Director that no longer exists is replaced at start, even when the team is seeded (AND-W2B-4)`() = runTest {
+        // A restore that ended between its records and its settings: the restored team, the fresh app's settings, whose
+        // Director was a starter agent the restore replaced.
+        manager.ensureDefaults()
+        val restored = manager.create(AgentDraft(name = "Ada", kind = AgentKind.DIRECTOR))
+        val starterDirector = world.settings.get().directorAgentId!!
+        world.agents.delete(starterDirector)
+        manager.ensureDefaults()
+        assertEquals(restored.id, world.settings.get().directorAgentId)
+        assertEquals(DefaultAgentManager.SEED_VERSION, world.settings.get().seedVersion)
+        assertTrue(world.log.all.any { it.title == "Director designated" && "Ada is the Director now" in it.detail })
+
+        // No Director left at all: none designated, and the owner is told.
+        world.agents.delete(restored.id)
+        manager.ensureDefaults()
+        assertNull(world.settings.get().directorAgentId)
+        val events = world.log.all.size
+        manager.ensureDefaults()
+        assertEquals(events, world.log.all.size, "an existing or absent Director is left alone")
+    }
+
+    @Test
     fun `seeding leaves an existing team alone but still designates its director`() = runTest {
         val mine = manager.create(AgentDraft(name = "Boss", kind = AgentKind.DIRECTOR))
         manager.ensureDefaults()

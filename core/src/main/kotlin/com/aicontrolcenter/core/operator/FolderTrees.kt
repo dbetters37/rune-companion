@@ -8,10 +8,14 @@ package com.aicontrolcenter.core.operator
  *
  * Two trees of one document provider overlap when one tree's document id is the other's, or starts
  * with it followed by "/" (or the other ends in "/" or ":", as a storage root such as "primary:"
- * does). Trees of different providers overlap only when both name a place on the phone's storage
- * that can be compared: the phone's own storage provider ("primary:Download/x" is
- * "/storage/emulated/0/Download/x", "<volume>:x" is "/storage/<volume>/x") and the downloads
- * provider's "raw:" ids (a path).
+ * does). Trees of the phone's own storage are compared by their place on it, whichever of the
+ * picker's entries named them: the phone's storage provider ("primary:Download/x" is
+ * "/storage/emulated/0/Download/x", "<volume>:x" is "/storage/<volume>/x", "home:x" is the
+ * Documents folder's "x") and the downloads provider, whose "raw:" ids are paths and whose other
+ * folders ("downloads", its root, and MediaStore folders "msf:<n>") lie somewhere in a Download
+ * folder that the id does not tell (SEC-W2B-2). Folder names on the phone's storage ignore case.
+ * Trees of any other provider (a cloud drive, an app's own provider) never share files with
+ * another provider's.
  */
 object FolderTrees {
     /** The phone's own storage provider. */
@@ -40,35 +44,88 @@ object FolderTrees {
     /**
      * True when the folders shared as [a] and [b] are the same place or one is inside the other;
      * false when they are apart; null when that cannot be told (a URI that is not a picker's tree,
-     * or two providers whose places cannot be compared and may be the same storage).
+     * or two folders on the phone's storage of which one cannot be placed exactly, such as a
+     * downloads-provider folder "msf:<n>" and a folder in or around a Download folder). Callers
+     * that protect something count null as overlapping.
      */
     fun overlap(a: String, b: String): Boolean? {
         val x = parse(a) ?: return null
         val y = parse(b) ?: return null
-        if (x.authority == y.authority) return within(x.documentId, y.documentId) || within(y.documentId, x.documentId)
-        val px = pathOf(x)
-        val py = pathOf(y)
-        if (px != null && py != null) return within(px, py) || within(py, px)
-        // One of them is on the phone's storage and the other is a provider we cannot place (a cloud drive, an app's own
-        // provider): they never share files. Two unknown providers of different names do not either.
-        return false
+        if (x.authority == y.authority && (within(x.documentId, y.documentId) || within(y.documentId, x.documentId))) return true
+        val px = placeOf(x)
+        val py = placeOf(y)
+        // Not both on the phone's storage: the same other provider whose ids are apart, or two different providers of
+        // which one is not the phone's storage (a cloud drive, an app's own provider). They never share files.
+        if (px == null || py == null) return false
+        return overlap(px, py)
     }
 
-    /** The place on the phone's storage a tree of the storage or downloads provider names, or null. */
-    private fun pathOf(tree: Tree): String? = when (tree.authority) {
+    /** Where on the phone's storage a folder is, as far as its id tells. */
+    private sealed interface Place {
+        /** Exactly [path] (lower case), on the volume whose root is [volume] (null when the path names none). */
+        data class At(val path: String, val volume: String?) : Place
+
+        /** Some folder in a Download folder of the phone's storage, or that folder itself; which, the id does not tell. */
+        data object InDownloads : Place
+
+        /** Some folder on the phone's storage; where, the id does not tell. */
+        data object Somewhere : Place
+    }
+
+    private fun overlap(p: Place, q: Place): Boolean? = when {
+        p is Place.At && q is Place.At -> within(p.path, q.path) || within(q.path, p.path)
+        p is Place.At && q == Place.InDownloads -> nearDownload(p)
+        p == Place.InDownloads && q is Place.At -> nearDownload(q)
+        else -> null
+    }
+
+    /** For a folder in some Download folder: null when [p] is in or around its volume's Download folder (it may be the same place), else false. */
+    private fun nearDownload(p: Place.At): Boolean? {
+        val volume = p.volume ?: return null
+        val download = "$volume/download"
+        return if (within(p.path, download) || within(download, p.path)) null else false
+    }
+
+    /** The place on the phone's storage a tree of the storage or downloads provider names, or null for any other provider. */
+    private fun placeOf(tree: Tree): Place? = when (tree.authority) {
         EXTERNAL_STORAGE -> {
             val colon = tree.documentId.indexOf(':')
             if (colon <= 0) {
-                null
+                Place.Somewhere
             } else {
                 val volume = tree.documentId.substring(0, colon)
-                val base = if (volume.equals("primary", ignoreCase = true)) "/storage/emulated/0" else "/storage/$volume"
-                (base + "/" + tree.documentId.substring(colon + 1)).trimEnd('/')
+                val rest = tree.documentId.substring(colon + 1)
+                when {
+                    volume.equals("primary", ignoreCase = true) -> at(PRIMARY, rest)
+                    volume.equals("home", ignoreCase = true) -> at(PRIMARY, "Documents/$rest")
+                    else -> at("/storage/$volume", rest)
+                }
             }
         }
-        DOWNLOADS -> tree.documentId.takeIf { it.startsWith("raw:/") }?.removePrefix("raw:")?.trimEnd('/')?.replace("/sdcard/", "/storage/emulated/0/")
+        DOWNLOADS -> when {
+            tree.documentId.startsWith("raw:/") -> raw(tree.documentId.removePrefix("raw:"))
+            tree.documentId == "downloads" || tree.documentId.startsWith("msf:") -> Place.InDownloads
+            else -> Place.Somewhere
+        }
         else -> null
     }
+
+    private fun at(volume: String, rest: String): Place.At =
+        Place.At((volume + "/" + rest).trimEnd('/').lowercase(), volume.lowercase())
+
+    /** A "raw:" path of the downloads provider, with its volume when it names one. */
+    private fun raw(path: String): Place.At {
+        val p = path.replace(Regex("^/sdcard(?=/|$)"), PRIMARY).trimEnd('/').lowercase()
+        val parts = p.split('/')
+        val volume = when {
+            parts.size >= 4 && parts[1] == "storage" && parts[2] == "emulated" -> "/storage/emulated/${parts[3]}"
+            parts.size >= 3 && parts[1] == "storage" && parts[2] != "emulated" && parts[2] != "self" -> "/storage/${parts[2]}"
+            else -> null
+        }
+        return Place.At(p, volume)
+    }
+
+    private const val PRIMARY = "/storage/emulated/0"
 
     /** True when [inner] is [outer] or lies inside it. */
     private fun within(inner: String, outer: String): Boolean =

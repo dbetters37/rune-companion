@@ -477,41 +477,44 @@ class RoomOwnerBackup(
         try {
             spaceProblem(checked.sizeBytes)?.let { throw BackupFailure(it) }
             val fileSettings = checked.manifest.settings
-            var settingsBefore: FrameworkSettings? = null
-            try {
-                val (pass, before) = stores.transactions.run {
-                    // First: is the app fresh? Checked inside the transaction, so nothing can be added in between.
-                    if (holdsOwnContent()) throw BackupFailure(BackupProblem.NotEmpty)
-                    replaceStarterContent(checked)
-                    val pass = RestorePass(starter, fileSpaces = checked.pass.spaces.toSet(), stores = stores)
-                    val input = openInput(open)
-                    try {
-                        val preamble = withContext(Dispatchers.IO) { BackupPreamble.read(input) }.orFail()
-                        // The same file as the one checked: the same header, then the same plaintext (digest below).
-                        if (!MessageDigest.isEqual(preamble.headerHash, checked.headerHash)) throw BackupFailure(BackupProblem.Damaged)
-                        val plaintext = ChunkPlaintextStream(chunks(input), keys, preamble.headerHash)
-                        readAll(plaintext, pass, BackupTexts.STEP_RESTORING, progress)
-                        if (!MessageDigest.isEqual(plaintext.digest(), checked.digest)) throw BackupFailure(BackupProblem.Damaged)
-                    } finally {
-                        runCatching { input.close() }
-                    }
-                    // Last: the settings, only through RestoreSettings.merge (F2).
+            val pass = stores.transactions.run {
+                // First: is the app fresh? Checked inside the transaction, so nothing can be added in between.
+                if (holdsOwnContent()) throw BackupFailure(BackupProblem.NotEmpty)
+                replaceStarterContent(checked)
+                val pass = RestorePass(starter, fileSpaces = checked.pass.spaces.toSet(), stores = stores)
+                val input = openInput(open)
+                try {
+                    val preamble = withContext(Dispatchers.IO) { BackupPreamble.read(input) }.orFail()
+                    // The same file as the one checked: the same header, then the same plaintext (digest below).
+                    if (!MessageDigest.isEqual(preamble.headerHash, checked.headerHash)) throw BackupFailure(BackupProblem.Damaged)
+                    val plaintext = ChunkPlaintextStream(chunks(input), keys, preamble.headerHash)
+                    readAll(plaintext, pass, BackupTexts.STEP_RESTORING, progress)
+                    if (!MessageDigest.isEqual(plaintext.digest(), checked.digest)) throw BackupFailure(BackupProblem.Damaged)
+                } finally {
+                    runCatching { input.close() }
+                }
+                pass
+            }
+            // Committed. Last: the settings, only through RestoreSettings.merge (F2), and only now that the records are
+            // in (AND-W2B-4): the settings file is not in Room's transaction. The process ending before this line leaves
+            // the restored records with the fresh app's settings, whose Director (a starter agent the restore replaced)
+            // startup replaces with a Director of the restored team; never the file's settings over the fresh records.
+            val merged = withContext(NonCancellable) {
+                try {
                     var before: FrameworkSettings? = null
                     stores.settings.update { current ->
                         before = current
                         RestoreSettings.merge(current, fileSettings, pass.agents).settings
                     }
-                    settingsBefore = before
-                    pass to before!!
+                    RestoreSettings.merge(before!!, fileSettings, pass.agents)
+                } catch (e: Exception) {
+                    // The records are restored; the app keeps its own settings, and the owner is told.
+                    null
                 }
-                val merged = RestoreSettings.merge(before, fileSettings, pass.agents)
-                val report = RestoreReport(pass.restoredCounts(), pass.droppedMemories, merged.changes)
-                return RestoreOutcome(report, restoreNotes(pass))
-            } catch (e: Throwable) {
-                // The settings are not in the database's transaction: put them back if the transaction did not commit.
-                settingsBefore?.let { previous -> withContext(NonCancellable) { runCatching { stores.settings.update { previous } } } }
-                throw e
             }
+            val report = RestoreReport(pass.restoredCounts(), pass.droppedMemories, merged?.changes.orEmpty())
+            val notes = restoreNotes(pass) + listOfNotNull(BackupTexts.SETTINGS_NOT_RESTORED.takeIf { merged == null })
+            return RestoreOutcome(report, notes)
         } finally {
             keys.clear()
         }

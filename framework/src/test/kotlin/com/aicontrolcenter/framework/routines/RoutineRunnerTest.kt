@@ -129,8 +129,11 @@ class RoutineRunnerTest {
         var limitFails = false
         var localOnlyBlocks = false
         val ids = SequentialIdGenerator()
-        val routineClock = RoutineClock(clock) { berlin }
-        val owner = DefaultOwnerRoutines(store, ActivityRecorder(log, ids, clock), clock, ids) { berlin }
+
+        /** The phone's zone: the owner may travel. */
+        var zone: ZoneId = berlin
+        val routineClock = RoutineClock(clock) { zone }
+        val owner = DefaultOwnerRoutines(store, ActivityRecorder(log, ids, clock), clock, ids) { zone }
         val runner = RoutineRunner(
             routines = store, tasks = tasks, orchestrator = orchestrator, settings = this.settings,
             dailyLimits = { if (limitFails) error("unreadable") else limit },
@@ -313,6 +316,59 @@ class RoutineRunnerTest {
         assertFalse(w.get(routine).enabled)
         assertEquals(RoutineLimits.PAUSED_AFTER_FAILURES, w.get(routine).pausedNote)
         assertEquals(7, w.orchestrator.started.size)
+    }
+
+    private fun local(ms: Long, zone: ZoneId) = java.time.Instant.ofEpochMilli(ms).atZone(zone).toLocalDateTime()
+
+    @Test
+    fun `after the owner flies to New York, the alarm set for 7 00 in Berlin starts nothing, and the routine runs at 7 00 in New York (AND-W2B-5)`() = runTest {
+        val newYork = ZoneId.of("America/New_York")
+        val w = World(start = "2026-11-24T20:00")
+        val routine = w.routine()
+        val stored = w.get(routine).nextRunAt!!
+        assertEquals(LocalDateTime.parse("2026-11-25T07:00"), local(stored, berlin))
+        // The owner lands in New York; the alarm (an instant) goes off at 7:00 Berlin, 1:00 in the night in New York.
+        w.zone = newYork
+        w.clock.current = stored
+        assertEquals(emptyList(), w.runner.runDue(), "nothing starts at 1:00 in the night")
+        assertTrue(w.orchestrator.started.isEmpty())
+        val next = w.get(routine).nextRunAt!!
+        assertEquals(LocalDateTime.parse("2026-11-25T07:00"), local(next, newYork))
+        // At 7:00 in New York it runs.
+        w.clock.current = next
+        val run = w.runner.runDue().single()
+        assertEquals(RoutineRunOutcome.STARTED, run.outcome)
+        assertEquals(7, local(run.dueAt, newYork).hour)
+        assertEquals(LocalDateTime.parse("2026-11-26T07:00"), local(w.get(routine).nextRunAt!!, newYork))
+    }
+
+    @Test
+    fun `flying east, the alarm set for 7 00 in New York starts nothing at 13 00 in Berlin, and the next 7 00 in Berlin is due (AND-W2B-5)`() = runTest {
+        val newYork = ZoneId.of("America/New_York")
+        val w = World(start = "2026-11-24T20:00")
+        w.zone = newYork
+        val routine = w.routine()
+        val stored = w.get(routine).nextRunAt!!
+        assertEquals(7, local(stored, newYork).hour)
+        w.zone = berlin
+        w.clock.current = stored
+        assertEquals(emptyList(), w.runner.runDue())
+        assertTrue(w.orchestrator.started.isEmpty())
+        assertEquals(LocalDateTime.parse("2026-11-26T07:00"), local(w.get(routine).nextRunAt!!, berlin))
+    }
+
+    @Test
+    fun `a due time made in another zone that passed while the phone was off counts from the routine's local times (AND-W2B-5)`() = runTest {
+        val newYork = ZoneId.of("America/New_York")
+        val w = World(start = "2026-11-24T20:00")
+        val routine = w.routine()
+        // The phone was off from Berlin to New York; it opens at 9:00 New York, two hours after 7:00 there.
+        w.zone = newYork
+        w.clock.current = LocalDateTime.parse("2026-11-25T09:00").atZone(newYork).toInstant().toEpochMilli()
+        val run = w.runner.runDue().single()
+        assertEquals(RoutineRunOutcome.WAITING_FOR_TAP, run.outcome, "late: it waits for the owner's tap")
+        assertEquals(LocalDateTime.parse("2026-11-25T07:00"), local(run.dueAt, newYork))
+        assertTrue(w.orchestrator.started.isEmpty())
     }
 
     @Test

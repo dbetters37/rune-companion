@@ -182,7 +182,92 @@ class RunHostTest {
         }
         deadline.set(System.nanoTime() / 1_000_000 + 300)
         val start = System.nanoTime()
-        assertEquals("!${RunHost.TIME_UP}", host(workspace).list(""))
+        val host = host(workspace)
+        assertEquals("!${RunHost.TIME_UP}", host.list(""))
         assertTrue((System.nanoTime() - start) / 1_000_000 < 2_000)
+        assertTrue(host.isOver, "a call given up at the run's time ends the run's workspace")
+    }
+
+    /**
+     * As [com.aicontrolcenter.framework.operator.LocalWorkspace] writes: on another thread, which an interrupt of the
+     * caller does not stop (an interrupted `runBlocking` returns at once while its work goes on).
+     */
+    private inner class LocalLikeWorkspace(private val writeMs: Long) : JsHost {
+        override val canWrite = true
+        val calls = CopyOnWriteArrayList<String>()
+        val files = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+        override fun read(path: String): String {
+            calls += "read $path"
+            return files[path] ?: throw JsHostError("\"$path\" does not exist.")
+        }
+
+        override fun list(path: String): List<Triple<String, Boolean, Long?>> = emptyList<Triple<String, Boolean, Long?>>().also { calls += "list $path" }
+
+        override fun write(path: String, text: String): String = kotlinx.coroutines.runBlocking {
+            calls += "write $path"
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val end = System.nanoTime() + writeMs * 1_000_000
+                while (System.nanoTime() < end) Thread.onSpinWait()
+                if (files.putIfAbsent(path, text) != null) throw JsHostError("exists")
+                path
+            }
+        }
+    }
+
+    private fun nowMs() = System.nanoTime() / 1_000_000
+
+    @Test(timeout = 60_000)
+    fun `once the run's workspace time is up nothing more reaches the workspace, and the cap holds (SEC-W2B-1)`() {
+        val workspace = LocalLikeWorkspace(writeMs = 1).also { it.files["a.txt"] = "a" }
+        val host = host(workspace)
+        val honest = List(19) { write(host, "ok$it.txt", "x") }
+        assertEquals(List(19) { "+ok$it.txt" }, honest)
+        val before = workspace.calls.size
+        // The run's workspace time is up; the engine lets the process go only some seconds later. A script process
+        // that keeps calling in between gets nothing done.
+        deadline.set(nowMs() - 1)
+        val late = mutableListOf<String>()
+        repeat(100) {
+            late += write(host, "late$it.txt", "x")
+            late += read(host, "a.txt").let { (ok, text) -> if (ok) "+$text" else "!$text" }
+            late += host.list("")
+        }
+        Thread.sleep(300)
+        assertEquals(emptyList(), workspace.calls.drop(before), "no call after the time reached the workspace")
+        assertEquals(setOf("!${RunHost.OVER}"), late.toSet())
+        assertEquals(19, workspace.files.keys.count { it.startsWith("ok") })
+        assertEquals(20, workspace.files.size)
+        assertEquals(19, host.filesCreated)
+        assertTrue(host.isOver)
+    }
+
+    @Test(timeout = 60_000)
+    fun `a write already in the workspace when the time is up is counted, and the script is told it may have been made (SEC-W2B-1)`() {
+        val workspace = LocalLikeWorkspace(writeMs = 400)
+        val host = host(workspace)
+        deadline.set(nowMs() + 150)
+        assertEquals("!${RunHost.IN_FLIGHT}", write(host, "straddle.txt", "x"))
+        // The write goes on to its end, and is counted when it is made.
+        val until = System.nanoTime() + 5_000_000_000L
+        while (host.filesCreated == 0 && System.nanoTime() < until) Thread.sleep(10)
+        assertEquals(setOf("straddle.txt"), workspace.files.keys)
+        assertEquals(1, host.filesCreated)
+        assertEquals("!${RunHost.OVER}", write(host, "next.txt", "x"))
+        assertEquals(listOf("write straddle.txt"), workspace.calls.toList())
+    }
+
+    @Test(timeout = 60_000)
+    fun `a call given up before it reached the workspace leaves nothing done there (SEC-W2B-1)`() {
+        val workspace = LocalLikeWorkspace(writeMs = 1)
+        val host = host(workspace)
+        deadline.set(nowMs() + 200)
+        // The text never comes: the call waits for it until the time is up.
+        val stalled = pipes.open()
+        assertEquals("!${RunHost.TIME_UP}", host.write("stalled.txt", stalled.read))
+        Thread.sleep(200)
+        assertEquals(emptyList(), workspace.calls.toList())
+        assertEquals(0, host.filesCreated)
+        assertTrue(host.isOver)
     }
 }

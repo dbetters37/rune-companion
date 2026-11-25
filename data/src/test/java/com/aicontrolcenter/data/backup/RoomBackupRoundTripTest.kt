@@ -148,6 +148,86 @@ class RoomBackupRoundTripTest {
         assertEquals(listOf("cnv_new"), target.conversations.observeConversations().first().map { it.id.value })
     }
 
+    /** [data]'s stores, with Room's transaction replaced by [transactions]. */
+    private fun storesWith(data: DataLayer, transactions: com.aicontrolcenter.data.Transactions, settings: com.aicontrolcenter.core.settings.SettingsRepository = data.backupStores.settings) =
+        data.backupStores.let { real ->
+            com.aicontrolcenter.data.BackupStores(
+                real.agents, real.providers, real.models, real.modelPrices, real.ownerModelPrices, real.aiApps, real.memories,
+                real.conversations, real.tasks, settings, real.activityLog, transactions,
+            )
+        }
+
+    private fun backupOver(stores: com.aicontrolcenter.data.BackupStores) = RoomOwnerBackup(
+        stores, LocalMaintenanceGate(), { Long.MAX_VALUE }, BackupFiles.APP, BackupFiles.STARTER,
+        toolTitles = ToolTitles(mapOf("tools_open" to "Open more tools")).apply { use(BackupPhone.titles) },
+        clock = clock, ids = SequentialIdGenerator(), iterations = BackupFiles.ITERATIONS,
+    )
+
+    private class Killed : RuntimeException("the process ends here")
+
+    @Test
+    fun `a restore stopped at Room's commit leaves the fresh app's settings with the fresh app's records (AND-W2B-4)`() = runBlocking<Unit> {
+        val file = save(phone())
+        val target = freshApp("kill-commit")
+        val firstAgent = target.agents.getAll().first().id
+        target.settings.update { it.copy(directorAgentId = firstAgent) }
+        val settingsBefore = target.settings.get()
+        val agentsBefore = target.agents.getAll()
+        var onDiskAtCommit: com.aicontrolcenter.core.settings.FrameworkSettings? = null
+        val real = target.backupStores.transactions
+        // The process ends right before Room's COMMIT: the block ran, nothing after it does.
+        val killing = object : com.aicontrolcenter.data.Transactions {
+            override suspend fun <R> run(block: suspend () -> R): R = real.run {
+                block()
+                onDiskAtCommit = target.settings.get()
+                throw Killed()
+            }
+        }
+        val result = runCatching { backupOver(storesWith(target, killing)).restoreWithNotes(BackupFiles.opener(file), BackupFiles.PASSPHRASE) }
+        assertTrue(result.exceptionOrNull() is Killed || result.getOrNull() is com.aicontrolcenter.core.backup.BackupResult.Failed, "$result")
+        assertEquals(settingsBefore, onDiskAtCommit, "nothing of the file's settings is on disk before the records are")
+        assertEquals(agentsBefore, target.agents.getAll())
+        assertTrue(target.agents.getAll().any { it.id == target.settings.get().directorAgentId })
+    }
+
+    @Test
+    fun `a restore stopped after Room's commit leaves the restored records with the fresh app's settings, and the file's settings follow the records (AND-W2B-4)`() = runBlocking<Unit> {
+        val file = save(phone())
+        val target = freshApp("kill-after")
+        val freshDirector = target.agents.getAll().first().id
+        target.settings.update { it.copy(directorAgentId = freshDirector) }
+        val settingsBefore = target.settings.get()
+        var settingsAtCommit: com.aicontrolcenter.core.settings.FrameworkSettings? = null
+        val real = target.backupStores.transactions
+        val watching = object : com.aicontrolcenter.data.Transactions {
+            override suspend fun <R> run(block: suspend () -> R): R = real.run(block).also { settingsAtCommit = target.settings.get() }
+        }
+        backupOver(storesWith(target, watching)).restoreWithNotes(BackupFiles.opener(file), BackupFiles.PASSPHRASE).done()
+        // At the commit (a stop there leaves this): the restored records, the fresh settings. Startup then gives the
+        // Director that no longer exists a Director of the restored team (DefaultAgentManager.ensureDefaults).
+        assertEquals(settingsBefore, settingsAtCommit)
+        assertTrue(target.agents.getAll().none { it.id == freshDirector })
+        // Afterwards: the file's settings, through RestoreSettings.merge.
+        assertEquals(BackupPhone.ada, target.settings.get().directorAgentId)
+        assertTrue(target.settings.get().localOnlyMode)
+        assertEquals(false, target.settings.get().operatorEnabled)
+    }
+
+    @Test
+    fun `settings that cannot be written after the records are restored leave the restore done, and say so (AND-W2B-4)`() = runBlocking<Unit> {
+        val file = save(phone())
+        val target = freshApp("settings-fail")
+        val failing = object : com.aicontrolcenter.core.settings.SettingsRepository by target.settings {
+            override suspend fun update(transform: (com.aicontrolcenter.core.settings.FrameworkSettings) -> com.aicontrolcenter.core.settings.FrameworkSettings) =
+                throw java.io.IOException("disk full")
+        }
+        val outcome = backupOver(storesWith(target, target.backupStores.transactions, failing))
+            .restoreWithNotes(BackupFiles.opener(file), BackupFiles.PASSPHRASE).done()
+        assertTrue(BackupTexts.SETTINGS_NOT_RESTORED in outcome.notes, "${outcome.notes}")
+        assertEquals(emptyList(), outcome.report.settingChanges)
+        assertTrue(target.agents.getAll().any { it.id == BackupPhone.ada }, "the records are restored")
+    }
+
     @Test
     fun `restored chats read back with roles, order and times`() = runBlocking<Unit> {
         val source = phone()

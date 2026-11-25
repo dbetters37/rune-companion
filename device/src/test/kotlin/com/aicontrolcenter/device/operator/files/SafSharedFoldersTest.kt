@@ -101,6 +101,25 @@ class SafSharedFoldersTest {
     }
 
     @Test
+    fun `nothing changes in a folder picked through the Downloads entry that may hold a read-only folder (SEC-W2B-2)`() = runTest {
+        // The picker's Downloads entry names Download/Agents by a number; the read-only Download/Agents/inbox was picked
+        // through the phone's storage entry. Whether one holds the other cannot be told: no change then.
+        val agents = SharedFolder(FolderId("fld_agents"), "content://com.android.providers.downloads.documents/tree/msf%3A31", "Agents", addedAt = 1, readOnly = false)
+        repository.upsert(agents)
+        val inbox = SharedFolder(
+            FolderId("fld_inbox"), "content://com.android.externalstorage.documents/tree/primary%3ADownload%2FAgents%2Finbox", "inbox",
+            addedAt = 2, readOnly = true, readOnlySince = 2,
+        )
+        repository.upsert(inbox)
+        assertNotAllowed(folders.write(agents.id, p("inbox/note.txt"), "x".toByteArray(), "text/plain", overwrite = false), "may hold, or be inside, the read-only folder inbox")
+        assertNotAllowed(folders.makeFolder(agents.id, p("New")), "read-only folder inbox")
+        // A read-only folder outside every Download folder does not stop it (the write then goes to the provider).
+        repository.upsert(inbox.copy(treeUri = "content://com.android.externalstorage.documents/tree/primary%3ADocuments%2Finbox"))
+        val refusal = folders.write(agents.id, p("note.txt"), "x".toByteArray(), "text/plain", overwrite = false)
+        assertFalse(refusal is DocResult.NotAllowed && "read-only folder" in refusal.reason, "$refusal")
+    }
+
+    @Test
     fun `lists folders first, then files by name, with sizes`() = runTest {
         picked()
         provider.file(rootId, "b.txt", "bee")

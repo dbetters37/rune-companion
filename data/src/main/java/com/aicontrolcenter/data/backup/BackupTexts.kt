@@ -41,6 +41,10 @@ object BackupTexts {
     const val KEYS_AGAIN = "Provider keys are not in the backup: enter them again after restoring."
     const val RESTARTS = "When the restore is done, the app starts again."
 
+    /** The records were restored, but the settings file could not be written (AND-W2B-4). */
+    const val SETTINGS_NOT_RESTORED =
+        "Your agents, memories and chats were restored, but the backup's settings could not be stored: this phone's own settings are kept. Check them in Settings."
+
     /** RestoreSettings.ALWAYS_OFF_AFTER_RESTORE as one line. */
     val ALWAYS_OFF: String =
         "After the restore these are off: ${RestoreSettings.ALWAYS_OFF_AFTER_RESTORE.joinToString(", ")}. Switch them on again in Settings if you want them."
