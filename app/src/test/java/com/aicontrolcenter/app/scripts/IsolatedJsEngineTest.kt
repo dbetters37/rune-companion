@@ -332,6 +332,61 @@ class IsolatedJsEngineTest {
         assertEquals(1, workspace.reads.get(), "the read after the answer never reached the workspace")
     }
 
+    /**
+     * A script process that says its code began, waits past the run's workspace time (its time limit and the grace) but
+     * not past the engine's own bound, then floods the workspace with writes and reads until it is told the run is over.
+     */
+    private inner class WindowRunner(private val waitMs: Long) : IScriptRunner.Stub() {
+        val replies: MutableList<String> = CopyOnWriteArrayList()
+
+        @Volatile
+        var finished = false
+
+        override fun pid(): Int = 667
+
+        override fun run(request: ParcelFileDescriptor?, host: IScriptHost?, result: IScriptResult?) {
+            val hostile = HostileRunner(pipes)
+            Thread({
+                try {
+                    result!!.started()
+                    Thread.sleep(waitMs)
+                    for (i in 0 until 200) {
+                        replies += hostile.write(host!!, "w$i.txt", "x")
+                        replies += hostile.read(host, "a.txt")
+                    }
+                } finally {
+                    finished = true
+                }
+            }, "window-run").apply { isDaemon = true }.start()
+        }
+    }
+
+    @Test(timeout = 60_000)
+    fun `a script process that calls the workspace after its time and grace gets nothing done there (SEC-W2B-1)`() = blocking {
+        val runner = WindowRunner(waitMs = 200 + JsSandbox.GRACE_MS + 100)
+        val launcher = DirectLauncher { _, _ -> runner }
+        val workspace = object : JsHost {
+            val calls = CopyOnWriteArrayList<String>()
+            override val canWrite = true
+
+            override fun read(path: String): String = "r".also { calls += "read $path" }
+
+            override fun list(path: String): List<Triple<String, Boolean, Long?>> = emptyList()
+
+            // As LocalWorkspace writes: on another thread, which an interrupt of the caller does not stop.
+            override fun write(path: String, text: String): String = runBlocking {
+                calls += "write $path"
+                kotlinx.coroutines.withContext(Dispatchers.IO) { Thread.sleep(1); path }
+            }
+        }
+        val outcome = engine(launcher, jsLimits(timeoutMs = 200)).run("1", null, workspace, 200)
+        assertEquals(JsSandbox.ABANDONED_TEXT, assertIs<JsOutcome.Stopped>(outcome).reason)
+        withTimeout(20_000) { while (!runner.finished) delay(20) }
+        assertEquals(emptyList(), workspace.calls.toList(), "nothing reached the workspace after the run's time")
+        assertTrue(runner.replies.isNotEmpty())
+        assertEquals(setOf("!${RunHost.OVER}"), runner.replies.toSet())
+    }
+
     @Test(timeout = 60_000)
     fun `the script process's ids are never the app's own`() = blocking {
         val launcher = DirectLauncher(makeProcess = honestProcess(pipes, ends))
