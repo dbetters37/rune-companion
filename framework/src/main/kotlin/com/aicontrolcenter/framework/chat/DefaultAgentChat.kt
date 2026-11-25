@@ -215,7 +215,11 @@ class DefaultAgentChat(
                 val notice = cutOff(name)
                 // Stored before the mark goes: an app that dies in between says it twice rather than not at all.
                 storeError(id, notice)
-                activity.record(ActivityType.TASK, "Chat reply cut off", notice, severity = Severity.WARNING, agentId = conversation.agentId)
+                try {
+                    activity.record(ActivityType.TASK, "Chat reply cut off", notice, severity = Severity.WARNING, agentId = conversation.agentId)
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e // the note is stored; only the log entry is missing
+                }
                 stored++
             }
             conversations.markTurnEnded(id)

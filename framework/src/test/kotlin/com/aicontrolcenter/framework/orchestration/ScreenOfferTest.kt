@@ -44,14 +44,19 @@ class ScreenOfferTest {
         val routine = team.start("Research note apps", ObjectiveOptions(routineId = RoutineId("rtn_1")))
         team.settle()
         assertEquals(TaskStatus.COMPLETED, team.objective(routine.id).status)
-        val withoutScreens = team.script.seenBy(OrchestrationProtocol.TASK).single { it.agent == "Researcher" }.request.tools.map { it.name }
-        assertTrue("screen_read" !in withoutScreens, "$withoutScreens")
+        assertTrue(!offersScreens(team), "not offered, not even in a menu of tool families")
 
         team.script.seen.clear()
         val owners = team.start("Research note apps", ObjectiveOptions())
         team.settle()
         assertEquals(TaskStatus.COMPLETED, team.objective(owners.id).status)
-        val withScreens = team.script.seenBy(OrchestrationProtocol.TASK).single { it.agent == "Researcher" }.request.tools.map { it.name }
-        assertTrue("screen_read" in withScreens, "$withScreens")
+        assertTrue(offersScreens(team), "offered, at once or in a menu of tool families")
+    }
+
+    /** The Researcher's request offers the screen tool itself, or a family menu (WP15's `tools_open`) that names the screen family. */
+    private fun offersScreens(team: TeamFixture): Boolean {
+        val tools = team.script.seenBy(OrchestrationProtocol.TASK).single { it.agent == "Researcher" }.request.tools
+        val menu = tools.firstOrNull { it.name == "tools_open" }
+        return tools.any { it.name == "screen_read" } || (menu != null && "screen" in menu.description + menu.parameters)
     }
 }
