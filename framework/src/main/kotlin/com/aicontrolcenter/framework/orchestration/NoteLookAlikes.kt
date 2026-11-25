@@ -64,7 +64,4 @@ internal object NoteLookAlikes {
 
     /** The letter [codePoint] looks like, or null when it looks like none of them. */
     fun letterOf(codePoint: Int): Char? = LETTERS[codePoint]
-
-    /** How many code points the table holds, for its test. */
-    val size: Int get() = LETTERS.size
 }
