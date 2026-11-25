@@ -19,6 +19,14 @@ enum class OwnerRequestKind {
 
     /** May this one consequential action run? Answered yes or no; never "always". */
     APPROVAL,
+
+    /**
+     * An agent's question to the owner (Phase 6, C1, Tier B; rule 13). Answered with text or
+     * "decide yourself" ([OwnerDecision.Answer]); never a permission: it carries no scope, writes
+     * no grant, never counts as a refusal and settles nothing else (rule 33). Appended last:
+     * stored by name.
+     */
+    QUESTION,
 }
 
 /** Where a request is. Only PENDING can change, and only once. Stored by name. */
@@ -44,8 +52,12 @@ enum class OwnerRequestStatus {
  * passed through [PreviewText.exact]; [reason] is the agent's own words and is shown quoted, as
  * data. Previews are never cut short: the owner scrolls.
  *
- * Invariants (checked on construction): an APPROVAL never carries a [decisionScope]; an approved
- * PERMISSION always does; a pending request carries no decision.
+ * Invariants (checked on construction): only a PERMISSION carries a [decisionScope], and an
+ * approved PERMISSION always does; a pending request carries no decision. A QUESTION (Phase 6,
+ * K3) and only a QUESTION carries [question]; it is SAFE, has no constraint, holds at most
+ * [QuestionRules.MAX_OPTIONS] [options] of at most [QuestionRules.MAX_OPTION_CHARS] characters,
+ * none of them using an approval word ([QuestionRules.approvalWordIn]), and carries an [answer]
+ * only once APPROVED (answered); an answered QUESTION without an [answer] means "decide yourself".
  */
 @Serializable
 data class OwnerRequest(
@@ -98,10 +110,26 @@ data class OwnerRequest(
      * next call or ask for the permission is put to the owner as usual. Null otherwise.
      */
     val askAgainAt: Long? = null,
+    /**
+     * QUESTION only: the agent's question, verbatim (untrusted text: shown quoted, never
+     * interpreted), 1 to [QuestionRules.MAX_QUESTION_CHARS] characters. Null for every other kind.
+     */
+    val question: String? = null,
+    /**
+     * QUESTION only: answers the agent suggests, shown as quoted agent text in a list ("Use this
+     * answer"), never as buttons that look like approvals. Empty for every other kind.
+     */
+    val options: List<String> = emptyList(),
+    /**
+     * QUESTION only, once answered (APPROVED): the owner's words, at most
+     * [QuestionRules.MAX_ANSWER_CHARS] characters; null on an answered question means the owner
+     * chose "decide yourself".
+     */
+    val answer: String? = null,
 ) {
     init {
         require(expiresAt > createdAt) { "A request must expire after it was created." }
-        require(kind == OwnerRequestKind.PERMISSION || decisionScope == null) { "An APPROVAL request never carries a scope." }
+        require(kind == OwnerRequestKind.PERMISSION || decisionScope == null) { "Only a PERMISSION request carries a scope." }
         require(status == OwnerRequestStatus.APPROVED || decisionScope == null) { "Only an approved request carries a scope." }
         require(!(kind == OwnerRequestKind.PERMISSION && status == OwnerRequestStatus.APPROVED) || decisionScope != null) {
             "An approved PERMISSION request carries the scope the owner chose."
@@ -113,7 +141,22 @@ data class OwnerRequest(
         require(askAgainAt == null || (status == OwnerRequestStatus.DENIED && kind == OwnerRequestKind.PERMISSION)) {
             "Only a refused permission request can be opened for asking again."
         }
+        require((kind == OwnerRequestKind.QUESTION) == (question != null)) { "A QUESTION always carries its question, and no other request does." }
+        require(kind == OwnerRequestKind.QUESTION || (options.isEmpty() && answer == null)) { "Only a QUESTION carries options or an answer." }
+        if (kind == OwnerRequestKind.QUESTION) {
+            QuestionRules.questionProblem(question!!, options)?.let { throw IllegalArgumentException(it) }
+            require(risk == RiskLevel.SAFE) { "A question is SAFE: it can do nothing." }
+            require(constraint == CapabilityConstraint.None) { "A question has no folder or app." }
+            require(answer == null || status == OwnerRequestStatus.APPROVED) { "Only an answered question carries an answer." }
+            require(answer == null || (answer.isNotBlank() && answer.length <= QuestionRules.MAX_ANSWER_CHARS)) {
+                "An answer is 1 to ${QuestionRules.MAX_ANSWER_CHARS} characters."
+            }
+            require(status != OwnerRequestStatus.DENIED) { "A question is answered, expires or is cancelled; it is never refused." }
+        }
     }
+
+    /** True for an agent's question to the owner (Phase 6). */
+    val isQuestion: Boolean get() = kind == OwnerRequestKind.QUESTION
 
     /**
      * True while this refusal holds the agent back at [now]: a refused PERMISSION request, less
@@ -125,23 +168,39 @@ data class OwnerRequest(
         kind == OwnerRequestKind.PERMISSION && status == OwnerRequestStatus.DENIED && askAgainAt == null &&
             decidedAt != null && now < decidedAt + REFUSAL_COOLDOWN_MS
 
-    /** The scopes the owner may choose from: none for an APPROVAL, and TASK only when the call belongs to a task. */
+    /** The scopes the owner may choose from: none for an APPROVAL or a QUESTION, and TASK only when the call belongs to a task. */
     val offeredScopes: List<GrantScope>
         get() = when (kind) {
-            OwnerRequestKind.APPROVAL -> emptyList()
+            OwnerRequestKind.APPROVAL, OwnerRequestKind.QUESTION -> emptyList()
             OwnerRequestKind.PERMISSION -> listOfNotNull(GrantScope.ONCE, GrantScope.TASK.takeIf { taskId != null }, GrantScope.ALWAYS)
         }
 
     fun isExpiredAt(at: Long): Boolean = at >= expiresAt
 
-    /** Why [decision] cannot answer this request (wrong kind, or a scope that is not offered), or null if it can. */
+    /**
+     * Why [decision] cannot answer this request (wrong kind, a scope that is not offered, an
+     * answer that is blank or too long), or null if it can. A QUESTION takes only an
+     * [OwnerDecision.Answer], and only a QUESTION takes one.
+     */
     fun problemWith(decision: OwnerDecision): String? = when (decision) {
-        is OwnerDecision.Deny -> null
-        is OwnerDecision.Approve ->
-            if (kind == OwnerRequestKind.APPROVAL) null else "A permission request is answered with a scope, not a plain approval."
+        is OwnerDecision.Deny ->
+            if (kind == OwnerRequestKind.QUESTION) QUESTION_ANSWERED_WITH_TEXT else null
+        is OwnerDecision.Approve -> when (kind) {
+            OwnerRequestKind.APPROVAL -> null
+            OwnerRequestKind.PERMISSION -> "A permission request is answered with a scope, not a plain approval."
+            OwnerRequestKind.QUESTION -> QUESTION_ANSWERED_WITH_TEXT
+        }
         is OwnerDecision.Grant -> when {
+            kind == OwnerRequestKind.QUESTION -> QUESTION_ANSWERED_WITH_TEXT
             kind != OwnerRequestKind.PERMISSION -> "An approval request is answered yes or no; it cannot be granted for longer."
             decision.scope !in offeredScopes -> "\"${decision.scope}\" is not offered for this request."
+            else -> null
+        }
+        is OwnerDecision.Answer -> when {
+            kind != OwnerRequestKind.QUESTION -> "Only an agent's question is answered with text."
+            decision.text != null && decision.text.isBlank() -> "Write an answer, or choose \"Decide yourself\"."
+            decision.text != null && decision.text.length > QuestionRules.MAX_ANSWER_CHARS ->
+                "An answer can be at most ${QuestionRules.MAX_ANSWER_CHARS} characters long."
             else -> null
         }
     }
@@ -170,6 +229,9 @@ data class OwnerRequest(
          * The owner can end it sooner on the refused request ([OwnerRequests.letAskAgain]).
          */
         const val REFUSAL_COOLDOWN_MS: Long = 10 * 60_000L
+
+        private const val QUESTION_ANSWERED_WITH_TEXT =
+            "A question is answered with your own words or \"Decide yourself\"; it gives and refuses no permission."
     }
 }
 
@@ -188,14 +250,27 @@ sealed interface OwnerDecision {
     /** An answer to an APPROVAL request. */
     sealed interface ForApproval : OwnerDecision
 
+    /** An answer to a QUESTION (Phase 6). */
+    sealed interface ForQuestion : OwnerDecision
+
     /** Yes to a PERMISSION request, for [scope]. */
     data class Grant(val scope: GrantScope, override val note: String? = null) : ForPermission
 
     /** Yes to an APPROVAL request: this one action, this one time. */
     data class Approve(override val note: String? = null) : ForApproval
 
-    /** No, to either kind. */
+    /** No, to a PERMISSION or an APPROVAL request. A QUESTION is never refused: it is answered. */
     data class Deny(override val note: String? = null) : ForPermission, ForApproval
+
+    /**
+     * The owner's answer to a QUESTION (Phase 6, K3): [text] in their own words, or null for
+     * "decide yourself". It closes the question as APPROVED with [OwnerRequest.answer] = [text];
+     * it writes no grant and answers no other request (rule 33). Its [note] is always null: the
+     * answer is the text.
+     */
+    data class Answer(val text: String?) : ForQuestion {
+        override val note: String? get() = null
+    }
 }
 
 /** What happened to one attempt to answer a request. */
@@ -288,6 +363,10 @@ interface OwnerRequestDecisions {
      * A [OwnerDecision.Grant] also stores `request.grantFor(scope, grantId, at)` in the same
      * transaction, so whoever sees the request APPROVED finds its grant
      * ([GrantLookup.findByRequest]). [grantId] is used for nothing else.
+     *
+     * An [OwnerDecision.Answer] (QUESTION only, Phase 6) closes the question as APPROVED with
+     * [OwnerRequest.answer] = its text (null: "decide yourself"), decidedAt = [at] and no note,
+     * through the same compare-and-set; it writes no grant, so [DecideResult.Decided.grant] is null.
      */
     suspend fun decide(id: RequestId, decision: OwnerDecision, at: Long, grantId: GrantId): DecideResult
 

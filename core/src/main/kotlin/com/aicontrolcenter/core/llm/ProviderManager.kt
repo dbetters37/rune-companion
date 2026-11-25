@@ -2,6 +2,8 @@ package com.aicontrolcenter.core.llm
 
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.ProviderId
+import com.aicontrolcenter.core.health.TimedWaits
+import com.aicontrolcenter.core.registry.ConnectionStatus
 import com.aicontrolcenter.core.registry.ModelCapabilities
 import com.aicontrolcenter.core.registry.ModelDescriptor
 import com.aicontrolcenter.core.registry.ModelProvider
@@ -93,4 +95,23 @@ interface ProviderManager {
 
     /** Makes sure the built-in simulator provider and model exist. Safe to call on every start. */
     suspend fun ensureBuiltIns()
+
+    /**
+     * Checks provider [providerId] again if its stored status is older than [olderThanMs] (or it
+     * was never checked), within a bounded time, and returns the status it has now; null when the
+     * provider is unknown or nothing was checked (Phase 6, K15, D28). Never checks a provider off
+     * the phone in local-only mode, and never a provider whose key was rejected. Work about to
+     * wait for a provider that is not answering asks this first. The default checks nothing.
+     */
+    suspend fun recheckIfStale(providerId: ProviderId, olderThanMs: Long): ConnectionStatus? = null
+
+    /** When the next scheduled re-check of a provider that is not answering is due (rule 5). The default: none. */
+    val timedWaits: TimedWaits get() = TimedWaits.None
+
+    /**
+     * True when [text] contains, or is, one of the provider keys stored in the vault, compared in
+     * constant time (Phase 6, rule 32: an answer to an agent's question that holds a stored key is
+     * never sent). For the owner's side only; never returns or logs a key. The default: false.
+     */
+    suspend fun matchesStoredKey(text: String): Boolean = false
 }

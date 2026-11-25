@@ -81,6 +81,61 @@ interface OwnerRequests {
      * method here it is the owner's alone: nothing an agent can reach calls it.
      */
     suspend fun letAskAgain(id: RequestId): OwnerResult<OwnerRequest>
+
+    /**
+     * The owner answers an agent's QUESTION (Phase 6, K3, Tier B): [text] in their own words, or
+     * null for "decide yourself". Refused, with a sentence for the owner, when the request is
+     * missing, not a pending question, no longer waited for ([closeIfAbandoned]), expired, or the
+     * text is blank or too long ([QuestionRules.MAX_ANSWER_CHARS]); when [text] looks like a key
+     * ([AnswerCheck], [AnswerRisk.KEY]) or matches a stored provider key, always; when it looks
+     * like a code ([AnswerRisk.CODE]), unless [sendAnyway] (the owner's second tap). An answer
+     * gives no permission, approves nothing and leaves every other request as it is (rules 2,
+     * 33); it is logged without its text. The default refuses: questions are switched off.
+     */
+    suspend fun answer(id: RequestId, text: String?, sendAnyway: Boolean = false): OwnerResult<Unit> =
+        OwnerResult.Refused(QUESTIONS_UNAVAILABLE)
+
+    /** Texts. */
+    companion object {
+        const val QUESTIONS_UNAVAILABLE: String = "Answering agents' questions is not available in this version."
+    }
+}
+
+/**
+ * How much of the owner's attention agents may ask for at once (Phase 6, rules 13 and 14, C3,
+ * D10). The framework checks these under one lock shared by the capability requester, the
+ * permission broker and the question tool (WP5), so two concurrent asks cannot pass a cap
+ * together. An "agent-initiated" request is one the agent raised on its own: an ask for a
+ * permission (toolId null) or a QUESTION ([isAgentInitiated]); every other request was raised by
+ * a tool call in progress.
+ */
+object OwnerAttention {
+    /** Agent-initiated requests open at once, in the whole app. */
+    const val MAX_OPEN_AGENT_REQUESTS: Int = 5
+
+    /** Agent-initiated requests open at once under one objective. */
+    const val MAX_OPEN_AGENT_REQUESTS_PER_OBJECTIVE: Int = 3
+
+    /** Pending requests raised by calls in progress, in the whole app; over it the call is refused and nothing runs (rule 14). */
+    const val MAX_PENDING_CALL_REQUESTS: Int = 12
+
+    /** Pending requests raised by calls in progress under one objective. */
+    const val MAX_PENDING_CALL_REQUESTS_PER_OBJECTIVE: Int = 6
+
+    /** Open questions of one task at a time. */
+    const val MAX_OPEN_QUESTIONS_PER_TASK: Int = 1
+
+    /** Questions one task may ask in all. */
+    const val MAX_QUESTIONS_PER_TASK: Int = 2
+
+    /** Questions one objective may ask in all. */
+    const val MAX_QUESTIONS_PER_OBJECTIVE: Int = 4
+
+    /** Minutes a question waits for the owner by default (`FrameworkSettings.ownerQuestionTimeoutMinutes`). */
+    const val DEFAULT_QUESTION_TIMEOUT_MINUTES: Int = 20
+
+    /** Raised by the agent on its own (a permission ask or a question), not by a tool call in progress. */
+    fun isAgentInitiated(request: OwnerRequest): Boolean = request.kind == OwnerRequestKind.QUESTION || request.toolId == null
 }
 
 /**

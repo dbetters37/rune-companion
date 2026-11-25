@@ -36,7 +36,7 @@ class OperatorDependencyTest {
         OwnerRequestDecisions::class.java, GrantStore::class.java, OwnerRequestRepository::class.java, PermissionRepository::class.java,
         // Owner-capable mutators: adding and removing folders and apps, taking and releasing a folder's access.
         SharedFolderRepository::class.java, OperatorAppRepository::class.java, SharedFolders::class.java,
-    )
+    ) + PHASE6_OWNER_ONLY
 
     /** Every type held by a field reachable from [root] through the framework's classes, with the path that reaches it. */
     private fun reachable(root: Class<*>): Map<Class<*>, String> {
@@ -61,7 +61,7 @@ class OperatorDependencyTest {
      * Actions that are the owner's alone, by method name: a type that offers one is owner-only
      * whatever it is called. Round 2 (B2): letting an agent ask again after a refusal.
      */
-    private val ownerOnlyActions = setOf("letAskAgain")
+    private val ownerOnlyActions = setOf("letAskAgain", "startOver", "clearHistory")
 
     /** A method taking an id (a value class) is compiled as "name-hash": compared by the name in front. */
     private fun offersOwnerAction(type: Class<*>): Boolean = type.methods.any { it.name.substringBefore('-') in ownerOnlyActions }
@@ -109,7 +109,45 @@ class OperatorDependencyTest {
         assertTrue(reachable(PermissionBroker::class.java).keys.any { it == com.aicontrolcenter.core.operator.OwnerRequestQueue::class.java })
     }
 
+    @Test
+    fun `every owner-only port the core declares is on the list`() {
+        // Phase 6 (WP1a): a new Owner… port in :core that nobody added here would be reachable unchecked.
+        val agentSide = setOf("OwnerRequestQueue", "OwnerResult", "OwnerDecision")
+        val ownerPorts = coreClassNames().map { Class.forName(it, false, javaClass.classLoader) }
+            .filter { it.isInterface && it.simpleName.startsWith("Owner") && it.simpleName !in agentSide }
+        assertTrue(ownerPorts.size >= 13, "the scan finds the core's owner ports: ${ownerPorts.map { it.simpleName }}")
+        for (port in ownerPorts) assertTrue(port in ownerOnly, "${port.name} is an owner-only port missing from the list")
+        for (store in listOf(com.aicontrolcenter.core.routines.RoutineRepository::class.java, com.aicontrolcenter.core.pickup.PickUpRuleRepository::class.java)) {
+            assertTrue(store in ownerOnly, "${store.simpleName} can create work that starts while nobody watches")
+        }
+    }
+
+    /** Every top-level and nested class of `:core`, read from its classes folder or jar. */
+    private fun coreClassNames(): List<String> {
+        val location = java.io.File(OwnerRequests::class.java.protectionDomain.codeSource.location.toURI())
+        val paths = if (location.isDirectory) {
+            location.walkTopDown().filter { it.isFile }.map { it.relativeTo(location).invariantSeparatorsPath }.toList()
+        } else {
+            java.util.zip.ZipFile(location).use { zip -> zip.entries().asSequence().map { it.name }.toList() }
+        }
+        return paths.filter { it.startsWith("com/aicontrolcenter/core/") && it.endsWith(".class") && "module-info" !in it }
+            .map { it.removeSuffix(".class").replace('/', '.') }
+    }
+
     private companion object {
         const val FRAMEWORK = "com.aicontrolcenter.framework"
+
+        /**
+         * Phase 6 (rule 3, WP1a): the owner's notes to the team, prices, usage history, backup,
+         * recovery, routines and folder pick-up rules, and the two stores that can create or change
+         * routines and pick-up rules (work or intake that starts while nobody watches).
+         */
+        val PHASE6_OWNER_ONLY: List<Class<*>> = listOf(
+            com.aicontrolcenter.core.tasks.OwnerConversation::class.java, com.aicontrolcenter.core.usage.OwnerModelPrices::class.java,
+            com.aicontrolcenter.core.usage.OwnerUsage::class.java, com.aicontrolcenter.core.backup.OwnerBackup::class.java,
+            com.aicontrolcenter.core.health.OwnerRecovery::class.java, com.aicontrolcenter.core.routines.OwnerRoutines::class.java,
+            com.aicontrolcenter.core.routines.RoutineRepository::class.java, com.aicontrolcenter.core.pickup.OwnerPickUpRules::class.java,
+            com.aicontrolcenter.core.pickup.PickUpRuleRepository::class.java,
+        )
     }
 }

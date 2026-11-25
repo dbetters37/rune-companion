@@ -257,7 +257,7 @@ class DataStoreSettingsRepositoryTest {
         assertEquals(customised, repository.get())
         assertEquals(customised.copy(memorySeedVersion = 1), repository.update { it.copy(memorySeedVersion = 1) })
         assertNull(store.data.first()[DataStoreSettingsRepository.UNREADABLE_COPY_KEY], "a missing field is not damage")
-        assertTrue(store.data.first()[DataStoreSettingsRepository.SETTINGS_KEY]!!.endsWith(""","memorySeedVersion":1}"""))
+        assertTrue(store.data.first()[DataStoreSettingsRepository.SETTINGS_KEY]!!.contains(""","memorySeedVersion":1,"""))
     }
 
     @Test

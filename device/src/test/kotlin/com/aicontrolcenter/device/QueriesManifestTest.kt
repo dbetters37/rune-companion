@@ -110,6 +110,11 @@ class QueriesManifestTest {
                 IntentQuery("android.content.pm.action.REQUEST_PERMISSIONS", emptySet(), null),
                 IntentQuery("android.app.action.ADD_DEVICE_ADMIN", emptySet(), null),
                 IntentQuery("android.app.action.SET_NEW_PASSWORD", emptySet(), null),
+                // Phase 6 (S26): the system's file and photo pickers.
+                IntentQuery("android.intent.action.OPEN_DOCUMENT", emptySet(), "*/*"),
+                IntentQuery("android.intent.action.OPEN_DOCUMENT_TREE", emptySet(), null),
+                IntentQuery("android.intent.action.CREATE_DOCUMENT", emptySet(), "*/*"),
+                IntentQuery("android.provider.action.PICK_IMAGES", emptySet(), "*/*"),
             ),
             intentQueries.toSet(),
         )

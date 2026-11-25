@@ -143,6 +143,8 @@ internal class ObjectiveJournal(
         Participant.Owner -> "Owner"
         Participant.System -> "System"
         is Participant.Agent -> agents.get(participant.agentId)?.name ?: "A deleted agent"
+        // Phase 6 (WP1a): memory shared into a space (WP7 names the space).
+        is Participant.Space -> "A shared memory space"
     }
 
     /** The log is a record, not a dependency: a failure to write it never changes what happens. */
@@ -174,6 +176,8 @@ internal class ObjectiveJournal(
         MessageType.ANSWER -> "Answer"
         MessageType.CANCEL -> "Cancelled"
         MessageType.STATUS -> "Status"
+        // Phase 6 (WP1a): a note from the owner (WP7 logs it without its text).
+        MessageType.GUIDANCE -> "Note from the owner"
     }
 
     private companion object {

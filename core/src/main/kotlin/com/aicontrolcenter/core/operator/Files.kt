@@ -287,11 +287,61 @@ interface Workspace {
      */
     fun commandRunning(): Boolean = false
 
+    /**
+     * Reserves the one shell-command slot for [token] (Phase 6, K5, D11, rule 15: one shell
+     * command at a time, from the question to the end). Null when the slot is now [token]'s:
+     * it was free, or [token] already held it (asking again is harmless). Otherwise a sentence
+     * for the model saying why not: another token holds it, or a command runs ([commandRunning]).
+     * A reservation holds back only other reservations, never a file change; it lasts until
+     * [releaseReservation] with the same token. `ScriptsRunShell` reserves in
+     * [com.aicontrolcenter.core.tools.PreparedAction.beforeOwnerAsked] and releases in
+     * `callEnded`; [runCommand] itself does not look at reservations. The default refuses only
+     * while a command runs. [CommandSlot] is the reference behaviour.
+     */
+    fun reserveCommand(token: String): String? = if (commandRunning()) COMMAND_SLOT_TAKEN else null
+
+    /** Frees the slot if [token] holds it; does nothing otherwise. */
+    fun releaseReservation(token: String) {}
+
     /** Constants. */
     companion object {
         /** The trash's folder name at the workspace root. */
         const val TRASH_FOLDER: String = ".trash"
+
+        /** Why a shell command cannot be reserved now ([reserveCommand]). */
+        const val COMMAND_SLOT_TAKEN: String =
+            "Another shell command is waiting for the owner or running. Shell commands run one at a time: try again when it has ended."
     }
+}
+
+/**
+ * The one shell-command slot of a workspace ([Workspace.reserveCommand]), as a small thread-safe
+ * object a workspace implementation can hold. [reserve] gives the slot to a token when it is
+ * free or already that token's, and refuses while [running] says a command runs.
+ */
+class CommandSlot(private val running: () -> Boolean = { false }) {
+    private val lock = Any()
+    private var holder: String? = null
+
+    /** Null when [token] now holds the slot; [Workspace.COMMAND_SLOT_TAKEN] otherwise. */
+    fun reserve(token: String): String? = synchronized(lock) {
+        when {
+            holder == token -> null
+            holder != null || running() -> Workspace.COMMAND_SLOT_TAKEN
+            else -> {
+                holder = token
+                null
+            }
+        }
+    }
+
+    /** Frees the slot if [token] holds it. */
+    fun release(token: String) {
+        synchronized(lock) { if (holder == token) holder = null }
+    }
+
+    /** The token holding the slot, or null. */
+    fun holder(): String? = synchronized(lock) { holder }
 }
 
 /**

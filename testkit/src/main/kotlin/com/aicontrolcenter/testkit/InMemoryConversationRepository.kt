@@ -5,6 +5,7 @@ import com.aicontrolcenter.core.ConversationId
 import com.aicontrolcenter.core.chat.Conversation
 import com.aicontrolcenter.core.chat.ConversationEntry
 import com.aicontrolcenter.core.chat.ConversationRepository
+import com.aicontrolcenter.core.chat.InterruptedTurn
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -15,6 +16,8 @@ class InMemoryConversationRepository : ConversationRepository {
     private data class State(
         val conversations: Map<ConversationId, Conversation> = emptyMap(),
         val entries: Map<ConversationId, List<ConversationEntry>> = emptyMap(),
+        /** Turns marked started and not ended (Phase 6, R3): conversation → when. */
+        val turns: Map<ConversationId, Long> = emptyMap(),
     )
 
     private val state = MutableStateFlow(State())
@@ -32,12 +35,20 @@ class InMemoryConversationRepository : ConversationRepository {
         state.update { it.copy(conversations = it.conversations + (conversation.id to conversation)) }
 
     override suspend fun deleteConversation(id: ConversationId) =
-        state.update { State(it.conversations - id, it.entries - id) }
+        state.update { State(it.conversations - id, it.entries - id, it.turns - id) }
 
     override suspend fun deleteByAgent(agentId: AgentId) = state.update { current ->
         val gone = current.conversations.values.filter { it.agentId == agentId }.map { it.id }.toSet()
-        State(current.conversations - gone, current.entries - gone)
+        State(current.conversations - gone, current.entries - gone, current.turns - gone)
     }
+
+    override suspend fun markTurnStarted(id: ConversationId, at: Long) =
+        state.update { if (id in it.conversations) it.copy(turns = it.turns + (id to at)) else it }
+
+    override suspend fun markTurnEnded(id: ConversationId) = state.update { it.copy(turns = it.turns - id) }
+
+    override suspend fun interruptedTurns(): List<InterruptedTurn> =
+        state.value.turns.map { (id, at) -> InterruptedTurn(id, at) }.sortedWith(compareBy({ it.startedAt }, { it.conversationId.value }))
 
     override fun observeEntries(id: ConversationId): Flow<List<ConversationEntry>> =
         state.map { it.entries[id].orEmpty() }.distinctUntilChanged()

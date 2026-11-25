@@ -117,6 +117,8 @@ class RoomOwnerRequestRepository internal constructor(
             )
             is OwnerDecision.Approve -> current.copy(status = OwnerRequestStatus.APPROVED, decidedAt = at, decisionNote = decision.note)
             is OwnerDecision.Deny -> current.copy(status = OwnerRequestStatus.DENIED, decidedAt = at, decisionNote = decision.note)
+            // Phase 6 (WP1a): a QUESTION's answer; its column arrives with schema 6 (WP1b).
+            is OwnerDecision.Answer -> current.copy(status = OwnerRequestStatus.APPROVED, decidedAt = at, answer = decision.text)
         }
         if (!closePending(decided)) return alreadyClosed(id)
         // Thrown inside the transaction, so the request goes back to PENDING with it.

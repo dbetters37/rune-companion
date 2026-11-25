@@ -160,9 +160,11 @@ class StoredNamesGoldenTest {
         assertStoredNames<MessageType>(
             "ASSIGNMENT", "ASSISTANCE_REQUEST", "ASSISTANCE_RESPONSE", "FINDINGS", "DELEGATION", "MEMORY_SHARE", "REVIEW_REQUEST",
             "REVIEW_RESULT", "COMPLETION", "FAILURE", "QUESTION", "ANSWER", "CANCEL", "STATUS",
+            // Phase 6 (WP1a): appended last.
+            "GUIDANCE",
         )
         assertStoredNames<GrantScope>("ONCE", "TASK", "ALWAYS")
-        assertStoredNames<OwnerRequestKind>("PERMISSION", "APPROVAL")
+        assertStoredNames<OwnerRequestKind>("PERMISSION", "APPROVAL", "QUESTION")
         assertStoredNames<OwnerRequestStatus>("PENDING", "APPROVED", "DENIED", "EXPIRED", "CANCELLED")
         assertStoredNames<RiskLevel>("SAFE", "MODIFYING", "CONSEQUENTIAL")
         assertStoredNames<ScreenActionPolicy>("ASK_EVERY_ACTION", "ASK_CONSEQUENTIAL_ONLY")
@@ -267,7 +269,7 @@ class StoredNamesGoldenTest {
     fun `keys and exact text of the task columns`() {
         assertStoredKeys(ReviewVerdict.serializer(), "reviewer", "decision", "summary", "issues", "at", "reviewTaskId")
         assertStoredKeys(TaskUsage.serializer(), "modelCalls", "toolCalls", "inputTokens", "outputTokens", "messagesSent")
-        assertStoredKeys(ObjectiveOptions.serializer(), "reviewResults", "saveKnowledge", "maxTasks")
+        assertStoredKeys(ObjectiveOptions.serializer(), "reviewResults", "saveKnowledge", "maxTasks", "routineId")
         assertEquals("""{"type":"owner"}""", encodeColumn(ColumnSerializers.taskRequester, TaskRequester.Owner))
         assertEquals(
             """{"type":"agent","agentId":"agt_director"}""",
@@ -290,7 +292,7 @@ class StoredNamesGoldenTest {
             encodeColumn(TaskUsage.serializer(), TaskUsage(3, 2, 1_200, 300, 4)),
         )
         assertEquals(
-            """{"reviewResults":true,"saveKnowledge":false,"maxTasks":null}""",
+            """{"reviewResults":true,"saveKnowledge":false,"maxTasks":null,"routineId":null}""",
             encodeColumn(ObjectiveOptions.serializer(), ObjectiveOptions()),
         )
         assertEquals("""["tsk_z","tsk_a"]""", encodeColumn(ColumnSerializers.taskIdList, listOf(TaskId("tsk_z"), TaskId("tsk_a"))))
@@ -510,11 +512,16 @@ class StoredNamesGoldenTest {
             "maxRevisionRounds", "maxTaskAttempts", "taskTimeoutMinutes", "objectiveTimeoutMinutes",
             "approvalTimeoutMinutes", "autoResumeInterruptedTasks", "operatorEnabled", "accessibilityOperatorEnabled",
             "onboardingCompleted", "seedVersion", "memorySeedVersion",
+            // Phase 6 (WP1a): appended last.
+            "keepAwakeWhileAgentsWork", "notifyWhenWorkEnds", "maxModelCallsPerDay", "maxTokensPerDay", "maxSpendPerDayMicros",
+            "agentQuestionsEnabled", "ownerQuestionTimeoutMinutes", "usageRetentionDays", "calmMotion", "routinesEnabled",
+            "folderPickUpEnabled",
         )
         // The defaults are deliberately not pinned as text: changing a default is not a format change.
-        val stored = SettingsCodec.encode(FrameworkSettings(localOnlyMode = true, seedVersion = 3, memorySeedVersion = 1))
+        val stored = SettingsCodec.encode(FrameworkSettings(localOnlyMode = true, seedVersion = 3, memorySeedVersion = 1, folderPickUpEnabled = true))
         assertEquals(true, stored.startsWith("""{"localOnlyMode":true,"activityRetentionDays":"""), stored)
-        assertEquals(true, stored.endsWith(""","onboardingCompleted":false,"seedVersion":3,"memorySeedVersion":1}"""), stored)
+        assertEquals(true, stored.contains(""","onboardingCompleted":false,"seedVersion":3,"memorySeedVersion":1,"keepAwakeWhileAgentsWork":"""), stored)
+        assertEquals(true, stored.endsWith(""","folderPickUpEnabled":true}"""), stored)
     }
 
     @Test

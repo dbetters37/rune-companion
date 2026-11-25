@@ -167,6 +167,7 @@ class InMemoryOwnerRequestRepository(
         is OwnerDecision.Grant -> request.copy(status = OwnerRequestStatus.APPROVED, decidedAt = at, decisionScope = decision.scope, decisionNote = decision.note)
         is OwnerDecision.Approve -> request.copy(status = OwnerRequestStatus.APPROVED, decidedAt = at, decisionNote = decision.note)
         is OwnerDecision.Deny -> request.copy(status = OwnerRequestStatus.DENIED, decidedAt = at, decisionNote = decision.note)
+        is OwnerDecision.Answer -> request.copy(status = OwnerRequestStatus.APPROVED, decidedAt = at, answer = decision.text)
     }
 
     override suspend fun close(id: RequestId, status: OwnerRequestStatus, at: Long, note: String?): OwnerRequest? {

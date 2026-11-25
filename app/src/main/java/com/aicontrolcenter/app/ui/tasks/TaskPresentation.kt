@@ -54,6 +54,8 @@ class AgentFaces(private val snapshot: RegistrySnapshot) {
         is Participant.Agent -> ParticipantUi.Agent(of(participant.agentId)!!)
         Participant.Owner -> ParticipantUi.Owner
         Participant.System -> ParticipantUi.System
+        // Phase 6 (WP1a): a memory space as a recipient; shown like the older shares until WP11a names the space.
+        is Participant.Space -> ParticipantUi.System
     }
 
     fun requester(requester: TaskRequester): String = when (requester) {

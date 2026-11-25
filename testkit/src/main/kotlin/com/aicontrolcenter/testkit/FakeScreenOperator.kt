@@ -3,6 +3,7 @@ package com.aicontrolcenter.testkit
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.operator.ActiveWindow
 import com.aicontrolcenter.core.operator.ConsequentialControls
+import com.aicontrolcenter.core.operator.FrontState
 import com.aicontrolcenter.core.operator.GlobalAction
 import com.aicontrolcenter.core.operator.ScreenBounds
 import com.aicontrolcenter.core.operator.ScreenControl
@@ -138,9 +139,37 @@ class FakeScreenOperator(
         stateFlow.value = value
     }
 
-    /** The owner's Stop, as a test presses it. */
+    /** A session held open while one of its calls waits for the owner (Phase 6, K7). */
+    data class Hold(val agentName: String, val packageName: String)
+
+    /** Holds by id ([holdSession]); Stop clears them, like the device's operator. */
+    val holds: MutableMap<String, Hold> = ConcurrentHashMap()
+
+    /** Every hold id passed to [releaseSession], in order. */
+    val releasedHolds = CopyOnWriteArrayList<String>()
+
+    /** When true, [frontState] answers [FrontState.Hidden]: a window in front that Android does not let the app read. */
+    @Volatile var frontHidden: Boolean = false
+
+    /** What [ScreenControl.switchedOffByAndroid] of [asControl] reports; tests set it. */
+    val switchedOffByAndroid = MutableStateFlow(false)
+
+    override fun holdSession(holdId: String, agentName: String, packageName: String) {
+        holds[holdId] = Hold(agentName, packageName)
+    }
+
+    override fun releaseSession(holdId: String) {
+        releasedHolds += holdId
+        holds.remove(holdId)
+    }
+
+    override suspend fun frontState(): FrontState =
+        if (frontHidden && stateFlow.value == ScreenServiceState.READY) FrontState.Hidden else super.frontState()
+
+    /** The owner's Stop, as a test presses it. Ends every hold. */
     fun stop() {
         stoppedFlow.value = true
+        holds.clear()
     }
 
     /** The owner's Resume, as a test presses it. */
@@ -361,4 +390,6 @@ private class FakeScreenControl(private val screen: FakeScreenOperator) : Screen
     override fun stop() = screen.stop()
 
     override fun resume() = screen.resume()
+
+    override val switchedOffByAndroid: StateFlow<Boolean> get() = screen.switchedOffByAndroid.asStateFlow()
 }

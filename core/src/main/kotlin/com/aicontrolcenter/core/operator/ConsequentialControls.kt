@@ -286,6 +286,12 @@ object ConsequentialControls {
         "android.content.pm.action.REQUEST_PERMISSIONS",
         "android.app.action.ADD_DEVICE_ADMIN",
         "android.app.action.SET_NEW_PASSWORD",
+        // Phase 6 (K17, S26): Android's own file and photo pickers. What the owner picks there
+        // decides which files an app gets, so no agent may operate them.
+        "android.intent.action.OPEN_DOCUMENT",
+        "android.intent.action.OPEN_DOCUMENT_TREE",
+        "android.intent.action.CREATE_DOCUMENT",
+        "android.provider.action.PICK_IMAGES",
     )
 
     /** Every package of this app and its build variants starts with this. */

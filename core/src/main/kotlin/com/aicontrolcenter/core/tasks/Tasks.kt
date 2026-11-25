@@ -2,6 +2,7 @@ package com.aicontrolcenter.core.tasks
 
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ConversationId
+import com.aicontrolcenter.core.RoutineId
 import com.aicontrolcenter.core.TaskId
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -106,6 +107,11 @@ data class ObjectiveOptions(
     val saveKnowledge: Boolean = false,
     /** Lower than the framework limit if set. */
     val maxTasks: Int? = null,
+    /**
+     * The routine that started this objective, so its record says "Started by routine 'Morning
+     * news'"; null when the owner started it by hand (Phase 6, Appendix A).
+     */
+    val routineId: RoutineId? = null,
 )
 
 /**
@@ -153,4 +159,11 @@ data class TaskRecord(
     val finishedAt: Long? = null,
     /** When the task times out, epoch ms. */
     val deadlineAt: Long? = null,
+    /**
+     * When the task may be tried again after a model or provider failure that is expected to
+     * pass (a provider that is not answering, "slow down" answers): the driver skips it until
+     * then (epoch ms). Null when it does not wait. Declared last: storage adds it as the last
+     * column (schema 6).
+     */
+    val retryAt: Long? = null,
 )

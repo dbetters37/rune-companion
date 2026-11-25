@@ -154,6 +154,8 @@ class DefaultOwnerRequests(
                     is OwnerDecision.Grant -> "Owner gave permission ${scopeWords(decision.scope)}"
                     is OwnerDecision.Approve -> "Owner approved"
                     is OwnerDecision.Deny -> if (request.kind == OwnerRequestKind.APPROVAL) "Owner did not approve" else "Owner refused permission"
+                    // Phase 6 (WP1a): questions are answered through OwnerRequests.answer (WP5); logged without the text.
+                    is OwnerDecision.Answer -> "Owner answered a question"
                 }
                 record(request, "$what: ${request.toolTitle ?: request.capability.id}", request.summary, Severity.INFO) {
                     put("status", request.status.name)
