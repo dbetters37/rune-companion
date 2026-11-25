@@ -111,6 +111,24 @@ interface PreparedAction {
      * default is [changedSince].
      */
     suspend fun changedSinceOwnerAnswered(): String? = changedSince()
+
+    /**
+     * Takes what this call must hold from the owner's question to its end (Phase 6, K5, D11,
+     * rule 15): the one shell-command slot ([com.aicontrolcenter.core.operator.Workspace.reserveCommand]).
+     * The permission broker calls it once, after the grant check: before it asks the owner when
+     * the call needs an approval, or before the call runs when it needs none. Null: go on. A
+     * sentence: nothing is asked and nothing runs, and the model reads the sentence. Whatever it
+     * took is given back in [callEnded]. The default takes nothing.
+     */
+    suspend fun beforeOwnerAsked(): String? = null
+
+    /**
+     * The call has ended, however it ended (done, refused, failed, cancelled): gives back what
+     * [beforeOwnerAsked] took. The tool executor calls it once, in a `finally`, for every
+     * prepared action it authorised or tried to; it must be quick, must not throw and must not
+     * suspend. The default does nothing.
+     */
+    fun callEnded() {}
 }
 
 @Serializable

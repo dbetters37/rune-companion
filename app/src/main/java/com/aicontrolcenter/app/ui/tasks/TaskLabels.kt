@@ -77,13 +77,15 @@ val MessageType.label: String
         MessageType.ANSWER -> "Answer"
         MessageType.CANCEL -> "Cancelled"
         MessageType.STATUS -> "Status"
+        // Phase 6 (WP1a): a note the owner wrote to the team.
+        MessageType.GUIDANCE -> "Your note"
     }
 
 val MessageType.icon: ImageVector
     get() = when (this) {
         MessageType.ASSIGNMENT -> AppIcons.Tasks
         MessageType.ASSISTANCE_REQUEST, MessageType.QUESTION -> AppIcons.Help
-        MessageType.ASSISTANCE_RESPONSE, MessageType.ANSWER -> AppIcons.Forum
+        MessageType.ASSISTANCE_RESPONSE, MessageType.ANSWER, MessageType.GUIDANCE -> AppIcons.Forum
         MessageType.FINDINGS -> AppIcons.Insights
         MessageType.DELEGATION -> AppIcons.Delegation
         MessageType.MEMORY_SHARE -> AppIcons.MemoryBrain

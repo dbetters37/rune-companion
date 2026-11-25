@@ -18,6 +18,8 @@ internal fun Participant.toColumns(): ParticipantColumns = when (this) {
     Participant.Owner -> ParticipantColumns(ParticipantKind.OWNER, null)
     Participant.System -> ParticipantColumns(ParticipantKind.SYSTEM, null)
     is Participant.Agent -> ParticipantColumns(ParticipantKind.AGENT, agentId.value)
+    // Phase 6 (WP1a): a space recipient is stored from schema 6 on (WP1b: kind "space" and `to_space_id`).
+    is Participant.Space -> throw IllegalArgumentException("A message to a memory space can be stored only from schema 6 on.")
 }
 
 internal fun AgentMessage.toEntity(): AgentMessageEntity {

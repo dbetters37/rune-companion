@@ -3,6 +3,7 @@ package com.aicontrolcenter.core.agents
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.ProviderId
 import com.aicontrolcenter.core.registry.ConnectionStatus
+import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.registry.ModelDescriptor
 import com.aicontrolcenter.core.registry.ModelProvider
 import com.aicontrolcenter.core.registry.ModelStatus
@@ -32,11 +33,26 @@ enum class UnavailableReason {
     PROVIDER_OFFLINE,
     PROVIDER_AUTH_ERROR,
     BLOCKED_BY_LOCAL_ONLY_MODE,
+    ;
+
+    /**
+     * True when the reason is expected to pass by itself: the provider is only not answering
+     * (Phase 6, K15). Work then waits for it instead of moving farther from the phone (rule 25).
+     * Every other reason is the owner's doing (disabled, removed, key rejected, local-only) and
+     * keeps the fallback order.
+     */
+    val isTransient: Boolean get() = this == PROVIDER_OFFLINE
 }
 
 /**
  * Resolves an agent's availability from the registry. The primary model is tried first, then
  * each fallback in order; the reason reported on failure is the primary model's.
+ *
+ * Rule 25 (Phase 6, K15, N8): no silent move farther from the phone. When the primary model's
+ * problem is only transient ([UnavailableReason.isTransient]: its provider is not answering), a
+ * fallback is used only if its provider is no farther from the phone than the primary's
+ * ([Locality] order: on this phone, on the owner's network, on the internet); otherwise the
+ * primary's reason is reported and the work waits. Every other reason keeps the fallback order.
  */
 fun resolveAvailability(
     agent: AgentProfile,
@@ -48,10 +64,20 @@ fun resolveAvailability(
     val primary = agent.modelId
         ?: return AgentAvailability.Unavailable(UnavailableReason.NO_MODEL_ASSIGNED, "No model is assigned to this agent.")
     var firstProblem: AgentAvailability.Unavailable? = null
+    var farthestAllowed: Locality? = null
     for ((index, candidate) in (listOf(primary) + agent.fallbackModelIds).distinct().withIndex()) {
+        if (index > 0 && farthestAllowed != null) {
+            val locality = models[candidate]?.let { providers[it.providerId] }?.effectiveLocality
+            if (locality == null || locality > farthestAllowed) continue
+        }
         val problem = modelProblem(candidate, models, providers, settings)
         if (problem == null) return AgentAvailability.Ready(candidate, usingFallback = index > 0)
-        if (firstProblem == null) firstProblem = problem
+        if (firstProblem == null) {
+            firstProblem = problem
+            if (problem.reason.isTransient) {
+                farthestAllowed = models[candidate]?.let { providers[it.providerId] }?.effectiveLocality
+            }
+        }
     }
     return firstProblem!!
 }

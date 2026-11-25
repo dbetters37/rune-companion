@@ -72,6 +72,74 @@ object WebAddressPolicy {
         return "Pages on $why are not read: only public web addresses are."
     }
 
+    /** Refusal for a host that is not a usual name or a plain address (a number in an unusual form, an unparsable literal). */
+    const val NOT_A_USUAL_ADDRESS: String = "The address is not a usual web address, so it is not read."
+
+    /**
+     * Why [host], as written in a URL, is refused before anything is looked up, or null when it
+     * must still be resolved (a public-looking name) or is a public literal address (Phase 6,
+     * K6, D8). Pure: no lookup, no network. The tool calls it before it is authorised, so the
+     * owner is never asked about a page that would be refused; `AddressGuard` uses it as its
+     * literal check. Names that resolve to a private address are still refused only at read
+     * time ([refusal] on every resolved address).
+     *
+     * Refused: an empty host; `localhost` and any `*.localhost`; names under `.local`,
+     * `.internal`, `.home.arpa` and `.lan`; dotless names ("router", "nas"), which only a local
+     * resolver answers; a literal IPv4 or IPv6 address that [refusal] refuses (IPv4-mapped and
+     * NAT64 forms included); and every number in a form other than a plain `a.b.c.d`: decimal
+     * (`2130706433`), octal (`0177.0.0.1`), hexadecimal (`0x7f.0.0.1`), shortened (`127.1`)
+     * and leading zeros, which systems read in different ways. Case, square brackets around an
+     * IPv6 literal and trailing dots (`router.local.`) are ignored.
+     */
+    fun literalRefusal(host: String): String? {
+        var name = host.trim().lowercase()
+        if (name.startsWith("[") && name.endsWith("]")) name = name.substring(1, name.length - 1)
+        name = name.trimEnd('.')
+        if (name.isEmpty()) return NOT_A_USUAL_ADDRESS
+        if (':' in name) {
+            // An IPv6 literal: parsed without any lookup, because it holds a colon.
+            // Java parses a literal only when it starts with a hex digit or a colon; anything else it would look up.
+            if (!(name[0] == ':' || name[0] in '0'..'9' || name[0] in 'a'..'f')) return NOT_A_USUAL_ADDRESS
+            if (!name.all { it in '0'..'9' || it in 'a'..'z' || it == ':' || it == '.' || it == '%' }) return NOT_A_USUAL_ADDRESS
+            val address = try {
+                InetAddress.getByName(name)
+            } catch (e: java.net.UnknownHostException) {
+                return NOT_A_USUAL_ADDRESS
+            }
+            return refusal(address)
+        }
+        val labels = name.split('.')
+        if (labels.all { NUMBER_LABEL.matches(it) }) {
+            val quad = dottedQuad(labels) ?: return NOT_A_USUAL_ADDRESS
+            return refusal(InetAddress.getByAddress(quad))
+        }
+        val why = when {
+            name == "localhost" || name.endsWith(".localhost") -> "this device (loopback)"
+            LOCAL_SUFFIXES.any { name.endsWith(it) } -> "a local network name"
+            '.' !in name -> "a local network name"
+            else -> return null
+        }
+        return "Pages on $why are not read: only public web addresses are."
+    }
+
+    /** What some systems read as a part of an IPv4 address: decimal, octal (leading 0) or hexadecimal (0x). */
+    private val NUMBER_LABEL = Regex("[0-9]+|0x[0-9a-f]*")
+
+    private val LOCAL_SUFFIXES = listOf(".local", ".internal", ".home.arpa", ".lan")
+
+    /** The four bytes of a plain `a.b.c.d` (each 0 to 255, no leading zeros), or null for any other form. */
+    private fun dottedQuad(labels: List<String>): ByteArray? {
+        if (labels.size != 4) return null
+        val bytes = ByteArray(4)
+        for ((i, part) in labels.withIndex()) {
+            if (part.isEmpty() || part.length > 3 || (part.length > 1 && part[0] == '0') || part.any { it !in '0'..'9' }) return null
+            val value = part.toInt()
+            if (value > 255) return null
+            bytes[i] = value.toByte()
+        }
+        return bytes
+    }
+
     private fun ipv4Refusal(b: ByteArray): String? {
         val a = b[0].toInt() and 0xFF
         val second = b[1].toInt() and 0xFF

@@ -1,7 +1,9 @@
 package com.aicontrolcenter.core.operator
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.Serializable
 
 /** Whether the accessibility service can be used. */
@@ -320,6 +322,27 @@ interface ScreenOperator {
     /** Hides [agentName]'s operating indicator; the framework calls it when that agent's run or task ends. */
     fun endSession(agentName: String)
 
+    /**
+     * Keeps [agentName]'s session in [packageName] open, with its banner ("<agent> waits for your
+     * answer to act in <app> · Stop"), from the moment one of its screen actions waits for the
+     * owner until [releaseSession] with the same [holdId] (Phase 6, K7, D4, rule 12). Holds are
+     * counted per id (the request's id), so one run's [endSession] never ends a session another
+     * call still holds, and the idle time-out does not end it either. Stop ends every hold. A
+     * second hold with the same id is the same hold. The default does nothing.
+     */
+    fun holdSession(holdId: String, agentName: String, packageName: String) {}
+
+    /** Ends the hold [holdId]; the session then ends as usual (idle time-out or [endSession]). Unknown ids are ignored. */
+    fun releaseSession(holdId: String) {}
+
+    /**
+     * What is in front, as far as this app may know (Phase 6, K7, D6): [FrontState.App] with the
+     * window, [FrontState.Hidden] when a window is in front that Android does not let this app
+     * read (its permission screens, a secure window), [FrontState.None] when nothing is known.
+     * The default builds it from [activeWindow] and never answers Hidden.
+     */
+    suspend fun frontState(): FrontState = activeWindow()?.let { FrontState.App(it) } ?: FrontState.None
+
     /** Timing of the operating indicator. */
     companion object {
         /** The indicator stays this long after an agent's last screen call. */
@@ -348,7 +371,32 @@ interface ScreenControl {
     fun stop()
 
     fun resume()
+
+    /**
+     * True when Android switched screen control off by itself: the service had been ready, and
+     * after the app was stopped (or force-stopped) it is no longer enabled (Phase 6, K7, D7). The
+     * owner then turns it on again in Android's accessibility settings. False by default.
+     */
+    val switchedOffByAndroid: StateFlow<Boolean> get() = NEVER_SWITCHED_OFF
 }
+
+/** What [ScreenOperator.frontState] reports. */
+sealed interface FrontState {
+    /** Nothing is known: the service is not ready, or no window is in front. */
+    data object None : FrontState
+
+    /**
+     * A window is in front that Android does not let this app read, such as its permission
+     * screens: "The window in front is one Android does not let this app read. Nothing was read."
+     */
+    data object Hidden : FrontState
+
+    /** [window] is in front. */
+    data class App(val window: ActiveWindow) : FrontState
+}
+
+/** A flow that is false for good: read-only, so nothing can switch it. */
+private val NEVER_SWITCHED_OFF: StateFlow<Boolean> = MutableStateFlow(false).asStateFlow()
 
 /**
  * How often screen actions in one authorised app ask the owner. Stored per app

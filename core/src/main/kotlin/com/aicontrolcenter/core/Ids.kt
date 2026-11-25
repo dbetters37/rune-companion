@@ -28,6 +28,15 @@ import java.util.UUID
 /** A shared folder the owner picked (see `core.operator.SharedFolder`). */
 @Serializable @JvmInline value class FolderId(val value: String) { override fun toString(): String = value }
 
+/** An objective the owner scheduled (see `core.routines.Routine`). */
+@Serializable @JvmInline value class RoutineId(val value: String) { override fun toString(): String = value }
+
+/** One due time of a routine and what became of it (see `core.routines.RoutineRun`). */
+@Serializable @JvmInline value class RoutineRunId(val value: String) { override fun toString(): String = value }
+
+/** An owner-made folder pick-up rule (see `core.pickup.PickUpRule`). */
+@Serializable @JvmInline value class PickUpRuleId(val value: String) { override fun toString(): String = value }
+
 /** Source of new identifiers. Injected everywhere so tests can be deterministic. */
 fun interface IdGenerator {
     /** Returns a new unique id of the form `<prefix>_<random>`. */
@@ -53,3 +62,6 @@ fun IdGenerator.conversationId() = ConversationId(newId("cnv"))
 fun IdGenerator.memoryLinkId() = MemoryLinkId(newId("lnk"))
 fun IdGenerator.grantId() = GrantId(newId("grt"))
 fun IdGenerator.folderId() = FolderId(newId("fld"))
+fun IdGenerator.routineId() = RoutineId(newId("rtn"))
+fun IdGenerator.routineRunId() = RoutineRunId(newId("rrn"))
+fun IdGenerator.pickUpRuleId() = PickUpRuleId(newId("pku"))

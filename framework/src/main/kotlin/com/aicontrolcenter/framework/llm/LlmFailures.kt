@@ -47,6 +47,7 @@ internal fun LlmException.withoutSecret(lease: ProviderLease): LlmException {
         is LlmException.MalformedResponse -> LlmException.MalformedResponse(text)
         is LlmException.Unsupported -> LlmException.Unsupported(text)
         is LlmException.BlockedByPolicy -> LlmException.BlockedByPolicy(text)
+        is LlmException.DailyLimitReached -> LlmException.DailyLimitReached(text)
     }
 }
 

@@ -10,6 +10,8 @@ import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.tools.ToolOutcome
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
 
 /** A direct conversation between the owner and one agent. */
@@ -55,7 +57,39 @@ interface ConversationRepository {
 
     /** Appends with the next sequence number and returns the stored entry. [entry]'s own seq is ignored. */
     suspend fun appendEntry(entry: ConversationEntry): ConversationEntry
+
+    // --- Turns cut off by the app stopping (Phase 6, K8, R3). A turn is marked when it starts
+    // and unmarked when it ends, however it ends; a mark still there at the next start means the
+    // app stopped during that turn. The mark is changed only by these two methods: upserting the
+    // conversation (a rename, a new updated time) keeps it, and deleting the conversation removes
+    // it. Storage that persists (Room) and the in-memory reference override them and pass
+    // `ConversationTurnContract`; the no-op defaults exist so that older fakes compile.
+
+    /** Marks a turn of conversation [id] as started at [at], replacing an earlier mark. Nothing happens for an unknown conversation. */
+    suspend fun markTurnStarted(id: ConversationId, at: Long) {}
+
+    /** Removes the mark of conversation [id], if any. */
+    suspend fun markTurnEnded(id: ConversationId) {}
+
+    /** Conversations whose turn was marked started and not ended, oldest mark first (then id). */
+    suspend fun interruptedTurns(): List<InterruptedTurn> = emptyList()
+
+    // --- Reading parts of a long conversation (Phase 6, K8, P2). The defaults read every entry;
+    // Room overrides them with queries on the sequence number.
+
+    /** The sequence number of the newest entry, or null while the conversation has none. Emits again only when it changes. */
+    fun observeLatestSeq(id: ConversationId): Flow<Int?> = observeEntries(id).map { it.lastOrNull()?.seq }.distinctUntilChanged()
+
+    /** Entries with a sequence number greater than [seq], in order. */
+    suspend fun entriesAfter(id: ConversationId, seq: Int): List<ConversationEntry> = getEntries(id).filter { it.seq > seq }
+
+    /** The [limit] newest entries with a sequence number smaller than [seq], in order (oldest of them first). */
+    suspend fun entriesBefore(id: ConversationId, seq: Int, limit: Int): List<ConversationEntry> =
+        getEntries(id).filter { it.seq < seq }.takeLast(limit.coerceAtLeast(0))
 }
+
+/** A conversation whose turn the app stopped in the middle of ([ConversationRepository.interruptedTurns]). */
+data class InterruptedTurn(val conversationId: ConversationId, val startedAt: Long)
 
 /** What the agent is doing during a turn that is in progress. */
 data class LiveTurn(
@@ -119,6 +153,22 @@ interface AgentChat {
 
     /** Stops the turn in progress, if any. What was produced so far is kept. */
     suspend fun cancel(id: ConversationId)
+
+    /**
+     * Runs the turn of the owner's last message again, after it failed or was cut off (Phase 6,
+     * K8, R3: "Send again"), without storing the message a second time. Like [send] otherwise.
+     * The default refuses.
+     */
+    suspend fun sendAgain(id: ConversationId): TurnResult =
+        TurnResult.Failed("Sending again is not available in this version.", retryable = false)
+
+    /**
+     * Called once at start: for every turn the app stopped in the middle of
+     * ([ConversationRepository.interruptedTurns]) stores "The app stopped before <agent>
+     * finished answering. Send your message again to try again." as a failed entry and removes
+     * the mark. Returns how many. The default does nothing and returns 0.
+     */
+    suspend fun recoverInterruptedTurns(): Int = 0
 }
 
 /** A tool call and its result as shown in a transcript. */

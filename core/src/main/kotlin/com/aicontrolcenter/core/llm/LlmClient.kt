@@ -1,6 +1,7 @@
 package com.aicontrolcenter.core.llm
 
 import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.ConversationId
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.registry.ConnectionStatus
@@ -88,6 +89,16 @@ sealed class LlmException(message: String, cause: Throwable? = null) : Exception
     class BlockedByPolicy(message: String) : LlmException(message) {
         override val retryable = false
     }
+
+    /**
+     * The framework refused the call because today's limit of model answers, tokens or money is
+     * reached (Phase 6, K11, rule 6). [message] is the sentence for the owner, e.g. "Today's limit
+     * of 200 model answers is reached. It starts again at midnight, or you can raise it in
+     * Settings > Daily limits." Not retryable today: a running objective pauses instead of failing.
+     */
+    class DailyLimitReached(message: String) : LlmException(message) {
+        override val retryable = false
+    }
 }
 
 /** A model as reported by a provider's listing. */
@@ -139,6 +150,8 @@ data class CallContext(
     val rootTaskId: TaskId? = null,
     /** What is being sent, in words, for the "information left the device" record. */
     val purpose: String = "prompt and conversation",
+    /** The owner's chat the call answers in, so its cost is counted per chat (Phase 6, K8); null outside a chat. */
+    val conversationId: ConversationId? = null,
 )
 
 /**

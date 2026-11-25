@@ -235,6 +235,8 @@ class PermissionBroker(
             // The exact preview, as the tool assessed it.
             OwnerRequestKind.APPROVAL -> call.assessment.details
             OwnerRequestKind.PERMISSION -> listOf("Needs the permission \"${info.title}\": ${info.description}") + call.assessment.details
+            // Phase 6 (WP1a): the broker never raises a question; questions are raised by the question tool (WP5).
+            OwnerRequestKind.QUESTION -> error("The permission broker does not raise questions.")
         }
         return OwnerRequest(
             id = ids.requestId(), kind = kind, agentId = context.agent.id, toolId = call.tool.id,

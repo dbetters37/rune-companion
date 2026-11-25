@@ -4,6 +4,8 @@ import com.aicontrolcenter.core.MemoryId
 import com.aicontrolcenter.core.MemoryLinkId
 import com.aicontrolcenter.core.SpaceId
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 
 /** Which memories a query covers. Every field narrows; the default covers everything. */
 data class MemoryFilter(
@@ -104,6 +106,19 @@ interface MemoryRepository {
 
     /** Deletes the space and every memory in it. Returns how many memories went. */
     suspend fun deleteSpace(id: SpaceId): Int
+
+    // --- Counts (Phase 6, K9, rule 16). The defaults count whole records; Room overrides them
+    // with COUNT(*) queries. Both pass `MemoryCountContract`.
+
+    /** How many memories [filter] covers. Emits again only when the number changes. */
+    fun observeCount(filter: MemoryFilter = MemoryFilter()): Flow<Int> = observe(filter).map { it.size }.distinctUntilChanged()
+
+    /**
+     * How many memories each shared space holds (scope [MemoryScope.Shared]), expired ones
+     * included; spaces without memories are left out. Emits again only when a number changes.
+     */
+    fun observeCountsBySpace(): Flow<Map<SpaceId, Int>> =
+        observe().map { all -> all.mapNotNull { (it.scope as? MemoryScope.Shared)?.spaceId }.groupingBy { it }.eachCount() }.distinctUntilChanged()
 }
 
 /**

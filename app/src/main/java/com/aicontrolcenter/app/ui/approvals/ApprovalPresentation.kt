@@ -141,6 +141,8 @@ val OwnerRequestKind.title: String
     get() = when (this) {
         OwnerRequestKind.APPROVAL -> "Approval needed"
         OwnerRequestKind.PERMISSION -> "Permission needed"
+        // Phase 6 (WP1a): an agent's question; its own screen comes with WP11a.
+        OwnerRequestKind.QUESTION -> "Question waiting"
     }
 
 /** "Approval request" or "Permission request": a request that no longer waits for anyone. */
@@ -148,6 +150,7 @@ val OwnerRequestKind.closedTitle: String
     get() = when (this) {
         OwnerRequestKind.APPROVAL -> "Approval request"
         OwnerRequestKind.PERMISSION -> "Permission request"
+        OwnerRequestKind.QUESTION -> "Question"
     }
 
 /**
@@ -193,6 +196,8 @@ fun RiskLevel.toRiskLabel(): StatusLabel = when (this) {
 
 /** The answers offered for [request]: a scope for a permission (the task one only inside a task), yes or no for an approval. */
 fun choicesFor(request: OwnerRequest): List<RequestChoice> = when (request.kind) {
+    // Phase 6 (WP1a): a question is answered with words on its own screen (WP11a), never with these buttons.
+    OwnerRequestKind.QUESTION -> emptyList()
     // No first: the safe answer leads.
     OwnerRequestKind.APPROVAL -> listOf(RequestChoice.DENY, RequestChoice.APPROVE)
     OwnerRequestKind.PERMISSION -> request.offeredScopes.map {
@@ -277,6 +282,7 @@ fun requestUi(
         raisedAt = formatCompactTimestamp(request.createdAt, now, zone),
         choices = if (open) choicesFor(request) else emptyList(),
         consequences = if (!open) emptyMap() else when (request.kind) {
+            OwnerRequestKind.QUESTION -> emptyMap()
             OwnerRequestKind.APPROVAL -> mapOf(
                 RequestChoice.DENY to "Nothing happens. ${agent.name} is told, with your note if you write one.",
                 RequestChoice.APPROVE to "Runs exactly what is shown above, this one time. You are asked again next time.",
