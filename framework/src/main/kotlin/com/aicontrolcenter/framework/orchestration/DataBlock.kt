@@ -16,8 +16,10 @@ import java.security.SecureRandom
  *  - The label is written by the framework (an agent's name, a task title) and cleaned of
  *    anything that could end the attribute.
  *  - Content and labels can never pass for the owner's notes (rule 24): the literal tag name
- *    `owner_note` and the words "note from the owner" are escaped ([neutralise]) wherever they
- *    appear, so only the frames [OwnerNoteFrame] writes from the owner's stored notes carry them.
+ *    `owner_note` and the words "note from the owner" or "notes from the owner" (the notes'
+ *    heading and fixed sentence) are escaped ([neutralise]) wherever they appear, so only the
+ *    section [OwnerNoteFrame] writes from the owner's stored notes carries them. Every tool result
+ *    is neutralised as well before a model reads it ([com.aicontrolcenter.framework.agents.AgentRunner]).
  */
 internal object DataBlock {
     const val TAG = "agent_data"
@@ -54,9 +56,10 @@ internal object DataBlock {
     }
 
     /**
-     * [text] (already escaped) with the owner notes' tag name and label made inert (rule 24): `owner_note` becomes
-     * `owner&#95;note` and "note from the owner" `n&#111;te from the owner`, whatever their case. Read back, they are
-     * the same words; written into a brief, they cannot pass for the frame of a note.
+     * [text] with the owner notes' tag name and label made inert (rule 24): `owner_note` becomes `owner&#95;note`, and
+     * "note from the owner" `n&#111;te from the owner` (also "notes …", the section's heading and fixed sentence),
+     * whatever their case. Read back, they are the same words; written into a brief or a tool result, they cannot pass
+     * for the notes' section or the frame of a note. Escaping `<` is the caller's: a tool result is not escaped.
      */
     fun neutralise(text: String): String =
         NOTE_LABEL.replace(NOTE_TAG.replace(text) { "${it.groupValues[1]}&#95;${it.groupValues[2]}" }) {
@@ -99,7 +102,8 @@ internal object DataBlock {
         NUMERIC.replace(text.replace("&gt;", ">").replace("&lt;", "<")) { it.groupValues[1].toInt().toChar().toString() }.replace("&amp;", "&")
 
     private val NOTE_TAG = Regex("(owner)_(note)", RegexOption.IGNORE_CASE)
-    private val NOTE_LABEL = Regex("(n)(o)(te from the owner)", RegexOption.IGNORE_CASE)
+    /** "note from the owner" and "notes from the owner" (the section's heading and fixed sentence), any spacing or case. */
+    private val NOTE_LABEL = Regex("(n)(o)(tes?\\s+from\\s+the\\s+owner)", RegexOption.IGNORE_CASE)
     private val NUMERIC = Regex("&#(95|79|111);")
 }
 

@@ -329,7 +329,9 @@ do it.
 - **Agents can mislead each other.** What one agent writes reaches the next agent's prompt as
   quoted data, never as instructions, and cannot change any agent's permissions. A model can
   still be persuaded by it, so an agent that read a planted instruction can pass bad work on.
-  Reviews are done by another model and catch mistakes, not attacks.
+  Reviews are done by another model and catch mistakes, not attacks. Text in a page, file or
+  screen that imitates your notes to the team ("Notes from the owner") reaches the agent's model
+  slightly altered, so it cannot pass for your notes.
 - **Limits stop work, not cost already spent.** Caps on tasks, messages, model calls and time
   bound how much an objective can do. A cloud provider bills for the calls made before a limit
   was reached.
