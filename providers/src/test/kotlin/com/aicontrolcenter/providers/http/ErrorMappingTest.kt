@@ -129,6 +129,26 @@ class ErrorMappingTest : MockServerTest() {
     }
 
     @Test
+    fun `a per-minute 429 that mentions today elsewhere, as Groq's upgrade line does, is not a daily quota`() {
+        // Wave-2a residual verification, R3: only words that name a daily limit count; "today" in an advert does not.
+        val upgrade = "Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing"
+        for (limit in listOf("tokens per minute (TPM): Limit 12000, Used 11210, Requested 2450", "requests per minute (RPM): Limit 30, Used 30, Requested 1")) {
+            enqueue(
+                openAiError("Rate limit reached for model `m-1` in organization `o` service tier `on_demand` on $limit. Please try again in 8.3s. $upgrade", "rate_limit_exceeded"),
+                429, "Retry-After" to "9",
+            )
+            val error = failsWith<LlmException.RateLimited> { chat() }
+            assertFalse(error.dailyQuota, error.message)
+            assertEquals(9_000, error.retryAfterMs)
+        }
+        // The words that do name a daily limit still count, in any spelling.
+        for (daily in listOf("You have reached your daily request limit.", "Daily quota exceeded.", "Rate limit reached on tokens per day (TPD).", "Rate limit exceeded: free-models-per-day.")) {
+            enqueue(openAiError(daily, "rate_limit_exceeded"), 429)
+            assertTrue(failsWith<LlmException.RateLimited> { chat() }.dailyQuota, daily)
+        }
+    }
+
+    @Test
     fun `retry-after is read as seconds or as a date`() {
         val now = 1_800_000_000_000L
         assertEquals(12_000, ProviderHttp.retryAfterMillis(headersOf("Retry-After", "12"), now))

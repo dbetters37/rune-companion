@@ -93,11 +93,14 @@ do it.
   a few times (its other tasks on that provider wait with it), then counts it as a failed
   attempt. A provider that asks to slow down without saying for how long is waited for 30
   seconds, then 2 minutes, which outlasts the per-minute limits of free plans (Groq, OpenRouter's
-  free models, Gemini's free tier). If it still asks after that, or its answer says that a daily
-  quota is used up, it has most likely used up its quota for the day; its tasks then fail
-  within minutes instead of waiting out the objective's time limit, until a call to that
-  provider is answered again. Such refused calls are not counted against your daily limit of
-  model answers.
+  free models, Gemini's free tier); a task does not ask it again in between. If it still asks
+  after that, it has most likely used up its quota for the day; its tasks then fail within
+  minutes instead of waiting out the objective's time limit, until a call to that provider is
+  answered again. Five tasks on such a provider end in about 4 minutes, with about 3 requests
+  each. When its answer itself says that a daily quota is used up ("per day", "daily limit"),
+  the tasks of that model fail at once, and the provider's other models keep their waits, since
+  free plans often count a day per model. Such refused calls are not counted against your daily
+  limit of model answers, also when you pause or stop the objective while it waits to try again.
 - Content an agent reads (web pages, files, other apps' screens, other agents' messages) can
   contain instructions aimed at the model. The framework passes such content as data and
   never lets it raise an agent's permissions, but a model can still be misled by it. Keep

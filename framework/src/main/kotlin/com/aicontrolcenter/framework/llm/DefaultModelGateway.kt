@@ -68,6 +68,10 @@ import kotlin.time.TimeSource
  *    over a rejected key; the re-checks then look again.
  *  - A provider that asks to slow down (429) is waited for as it asks ([RetryPolicy]); after the
  *    last attempt the failure stays [LlmException.RateLimited], so the caller waits rather than fails.
+ *    A call made for an objective's task ([CallContext.taskId]) does not repeat a "slow down" that
+ *    names no wait: the task's step waits itself, 30 seconds and then 2 minutes.
+ *  - A call that only ever got "slow down" answers is not one of today's answers, also when it is
+ *    stopped while it waits to try again (an objective paused or stopped meanwhile).
  *
  * @param usage where every call is recorded (Room in the app). Only adds; nothing here deletes usage (F4).
  * @param limiter today's limits; built from read-only usage reports, read-only prices and the
@@ -123,7 +127,7 @@ class DefaultModelGateway(
                     return succeed(call, response!!)
                 }
                 call.attemptFailed(failure)
-                val pause = retry.delayBeforeRetry(call.attempts, failure) ?: throw fail(call, failure)
+                val pause = retry.delayBeforeRetry(call.attempts, failure, callerWaits(call)) ?: throw fail(call, failure)
                 waitBeforeRetry(call, pause)
             }
         } finally {
@@ -169,7 +173,7 @@ class DefaultModelGateway(
                     return@flow
                 }
                 call.attemptFailed(failure)
-                val pause = (if (passedOn) null else retry.delayBeforeRetry(call.attempts, failure)) ?: throw fail(call, failure)
+                val pause = (if (passedOn) null else retry.delayBeforeRetry(call.attempts, failure, callerWaits(call))) ?: throw fail(call, failure)
                 waitBeforeRetry(call, pause)
             }
         } finally {
@@ -276,6 +280,9 @@ class DefaultModelGateway(
         (request.maxOutputTokens?.toLong() ?: DailyLimiter.DEFAULT_ANSWER_ESTIMATE).coerceAtLeast(0),
     )
 
+    /** Whether [call]'s caller waits itself when the provider asks the app to slow down: an objective's step does ([RetryPolicy]). */
+    private fun callerWaits(call: ModelCall): Boolean = call.context.taskId != null
+
     /** Waits [pauseMs] before the next attempt, as the provider or the retry policy asked. */
     private suspend fun waitBeforeRetry(call: ModelCall, pauseMs: Long) {
         call.retryWaitMs += pauseMs
@@ -350,12 +357,16 @@ class DefaultModelGateway(
         return response
     }
 
-    /** Writes the event of a call that ended without a result or a failure of its own. */
+    /**
+     * Writes the event of a call that ended without a result or a failure of its own. A call that sent a request counts
+     * towards today's limits however it ended, unless every attempt it sent was answered "slow down" (429): stopped while
+     * it waited to try again, it answered nothing and cost nothing, like a call that ended on that answer.
+     */
     private suspend fun closeUnrecorded(call: ModelCall) {
         withContext(NonCancellable) {
-            // A call that sent a request counts towards today's limits however it ended.
-            settleLimits(call, used = null)
-            if (!call.recorded) bestEffort { journal.cancelled(call, elapsed(call), clock.now()) }
+            val onlySlowDowns = call.attempts > 0 && call.rateLimitedWaits == call.attempts
+            settleLimits(call, used = null, counted = !onlySlowDowns)
+            if (!call.recorded) bestEffort { journal.cancelled(call, elapsed(call), clock.now(), afterSlowDown = onlySlowDowns) }
         }
     }
 

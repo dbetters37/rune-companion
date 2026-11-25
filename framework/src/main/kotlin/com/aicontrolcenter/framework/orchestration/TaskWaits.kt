@@ -103,9 +103,13 @@ internal sealed interface Trouble {
  * Each such answer after the provider's last wait is a strike, and the provider's waits follow R4 whichever step a
  * strike hits: 30 seconds after the first, 2 minutes after each later one, longer when the provider asks for it.
  *
- * Its quota counts as used up for now (a free tier's daily quota answers "slow down" all day), and [slowedDown] returns
- * false, when:
- *  - the answer names a daily quota ([LlmException.RateLimited.dailyQuota]): at once, no wait;
+ * An answer that names a daily quota ([LlmException.RateLimited.dailyQuota]) is never waited for: [slowedDown] returns
+ * false at once, and the step counts it as an ordinary failed attempt. It is no strike and leaves any hold as it is,
+ * because a daily quota is often one model's (Gemini's and Groq's are per model): another model of the same provider
+ * that answers a per-minute "slow down" still gets its waits (wave-2a residual verification, NEW-R3-CROSS-MODEL).
+ *
+ * Otherwise its quota counts as used up for now (a free tier's daily quota answers "slow down" all day), and
+ * [slowedDown] returns false, when:
  *  - it said nothing about when to try again and asks a third time, after the 30-second and the 2-minute wait
  *    ([ProviderWaits.WAITS_WITHOUT_RETRY_AFTER]; a per-minute limit, as Groq's, OpenRouter's free models' and Gemini's
  *    free tier's, is over by then, NEW-2);
@@ -132,19 +136,17 @@ internal class ProviderSlowDowns {
      */
     @Synchronized
     fun slowedDown(provider: ProviderId?, error: LlmException.RateLimited, now: Long, waitUntil: Long, mayWait: Boolean): Boolean {
-        val id = provider ?: return mayWait && !error.dailyQuota
+        // A used-up daily quota: never waited for, and no strike against the provider's other models.
+        if (error.dailyQuota) return false
+        val id = provider ?: return mayWait
         val before = states[id]?.takeIf { now - maxOf(it.lastAt, it.until) <= REPEAT_WINDOW_MS }
         // The same answer reached several steps whose calls were already on their way: they wait together.
-        if (before != null && before.until > now && !error.dailyQuota) {
+        if (before != null && before.until > now) {
             if (mayWait) states[id] = SlowDown(maxOf(before.until, waitUntil), error, now, before.strikes)
             return mayWait
         }
         val strikes = (before?.strikes ?: 0) + 1
-        val allowed = when {
-            error.dailyQuota -> 0
-            error.retryAfterMs != null -> ProviderWaits.MAX_WAITS_AFTER_FAILURE
-            else -> ProviderWaits.WAITS_WITHOUT_RETRY_AFTER
-        }
+        val allowed = if (error.retryAfterMs != null) ProviderWaits.MAX_WAITS_AFTER_FAILURE else ProviderWaits.WAITS_WITHOUT_RETRY_AFTER
         val waits = mayWait && strikes <= allowed
         // R4 for the provider as a whole: 30 seconds after its first strike, 2 minutes after a later one.
         states[id] = SlowDown(if (waits) maxOf(waitUntil, now + ProviderWaits.waitMs(strikes - 1, error)) else now, error, now, strikes)

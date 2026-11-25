@@ -36,7 +36,7 @@ internal fun LlmException.withoutSecret(lease: ProviderLease): LlmException {
     val text = lease.redact(message.orEmpty())
     return when (this) {
         is LlmException.Authentication -> LlmException.Authentication(text)
-        is LlmException.RateLimited -> LlmException.RateLimited(text, retryAfterMs)
+        is LlmException.RateLimited -> LlmException.RateLimited(text, retryAfterMs, dailyQuota = dailyQuota)
         is LlmException.Overloaded -> LlmException.Overloaded(text)
         is LlmException.ModelNotFound -> LlmException.ModelNotFound(text)
         is LlmException.ContextTooLong -> LlmException.ContextTooLong(text)

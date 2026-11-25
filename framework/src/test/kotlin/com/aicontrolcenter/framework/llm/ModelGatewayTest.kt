@@ -225,6 +225,41 @@ class ModelGatewayTest {
     }
 
     @Test
+    fun `an objective's call is not repeated within the gateway for a 429 that names no wait, since its step waits itself`() = runTest {
+        // Wave-2a residual verification, NEW-R3-INT1-BOUND: the step waits 30 seconds, then 2 minutes (R4); repeating the
+        // request after 1 and 2 seconds inside a per-minute limit only spends requests the provider may count.
+        val world = TestWorld(retry = RetryPolicy(initialDelayMs = 1_000, maxRetryAfterMs = 20_000))
+        val objective = CallContext(taskId = com.aicontrolcenter.core.TaskId("tsk_1"), rootTaskId = com.aicontrolcenter.core.TaskId("tsk_0"))
+        val bare = ScriptedLlmClient.script(ScriptStep.Fail(LlmException.RateLimited("Rate limit exceeded: free-models-per-min.")), ScriptStep.Reply("ok"))
+        assertFailsWith<LlmException.RateLimited> { world.gateway.chat(world.serve(bare).id, ask, objective) }
+        assertEquals(1, bare.requests.size)
+        assertEquals(0, currentTime, "no time was spent waiting inside the call")
+
+        // A wait the provider named is still waited for inside the call, and other failures are still repeated.
+        val named = ScriptedLlmClient.script(ScriptStep.Fail(LlmException.RateLimited("Please try again in 8.3s.", retryAfterMs = 9_000)), ScriptStep.Reply("ok"))
+        assertEquals("ok", world.gateway.chat(world.serve(named).id, ask, objective).message.text)
+        assertEquals(2, named.requests.size)
+        val busy = ScriptedLlmClient.script(ScriptStep.Fail(LlmException.Overloaded("busy")), ScriptStep.Reply("ok"))
+        assertEquals("ok", world.gateway.chat(world.serve(busy).id, ask, objective).message.text)
+
+        // A chat, where nothing else waits, still repeats it.
+        val chat = ScriptedLlmClient.script(ScriptStep.Fail(LlmException.RateLimited("Rate limit exceeded: free-models-per-min.")), ScriptStep.Reply("ok"))
+        assertEquals("ok", world.gateway.chat(world.serve(chat).id, ask, CallContext(conversationId = com.aicontrolcenter.core.ConversationId("cnv_1"))).message.text)
+        assertEquals(2, chat.requests.size)
+    }
+
+    @Test
+    fun `a daily quota stays a daily quota when the key is removed from the provider's answer`() = runTest {
+        val answer = ScriptedLlmClient.script(ScriptStep.Fail(LlmException.RateLimited("Quota of key $secret used up.", retryAfterMs = 35_000, dailyQuota = true)))
+        val model = world.model(world.provider(FakeProviderAdapter(client = answer), baseUrl = "https://quota.example.com/v1", apiKey = secret))
+        val error = assertFailsWith<LlmException.RateLimited> { world.gateway.chat(model.id, ask) }
+        assertTrue("[key removed]" in error.message.orEmpty(), error.message)
+        assertTrue(error.dailyQuota)
+        assertEquals(35_000, error.retryAfterMs)
+        assertEquals(1, answer.requests.size, "and it is not sent again")
+    }
+
+    @Test
     fun `a stream is retried while nothing was passed on, never after output started`() = runTest {
         val recovers = StreamingClient { _, attempt ->
             flow {

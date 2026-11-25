@@ -27,10 +27,15 @@ data class RetryPolicy(
      * call), or null when the call should fail now. A provider's Retry-After is honoured, never
      * shortened: sending earlier than asked only burns another request. A provider that says its
      * daily quota is used up ([LlmException.RateLimited.dailyQuota]) is not asked again.
+     *
+     * [callerWaits]: the caller waits itself when the provider asks the app to slow down (an
+     * objective's step waits 30 seconds, then 2 minutes). A "slow down" that names no wait is then
+     * not repeated within the call: a per-minute limit is not over in a second or two, and each
+     * repeat is a request the provider may count (wave-2a residual verification, NEW-R3-INT1-BOUND).
      */
-    fun delayBeforeRetry(attempt: Int, error: LlmException): Long? {
+    fun delayBeforeRetry(attempt: Int, error: LlmException, callerWaits: Boolean = false): Long? {
         if (!error.retryable || attempt > maxRetries) return null
-        if (error is LlmException.RateLimited && error.dailyQuota) return null
+        if (error is LlmException.RateLimited && (error.dailyQuota || (callerWaits && error.retryAfterMs == null))) return null
         val backoff = (initialDelayMs shl (attempt - 1).coerceAtMost(16)).coerceAtMost(maxDelayMs)
         val asked = (error as? LlmException.RateLimited)?.retryAfterMs ?: return backoff
         if (asked > maxRetryAfterMs) return null

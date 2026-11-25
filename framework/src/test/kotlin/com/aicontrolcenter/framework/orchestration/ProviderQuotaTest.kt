@@ -60,19 +60,23 @@ class ProviderQuotaTest {
         // Low enough that the "slow down" calls alone would use it up if they counted.
         val team = team { copy(maxModelCallsPerDay = 20) }
         team.script.plan = { _, _ -> ScriptStep.Reply(planJson((1..5).map { task("t$it", "Research part $it", skills = listOf("research")) })) }
-        team.script.work = { ScriptStep.Fail(LlmException.RateLimited("You exceeded your current quota for today")) }
+        // A 429 that says nothing about a day or about when to try again (wave-2a residual verification, NEW-R3-INT1-BOUND):
+        // it gets R4's waits (30 seconds, then 2 minutes) before it counts as a used-up quota.
+        team.script.work = { ScriptStep.Fail(LlmException.RateLimited("Gemini is limiting requests (HTTP 429).")) }
         val objective = team.start()
         val minutes = team.runOut(objective.id)
 
         val ended = team.objective(objective.id)
         assertTrue(ended.status != TaskStatus.RUNNING && ended.status != TaskStatus.PAUSED, "${ended.status}: ${ended.statusDetail}")
-        assertTrue(minutes <= 10, "ended after $minutes minutes")
+        assertTrue(minutes <= 5, "ended after $minutes minutes")
         assertTrue(team.work(objective.id).all { it.status == TaskStatus.FAILED }, team.work(objective.id).joinToString { "${it.status} ${it.statusDetail}" })
         val sent = team.script.seenBy(OrchestrationProtocol.TASK).size
-        assertTrue(sent <= 40, "work requests sent: $sent")
         val calls = team.world.events(ActivityType.MODEL_CALL).size
         println("Used-up quota, five tasks: ${ended.status} after $minutes min; $sent work requests, $calls gateway calls")
-        assertTrue(calls <= 15, "gateway calls: $calls")
+        // One request per refused call: an objective's call is not repeated within the gateway for a 429 that names no
+        // wait, since the step's own waits cover it. The two R4 waits cost one more call per task than INT-1's bound of 15.
+        assertTrue(sent <= 20, "work requests sent: $sent")
+        assertTrue(calls <= 16, "gateway calls: $calls")
 
         // The owner's other, healthy provider still answers: none of those calls was one of today's answers.
         val healthy = ScriptedLlmClient.replies("Hello!")
@@ -237,5 +241,60 @@ class ProviderQuotaTest {
             "The Director could not plan: Gemini has used up its quota for today. Try again tomorrow, or give the Director a model of another provider.",
             ended.error,
         )
+    }
+
+    @Test
+    fun `a per-minute 429 whose message mentions today elsewhere is waited out, not taken for a used-up daily quota`() = runTest {
+        // Wave-2a residual verification, R3: Groq's per-minute answers end with an advert that says "today".
+        val team = team()
+        val start = team.world.clock.now()
+        val groq = "Groq is limiting requests (HTTP 429): Rate limit reached for model `m-1` in organization `o` service tier `on_demand` on tokens per minute (TPM): " +
+            "Limit 12000, Used 11210, Requested 2450. Please try again in 8.3s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing"
+        team.script.work = { s ->
+            if (team.world.clock.now() - start < 60_000) ScriptStep.Fail(LlmException.RateLimited(groq, retryAfterMs = 9_000)) else ScriptStep.Reply("Result of ${s.agent}")
+        }
+        val objective = team.start()
+        var seconds = 0
+        while (team.objective(objective.id).status == TaskStatus.RUNNING && seconds < 600) {
+            team.pass(5_000)
+            seconds += 5
+        }
+        assertEquals(TaskStatus.COMPLETED, team.objective(objective.id).status, team.work(objective.id).joinToString { "${it.status} ${it.statusDetail} ${it.error}" })
+        assertEquals(0, team.work(objective.id).single().attempt, "the waits used no attempt")
+    }
+
+    @Test
+    fun `a daily quota used up on one model takes no waits away from another model of the same provider`() = runTest {
+        // Wave-2a residual verification, NEW-R3-CROSS-MODEL: Gemini's and Groq's quotas are per model.
+        val team = TeamFixture(this).setUp()
+        val provider = team.world.provider(FakeProviderAdapter(client = team.script.client), baseUrl = "https://api.example.com/v1", name = "Gemini")
+        val usedUp = team.world.model(provider, modelName = "model-a", capabilities = ModelCapabilities(toolCalling = true, jsonOutput = true))
+        val perMinute = team.world.model(provider, modelName = "model-b", capabilities = ModelCapabilities(toolCalling = true, jsonOutput = true))
+        for (agent in listOf(team.director, team.analyst, team.writer, team.reviewer)) team.world.agents.upsert(team.world.agents.get(agent.id)!!.copy(modelId = perMinute.id))
+        team.world.agents.upsert(team.world.agents.get(team.researcher.id)!!.copy(modelId = usedUp.id))
+        val start = team.world.clock.now()
+        team.script.plan = { _, _ ->
+            ScriptStep.Reply(planJson((1..3).map { task("r$it", "Research part $it", assignee = "Researcher") } + (1..3).map { task("a$it", "Analyse part $it", assignee = "Analyst") }))
+        }
+        val quota = "Gemini is limiting requests (HTTP 429): You exceeded your current quota, please check your plan and billing details."
+        team.script.work = { s ->
+            when {
+                s.request.model == "model-a" -> ScriptStep.Fail(LlmException.RateLimited(quota, retryAfterMs = 35_000, dailyQuota = true))
+                team.world.clock.now() - start < 90_000 -> ScriptStep.Fail(LlmException.RateLimited(quota, retryAfterMs = 40_000, dailyQuota = false))
+                else -> ScriptStep.Reply("Result of ${s.agent}")
+            }
+        }
+        val objective = team.start()
+        var seconds = 0
+        while (team.objective(objective.id).status == TaskStatus.RUNNING && seconds < 900) {
+            team.pass(5_000)
+            seconds += 5
+        }
+
+        val work = team.work(objective.id)
+        val analysed = work.filter { it.title.startsWith("Analyse") }
+        assertTrue(analysed.all { it.status == TaskStatus.COMPLETED }, work.joinToString("\n") { "${it.title}: ${it.status} ${it.statusDetail} ${it.error}" })
+        assertTrue(work.filter { it.title.startsWith("Research") }.all { it.status == TaskStatus.FAILED }, work.joinToString { "${it.title}: ${it.status}" })
+        assertTrue(seconds <= 300, "ended after $seconds seconds")
     }
 }

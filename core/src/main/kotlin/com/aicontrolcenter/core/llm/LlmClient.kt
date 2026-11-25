@@ -54,11 +54,15 @@ sealed class LlmException(message: String, cause: Throwable? = null) : Exception
 
         companion object {
             /**
-             * "per day", "per-day", "PerDay", "daily", "today", and the short forms "RPD" and "TPD" (requests and tokens
-             * per day): what providers' 429 answers say when the limit reached is a daily one. A per-minute limit
-             * ("per minute", "RPM", "per-min") says none of these.
+             * "per day", "per-day", "PerDay", "daily quota", "daily request limit", and the short forms "RPD" and "TPD"
+             * (requests and tokens per day): what providers' 429 answers say when the limit reached is a daily one. A
+             * per-minute limit ("per minute", "RPM", "per-min") says none of these. "Today" alone does not count: Groq's
+             * per-minute answers end "Upgrade to Dev Tier today".
              */
-            private val DAILY = Regex("per[\\s_-]?day|daily|today|(?<![a-z])[rt]pd(?![a-z])", RegexOption.IGNORE_CASE)
+            private val DAILY = Regex(
+                "per[\\s_-]?day|daily(?:[\\s_-]+[a-z]+)?[\\s_-]*(?:quota|limit)|(?<![a-z])[rt]pd(?![a-z])",
+                RegexOption.IGNORE_CASE,
+            )
 
             /** True when [text], a provider's answer to a call, names a daily quota. */
             fun namesDailyQuota(text: String): Boolean = DAILY.containsMatchIn(text)

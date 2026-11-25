@@ -225,6 +225,50 @@ class DailyLimitTest {
     }
 
     @Test
+    fun `a call stopped while it waited after only slow-down answers is not one of today's answers either`() = runTest {
+        // Wave-2a residual verification, NEW-LIMIT-CANCELLED-429: an objective paused or stopped while its call waits on a short
+        // Retry-After must not use up one of the owner's answers, now or after a restart.
+        val metered = MeteredWorld(this)
+        metered.settings { it.copy(maxModelCallsPerDay = 2) }
+        val healthy = metered.cloud(ScriptedLlmClient.replies("One", "Two", "Three"))
+        val limited = metered.cloud(ScriptedLlmClient { _, _ -> ScriptStep.Fail(LlmException.RateLimited("Rate limit exceeded: free-models-per-min.", retryAfterMs = 10_000)) })
+        metered.gateway.chat(healthy.id, ask)
+
+        val waiting = async { runCatching { metered.gateway.chat(limited.id, ask) } }
+        runCurrent()
+        advanceTimeBy(3_000)
+        waiting.cancel()
+        runCurrent()
+
+        assertEquals(1, metered.limiter.today().calls)
+        val rows = metered.usage.byModel(UsageRange.day(metered.clock.now(), metered.zone))
+        assertEquals(1, DailyUse.of(rows, emptyMap()).calls)
+        assertEquals(1, DailyLimiter(metered.usage, metered.ownerPrices, metered.world.settings, metered.clock) { metered.zone }.today().calls)
+        assertEquals("Two", metered.gateway.chat(healthy.id, ask).message.text)
+        assertFailsWith<LlmException.DailyLimitReached> { metered.gateway.chat(healthy.id, ask) }
+        // Its event still says it was stopped.
+        assertEquals("Model call cancelled", metered.modelCalls()[1].title)
+    }
+
+    @Test
+    fun `a call stopped while its second attempt was on its way still counts`() = runTest {
+        // The attempt in flight may have been answered and billed: only calls whose every attempt was refused are left out.
+        val metered = MeteredWorld(this)
+        val attempts = java.util.concurrent.atomic.AtomicInteger()
+        val limited = metered.cloud(ScriptedLlmClient { _, _ ->
+            if (attempts.getAndIncrement() == 0) ScriptStep.Fail(LlmException.RateLimited("Slow down.", retryAfterMs = 2_000))
+            else { kotlinx.coroutines.awaitCancellation() }
+        })
+        val waiting = async { runCatching { metered.gateway.chat(limited.id, ask) } }
+        runCurrent()
+        advanceTimeBy(5_000)
+        assertEquals(2, attempts.get())
+        waiting.cancel()
+        runCurrent()
+        assertEquals(1, metered.limiter.today().calls)
+    }
+
+    @Test
     fun `raising the limit lets the next call go at once`() = runTest {
         val metered = MeteredWorld(this)
         metered.settings { it.copy(maxModelCallsPerDay = 1) }
