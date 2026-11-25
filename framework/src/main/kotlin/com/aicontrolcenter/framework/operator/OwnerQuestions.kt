@@ -174,7 +174,8 @@ class OwnerQuestions(
             id = ids.messageId(), rootId = task.rootId, taskId = task.id, from = from, to = to, type = type,
             body = body.trim().take(MAX_BODY), at = clock.now(),
         )
-        messages.append(message)
+        // A message that cannot be stored costs the objective's record a line, never the answer the agent waits for.
+        orNull { messages.append(message) } ?: return
         val agentId = (from as? Participant.Agent)?.agentId ?: (to as? Participant.Agent)?.agentId
         val name = agentId?.let { facts.agent(it)?.name } ?: "An agent"
         logSafely {
@@ -274,11 +275,15 @@ class AnsweredQuestions(private val maxTasks: Int = 1_000) {
     @Synchronized
     fun isMarked(task: TaskId): Boolean = task in flags
 
+    @Synchronized
+    private fun none(): Boolean = flags.isEmpty()
+
     /**
      * The flagged task that [taskId] is or works under (its parents, for a delegated task), read in
      * [tasks]; null when none is flagged or there is no task.
      */
     suspend fun flagged(taskId: TaskId?, tasks: TaskRepository?): TaskId? {
+        if (none()) return null
         var current = taskId ?: return null
         repeat(MAX_WALK) {
             if (isMarked(current)) return current

@@ -119,6 +119,9 @@ class ShellSlotProbesTest {
         assertEquals(ShellSlot.SLOT_TAKEN, w.shell(w.second, "tsk_b", "echo b").outcome.content)
         advanceTimeBy(31_000)
         assertTrue(first.await().outcome.ok)
+        // D12: the call's log entry says how long of it was the owner's time (the minute before the approval).
+        val logged = w.b.events(com.aicontrolcenter.core.activity.ActivityType.TOOL_CALL).first { it.title == "Tool used: Run a shell command" }
+        assertEquals(MINUTE.toString(), logged.data!!["ownerWaitMs"].toString())
         // Once it has ended, the second asks again as it was told: one request, one run.
         val third = async { w.shell(w.second, "tsk_b", "echo b") }
         runCurrent()
