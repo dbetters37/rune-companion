@@ -140,12 +140,18 @@ internal fun amountOnly(max: Int = 14): InputTransformation = InputTransformatio
     kept
 }
 
-/** "US$3 in, US$15 out per million tokens"; with a cached price: "…, cached input US$0.30". */
+/** "US$3.00 in, US$15.00 out per million tokens"; with a cached price: "…, cached input US$0.30". */
 internal fun priceSentence(price: ModelPrice): String = buildString {
     val c = price.currencyLabel
-    append(c).append(perMillionText(price.inputPerMTokMicros)).append(" in, ")
-    append(c).append(perMillionText(price.outputPerMTokMicros)).append(" out per million tokens")
-    price.cachedInputPerMTokMicros?.let { append(", cached input ").append(c).append(perMillionText(it)) }
+    append(c).append(amountText(price.inputPerMTokMicros)).append(" in, ")
+    append(c).append(amountText(price.outputPerMTokMicros)).append(" out per million tokens")
+    price.cachedInputPerMTokMicros?.let { append(", cached input ").append(c).append(amountText(it)) }
+}
+
+/** An amount to read, with at least two decimals as prices are written: 3000000 → "3.00", 75000 → "0.075". */
+internal fun amountText(micros: Long): String {
+    val value = BigDecimal.valueOf(micros, 6).stripTrailingZeros()
+    return (if (value.scale() < 2) value.setScale(2) else value).toPlainString()
 }
 
 /** The cost of a typical stretch of work at [price]: three parts read to one part written, a million tokens in all. */

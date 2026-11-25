@@ -301,7 +301,9 @@ class ModelEditorViewModelTest {
         assertNull(parseAmountMicros(""))
         assertEquals("0.15", perMillionText(150_000))
         assertEquals("3", perMillionText(3_000_000))
-        assertEquals("US$3 in, US$15 out per million tokens, cached input US$0.3", priceSentence(ModelPrice(ModelId("m"), 3_000_000, 15_000_000, 300_000)))
+        assertEquals("0.075", amountText(75_000))
+        assertEquals("1234.50", amountText(1_234_500_000))
+        assertEquals("US$3.00 in, US$15.00 out per million tokens, cached input US$0.30", priceSentence(ModelPrice(ModelId("m"), 3_000_000, 15_000_000, 300_000)))
     }
 
     @Test

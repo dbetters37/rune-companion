@@ -318,9 +318,11 @@ class ToolsViewModelsTest {
         val cloud = "content://com.example.cloud.documents/tree/root%3AWork"
         val unnamed = "content://org.example.files/tree/abc"
         val phone = "content://com.android.externalstorage.documents/tree/primary%3ADocuments"
+        val downloads = "content://com.android.providers.downloads.documents/tree/msd%3A12"
         app.folderAccess.pickable[cloud] = "Work"
         app.folderAccess.pickable[unnamed] = "Files"
         app.folderAccess.pickable[phone] = "Documents"
+        app.folderAccess.pickable[downloads] = "Download"
         val asked = mutableListOf<String>()
         val vm = FoldersViewModel(
             app.graph.ownerFolders, app.graph.ownerGrants, app.graph.registryDirectory, app.familyOf(), app.clock, ZoneOffset.UTC,
@@ -330,12 +332,14 @@ class ToolsViewModelsTest {
         vm.add(cloud)
         vm.add(unnamed)
         vm.add(phone)
+        vm.add(downloads)
         fun note(name: String) = vm.uiState.value.folders.single { it.name == name }.otherAppNote
 
         assertEquals(com.aicontrolcenter.core.operator.OwnerFolders.otherAppStorageNote("Cloud Drive", readOnly = false), note("Work"))
         assertTrue(note("Work")!!.startsWith("This folder comes from Cloud Drive."))
         assertTrue(note("Files")!!.startsWith("This folder comes from another app."), "Android did not tell the name")
         assertNull(note("Documents"), "the phone's own storage needs no warning")
+        assertNull(note("Download"), "nor the folder picker's Downloads entry")
         assertEquals(listOf(cloud, unnamed), asked, "each other app's name is asked once, never for the phone's own folders")
 
         vm.setReadOnly(vm.uiState.value.folders.single { it.name == "Work" }.id, true)
