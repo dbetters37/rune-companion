@@ -8,7 +8,7 @@ import com.aicontrolcenter.core.memory.Embedder
 import com.aicontrolcenter.core.memory.MemoryFilter
 import com.aicontrolcenter.core.memory.MemoryRecord
 import com.aicontrolcenter.core.memory.MemoryRepository
-import com.aicontrolcenter.core.settings.SettingsRepository
+import com.aicontrolcenter.core.settings.SettingsView
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -35,7 +35,7 @@ import kotlin.coroutines.cancellation.CancellationException
  */
 internal class MemoryEmbeddings(
     private val embedder: Embedder,
-    private val settings: SettingsRepository,
+    private val settings: SettingsView,
     private val repository: MemoryRepository,
     private val activity: MemoryActivity,
     private val config: MemoryConfig,

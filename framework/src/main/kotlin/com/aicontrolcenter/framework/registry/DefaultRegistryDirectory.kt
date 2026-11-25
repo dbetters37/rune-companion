@@ -9,7 +9,7 @@ import com.aicontrolcenter.core.registry.ModelRepository
 import com.aicontrolcenter.core.registry.ProviderRepository
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.registry.RegistrySnapshot
-import com.aicontrolcenter.core.settings.SettingsRepository
+import com.aicontrolcenter.core.settings.SettingsView
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -20,7 +20,7 @@ class DefaultRegistryDirectory(
     private val providers: ProviderRepository,
     private val models: ModelRepository,
     private val apps: AiAppRepository,
-    private val settings: SettingsRepository,
+    private val settings: SettingsView,
 ) : RegistryDirectory {
 
     override fun observe(): Flow<RegistrySnapshot> {

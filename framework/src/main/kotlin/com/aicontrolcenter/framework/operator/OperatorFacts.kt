@@ -8,7 +8,7 @@ import com.aicontrolcenter.core.operator.OperatorTools
 import com.aicontrolcenter.core.operator.ProtectedPackages
 import com.aicontrolcenter.core.registry.AgentRepository
 import com.aicontrolcenter.core.settings.FrameworkSettings
-import com.aicontrolcenter.core.settings.SettingsRepository
+import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.tools.ActionAssessment
 import com.aicontrolcenter.core.tools.Capability
 import com.aicontrolcenter.core.tools.CapabilityConstraint
@@ -28,7 +28,7 @@ import kotlinx.coroutines.flow.StateFlow
  */
 class OperatorFacts(
     private val agents: AgentRepository,
-    private val settings: SettingsRepository,
+    private val settings: SettingsView,
     private val capabilities: CapabilityRegistry,
     private val folders: FolderDirectory,
     private val apps: AuthorisedApps,

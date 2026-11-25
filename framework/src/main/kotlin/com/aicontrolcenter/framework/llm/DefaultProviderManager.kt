@@ -33,7 +33,7 @@ import com.aicontrolcenter.core.registry.ProviderRepository
 import com.aicontrolcenter.core.registry.effectiveLocality
 import com.aicontrolcenter.core.security.SecretVault
 import com.aicontrolcenter.core.security.SecretVaultException
-import com.aicontrolcenter.core.settings.SettingsRepository
+import com.aicontrolcenter.core.settings.SettingsView
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -70,7 +70,7 @@ import kotlinx.serialization.json.put
 class DefaultProviderManager(
     private val providers: ProviderRepository,
     private val models: ModelRepository,
-    private val settings: SettingsRepository,
+    private val settings: SettingsView,
     private val vault: SecretVault,
     private val connections: ProviderConnections,
     private val activity: ActivityRecorder,

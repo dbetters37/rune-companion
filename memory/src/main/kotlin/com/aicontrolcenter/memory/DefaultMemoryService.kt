@@ -36,7 +36,7 @@ import com.aicontrolcenter.core.memory.RecallQuery
 import com.aicontrolcenter.core.memory.editedNote
 import com.aicontrolcenter.core.memoryId
 import com.aicontrolcenter.core.registry.AgentRepository
-import com.aicontrolcenter.core.settings.SettingsRepository
+import com.aicontrolcenter.core.settings.SettingsView
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -79,7 +79,7 @@ import kotlinx.serialization.json.put
 class DefaultMemoryService(
     private val repository: MemoryRepository,
     private val agents: AgentRepository,
-    settings: SettingsRepository,
+    settings: SettingsView,
     embedder: Embedder,
     activity: ActivityRecorder,
     private val ids: IdGenerator,
