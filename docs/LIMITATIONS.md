@@ -291,6 +291,13 @@ do it.
   chat or task was stopped, or you withdrew the app, removed the folder, revoked the permission
   or pressed Stop on screen control, the request is closed as "No longer waiting" and nothing is
   done; the agent has to ask again. Its notification is removed with it.
+- **After you answer an agent's question**, every task of that objective (the one that asked,
+  the one that handed it that work, the ones that build on its result, and the final result)
+  asks you once before its first action that may send information off the phone, so you can
+  check that your answer does not go where it should not. This also holds after the app
+  restarts. It does not follow your answer further: if an agent saves it to memory, an agent of
+  another objective or a chat can find it there later and send it without this extra question
+  (its usual permissions and approvals still apply).
 - **After you refuse a permission**, the same agent cannot ask you for the same permission and
   target again for 10 minutes: its calls are refused at once and the refusal in Tools > History
   counts them. This does not apply to approvals of single actions, which are always put to you.

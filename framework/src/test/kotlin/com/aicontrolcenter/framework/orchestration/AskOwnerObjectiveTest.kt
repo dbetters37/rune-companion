@@ -7,7 +7,6 @@ import com.aicontrolcenter.core.operator.OwnerResult
 import com.aicontrolcenter.core.tasks.MessageType
 import com.aicontrolcenter.core.tasks.Participant
 import com.aicontrolcenter.core.tasks.TaskStatus
-import com.aicontrolcenter.framework.operator.AnsweredQuestions
 import com.aicontrolcenter.framework.operator.OperatorFixture.Companion.json
 import com.aicontrolcenter.framework.operator.OwnerAttentionGate
 import com.aicontrolcenter.framework.operator.OwnerQuestions
@@ -37,7 +36,7 @@ class AskOwnerObjectiveTest {
         val world = team.world
         val questions = OwnerQuestions(
             world.requests, world.waiters, world.tasks, team.messages, world.facts, world.activity, world.ids, world.clock,
-            OwnerAttentionGate(world.requests, world.waiters, world.activity), OwnerWaitLedger(), AnsweredQuestions(),
+            OwnerAttentionGate(world.requests, world.waiters, world.activity), OwnerWaitLedger(), world.answeredQuestions,
         )
         TeamTools.registerAskOwner(world.toolRegistry, world.capabilities, questions)
         team.script.plan = { _, _ -> ScriptStep.Reply(planJson(listOf(task("t", "Find apps", listOf("research"))))) }
