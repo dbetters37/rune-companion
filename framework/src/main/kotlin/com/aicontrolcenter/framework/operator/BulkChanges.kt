@@ -13,10 +13,17 @@ import com.aicontrolcenter.core.tools.ToolContext
  * agent across all its tasks, and by all agents working on the same root objective. So many
  * small calls add up, and neither a new task nor a helper agent starts again at zero. Kept in
  * memory: when the app restarts, the counts start again from zero.
+ *
+ * Time spent waiting for the owner does not age a change (Phase 6, D12): with [ownerWaits], a
+ * change's age is the time since it was made less the time its agent, its task or its objective
+ * waited for the owner since then ([OwnerWaitLedger.waitedMs]). So an approval that took 11
+ * minutes does not empty the window.
  */
 class RecentFileChanges(
     private val windowMs: Long = ConsequentialControls.BULK_WINDOW_MS,
     private val limit: Int = ConsequentialControls.BULK_FILE_LIMIT,
+    /** The owner waits of agents, tasks and objectives (D12); null: the window runs on the wall clock alone. */
+    private val ownerWaits: OwnerWaitLedger? = null,
 ) {
     /**
      * Whose changes a call adds to: the [agent], its [task] (null outside any task) and the
@@ -34,7 +41,9 @@ class RecentFileChanges(
     /** Files changed within the window ending at [now], in the [scope] that [key] belongs to. */
     @Synchronized
     fun count(key: Key, now: Long, scope: Scope): Int {
-        entries.removeAll { it.at <= now - windowMs }
+        entries.removeAll { age(it, now) >= windowMs }
+        // A wait that ended before the oldest change kept can no longer pause any of them.
+        ownerWaits?.forgetBefore(entries.firstOrNull()?.at ?: now)
         return entries.sumOf { e ->
             val counted = when (scope) {
                 Scope.TASK -> e.key.agent == key.agent && e.key.task == key.task
@@ -69,6 +78,12 @@ class RecentFileChanges(
         if (entries.size >= MAX_ENTRIES) entries.removeAt(0)
         entries += Entry(now, files, key)
         return true
+    }
+
+    /** How long ago [e] was made, at [now], not counting the time its agent, task or objective waited for the owner since. */
+    private fun age(e: Entry, now: Long): Long {
+        val waited = ownerWaits?.waitedMs(e.key.agent, e.key.task, e.key.root, e.at, now) ?: 0L
+        return now - e.at - waited
     }
 
     private companion object {

@@ -30,6 +30,7 @@ import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.tasks.Orchestrator
 import com.aicontrolcenter.core.tools.ToolRegistry
 import com.aicontrolcenter.framework.memory.MemoryTools
+import com.aicontrolcenter.framework.operator.AnsweredQuestions
 import com.aicontrolcenter.framework.operator.DefaultCapabilityRequester
 import com.aicontrolcenter.framework.operator.DefaultOwnerFolders
 import com.aicontrolcenter.framework.operator.DefaultOwnerGrants
@@ -43,9 +44,14 @@ import com.aicontrolcenter.framework.operator.OperatorFacts
 import com.aicontrolcenter.framework.operator.OperatorTaskHooks
 import com.aicontrolcenter.framework.operator.OperatorToolDependencies
 import com.aicontrolcenter.framework.operator.OperatorToolset
+import com.aicontrolcenter.framework.operator.OwnerAttentionGate
+import com.aicontrolcenter.framework.operator.OwnerQuestions
+import com.aicontrolcenter.framework.operator.OwnerWaitLedger
 import com.aicontrolcenter.framework.operator.PermissionBroker
 import com.aicontrolcenter.framework.operator.PermissionRequestTool
+import com.aicontrolcenter.framework.operator.RecentFileChanges
 import com.aicontrolcenter.framework.operator.RequestWaiters
+import com.aicontrolcenter.framework.orchestration.TeamTools
 import com.aicontrolcenter.framework.tools.BuiltInTools
 import com.aicontrolcenter.framework.tools.CapabilityRegistry
 import com.aicontrolcenter.framework.tools.DefaultToolRegistry
@@ -81,8 +87,14 @@ class OperatorAssembly(
     appScope: CoroutineScope,
     registryDirectory: RegistryDirectory,
     memory: MemoryService,
-    @Suppress("UNUSED_PARAMETER") ownerKeyCheck: OwnerKeyCheck,
+    ownerKeyCheck: OwnerKeyCheck,
 ) {
+    private val tasks = ports.tasks
+    private val messages = ports.messages
+    private val activityRecorder = activity
+    private val ids = ports.idGenerator
+    private val clock = ports.clock
+
     /** The apps that are never operated: resolved once at start-up, the same set everywhere. */
     private val protectedPackages: () -> ProtectedPackages = ports.operator.protectedPackages
 
@@ -113,6 +125,18 @@ class OperatorAssembly(
      * closes it instead, and start-up withdraws exactly those.
      */
     internal val requestWaiters = RequestWaiters()
+
+    /**
+     * The one lock and the caps every request to the owner is raised under (Phase 6, rules 13 and 14, C3, D10): the
+     * broker's, the capability requester's and the question tool's, so concurrent asks cannot pass a cap together.
+     */
+    private val attention = OwnerAttentionGate(requestQueue, requestWaiters, activity)
+
+    /** How long agents waited for the owner (D12): the bulk rule's window does not run on while they wait. */
+    private val ownerWaits = OwnerWaitLedger()
+
+    /** The tasks whose agent got the owner's answer to a question (rule 32): their next call off the phone asks first. */
+    private val answeredQuestions = AnsweredQuestions()
 
     /** The owner's folders and authorised apps, read only, for the permission checks and the tools. */
     private val folderDirectory = FolderDirectoryView(ports.operator.sharedFolders)
@@ -154,11 +178,18 @@ class OperatorAssembly(
         activity = activity,
         ids = ports.idGenerator,
         clock = ports.clock,
+        attention = attention,
+        ownerWaits = ownerWaits,
+        answeredQuestions = answeredQuestions,
     )
 
     /** How an agent asks the owner for a permission itself (`permissions.request`). It never waits and can grant nothing. */
-    private val capabilityRequester =
-        DefaultCapabilityRequester(operatorFacts, requestQueue, grantLookup, requestWaiters, activity, ports.idGenerator, ports.clock)
+    private val capabilityRequester = DefaultCapabilityRequester(
+        operatorFacts, requestQueue, grantLookup, requestWaiters, activity, ports.idGenerator, ports.clock,
+        // A routine's objective: no screens without the owner's tick, and its own time-out (F12).
+        tasks = ports.tasks,
+        attention = attention,
+    )
 
     /** Every tool agents can be given. The team tools are added once the orchestrator exists (TeamAssembly). */
     val toolRegistry: ToolRegistry = DefaultToolRegistry().also { registry ->
@@ -184,6 +215,8 @@ class OperatorAssembly(
             ownPackage = ports.operator.ownPackage,
             // Commands and links that may send data off the phone are logged as data transfers when they run.
             egress = OperatorEgress.logTo(activity),
+            // The bulk rule's window does not run on while an agent waits for the owner (D12).
+            recentChanges = RecentFileChanges(ownerWaits = ownerWaits),
         )
         // JavaScript runs in the engine the scripts package provides (WP6: its own process), else in this process.
         val js: JsEngine = ports.scripts.engine?.invoke(dependencies.limits.js) ?: JsSandbox(dependencies.limits.js)
@@ -217,8 +250,11 @@ class OperatorAssembly(
      * Pending and past questions to the owner, and the only way to answer them. It takes an answer
      * only while a call still waits for it and what it is about is still there.
      */
-    val ownerRequests: OwnerRequests =
-        DefaultOwnerRequests(ports.operator.ownerRequests, requestWaiters, operatorFacts, activity, ports.idGenerator, ports.clock)
+    val ownerRequests: OwnerRequests = DefaultOwnerRequests(
+        ports.operator.ownerRequests, requestWaiters, operatorFacts, activity, ports.idGenerator, ports.clock,
+        // Rule 32: an answer holding a stored provider key is never sent. Only this owner port holds the check (F3).
+        keyCheck = ownerKeyCheck,
+    )
 
     /** What each agent has been granted; giving and revoking grants. */
     val ownerGrants: OwnerGrants = DefaultOwnerGrants(
@@ -257,11 +293,22 @@ class OperatorAssembly(
     fun isProtectedPackage(packageName: String): Boolean = protectedPackages().isProtected(packageName)
 
     /**
-     * Called once by the composition root, right after the orchestrator exists and its team tools are registered,
-     * before any agent runs. Nothing to do in wave 1 (WP5: `team.ask_owner`, which needs both the broker's wait and
-     * the orchestrator).
+     * The agent's side of a question to the owner (`team.ask_owner`, Phase 6, C1, Tier B): it raises a QUESTION and waits
+     * as a tool call waits for an approval, under the same lock and caps; it can answer, grant or approve nothing. The
+     * owner answers through [ownerRequests].
      */
-    fun teamReady(@Suppress("UNUSED_PARAMETER") orchestrator: Orchestrator) {}
+    val ownerQuestions = OwnerQuestions(
+        requests = requestQueue, waiters = requestWaiters, tasks = tasks, messages = messages, facts = operatorFacts,
+        activity = activityRecorder, ids = ids, clock = clock, attention = attention, ownerWaits = ownerWaits, answered = answeredQuestions,
+    )
+
+    /**
+     * Called once by the composition root, right after the orchestrator exists and its team tools are registered,
+     * before any agent runs: registers `team.ask_owner`, which work tasks offer while the owner allows agents' questions.
+     */
+    fun teamReady(@Suppress("UNUSED_PARAMETER") orchestrator: Orchestrator) {
+        TeamTools.registerAskOwner(toolRegistry, capabilities, ownerQuestions)
+    }
 
     init {
         // The owner's Stop (here, on the banner or in the notification) withdraws the questions to see or use a screen:

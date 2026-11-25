@@ -95,11 +95,14 @@ internal class FakeAvailability(
 internal class FakeDeviceFacts : DeviceFacts {
     val certificates = HashMap<String, String>()
     @Volatile var locked = false
+    @Volatile var screenIsOn = true
     var launcher: String? = "com.android.launcher3"
 
     override fun signingCertSha256(packageName: String): String? = certificates[packageName]
 
     override fun keyguardLocked() = locked
+
+    override fun screenOn() = screenIsOn
 
     override fun launcherPackage() = launcher
 }

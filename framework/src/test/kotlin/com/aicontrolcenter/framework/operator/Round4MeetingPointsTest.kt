@@ -146,8 +146,8 @@ class Round4MeetingPointsTest {
         leaveLeftovers(f)
         val running = startCommand(f, "sleep 20")
         try {
-            // R5: a command asked for now could never run, so the owner is not asked for it.
-            assertTrue("Another shell command is running. Nothing was asked and nothing was run." in f.rejected("scripts.run_shell", "command" to "echo second"))
+            // R5 and D11 (Phase 6): a command asked for now could never run, so the broker refuses it before the owner is asked.
+            assertEquals(ShellSlot.SLOT_TAKEN, f.assess("scripts.run_shell", "command" to "echo second").prepared!!.beforeOwnerAsked())
             // W2 and W3: looking waits for nothing, claims no leftovers and tidies nothing under the command's feet,
             // through the workspace and through an agent's tools.
             assertTrue(withTimeout(5_000) { f.trash() }.isEmpty())
@@ -157,7 +157,7 @@ class Round4MeetingPointsTest {
             assertTrue(f.file(".trash/.staging/half-written").exists())
             assertFalse(f.file(".trash/$LOST_ID.json").exists())
             // And the refusal stays the same however often it is asked meanwhile: no look made the command "not running".
-            assertTrue("Another shell command is running." in f.rejected("scripts.run_shell", "command" to "echo second"))
+            assertEquals(ShellSlot.SLOT_TAKEN, f.assess("scripts.run_shell", "command" to "echo second").prepared!!.beforeOwnerAsked())
         } finally {
             running.release.countDown()
         }

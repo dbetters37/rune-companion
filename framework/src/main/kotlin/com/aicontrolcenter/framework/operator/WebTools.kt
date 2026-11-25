@@ -2,6 +2,7 @@ package com.aicontrolcenter.framework.operator
 
 import com.aicontrolcenter.core.activity.EgressOrigin
 import com.aicontrolcenter.core.operator.LinkPolicy
+import com.aicontrolcenter.core.operator.WebAddressPolicy
 import com.aicontrolcenter.core.operator.WebReadResult
 import com.aicontrolcenter.core.tools.ActionAssessment
 import com.aicontrolcenter.core.tools.Tool
@@ -50,6 +51,10 @@ internal class WebReadPage(private val d: OperatorToolDependencies) : OperatorTo
     override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
         val args = Args(arguments)
         val link = AppTools.link(d, args.text("url", LinkPolicy.MAX_LENGTH)!!, webOnly = true)
+        // D8: an address on this phone or its network, written as such (a literal private address, localhost, a .local or
+        // dotless name, a number in an unusual form), is refused before anyone is asked: the reader would refuse it anyway.
+        // Names that resolve to such an address are still refused only when the page is read.
+        WebAddressPolicy.literalRefusal(link.host.orEmpty())?.let { throw ToolCallRejected("The page was not read: $it") }
         val max = args.int("max_chars", d.limits.pageChars, 500..d.limits.maxPageChars)
         val links = args.bool("include_links", false)
         return assessment(

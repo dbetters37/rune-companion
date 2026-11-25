@@ -181,6 +181,9 @@ class OperatorDependencyTest {
             PermissionRequestTool::class.java, OperatorTaskHooks::class.java, AgentRunner::class.java, DefaultOrchestrator::class.java,
             DefaultModelGateway::class.java, DefaultAgentChat::class.java, DefaultRegistryDirectory::class.java, DefaultToolAuthorizer::class.java,
             com.aicontrolcenter.framework.llm.DefaultProviderRechecks::class.java,
+            // Phase 6 (WP5): the agent's side of a question to the owner, its tool, and what it shares with the broker.
+            OwnerQuestions::class.java, com.aicontrolcenter.framework.orchestration.AskOwnerTool::class.java, OwnerAttentionGate::class.java,
+            OwnerRequestWait::class.java, AnsweredQuestions::class.java, OwnerWaitLedger::class.java,
         ) + TestWorld().toolRegistry.all().map { it.javaClass }
         ).distinct()
 
@@ -193,6 +196,8 @@ class OperatorDependencyTest {
         val agentSide = listOf(
             com.aicontrolcenter.core.operator.OwnerRequestQueue::class.java, com.aicontrolcenter.core.operator.GrantLookup::class.java,
             com.aicontrolcenter.core.operator.CapabilityRequester::class.java, RequestWaiters::class.java, OperatorFacts::class.java,
+            // Phase 6 (WP5): the question's agent side never answers (its wait is `ask`, never `answer`).
+            OwnerQuestions::class.java, OwnerAttentionGate::class.java,
         )
         for (type in agentSide) assertTrue(!offersOwnerAction(type), "${type.simpleName} must not offer an owner-only action")
         // Nothing reachable from the executor, the broker, the requester, the runner, the orchestrator or any tool offers it.

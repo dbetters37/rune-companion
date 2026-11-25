@@ -165,7 +165,9 @@ class AppMediaWebToolsTest {
         f.web.page("https://example.com/long", "x".repeat(5_000), contentType = "text/plain")
         val cut = f.ok("web.read_page", "url" to "https://example.com/long", "max_chars" to 1_000)
         assertTrue("cut at 1000 characters" in cut.content)
-        assertTrue("only public" in f.fails("web.read_page", "url" to "http://127.0.0.1/admin").content)
+        // Phase 6 (D8): a literal private address is refused before the call is authorised, and nothing is read.
+        assertTrue("only public" in f.rejected("web.read_page", "url" to "http://127.0.0.1/admin"))
+        assertFalse(f.web.requests.any { "127.0.0.1" in it.first })
         f.web.page("https://example.com/missing", "<p>Not here</p>", status = 404)
         assertTrue("HTTP 404" in f.fails("web.read_page", "url" to "https://example.com/missing").content)
         f.web.pages["https://example.com/pic"] = WebReadResult.Page("https://example.com/pic", 200, "image/png", "\u0089PNG", false, listOf("example.com"))

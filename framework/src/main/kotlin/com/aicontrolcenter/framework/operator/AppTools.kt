@@ -147,8 +147,11 @@ internal class AppsOpen(private val d: OperatorToolDependencies) : OperatorTool(
         if (app == null) return assessment(summary, failing("No app $pkg that can be opened is installed."))
         return assessment(
             summary,
-            prepared(check = { if (AppTools.launchable(d, pkg) == null) "the app $pkg was removed" else null }) {
-                AppTools.answer(d.apps.open(pkg), "${app.label} is open. What happens in it is not reported back.")
+            prepared(check = { if (AppTools.launchable(d, pkg) == null) "the app $pkg was removed" else null }) { ctx ->
+                val result = d.apps.open(pkg)
+                // D5: a screen tool this agent calls next waits a moment for the app to come to the front.
+                if (result == AppActionResult.Started) d.launches.record(ctx.agent.id, pkg, d.clock.now())
+                AppTools.answer(result, "${app.label} is open. What happens in it is not reported back.")
             },
         )
     }
@@ -190,6 +193,8 @@ internal class AppsOpenLink(private val d: OperatorToolDependencies) : OperatorT
             }) { ctx ->
                 val result = d.apps.openLink(link.link)
                 if (result == AppActionResult.Started) {
+                    // D5: Android picked the app; a screen tool this agent calls next waits a moment for whatever comes to the front.
+                    d.launches.record(ctx.agent.id, null, d.clock.now())
                     d.egress.handedOver(
                         ctx, "Link opened in another app", "An agent opened ${q(link.link.take(300))}" + (opener?.let { " in $it" } ?: "") + ".",
                         if (web || pinned.size != 1) OperatorEgress.toHost(if (web) link.host else goesTo, "a link opened by an agent")
@@ -222,6 +227,7 @@ internal class BrowserOpen(private val d: OperatorToolDependencies) : OperatorTo
             prepared { ctx ->
                 val result = d.apps.openInBrowser(link.link)
                 if (result == AppActionResult.Started) {
+                    d.launches.record(ctx.agent.id, null, d.clock.now())
                     d.egress.handedOver(ctx, "Web page opened in the browser", "An agent opened ${q(link.link.take(300))} in the browser.", OperatorEgress.toHost(link.host, "a web address opened by an agent"))
                 }
                 AppTools.answer(result, "The page opened in the browser. What happens there is not reported back.")

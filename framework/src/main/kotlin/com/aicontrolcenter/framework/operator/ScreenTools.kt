@@ -1,7 +1,9 @@
 package com.aicontrolcenter.framework.operator
 
+import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.operator.ConsequentialControls
 import com.aicontrolcenter.core.operator.DocResult
+import com.aicontrolcenter.core.operator.FrontState
 import com.aicontrolcenter.core.operator.GlobalAction
 import com.aicontrolcenter.core.operator.OperatorApp
 import com.aicontrolcenter.core.operator.RelativePath
@@ -87,7 +89,7 @@ internal object ScreenTools {
      * for a call the broker would refuse on them. [acting]: the tool acts on the app, which may
      * send data off the phone, so local-only mode refuses it.
      */
-    suspend fun front(d: OperatorToolDependencies, title: String, acting: Boolean): Front {
+    suspend fun front(d: OperatorToolDependencies, title: String, acting: Boolean, agent: AgentId? = null): Front {
         val settings = d.settings()
         if (!settings.operatorEnabled) throw ToolCallRejected("Phone operation is switched off in Settings, so \"$title\" cannot be used.")
         if (!settings.accessibilityOperatorEnabled) throw ToolCallRejected("Screen control is switched off in Settings.")
@@ -95,9 +97,42 @@ internal object ScreenTools {
         val state = knownState(d)
         if (state != ScreenServiceState.READY) throw ToolCallRejected(unavailable(state))
         if (d.screen.stopped.value) throw ToolCallRejected(STOPPED)
-        val window = d.screen.activeWindow() ?: throw ToolCallRejected("No app window is in front, so there is nothing to operate.")
+        val window = when (val front = frontAfterLaunch(d, agent)) {
+            is FrontState.App -> front.window
+            // D6: a window Android does not let this app read (its permission screens), said as such.
+            FrontState.Hidden -> throw ToolCallRejected(HIDDEN_WINDOW)
+            FrontState.None -> throw ToolCallRejected("No app window is in front, so there is nothing to operate.")
+        }
         val protected = d.protectedPackages().isProtected(window.packageName)
         return Front(window.packageName, if (protected) null else d.authorisedApps.get(window.packageName), protected)
+    }
+
+    /**
+     * What is in front (D5): when [agent] opened an app less than [OperatorLimits.launchRecentMs]
+     * ago ([RecentLaunches]), first a bounded wait, every [OperatorLimits.screenPollMs] for up to
+     * [OperatorLimits.screenOpenWaitMs], for that app (or, for a link or a web page, any app other
+     * than this one) to come to the front, so a screen call right after opening an app is not
+     * refused while Android still brings it up. Stop ends the wait.
+     */
+    private suspend fun frontAfterLaunch(d: OperatorToolDependencies, agent: AgentId?): FrontState {
+        var state = d.screen.frontState()
+        val launch = agent?.let { d.launches.latest(it, d.limits.launchRecentMs, d.clock.now()) } ?: return state
+        if (arrived(d, state, launch)) return state
+        withTimeoutOrNull(d.limits.screenOpenWaitMs) {
+            while (true) {
+                delay(d.limits.screenPollMs)
+                if (d.screen.stopped.value) break
+                state = d.screen.frontState()
+                if (arrived(d, state, launch)) break
+            }
+        }
+        return state
+    }
+
+    /** Whether the app [launch] opened is in front: that package, or for a link any app other than this one. */
+    private fun arrived(d: OperatorToolDependencies, state: FrontState, launch: RecentLaunches.Launch): Boolean {
+        val front = (state as? FrontState.App)?.window?.packageName ?: return false
+        return if (launch.packageName != null) front == launch.packageName else front != d.ownPackage
     }
 
     /**
@@ -194,6 +229,9 @@ internal object ScreenTools {
 
     const val STOPPED = "The owner pressed Stop on screen control. Screen actions are refused until the owner resumes."
 
+    /** D6: the window in front is one Android does not let this app read. */
+    const val HIDDEN_WINDOW = "The window in front is one Android does not let this app read, such as its permission screens. Nothing was read."
+
     fun problem(r: ScreenResult<*>, what: String): String = when (r) {
         is ScreenResult.Ok -> "$what: done."
         is ScreenResult.Unavailable -> "$what: ${unavailable(r.state)}"
@@ -274,7 +312,7 @@ internal class ScreenRead(private val d: OperatorToolDependencies) : OperatorToo
 ) {
     override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
         val max = Args(arguments).int("max_elements", 150, 1..d.limits.maxScreenElements)
-        val front = ScreenTools.front(d, spec.title, acting = false)
+        val front = ScreenTools.front(d, spec.title, acting = false, agent = context.agent.id)
         front.refusal?.let { return ScreenTools.refused(this, front, "Read", failing(it)) }
         return assessment(
             "Read the screen of ${front.name()}",
@@ -310,7 +348,7 @@ internal class ScreenWaitFor(private val d: OperatorToolDependencies) : Operator
         val args = Args(arguments)
         val text = args.text("text", 500)!!
         val timeout = args.long("timeout_ms", 10_000, 100..d.limits.maxWaitMs)
-        val front = ScreenTools.front(d, spec.title, acting = false)
+        val front = ScreenTools.front(d, spec.title, acting = false, agent = context.agent.id)
         front.refusal?.let { return ScreenTools.refused(this, front, "Wait", failing(it)) }
         return assessment(
             "Wait up to ${timeout / 1000.0} s for ${q(text)} to appear in ${front.name()}",
@@ -333,7 +371,7 @@ internal class ScreenScreenshot(private val d: OperatorToolDependencies) : Opera
 ) {
     override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
         val args = Args(arguments)
-        val front = ScreenTools.front(d, spec.title, acting = false)
+        val front = ScreenTools.front(d, spec.title, acting = false, agent = context.agent.id)
         val to = if (args.has("to")) args.entryPath("to") else RelativePath.of("Screenshots/${front.packageName}-${STAMP.format(Instant.ofEpochMilli(d.clock.now()))}.png")
         if (!to.name.lowercase(Locale.ROOT).endsWith(".png")) throw ToolCallRejected("\"to\" must end in .png.")
         front.refusal?.let { return ScreenTools.refused(this, front, "Take a screenshot", failing(it)) }
@@ -375,7 +413,7 @@ internal abstract class ScreenActingTool(
     parameters: JsonObject,
 ) : OperatorTool(id, title, description, parameters) {
     /** The app in front for an action; local-only mode refuses it. */
-    protected suspend fun front(): ScreenTools.Front = ScreenTools.front(d, spec.title, acting = true)
+    protected suspend fun front(context: ToolContext): ScreenTools.Front = ScreenTools.front(d, spec.title, acting = true, agent = context.agent.id)
 
     /** The window, read without starting a session; null with an assessment that fails with why it could not be read. */
     protected suspend fun inspect(front: ScreenTools.Front, summary: String, leadsTo: String? = null): Pair<ScreenSnapshot?, ActionAssessment?> =
@@ -452,9 +490,9 @@ internal abstract class ScreenControlTool(
     protected class Found(val front: ScreenTools.Front, val target: ScreenTarget, val element: ScreenElement)
 
     /** The element, or an assessment that refuses (app not usable) or fails (element not found). */
-    protected suspend fun find(args: Args, verb: String): Pair<Found?, ActionAssessment?> {
+    protected suspend fun find(args: Args, verb: String, context: ToolContext): Pair<Found?, ActionAssessment?> {
         val target = ScreenTools.target(args)!!
-        val front = front()
+        val front = front(context)
         front.refusal?.let { return null to ScreenTools.refused(this, front, verb, failing(it)) }
         return when (val r = d.screen.find(front.packageName, target)) {
             is ScreenResult.Ok -> Found(front, target, r.value) to null
@@ -477,7 +515,7 @@ internal class ScreenTap(d: OperatorToolDependencies) : ScreenControlTool(
     objectSchema { with(ScreenTools) { targetProps("control") } },
 ) {
     override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
-        val (found, early) = find(Args(arguments), "Tap")
+        val (found, early) = find(Args(arguments), "Tap", context)
         if (found == null) return early!!
         val front = found.front
         val element = found.element
@@ -515,7 +553,7 @@ internal class ScreenType(d: OperatorToolDependencies) : ScreenControlTool(
         val text = args.string("text") ?: throw ToolCallRejected("\"text\" is required.")
         if (text.length > 10_000) throw ToolCallRejected("\"text\" is longer than 10000 characters.")
         val submit = args.bool("submit", false)
-        val (found, early) = find(args, "Type")
+        val (found, early) = find(args, "Type", context)
         if (found == null) return early!!
         val front = found.front
         val element = found.element
@@ -551,7 +589,7 @@ internal class ScreenScroll(d: OperatorToolDependencies) : ScreenControlTool(
             ?: throw ToolCallRejected("\"direction\" must be up, down, left or right.")
         val word = direction.name.lowercase(Locale.ROOT)
         if (ScreenTools.target(args, optional = true) != null) {
-            val (found, early) = find(args, "Scroll")
+            val (found, early) = find(args, "Scroll", context)
             if (found == null) return early!!
             val element = found.element
             // The same rule as a tap, on what is scrolled: a slider "Slide to pay" asks.
@@ -560,7 +598,7 @@ internal class ScreenScroll(d: OperatorToolDependencies) : ScreenControlTool(
                 scroll(ctx, found.front, direction, element)
             }
         }
-        val front = front()
+        val front = front(context)
         front.refusal?.let { return ScreenTools.refused(this, front, "Scroll", failing(it)) }
         val summary = "Scroll $word in ${front.name()}"
         var window: ScreenSnapshot? = null
@@ -590,7 +628,7 @@ internal abstract class ScreenGlobalTool(
     protected abstract val verb: String
 
     override suspend fun assess(arguments: JsonObject, context: ToolContext): ActionAssessment {
-        val front = front()
+        val front = front(context)
         val launcher = d.screen.launcherPackage() ?: throw ToolCallRejected("The home screen app is not known, and $verb can lead there, so it is not pressed.")
         front.refusal?.let { return ScreenTools.refused(this, front, verb, failing(it)).copy(leadsTo = launcher) }
         return acting(

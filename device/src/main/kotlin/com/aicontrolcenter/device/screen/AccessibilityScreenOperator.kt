@@ -10,6 +10,7 @@ import android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction
 import android.view.accessibility.AccessibilityWindowInfo
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.operator.ActiveWindow
+import com.aicontrolcenter.core.operator.FrontState
 import com.aicontrolcenter.core.operator.GlobalAction
 import com.aicontrolcenter.core.operator.OperatorApp
 import com.aicontrolcenter.core.operator.OperatorAppRepository
@@ -161,6 +162,21 @@ internal class AccessibilityScreenOperator(
         val packageName = front.packageName ?: return@withContext null
         val titled = !protectedPackages().isProtected(packageName) && !device.keyguardLocked() && authorised(packageName) != null
         ActiveWindow(packageName, if (titled) ScreenReader.clean(front.title) else null)
+    }
+
+    /**
+     * What is in front (Phase 6, D6): [FrontState.Hidden] for an active window whose content Android
+     * does not let this app read (no root, as its permission screens), so a screen tool can say so
+     * instead of "no app window"; nothing of it is read.
+     */
+    override suspend fun frontState(): FrontState = withContext(io) {
+        start()
+        val host = link.host.value ?: return@withContext FrontState.None
+        val front = front(host) ?: return@withContext FrontState.None
+        val packageName = front.packageName
+        if (front.root == null || packageName == null) return@withContext FrontState.Hidden
+        val titled = !protectedPackages().isProtected(packageName) && !device.keyguardLocked() && authorised(packageName) != null
+        FrontState.App(ActiveWindow(packageName, if (titled) ScreenReader.clean(front.title) else null))
     }
 
     override suspend fun launcherPackage(): String? = withContext(io) { device.launcherPackage() }
@@ -343,14 +359,66 @@ internal class AccessibilityScreenOperator(
     override fun endSession(agentName: String) {
         synchronized(sessionLock) {
             val session = sessions[agentName] ?: return
-            if (session.calls > 0) {
-                // Never hide the banner while this agent's call is still operating; end when it returns.
+            if (session.calls > 0 || session.waitingForOwner) {
+                // Never hide the banner while this agent's call is still operating or one of its actions waits for the
+                // owner (another run's end, Phase 6 D4); end when the last of them is over.
                 session.ending = true
                 return
             }
             session.idle?.cancel()
             sessions.remove(agentName)
         }
+        applyIndicator()
+    }
+
+    /**
+     * Keeps [agentName]'s session, with the banner "<agent> waits for your answer to act in <app>",
+     * while its screen action [holdId] waits for the owner (Phase 6, D4, S22; rule 12): neither
+     * [endSession] (of any run of that agent) nor the idle time-out ends a session with an open
+     * hold. The same id is the same hold. Stop ends every hold. Nothing here suspends.
+     */
+    override fun holdSession(holdId: String, agentName: String, packageName: String) {
+        var labelKnown = true
+        synchronized(sessionLock) {
+            if (stopSwitch.stopped.value || holdId in holdOwners) return
+            val session = sessions.getOrPut(agentName) {
+                labelKnown = false
+                Session(packageName)
+            }
+            session.holds += holdId
+            holdOwners[holdId] = agentName
+            session.idle?.cancel()
+            session.idle = null
+        }
+        // A session that starts with the hold names the app as the owner authorised it, once that is read.
+        if (!labelKnown) {
+            scope.launch(io) {
+                val label = apps.get(packageName)?.label?.takeIf { it.isNotBlank() } ?: return@launch
+                synchronized(sessionLock) { sessions[agentName]?.takeIf { it.appLabel == packageName }?.appLabel = label }
+                applyIndicator()
+            }
+        }
+        applyIndicator()
+    }
+
+    /** Ends the hold [holdId]; the session then ends as usual (idle time-out, or at once when its agent's run ended meanwhile). */
+    override fun releaseSession(holdId: String) {
+        synchronized(sessionLock) {
+            val agentName = holdOwners.remove(holdId) ?: return
+            val session = sessions[agentName] ?: return
+            session.holds -= holdId
+            if (session.waitingForOwner || session.calls > 0) return@synchronized
+            if (session.ending) {
+                sessions.remove(agentName)
+            } else {
+                session.idle?.cancel()
+                session.idle = scope.launch {
+                    delay(ScreenOperator.SESSION_IDLE_MS)
+                    expire(agentName, session)
+                }
+            }
+        }
+        // Shown afresh: the session either ended or no longer waits for the owner.
         applyIndicator()
     }
 
@@ -387,7 +455,16 @@ internal class AccessibilityScreenOperator(
         var calls = 0
         var idle: Job? = null
         var ending = false
+
+        /** The holds of calls that wait for the owner to act in the app (Phase 6, D4): the session stays while any is open. */
+        val holds = LinkedHashSet<String>()
+
+        /** True while one of the agent's screen actions waits for the owner's answer. */
+        val waitingForOwner: Boolean get() = holds.isNotEmpty()
     }
+
+    /** Which agent's session each open hold keeps ([holdSession]); guarded by [sessionLock]. */
+    private val holdOwners = HashMap<String, String>()
 
     /**
      * Runs [block] as the one call in progress, after the checks passed. Stop cancels it and it
@@ -437,6 +514,8 @@ internal class AccessibilityScreenOperator(
         if (stopSwitch.stopped.value) return Gate.Shut(ScreenResult.Stopped)
         if (protectedPackages().isProtected(packageName)) return Gate.Shut(ScreenResult.Protected(packageName))
         val app = authorised(packageName) ?: return Gate.Shut(ScreenResult.NotAuthorised(packageName))
+        // Phase 6 (rule 12, S15): nothing is read or done while the screen is off; the agent waits until the owner uses the phone.
+        if (!device.screenOn()) return Gate.Shut(ScreenResult.NotSupported(SCREEN_OFF))
         if (device.keyguardLocked()) return Gate.Shut(ScreenResult.WrongWindow(packageName, null))
         val front = front(host) ?: return Gate.Shut(ScreenResult.WrongWindow(packageName, null))
         val root = front.root
@@ -465,6 +544,7 @@ internal class AccessibilityScreenOperator(
     /** Null while Stop is not pressed and the same window of the same app is still in front with no lock screen; else why not. */
     private fun stillInFront(open: Passed): ScreenResult<Nothing>? {
         if (stopSwitch.stopped.value) return ScreenResult.Stopped
+        if (!device.screenOn()) return ScreenResult.NotSupported(SCREEN_OFF)
         if (device.keyguardLocked()) return ScreenResult.WrongWindow(open.packageName, null)
         val now = front(open.host)
         if (now == null || now.id != open.front.id || now.packageName != open.packageName || now.type != AccessibilityWindowInfo.TYPE_APPLICATION) {
@@ -656,7 +736,7 @@ internal class AccessibilityScreenOperator(
         synchronized(sessionLock) {
             val session = sessions[agentName] ?: return
             session.calls = (session.calls - 1).coerceAtLeast(0)
-            if (session.calls > 0) return
+            if (session.calls > 0 || session.waitingForOwner) return
             if (session.ending) {
                 sessions.remove(agentName)
                 ended = true
@@ -672,7 +752,7 @@ internal class AccessibilityScreenOperator(
 
     private fun expire(agentName: String, session: Session) {
         synchronized(sessionLock) {
-            if (sessions[agentName] !== session || session.calls > 0) return
+            if (sessions[agentName] !== session || session.calls > 0 || session.waitingForOwner) return
             sessions.remove(agentName)
         }
         applyIndicator()
@@ -683,6 +763,8 @@ internal class AccessibilityScreenOperator(
         synchronized(sessionLock) {
             sessions.values.forEach { it.idle?.cancel() }
             sessions.clear()
+            // Stop ends every hold too (rule 12): the waiting actions are refused after any answer.
+            holdOwners.clear()
         }
         applyIndicator()
     }
@@ -699,7 +781,8 @@ internal class AccessibilityScreenOperator(
             lockedWhenApplied.set(locked)
             val text = synchronized(sessionLock) {
                 sessions.entries.joinToString("\n") { (agent, session) ->
-                    "${PreviewText.exact(agent)} is operating ${PreviewText.exact(session.appLabel)}"
+                    if (session.waitingForOwner) "${PreviewText.exact(agent)} waits for your answer to act in ${PreviewText.exact(session.appLabel)}"
+                    else "${PreviewText.exact(agent)} is operating ${PreviewText.exact(session.appLabel)}"
                 }
             }
             if (text.isEmpty() || locked) host.indicator.hide() else host.indicator.show(text) { stopSwitch.stop() }
@@ -728,6 +811,9 @@ internal class AccessibilityScreenOperator(
 
         private const val NO_KEYBOARD_ACTION =
             "That field offers no keyboard action to press, even when focused. Tap it first and type again, or tap the app's own send button."
+
+        /** Rule 12 (S15): screen actions need a screen that is on. */
+        const val SCREEN_OFF = "The phone's screen is off. Screen actions wait until you use the phone."
 
         private const val COVERED =
             "Another window covers part of the app (the notification shade, a pop-up or another app), so a screenshot of the app alone is not possible right now."
