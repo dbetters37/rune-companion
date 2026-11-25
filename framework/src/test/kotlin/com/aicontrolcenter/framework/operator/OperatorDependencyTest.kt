@@ -180,6 +180,7 @@ class OperatorDependencyTest {
             ToolExecutor::class.java, PermissionBroker::class.java, OperatorFacts::class.java, DefaultCapabilityRequester::class.java,
             PermissionRequestTool::class.java, OperatorTaskHooks::class.java, AgentRunner::class.java, DefaultOrchestrator::class.java,
             DefaultModelGateway::class.java, DefaultAgentChat::class.java, DefaultRegistryDirectory::class.java, DefaultToolAuthorizer::class.java,
+            com.aicontrolcenter.framework.llm.DefaultProviderRechecks::class.java,
         ) + TestWorld().toolRegistry.all().map { it.javaClass }
         ).distinct()
 
