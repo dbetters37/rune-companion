@@ -1,11 +1,14 @@
 package com.aicontrolcenter.app.ui.models
 
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aicontrolcenter.app.ui.components.SIMULATOR_LABEL
 import com.aicontrolcenter.app.ui.components.StatusLabel
 import com.aicontrolcenter.app.ui.components.UserMessage
+import com.aicontrolcenter.app.ui.components.putText
 import com.aicontrolcenter.app.ui.components.toStatusLabel
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.core.AgentId
@@ -67,6 +70,51 @@ data class ModelEditorUiState(
     val message: UserMessage? = null,
 )
 
+/**
+ * The model editor's text fields. The fields read these and the keyboard writes them directly, so
+ * every key lands in order; the draft follows them and never writes back while the owner types.
+ * Filled when the model loads, and again only while the owner has changed nothing.
+ */
+class ModelTextFields {
+    val displayName = TextFieldState()
+    val notes = TextFieldState()
+
+    /** Digits only; empty means unknown. */
+    val contextWindow = TextFieldState()
+    val maxOutput = TextFieldState()
+
+    internal fun fill(draft: ModelDescriptionDraft) {
+        displayName.putText(draft.displayName)
+        notes.putText(draft.notes)
+        contextWindow.putText(draft.contextWindowText)
+        maxOutput.putText(draft.maxOutputText)
+    }
+
+    internal fun read() = Texts(displayName.text.toString(), notes.text.toString(), contextWindow.text.toString(), maxOutput.text.toString())
+
+    /** Puts into the fields the texts [draft] changed from [before] (a change made from code, not typed). */
+    internal fun showChanges(before: ModelDescriptionDraft, draft: ModelDescriptionDraft) {
+        if (draft.displayName != before.displayName) displayName.putText(draft.displayName)
+        if (draft.notes != before.notes) notes.putText(draft.notes)
+        if (draft.contextWindowText != before.contextWindowText) contextWindow.putText(draft.contextWindowText)
+        if (draft.maxOutputText != before.maxOutputText) maxOutput.putText(draft.maxOutputText)
+    }
+
+    internal data class Texts(val displayName: String, val notes: String, val contextWindow: String, val maxOutput: String) {
+        /** [draft] with these texts; the number fields keep their digits, as the fields do. */
+        fun applyTo(draft: ModelDescriptionDraft) = draft.copy(
+            displayName = displayName,
+            notes = notes,
+            contextWindowText = contextWindow.filter(Char::isDigit).take(MAX_DIGITS),
+            maxOutputText = maxOutput.filter(Char::isDigit).take(MAX_DIGITS),
+        )
+    }
+
+    internal companion object {
+        const val MAX_DIGITS = 8
+    }
+}
+
 /** An agent offered by "Use for agents…", with the model it uses now. */
 @Immutable
 data class AgentChoiceUi(
@@ -120,7 +168,12 @@ class ModelEditorViewModel(
     private var messageCounter = 0L
     private var latest: RegistrySnapshot? = null
 
+    /** What is being typed into the editor's text fields. */
+    val fields = ModelTextFields()
+
     init {
+        // The draft follows what is typed. (Before the model has loaded, edits are ignored.)
+        viewModelScope.launch { snapshotFlow { fields.read() }.collect { edit { it } } }
         viewModelScope.launch {
             directory.observe().collect { snapshot ->
                 latest = snapshot
@@ -137,10 +190,17 @@ class ModelEditorViewModel(
                     contextWindowText = model.capabilities.contextWindow?.toString().orEmpty(),
                     maxOutputText = model.capabilities.maxOutputTokens?.toString().orEmpty(),
                 )
+                // The owner's unsaved edits win over a registry change made elsewhere. Whether there
+                // are any is read from the fields themselves, which may be a key ahead of the draft.
+                val before = state.value
+                val typed = if (before.isLoading || before.notFound) null else fields.read().applyTo(before.draft)
+                val dirty = typed != null && typed != original
+                if (!dirty) {
+                    original = stored
+                    fields.fill(stored)
+                }
                 state.update { current ->
-                    // The owner's unsaved edits win over a registry change made elsewhere.
-                    val draft = if (current.isDirty) current.draft else stored
-                    if (!current.isDirty) original = stored
+                    val draft = if (dirty && typed != null) typed else stored
                     current.copy(
                         isLoading = false,
                         notFound = false,
@@ -166,16 +226,23 @@ class ModelEditorViewModel(
                             )
                         },
                         draft = draft,
+                        isDirty = dirty,
                     )
                 }
             }
         }
     }
 
+    /**
+     * Applies a change to the draft. It starts from what the text fields hold now (they may be a
+     * key ahead of the draft); a text it changes goes into its field.
+     */
     fun edit(change: (ModelDescriptionDraft) -> ModelDescriptionDraft) {
         val current = state.value
         if (current.isLoading || current.notFound || current.isSimulator) return
-        val draft = change(current.draft)
+        val typed = fields.read().applyTo(current.draft)
+        val draft = change(typed)
+        fields.showChanges(typed, draft)
         state.update {
             it.copy(
                 draft = draft,
@@ -184,6 +251,8 @@ class ModelEditorViewModel(
             )
         }
     }
+
+    // Typing goes into [fields] directly; these replace a field's text from code.
 
     fun setDisplayName(value: String) = edit { it.copy(displayName = value) }
 
@@ -195,11 +264,13 @@ class ModelEditorViewModel(
 
     fun setCoding(tier: CapabilityTier) = setCapabilities { it.copy(coding = tier) }
 
-    fun setContextWindowText(text: String) = edit { it.copy(contextWindowText = text.filter(Char::isDigit).take(MAX_DIGITS)) }
+    fun setContextWindowText(text: String) = edit { it.copy(contextWindowText = text.filter(Char::isDigit).take(ModelTextFields.MAX_DIGITS)) }
 
-    fun setMaxOutputText(text: String) = edit { it.copy(maxOutputText = text.filter(Char::isDigit).take(MAX_DIGITS)) }
+    fun setMaxOutputText(text: String) = edit { it.copy(maxOutputText = text.filter(Char::isDigit).take(ModelTextFields.MAX_DIGITS)) }
 
     fun save() {
+        // Exactly what the fields hold now, even if the owner taps Save straight after the last key.
+        edit { it }
         val current = state.value
         if (current.isSaving || current.isLoading || current.notFound || current.isSimulator) return
         val draft = current.draft
@@ -321,10 +392,6 @@ class ModelEditorViewModel(
     }
 
     private fun message(text: String) = UserMessage(text, ++messageCounter)
-
-    private companion object {
-        const val MAX_DIGITS = 8
-    }
 }
 
 /**

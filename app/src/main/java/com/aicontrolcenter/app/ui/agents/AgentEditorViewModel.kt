@@ -1,9 +1,12 @@
 package com.aicontrolcenter.app.ui.agents
 
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aicontrolcenter.app.ui.components.UserMessage
+import com.aicontrolcenter.app.ui.components.putText
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.SpaceId
@@ -117,6 +120,59 @@ data class AgentEditorUiState(
 }
 
 /**
+ * The editor's text fields. The fields read these and the keyboard writes them directly, so every
+ * key lands in order; the draft follows them (see [AgentEditorViewModel]) and never writes back
+ * while the owner types. Filled once, when the agent (or a restored draft) has loaded.
+ */
+class AgentTextFields {
+    val name = TextFieldState()
+    val description = TextFieldState()
+    val instructions = TextFieldState()
+    val personality = TextFieldState()
+
+    /** Digits only; empty means the model's own limit. */
+    val maxOutputTokens = TextFieldState()
+
+    internal fun fill(draft: AgentDraft) {
+        name.putText(draft.name)
+        description.putText(draft.description)
+        instructions.putText(draft.systemInstructions)
+        personality.putText(draft.personality)
+        maxOutputTokens.putText(draft.generation.maxOutputTokens?.toString().orEmpty())
+    }
+
+    /** Puts into the fields the texts [draft] changed from [before] (a change made from code, not typed). */
+    internal fun showChanges(before: AgentDraft, draft: AgentDraft) {
+        if (draft.name != before.name) name.putText(draft.name)
+        if (draft.description != before.description) description.putText(draft.description)
+        if (draft.systemInstructions != before.systemInstructions) instructions.putText(draft.systemInstructions)
+        if (draft.personality != before.personality) personality.putText(draft.personality)
+        val tokens = draft.generation.maxOutputTokens
+        if (tokens != before.generation.maxOutputTokens) maxOutputTokens.putText(tokens?.toString().orEmpty())
+    }
+
+    internal fun read() = Texts(
+        name.text.toString(), description.text.toString(), instructions.text.toString(), personality.text.toString(),
+        maxOutputTokens.text.toString(),
+    )
+
+    internal data class Texts(val name: String, val description: String, val instructions: String, val personality: String, val maxOutputTokens: String) {
+        /** [draft] with these texts; the token count keeps its digits, as the field does. */
+        fun applyTo(draft: AgentDraft): AgentDraft = draft.copy(
+            name = name,
+            description = description,
+            systemInstructions = instructions,
+            personality = personality,
+            generation = draft.generation.copy(maxOutputTokens = maxOutputTokens.filter(Char::isDigit).take(MAX_TOKEN_DIGITS).toIntOrNull()),
+        )
+    }
+
+    internal companion object {
+        const val MAX_TOKEN_DIGITS = 7
+    }
+}
+
+/**
  * Keeps the draft across process death. The route backs it with the navigation entry's saved
  * state; tests and previews use [None].
  */
@@ -159,8 +215,14 @@ class AgentEditorViewModel(
     private var validation: Job? = null
     private var messageCounter = 0L
 
+    /** What is being typed into the editor's text fields. */
+    val fields = AgentTextFields()
+
     init {
         viewModelScope.launch { load() }
+        // The draft follows what is typed. (Before the agent has loaded, edits are ignored, and the
+        // fields are filled from the draft once it has.)
+        viewModelScope.launch { snapshotFlow { fields.read() }.collect { edit { it } } }
         viewModelScope.launch {
             directory.observe().collect { snapshot -> state.update { it.copy(models = snapshot.modelOptions()) } }
         }
@@ -186,21 +248,28 @@ class AgentEditorViewModel(
         original = base
         val restored = draftStore.read()?.let { runCatching { json.decodeFromString(AgentDraft.serializer(), it) }.getOrNull() }
         val draft = restored ?: base
+        fields.fill(draft)
         state.update { it.copy(isLoading = false, draft = draft, isDirty = draft != base) }
         validate(draft)
     }
 
-    /** Applies an edit to the draft. All field changes go through here. */
+    /**
+     * Applies an edit to the draft. All changes go through here. The edit starts from what the text
+     * fields hold now (they may be a key ahead of the draft); a text it changes goes into its field.
+     */
     fun edit(transform: (AgentDraft) -> AgentDraft) {
         val current = state.value
         if (current.isLoading || current.notFound) return
-        val draft = transform(current.draft)
+        val typed = fields.read().applyTo(current.draft)
+        val draft = transform(typed)
+        fields.showChanges(typed, draft)
         if (draft == current.draft) return
         state.update { it.copy(draft = draft, isDirty = draft != original) }
         draftStore.write(json.encodeToString(AgentDraft.serializer(), draft))
         validate(draft)
     }
 
+    /** Replaces the name from code; typing goes into [fields] directly. */
     fun setName(name: String) = edit { it.copy(name = name) }
 
     fun addResponsibility(text: String) = edit { draft ->
@@ -251,13 +320,16 @@ class AgentEditorViewModel(
         it.copy(generation = it.generation.copy(temperature = value?.let { v -> Math.round(v * 10) / 10.0 }))
     }
 
-    /** Accepts what was typed in the token field: digits only, empty for the model's default. */
-    fun setMaxOutputTokensText(text: String) = edit {
-        val digits = text.filter(Char::isDigit).take(MAX_TOKEN_DIGITS)
-        it.copy(generation = it.generation.copy(maxOutputTokens = digits.toIntOrNull()))
+    /** Replaces the token field from code: digits only, empty for the model's default. */
+    fun setMaxOutputTokensText(text: String) {
+        val digits = text.filter(Char::isDigit).take(AgentTextFields.MAX_TOKEN_DIGITS)
+        fields.maxOutputTokens.putText(digits)
+        edit { it }
     }
 
     fun save() {
+        // Exactly what the fields hold now, even if the owner taps Save straight after the last key.
+        edit { it }
         val current = state.value
         // A second tap while the first save is still being acted on must not save again.
         if (current.isSaving || current.isLoading || current.notFound || current.savedAgentId != null) return
@@ -309,7 +381,6 @@ class AgentEditorViewModel(
     private fun List<ValidationIssue>.byField(): Map<AgentField, List<String>> = groupBy({ it.field }, { it.message })
 
     companion object {
-        private const val MAX_TOKEN_DIGITS = 7
         private const val MAX_NAME_LENGTH = 40
         private val json = Json { ignoreUnknownKeys = true }
 

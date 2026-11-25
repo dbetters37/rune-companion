@@ -51,15 +51,14 @@ internal val AgentKind.roleExplanation: String
     }
 
 @Composable
-internal fun IdentityEditor(state: AgentEditorUiState, actions: AgentEditorActions) {
+internal fun IdentityEditor(state: AgentEditorUiState, fields: AgentTextFields, actions: AgentEditorActions) {
     val draft = state.draft
     Column {
         SectionHeader("Identity")
         AppCard {
             Column(verticalArrangement = Arrangement.spacedBy(Spacing.md)) {
                 AppTextField(
-                    value = draft.name,
-                    onValueChange = { name -> actions.onEdit { it.copy(name = name) } },
+                    state = fields.name,
                     label = "Name",
                     errorText = state.issue(AgentField.NAME),
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
@@ -85,8 +84,7 @@ internal fun IdentityEditor(state: AgentEditorUiState, actions: AgentEditorActio
                     )
                 }
                 AppTextField(
-                    value = draft.description,
-                    onValueChange = { text -> actions.onEdit { it.copy(description = text) } },
+                    state = fields.description,
                     label = "Description",
                     supportingText = "One line saying what this agent is for. The Director reads it when assigning work.",
                     singleLine = false,
@@ -150,15 +148,13 @@ private fun AccentPicker(selected: Int, onSelect: (Int) -> Unit) {
 }
 
 @Composable
-internal fun InstructionsEditor(state: AgentEditorUiState, actions: AgentEditorActions) {
-    val draft = state.draft
+internal fun InstructionsEditor(state: AgentEditorUiState, fields: AgentTextFields) {
     Column {
         SectionHeader("Instructions and personality")
         AppCard {
             Column(verticalArrangement = Arrangement.spacedBy(Spacing.md)) {
                 AppTextField(
-                    value = draft.systemInstructions,
-                    onValueChange = { text -> actions.onEdit { it.copy(systemInstructions = text) } },
+                    state = fields.instructions,
                     label = "Instructions",
                     supportingText = "The agent's standing instructions: what it does and how it should work.",
                     errorText = state.issue(AgentField.INSTRUCTIONS),
@@ -168,8 +164,7 @@ internal fun InstructionsEditor(state: AgentEditorUiState, actions: AgentEditorA
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                 )
                 AppTextField(
-                    value = draft.personality,
-                    onValueChange = { text -> actions.onEdit { it.copy(personality = text) } },
+                    state = fields.personality,
                     label = "Personality",
                     supportingText = "Tone and character, kept apart from the instructions so either can change alone.",
                     singleLine = false,

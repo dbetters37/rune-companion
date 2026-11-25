@@ -13,6 +13,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
@@ -65,6 +67,7 @@ fun AgentsRoute(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     AgentsScreen(
         state = state,
+        query = viewModel.query,
         onAssignModel = viewModel::assignToAgentsWithoutModel,
         onAddProvider = onAddProvider,
         onMessageShown = viewModel::messageShown,
@@ -77,9 +80,11 @@ fun AgentsRoute(
     )
 }
 
+/** The agent list. [query] holds the search being typed; the list in [state] follows it. */
 @Composable
 fun AgentsScreen(
     state: AgentsUiState,
+    query: TextFieldState,
     onAssignModel: (ModelId) -> Unit,
     onAddProvider: () -> Unit,
     onMessageShown: () -> Unit,
@@ -112,7 +117,7 @@ fun AgentsScreen(
             return@ScreenScaffold
         }
         Column(Modifier.fillMaxSize().padding(padding)) {
-            AgentFilters(state, onQueryChange, onRoleFilterChange, onStatusFilterChange, Modifier.readableWidth())
+            AgentFilters(state, query, onQueryChange, onRoleFilterChange, onStatusFilterChange, Modifier.readableWidth())
             when {
                 state.totalCount == 0 -> EmptyState(
                     icon = AppIcons.Agent,
@@ -149,6 +154,7 @@ fun AgentsScreen(
 @Composable
 private fun AgentFilters(
     state: AgentsUiState,
+    query: TextFieldState,
     onQueryChange: (String) -> Unit,
     onRoleFilterChange: (AgentKind?) -> Unit,
     onStatusFilterChange: (AgentStatusFilter) -> Unit,
@@ -156,14 +162,13 @@ private fun AgentFilters(
 ) {
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
         OutlinedTextField(
-            value = state.query,
-            onValueChange = onQueryChange,
+            state = query,
             modifier = Modifier.fillMaxWidth().padding(horizontal = Spacing.screen),
-            singleLine = true,
+            lineLimits = TextFieldLineLimits.SingleLine,
             placeholder = { Text("Search agents") },
             leadingIcon = { Icon(AppIcons.Search, contentDescription = null) },
             trailingIcon = {
-                if (state.query.isNotEmpty()) {
+                if (query.text.isNotEmpty()) {
                     IconButton(onClick = { onQueryChange("") }) { Icon(AppIcons.Close, contentDescription = "Clear search") }
                 }
             },

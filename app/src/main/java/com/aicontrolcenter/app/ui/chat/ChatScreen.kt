@@ -33,6 +33,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -87,7 +89,6 @@ import androidx.compose.ui.text.style.TextAlign
 
 class ChatActions(
     val onBack: () -> Unit,
-    val onDraftChange: (String) -> Unit,
     val onSend: () -> Unit,
     val onStop: () -> Unit,
     val onRename: (String) -> Unit,
@@ -115,9 +116,9 @@ fun ChatRoute(conversationId: ConversationId, onBack: () -> Unit, onOpenProvider
     LaunchedEffect(state.deleted) { if (state.deleted) onBack() }
     ChatScreen(
         state = state,
+        draft = viewModel.draft,
         actions = ChatActions(
             onBack = onBack,
-            onDraftChange = viewModel::setDraft,
             onSend = viewModel::send,
             onStop = viewModel::stop,
             onRename = viewModel::rename,
@@ -131,7 +132,7 @@ fun ChatRoute(conversationId: ConversationId, onBack: () -> Unit, onOpenProvider
 }
 
 @Composable
-fun ChatScreen(state: ChatUiState, actions: ChatActions) {
+fun ChatScreen(state: ChatUiState, draft: TextFieldState, actions: ChatActions) {
     var menuOpen by remember { mutableStateOf(false) }
     var renaming by rememberSaveable { mutableStateOf(false) }
     var confirmDelete by rememberSaveable { mutableStateOf(false) }
@@ -192,7 +193,7 @@ fun ChatScreen(state: ChatUiState, actions: ChatActions) {
                     )
                 }
                 Transcript(state, actions, Modifier.weight(1f))
-                Composer(state, actions)
+                Composer(state, draft, actions)
             }
         }
     }
@@ -325,7 +326,7 @@ private fun LiveReply(state: ChatUiState, live: LiveTurnUi, showAvatar: Boolean)
 
 /** The bottom of the screen: where text goes, then the input (or why there is none). */
 @Composable
-private fun Composer(state: ChatUiState, actions: ChatActions) {
+private fun Composer(state: ChatUiState, draft: TextFieldState, actions: ChatActions) {
     Surface(color = MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxWidth()) {
             HorizontalDivider(color = appColors.hairline)
@@ -339,7 +340,7 @@ private fun Composer(state: ChatUiState, actions: ChatActions) {
                     InfoBanner(title = "Cannot send", text = blocked, tone = StatusTone.UNAVAILABLE)
                     if (state.checkProviderId != null) ProviderActions(state, actions)
                 } else {
-                    InputRow(state, actions)
+                    InputRow(state, draft, actions)
                 }
             }
         }
@@ -385,20 +386,14 @@ internal fun DestinationLine(destination: DestinationUi?) {
 }
 
 @Composable
-private fun InputRow(state: ChatUiState, actions: ChatActions) {
-    // Typed text is held here and reported upward, so the cursor never jumps while the view model catches up.
-    var text by remember { mutableStateOf(state.draft) }
-    LaunchedEffect(state.draft) { if (state.draft != text) text = state.draft }
+private fun InputRow(state: ChatUiState, draft: TextFieldState, actions: ChatActions) {
+    // The field reads and writes the view model's text directly, so no key waits for the transcript to update.
     Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
         OutlinedTextField(
-            value = text,
-            onValueChange = {
-                text = it
-                actions.onDraftChange(it)
-            },
+            state = draft,
             modifier = Modifier.weight(1f).semantics { contentDescription = "Message to ${state.agentName}" },
             placeholder = { Text(if (state.isRunning) "${state.agentName} is answering…" else "Message ${state.agentName}") },
-            maxLines = 5,
+            lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = 1, maxHeightInLines = 5),
             shape = MaterialTheme.shapes.large,
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
         )
@@ -412,7 +407,7 @@ private fun InputRow(state: ChatUiState, actions: ChatActions) {
                 ),
             ) { Icon(AppIcons.Stop, contentDescription = "Stop") }
         } else {
-            FilledIconButton(onClick = actions.onSend, enabled = state.canSend, modifier = Modifier.size(56.dp)) {
+            FilledIconButton(onClick = actions.onSend, enabled = state.canSend(draft.text), modifier = Modifier.size(56.dp)) {
                 Icon(AppIcons.Send, contentDescription = "Send")
             }
         }

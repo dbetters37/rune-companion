@@ -24,6 +24,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -215,16 +216,20 @@ private fun SpaceHeader(detail: SpaceDetailUi, actions: SpaceDetailActions, onRe
 
 @Composable
 private fun RenameForm(detail: SpaceDetailUi, state: SpaceDetailUiState, actions: SpaceDetailActions, onCancel: () -> Unit) {
-    var name by rememberSaveable { mutableStateOf(detail.space.name) }
-    var description by rememberSaveable { mutableStateOf(detail.space.description) }
+    // Kept across rotation; the fields read and write these directly, so no key is lost.
+    val name = rememberTextFieldState(detail.space.name)
+    val description = rememberTextFieldState(detail.space.description)
     AppCard(borderColor = appColors.hairlineStrong) {
         Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
             Text("Rename space", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
-            AppTextField(value = name, onValueChange = { name = it }, label = "Space name", errorText = state.renameError)
-            AppTextField(value = description, onValueChange = { description = it }, label = "What belongs in it", singleLine = false, maxLines = 4)
+            AppTextField(state = name, label = "Space name", errorText = state.renameError)
+            AppTextField(state = description, label = "What belongs in it", singleLine = false, maxLines = 4)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Spacing.sm, Alignment.End)) {
                 TextButton(onClick = onCancel) { Text("Cancel") }
-                Button(onClick = { actions.onRename(name, description) }, enabled = name.isNotBlank() && !state.isBusy) { Text("Save") }
+                Button(
+                    onClick = { actions.onRename(name.text.toString(), description.text.toString()) },
+                    enabled = name.text.isNotBlank() && !state.isBusy,
+                ) { Text("Save") }
             }
         }
     }

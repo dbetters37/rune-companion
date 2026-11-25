@@ -32,6 +32,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,6 +50,7 @@ import com.aicontrolcenter.app.di.LocalAppGraph
 import com.aicontrolcenter.app.ui.components.AgentAvatar
 import com.aicontrolcenter.app.ui.components.AppCard
 import com.aicontrolcenter.app.ui.components.AppTextField
+import com.aicontrolcenter.app.ui.components.digitsOnly
 import com.aicontrolcenter.app.ui.components.ConfirmDialog
 import com.aicontrolcenter.app.ui.components.EmptyState
 import com.aicontrolcenter.app.ui.components.InfoBanner
@@ -254,14 +256,12 @@ private fun DescriptionEditor(state: ModelEditorUiState, viewModel: ModelEditorV
         AppCard {
             Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 AppTextField(
-                    value = state.draft.displayName,
-                    onValueChange = viewModel::setDisplayName,
+                    state = viewModel.fields.displayName,
                     label = "Display name",
                     errorText = state.nameError,
                 )
                 AppTextField(
-                    value = state.draft.notes,
-                    onValueChange = viewModel::setNotes,
+                    state = viewModel.fields.notes,
                     label = "Notes",
                     placeholder = "What it is good at, what it costs…",
                     singleLine = false,
@@ -299,22 +299,21 @@ private fun CapabilitiesEditor(state: ModelEditorUiState, viewModel: ModelEditor
                 TierPicker(testLabel("Reasoning"), caps.reasoning, viewModel::setReasoning)
                 TierPicker(testLabel("Coding"), caps.coding, viewModel::setCoding)
                 RowDivider()
+                val digits = remember { digitsOnly(ModelTextFields.MAX_DIGITS) }
                 AppTextField(
-                    value = state.draft.contextWindowText,
-                    onValueChange = viewModel::setContextWindowText,
+                    state = viewModel.fields.contextWindow,
                     label = "Context window (tokens)",
                     placeholder = "Unknown",
                     supportingText = "How much conversation fits. Used to refuse a conversation that has grown too long.",
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    transformInput = { it.filter(Char::isDigit).take(8) },
+                    inputTransformation = digits,
                 )
                 AppTextField(
-                    value = state.draft.maxOutputText,
-                    onValueChange = viewModel::setMaxOutputText,
+                    state = viewModel.fields.maxOutput,
                     label = "Longest reply (tokens)",
                     placeholder = "Unknown",
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    transformInput = { it.filter(Char::isDigit).take(8) },
+                    inputTransformation = digits,
                 )
             }
         }

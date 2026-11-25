@@ -16,6 +16,12 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.clearText
+import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.runtime.rememberUpdatedState
+import com.aicontrolcenter.app.ui.components.textChanges
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -27,8 +33,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,6 +62,15 @@ class ExplorerActions(
 /** Search, filters and the list of memories. */
 @Composable
 internal fun MemoryExplorerTab(state: ExplorerUiState, actions: ExplorerActions) {
+    // The search being typed: the field reads and writes it directly, so no key waits for the
+    // search to run, and each change is reported to the view model, which waits for the next key.
+    val query = rememberTextFieldState(state.filters.query)
+    val onQueryChange by rememberUpdatedState(actions.onQueryChange)
+    LaunchedEffect(query) { query.textChanges().collect { onQueryChange(it) } }
+    val clearFilters = {
+        query.clearText()
+        actions.onClearFilters()
+    }
     val listState = rememberLazyListState()
     // New results start at the top, where the best match is. Remembered across navigation, so
     // coming back from a memory keeps the place in an unchanged list.
@@ -71,7 +84,7 @@ internal fun MemoryExplorerTab(state: ExplorerUiState, actions: ExplorerActions)
     }
     Column(Modifier.fillMaxSize()) {
         // Filters mean nothing before there is anything to filter.
-        if (state.totalCount > 0) ExplorerFiltersBar(state, actions, Modifier.readableWidth())
+        if (state.totalCount > 0) ExplorerFiltersBar(state, query, actions, Modifier.readableWidth())
         when {
             state.totalCount == 0 -> EmptyState(
                 icon = AppIcons.MemoryBrain,
@@ -83,7 +96,7 @@ internal fun MemoryExplorerTab(state: ExplorerUiState, actions: ExplorerActions)
                 icon = AppIcons.Search,
                 message = "The search could not run. Try again in a moment, or clear it to browse.",
                 actionLabel = "Clear search",
-                onAction = { actions.onQueryChange("") },
+                onAction = { query.clearText() },
             )
             state.rows.isEmpty() && !state.isSearching -> EmptyState(
                 icon = AppIcons.Search,
@@ -93,7 +106,7 @@ internal fun MemoryExplorerTab(state: ExplorerUiState, actions: ExplorerActions)
                     "No memory matches these filters."
                 },
                 actionLabel = "Clear filters",
-                onAction = actions.onClearFilters,
+                onAction = clearFilters,
             )
             else -> LazyColumn(
                 state = listState,
@@ -110,29 +123,21 @@ internal fun MemoryExplorerTab(state: ExplorerUiState, actions: ExplorerActions)
 }
 
 @Composable
-private fun ExplorerFiltersBar(state: ExplorerUiState, actions: ExplorerActions, modifier: Modifier = Modifier) {
+private fun ExplorerFiltersBar(state: ExplorerUiState, query: TextFieldState, actions: ExplorerActions, modifier: Modifier = Modifier) {
     val filters = state.filters
-    // Typed text is kept here so the field never lags behind the keyboard while a search runs.
-    var query by remember { mutableStateOf(filters.query) }
-    LaunchedEffect(filters.query) { if (filters.query != query) query = filters.query }
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
         OutlinedTextField(
-            value = query,
-            onValueChange = {
-                query = it
-                actions.onQueryChange(it)
-            },
+            state = query,
             modifier = Modifier.fillMaxWidth().padding(horizontal = Spacing.screen),
-            singleLine = true,
+            lineLimits = TextFieldLineLimits.SingleLine,
             placeholder = { Text("Search memories") },
             leadingIcon = { Icon(AppIcons.Search, contentDescription = null) },
             trailingIcon = {
                 when {
                     state.isSearching -> CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                    query.isNotEmpty() -> IconButton(onClick = {
-                        query = ""
-                        actions.onQueryChange("")
-                    }) { Icon(AppIcons.Close, contentDescription = "Clear search") }
+                    query.text.isNotEmpty() -> IconButton(onClick = { query.clearText() }) {
+                        Icon(AppIcons.Close, contentDescription = "Clear search")
+                    }
                 }
             },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),

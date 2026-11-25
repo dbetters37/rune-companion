@@ -1,11 +1,15 @@
 package com.aicontrolcenter.app.ui.models
 
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.clearText
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aicontrolcenter.app.ui.components.UserMessage
 import com.aicontrolcenter.app.ui.components.label
 import com.aicontrolcenter.app.ui.components.plural
+import com.aicontrolcenter.app.ui.components.putText
 import com.aicontrolcenter.core.ProviderId
 import com.aicontrolcenter.core.llm.LlmException
 import com.aicontrolcenter.core.llm.ProviderDraft
@@ -88,6 +92,49 @@ data class ProviderFormUiState(
 }
 
 /**
+ * The provider form's text fields. The fields read these and the keyboard writes them directly,
+ * so every key lands in order; the form's state follows them and never writes back while the
+ * owner types. Filled once, when the preset or the provider has loaded.
+ */
+class ProviderTextFields {
+    val name = TextFieldState()
+    val baseUrl = TextFieldState()
+
+    /** The key being typed: emptied, with its undo history, as soon as it has gone to the vault. */
+    val apiKey = TextFieldState()
+    val headers = TextFieldState()
+
+    internal fun read() = Texts(name.text.toString(), baseUrl.text.toString(), apiKey.text.toString(), headers.text.toString())
+
+    /** Puts into the fields the texts [form] changed from [before] (a change made from code, not typed). */
+    internal fun showChanges(before: ProviderFormUiState, form: ProviderFormUiState) {
+        if (form.name != before.name) name.putText(form.name)
+        if (form.baseUrl != before.baseUrl) baseUrl.putText(form.baseUrl)
+        if (form.apiKey != before.apiKey) if (form.apiKey.isEmpty()) forgetKey() else apiKey.putText(form.apiKey)
+        if (form.headersText != before.headersText) headers.putText(form.headersText)
+    }
+
+    /** Forgets the typed key, including what undo could bring back. */
+    internal fun forgetKey() {
+        apiKey.clearText()
+        apiKey.undoState.clearHistory()
+    }
+
+    internal data class Texts(val name: String, val baseUrl: String, val apiKey: String, val headers: String) {
+        fun applyTo(form: ProviderFormUiState): ProviderFormUiState = form.copy(
+            name = name,
+            baseUrl = baseUrl,
+            apiKey = apiKey,
+            headersText = headers,
+            removeStoredKey = if (apiKey.isNotEmpty()) false else form.removeStoredKey,
+        )
+
+        /** Never prints the key. */
+        override fun toString(): String = "Texts(name=$name, baseUrl=$baseUrl, apiKey=${if (apiKey.isEmpty()) "empty" else "[typed, hidden]"})"
+    }
+}
+
+/**
  * Adds a provider from a preset, or edits one. Every change is validated by
  * [ProviderManager.validate] and the issues are shown next to their fields, so the form never
  * disagrees with what saving would accept. After a successful save it checks the connection
@@ -112,8 +159,13 @@ class ProviderFormViewModel(
     /** "Write each header as Name: value" when a line cannot be read. */
     private var headerParseProblem: String? = null
 
+    /** What is being typed into the form's text fields. */
+    val fields = ProviderTextFields()
+
     init {
         viewModelScope.launch { load() }
+        // The form follows what is typed. (Before the form has loaded, edits are ignored.)
+        viewModelScope.launch { snapshotFlow { fields.read() }.collect { edit { it } } }
     }
 
     private suspend fun load() {
@@ -140,6 +192,9 @@ class ProviderFormViewModel(
             )
         }
         original = loaded
+        fields.name.putText(loaded.name)
+        fields.baseUrl.putText(loaded.baseUrl)
+        fields.headers.putText(loaded.headersText)
         state.value = loaded
         validate()
     }
@@ -155,6 +210,8 @@ class ProviderFormViewModel(
         keyStored = keyStored,
     )
 
+    // Typing goes into [fields] directly; these replace a field's text from code.
+
     fun setName(value: String) = edit { it.copy(name = value) }
 
     fun setBaseUrl(value: String) = edit { it.copy(baseUrl = value) }
@@ -166,16 +223,24 @@ class ProviderFormViewModel(
     /** Editing only: delete the stored key when saving. Typing a new key replaces it instead. */
     fun setRemoveStoredKey(remove: Boolean) = edit { it.copy(removeStoredKey = remove, apiKey = if (remove) "" else it.apiKey) }
 
+    /**
+     * Applies a change to the form. It starts from what the text fields hold now (they may be a key
+     * ahead of the form); a text it changes goes into its field.
+     */
     private fun edit(change: (ProviderFormUiState) -> ProviderFormUiState) {
         val current = state.value
         if (current.isLoading || current.notFound || current.setup != null) return
-        val next = change(current)
+        val typed = fields.read().applyTo(current)
+        val next = change(typed)
+        fields.showChanges(typed, next)
         if (next == current) return
         state.value = next.copy(isDirty = next.contentDiffers(original))
         validate()
     }
 
     fun save() {
+        // Exactly what the fields hold now, even if the owner taps Save straight after the last key.
+        edit { it }
         val current = state.value
         if (current.isSaving || current.isLoading || current.notFound || current.setup != null) return
         val draft = draftOf(current)
@@ -194,6 +259,7 @@ class ProviderFormViewModel(
                 }
                 original = null
                 // The key has reached the vault; from here on nothing in the UI holds it.
+                fields.forgetKey()
                 state.update {
                     it.copy(
                         apiKey = "",

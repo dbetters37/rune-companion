@@ -8,11 +8,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.appColors
@@ -34,15 +31,16 @@ fun InlineTextEntry(
     placeholder: String? = null,
     initial: String = "",
 ) {
-    var text by rememberSaveable { mutableStateOf(initial) }
+    // Kept across rotation; the field reads and writes it directly, so no key is lost.
+    val text = rememberTextFieldState(initial)
     AppCard(modifier = modifier.fillMaxWidth(), borderColor = appColors.hairlineStrong) {
         Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
             Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
             explanation?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            AppTextField(value = text, onValueChange = { text = it }, label = label, placeholder = placeholder)
+            AppTextField(state = text, label = label, placeholder = placeholder)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Spacing.sm, androidx.compose.ui.Alignment.End)) {
                 TextButton(onClick = onDismiss) { Text("Cancel") }
-                Button(onClick = { onConfirm(text) }, enabled = text.isNotBlank()) { Text(confirmLabel) }
+                Button(onClick = { onConfirm(text.text.toString()) }, enabled = text.text.isNotBlank()) { Text(confirmLabel) }
             }
         }
     }

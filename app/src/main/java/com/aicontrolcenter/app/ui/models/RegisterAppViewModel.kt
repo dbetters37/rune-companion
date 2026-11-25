@@ -1,9 +1,12 @@
 package com.aicontrolcenter.app.ui.models
 
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aicontrolcenter.app.ui.components.UserMessage
+import com.aicontrolcenter.app.ui.components.putText
+import com.aicontrolcenter.app.ui.components.textChanges
 import com.aicontrolcenter.core.AiAppId
 import com.aicontrolcenter.core.registry.AiAppRegistry
 import com.aicontrolcenter.core.registry.InstalledAppInfo
@@ -39,8 +42,12 @@ class RegisterAppViewModel(private val registry: AiAppRegistry) : ViewModel() {
     private var all: List<InstalledAppInfo> = emptyList()
     private var messageCounter = 0L
 
+    /** The search being typed. The field reads and writes it directly; the list follows it. */
+    val query = TextFieldState()
+
     init {
         load()
+        viewModelScope.launch { query.textChanges().collect { text -> state.update { it.copy(query = text).filtered() } } }
     }
 
     fun load() {
@@ -59,7 +66,11 @@ class RegisterAppViewModel(private val registry: AiAppRegistry) : ViewModel() {
         }
     }
 
-    fun setQuery(query: String) = state.update { it.copy(query = query).filtered() }
+    /** Replaces the search from code (clearing it); typing goes into [query] directly. */
+    fun setQuery(text: String) {
+        query.putText(text)
+        state.update { it.copy(query = text).filtered() }
+    }
 
     fun setIncludeSystemApps(include: Boolean) = state.update { it.copy(includeSystemApps = include).filtered() }
 

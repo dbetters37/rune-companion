@@ -17,6 +17,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -210,21 +212,21 @@ fun AiAppDetailScreen(state: AiAppDetailUiState, actions: AiAppDetailActions) {
 
 @Composable
 private fun NotesSection(savedNotes: String, isBusy: Boolean, onSave: (String) -> Unit) {
-    var notes by rememberSaveable(savedNotes) { mutableStateOf(savedNotes) }
+    // Starts from the saved notes, and again whenever they change (after a save); kept across
+    // rotation. The field reads and writes it directly, so no key is lost.
+    val notes = rememberSaveable(savedNotes, saver = TextFieldState.Saver) { TextFieldState(savedNotes) }
     Column {
         SectionHeader("Notes")
         AppCard {
             OutlinedTextField(
-                value = notes,
-                onValueChange = { notes = it },
+                state = notes,
                 modifier = Modifier.fillMaxWidth(),
                 label = { Text("Your notes about this app") },
-                minLines = 2,
-                maxLines = 6,
+                lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = 2, maxHeightInLines = 6),
             )
             TextButton(
-                onClick = { onSave(notes) },
-                enabled = !isBusy && notes.trim() != savedNotes,
+                onClick = { onSave(notes.text.toString()) },
+                enabled = !isBusy && notes.text.toString().trim() != savedNotes,
                 modifier = Modifier.align(Alignment.End).padding(top = Spacing.xs),
             ) { Text("Save notes") }
         }

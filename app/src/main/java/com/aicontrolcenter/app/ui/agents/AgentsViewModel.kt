@@ -1,11 +1,14 @@
 package com.aicontrolcenter.app.ui.agents
 
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aicontrolcenter.app.ui.components.StatusLabel
 import com.aicontrolcenter.app.ui.components.toStatusLabel
 import com.aicontrolcenter.app.ui.components.UserMessage
+import com.aicontrolcenter.app.ui.components.putText
+import com.aicontrolcenter.app.ui.components.textChanges
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.agents.AgentManager
@@ -105,6 +108,13 @@ class AgentsViewModel(
     private val local = MutableStateFlow(Local())
     private var messageCounter = 0L
 
+    /** The search being typed. The field reads and writes it directly; the list follows it. */
+    val query = TextFieldState()
+
+    init {
+        viewModelScope.launch { query.textChanges().collect { text -> criteria.update { it.copy(query = text) } } }
+    }
+
     val uiState: StateFlow<AgentsUiState> = combine(directory.observe(), criteria, local) { snapshot, criteria, local ->
         val needle = criteria.query.trim()
         AgentsUiState(
@@ -131,13 +141,20 @@ class AgentsViewModel(
         AgentsUiState(statusFilter = initialStatusFilter),
     )
 
-    fun setQuery(query: String) = criteria.update { it.copy(query = query) }
+    /** Replaces the search from code (clearing it); typing goes into [query] directly. */
+    fun setQuery(text: String) {
+        query.putText(text)
+        criteria.update { it.copy(query = text) }
+    }
 
     fun setRoleFilter(role: AgentKind?) = criteria.update { it.copy(role = role) }
 
     fun setStatusFilter(status: AgentStatusFilter) = criteria.update { it.copy(status = status) }
 
-    fun clearFilters() = criteria.update { Criteria("", null, AgentStatusFilter.ALL) }
+    fun clearFilters() {
+        query.putText("")
+        criteria.update { Criteria("", null, AgentStatusFilter.ALL) }
+    }
 
     /** Gives [modelId] to every agent that has none. */
     fun assignToAgentsWithoutModel(modelId: ModelId) {

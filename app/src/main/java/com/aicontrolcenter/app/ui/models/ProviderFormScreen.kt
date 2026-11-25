@@ -59,10 +59,6 @@ import com.aicontrolcenter.core.registry.ProviderKind
 
 /** What the provider form can ask for. */
 class ProviderFormActions(
-    val onNameChange: (String) -> Unit,
-    val onBaseUrlChange: (String) -> Unit,
-    val onApiKeyChange: (String) -> Unit,
-    val onHeadersChange: (String) -> Unit,
     val onRemoveStoredKeyChange: (Boolean) -> Unit,
     val onSave: () -> Unit,
     val onClose: () -> Unit,
@@ -86,11 +82,8 @@ fun ProviderFormRoute(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     ProviderFormScreen(
         state = state,
+        fields = viewModel.fields,
         actions = ProviderFormActions(
-            onNameChange = viewModel::setName,
-            onBaseUrlChange = viewModel::setBaseUrl,
-            onApiKeyChange = viewModel::setApiKey,
-            onHeadersChange = viewModel::setHeadersText,
             onRemoveStoredKeyChange = viewModel::setRemoveStoredKey,
             onSave = viewModel::save,
             onClose = onClose,
@@ -101,7 +94,7 @@ fun ProviderFormRoute(
 }
 
 @Composable
-fun ProviderFormScreen(state: ProviderFormUiState, actions: ProviderFormActions) {
+fun ProviderFormScreen(state: ProviderFormUiState, fields: ProviderTextFields, actions: ProviderFormActions) {
     var confirmDiscard by rememberSaveable { mutableStateOf(false) }
     val setup = state.setup
     val requestClose = {
@@ -152,7 +145,7 @@ fun ProviderFormScreen(state: ProviderFormUiState, actions: ProviderFormActions)
                 if (setup != null) {
                     SetupProgress(setup, onOpen = { actions.onFinished(setup.providerId) })
                 } else {
-                    ProviderFields(state, actions)
+                    ProviderFields(state, fields, actions)
                 }
             }
         }
@@ -175,7 +168,7 @@ fun ProviderFormScreen(state: ProviderFormUiState, actions: ProviderFormActions)
 }
 
 @Composable
-private fun ProviderFields(state: ProviderFormUiState, actions: ProviderFormActions) {
+private fun ProviderFields(state: ProviderFormUiState, fields: ProviderTextFields, actions: ProviderFormActions) {
     AppCard {
         Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
             Text(
@@ -202,15 +195,13 @@ private fun ProviderFields(state: ProviderFormUiState, actions: ProviderFormActi
         AppCard {
             Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 AppTextField(
-                    value = state.name,
-                    onValueChange = actions.onNameChange,
+                    state = fields.name,
                     label = "Name",
                     errorText = state.issue(ProviderField.NAME),
                 )
                 if (state.showBaseUrl) {
                     AppTextField(
-                        value = state.baseUrl,
-                        onValueChange = actions.onBaseUrlChange,
+                        state = fields.baseUrl,
                         label = "Base URL",
                         placeholder = "https://host/v1",
                         supportingText = "Leave empty to use the vendor's own address.".takeIf { state.kind.addressOptional },
@@ -235,8 +226,7 @@ private fun ProviderFields(state: ProviderFormUiState, actions: ProviderFormActi
         AppCard {
             Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 SecretTextField(
-                    value = state.apiKey,
-                    onValueChange = actions.onApiKeyChange,
+                    state = fields.apiKey,
                     label = if (state.isEditing && state.keyStored) "New API key" else "API key",
                     placeholder = if (state.isEditing && state.keyStored) "Leave empty to keep the stored key" else null,
                     supportingText = keyHelp(state),
@@ -260,8 +250,7 @@ private fun ProviderFields(state: ProviderFormUiState, actions: ProviderFormActi
         SectionHeader("Extra headers (optional)")
         AppCard {
             AppTextField(
-                value = state.headersText,
-                onValueChange = actions.onHeadersChange,
+                state = fields.headers,
                 label = "Extra headers",
                 placeholder = "X-Title: AI Control Center",
                 supportingText = "One per line, as Name: value. Stored in plain form, so never put a key here.",

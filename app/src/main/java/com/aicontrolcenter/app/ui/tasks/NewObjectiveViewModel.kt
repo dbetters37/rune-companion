@@ -1,10 +1,13 @@
 package com.aicontrolcenter.app.ui.tasks
 
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.clearText
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aicontrolcenter.app.ui.components.UserMessage
 import com.aicontrolcenter.app.ui.components.formatCount
+import com.aicontrolcenter.app.ui.components.putText
 import com.aicontrolcenter.app.work.NotificationAccess
 import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.agents.AgentAvailability
@@ -33,9 +36,8 @@ data class DirectorUi(val name: String, val colorIndex: Int, val canRun: Boolean
 @Immutable
 data class NewObjectiveUiState(
     val isLoading: Boolean = true,
-    val text: String = "",
-    /** Shown once the owner has tried to start. */
-    val textError: String? = null,
+    /** Problems with the text are shown once the owner has tried to start. */
+    val showErrors: Boolean = false,
     val reviewResults: Boolean = true,
     val saveKnowledge: Boolean = false,
     /** Null when no Director is designated. */
@@ -51,6 +53,9 @@ data class NewObjectiveUiState(
     val message: UserMessage? = null,
 ) {
     val canStart: Boolean get() = !isLoading && !isStarting && director?.canRun == true
+
+    /** What is wrong with [text] as an objective, once the owner has tried to start; null when nothing is (or not yet). */
+    fun textError(text: CharSequence): String? = if (showErrors) NewObjectiveViewModel.validate(text.toString()) else null
 }
 
 /**
@@ -73,7 +78,6 @@ class NewObjectiveViewModel(
 ) : ViewModel() {
 
     private data class Local(
-        val text: String = "",
         val reviewResults: Boolean = true,
         val saveKnowledge: Boolean = false,
         val showErrors: Boolean = false,
@@ -86,6 +90,13 @@ class NewObjectiveViewModel(
     private val local = MutableStateFlow(Local())
     private var messageCounter = 0L
 
+    /**
+     * The objective being written. The field reads it and the keyboard writes it directly, so
+     * every key lands in order however long the rest of this state takes to load. The counter
+     * and the error read it too; nothing here ever writes it back while the owner types.
+     */
+    val objective = TextFieldState()
+
     val uiState: StateFlow<NewObjectiveUiState> = combine(
         directory.observe(),
         memory?.observeSpaces() ?: flowOf(emptyList()),
@@ -95,8 +106,7 @@ class NewObjectiveViewModel(
         val space = knowledgeSpaceOf(snapshot, spaces)
         NewObjectiveUiState(
             isLoading = false,
-            text = local.text,
-            textError = if (local.showErrors) validate(local.text) else null,
+            showErrors = local.showErrors,
             reviewResults = local.reviewResults,
             saveKnowledge = local.saveKnowledge && space != null,
             director = director,
@@ -109,7 +119,8 @@ class NewObjectiveViewModel(
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), NewObjectiveUiState())
 
-    fun setText(value: String) = local.update { it.copy(text = value) }
+    /** Replaces the objective from code (the field itself is typed into directly). */
+    fun setText(value: String) = objective.putText(value)
 
     fun setReviewResults(value: Boolean) = local.update { it.copy(reviewResults = value) }
 
@@ -119,7 +130,7 @@ class NewObjectiveViewModel(
     fun start() {
         val current = local.value
         if (current.isStarting) return
-        if (validate(current.text) != null) {
+        if (validate(objective.text.toString()) != null) {
             local.update { it.copy(showErrors = true) }
             return
         }
@@ -153,16 +164,18 @@ class NewObjectiveViewModel(
     private fun launchStart() {
         val current = local.value
         if (current.isStarting) return
+        val text = objective.text.toString().trim()
         local.update { it.copy(isStarting = true) }
         val saveKnowledge = uiState.value.saveKnowledge
         viewModelScope.launch {
             try {
                 awaitStartup()
-                val objective = orchestrator.startObjective(
-                    current.text.trim(),
+                val started = orchestrator.startObjective(
+                    text,
                     ObjectiveOptions(reviewResults = current.reviewResults, saveKnowledge = saveKnowledge),
                 )
-                local.update { it.copy(isStarting = false, startedId = objective.id, text = "", showErrors = false) }
+                objective.clearText()
+                local.update { it.copy(isStarting = false, startedId = started.id, showErrors = false) }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (refused: IllegalStateException) {
