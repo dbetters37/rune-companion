@@ -15,6 +15,7 @@ import com.aicontrolcenter.core.pickup.OwnerPickUpRules
 import com.aicontrolcenter.core.pickup.PickUpLimits
 import com.aicontrolcenter.core.pickup.PickUpRule
 import com.aicontrolcenter.core.pickup.PickUpRuleRepository
+import com.aicontrolcenter.core.pickup.PickUpSafety
 import com.aicontrolcenter.core.pickup.PickedUpFile
 import com.aicontrolcenter.core.routineId
 import com.aicontrolcenter.core.routines.OwnerRoutines
@@ -214,8 +215,9 @@ class InMemoryPickUpRuleRepository : PickUpRuleRepository {
 
 /**
  * Reference implementation of [OwnerPickUpRules] over a [PickUpRuleRepository], checking folders
- * against [folders] and spaces against [memory]. Changes are serialised so the rule cap and the
- * one-rule-per-folder rule cannot be passed by two creations at once.
+ * against [folders] (they must exist and be read-only for agents, [PickUpSafety.folderProblem])
+ * and spaces against [memory]. Changes are serialised so the rule cap and the one-rule-per-folder
+ * rule cannot be passed by two creations at once.
  */
 class ReferenceOwnerPickUpRules(
     private val repository: PickUpRuleRepository,
@@ -229,7 +231,8 @@ class ReferenceOwnerPickUpRules(
     override fun observeAll(): Flow<List<PickUpRule>> = repository.observeAll()
 
     override suspend fun create(folderId: FolderId, spaceId: SpaceId): OwnerResult<PickUpRule> = mutex.withLock {
-        if (folders.get(folderId) == null) return OwnerResult.Refused(NO_FOLDER)
+        // Security review of wave 1, F1: only a folder agents cannot change may feed a space.
+        PickUpSafety.folderProblem(folders.get(folderId))?.let { return OwnerResult.Refused(it) }
         if (memory.getSpace(spaceId) == null) return OwnerResult.Refused(NO_SPACE)
         val rules = repository.getAll()
         if (rules.any { it.folderId == folderId }) return OwnerResult.Refused("This folder already has a pick-up rule.")
@@ -247,6 +250,10 @@ class ReferenceOwnerPickUpRules(
     }
 
     override suspend fun setEnabled(id: PickUpRuleId, enabled: Boolean): OwnerResult<PickUpRule> = mutex.withLock {
+        if (enabled) {
+            val rule = repository.get(id) ?: return OwnerResult.Refused(MISSING)
+            PickUpSafety.folderProblem(folders.get(rule.folderId))?.let { return OwnerResult.Refused(it) }
+        }
         val now = clock.now()
         repository.update(id) { it.copy(enabled = enabled, updatedAt = now) }?.let { OwnerResult.Done(it) } ?: OwnerResult.Refused(MISSING)
     }
@@ -258,7 +265,6 @@ class ReferenceOwnerPickUpRules(
     }
 
     private companion object {
-        const val NO_FOLDER = "That shared folder is no longer there. Add it again in Tools > Folders."
         const val NO_SPACE = "That memory space is no longer there."
         const val MISSING = "This pick-up rule no longer exists."
     }

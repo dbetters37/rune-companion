@@ -38,6 +38,51 @@ class BackupContractsTest {
     }
 
     @Test
+    fun `trivially guessable own passphrases are refused`() {
+        // Security review of wave 1, F7: four short or repeated words, one-letter blocks and keyboard walks.
+        for (weak in listOf(
+            "abc abd abe abf", "aaaa bbbb cccc dddd eeee", "the cat sat mat", "dog dog dog cat", "qwerty asdf zxcv 1234",
+            "0000-0000-0000-0000-0000", "abab abab abab abab", "qwertyuiopasdfghjkl", "1q2w3e4r5t6y7u8i9o0p", "zxcvbnm zxcvbnm!!",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "Password Password Password", "x".repeat(Passphrases.MAX_CHARS + 1),
+        )) {
+            assertNotNull(Passphrases.check(weak), weak)
+        }
+        // Four real words, or enough strength without them.
+        for (strong in listOf("blue train under hill", "river candle orbit maple", "Vögel fliegen über Brücken", "k7#Qm2!vR9@xL4\$w", "Seventeen chars!!")) {
+            assertNull(Passphrases.check(strong), strong)
+        }
+        assertEquals(setOf("B1UE", "TRA1N", "UNDER", "H111"), Passphrases.realWords("blue train under hill"))
+        assertEquals(emptySet(), Passphrases.realWords("aaaa bbbb abab qwerty asdf abcd"), "repeats, walks and runs are no words")
+        assertTrue(Passphrases.strengthBits("qwerty asdf zxcv 1234") < Passphrases.MIN_OWN_BITS)
+        assertTrue(Passphrases.strengthBits("k7#Qm2!vR9@xL4\$w") >= Passphrases.MIN_OWN_BITS)
+    }
+
+    @Test
+    fun `a save takes the passphrase it generated and showed, or an own one that passes the check, never a look-alike`() {
+        val shown = Passphrases.generate(Random(7))
+        assertNull(Passphrases.problemForSave(shown, shown))
+        assertNull(Passphrases.problemForSave(shown.lowercase().replace("-", " "), shown), "typed back in another form")
+        // Typed by the owner, in the generated form: checked like any own passphrase.
+        assertTrue(Passphrases.isGeneratedForm("0000-0000-0000-0000-0000"))
+        assertNotNull(Passphrases.problemForSave("0000-0000-0000-0000-0000", generatedShown = null))
+        assertNotNull(Passphrases.problemForSave("0000-0000-0000-0000-0000", generatedShown = shown))
+        assertNull(Passphrases.problemForSave("blue train under hill", generatedShown = shown))
+        assertNotNull(Passphrases.problemForSave("", generatedShown = ""))
+    }
+
+    @Test
+    fun `entry is Unicode-stable - precomposed, decomposed and compatibility forms normalise alike`() {
+        // Security review of wave 1, F6.
+        val precomposed = "Caf\u00e9 cr\u00e8me"
+        val decomposed = "Cafe\u0301 cre\u0300me"
+        assertEquals(Passphrases.normalise(precomposed), Passphrases.normalise(decomposed))
+        assertEquals("CAFÉCRÈME", Passphrases.normalise(decomposed))
+        assertEquals(Passphrases.normalise("7KQ2"), Passphrases.normalise("\uFF17\uFF2B\uFF31\uFF12"), "full-width forms")
+        assertEquals(Passphrases.normalise("a-b"), Passphrases.normalise("a\u2212b\u2011"), "minus sign and non-breaking hyphen are dashes")
+        assertEquals("STRASSE", Passphrases.normalise("stra\u00dfe"))
+    }
+
+    @Test
     fun `the owner's own passphrase needs 16 characters or 4 words and is not common`() {
         assertNull(Passphrases.check("my dog likes long walks"))
         assertNull(Passphrases.check("Seventeen chars!!"))
@@ -77,6 +122,7 @@ class BackupContractsTest {
         assertEquals(1, BackupFormat.VERSION)
         assertEquals("PBKDF2WithHmacSHA256", BackupFormat.KDF)
         assertEquals(600_000, BackupFormat.DEFAULT_ITERATIONS)
+        assertEquals(100_000..2_000_000, BackupFormat.MIN_ITERATIONS..BackupFormat.MAX_ITERATIONS)
         assertTrue(BackupFormat.DEFAULT_ITERATIONS in BackupFormat.MIN_ITERATIONS..BackupFormat.MAX_ITERATIONS)
         assertEquals(12, BackupFormat.NONCE_BYTES)
         assertEquals(1 shl 20, BackupFormat.CHUNK_BYTES)

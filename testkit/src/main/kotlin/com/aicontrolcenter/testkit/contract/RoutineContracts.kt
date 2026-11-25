@@ -10,6 +10,8 @@ import com.aicontrolcenter.core.SpaceId
 import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.memory.KnowledgeSpace
 import com.aicontrolcenter.core.memory.MemoryRepository
+import com.aicontrolcenter.core.memory.MemoryScope
+import com.aicontrolcenter.core.memory.ProvenanceOrigin
 import com.aicontrolcenter.core.operator.OwnerResult
 import com.aicontrolcenter.core.operator.SharedFolder
 import com.aicontrolcenter.core.operator.SharedFolderRepository
@@ -17,6 +19,7 @@ import com.aicontrolcenter.core.pickup.OwnerPickUpRules
 import com.aicontrolcenter.core.pickup.PickUpLimits
 import com.aicontrolcenter.core.pickup.PickUpRule
 import com.aicontrolcenter.core.pickup.PickUpRuleRepository
+import com.aicontrolcenter.core.pickup.PickUpSafety
 import com.aicontrolcenter.core.pickup.PickedUpFile
 import com.aicontrolcenter.core.routines.OwnerRoutines
 import com.aicontrolcenter.core.routines.Routine
@@ -296,15 +299,19 @@ abstract class OwnerPickUpRulesContract {
 
     protected abstract fun createMemory(): MemoryRepository
 
-    private suspend fun world(folderCount: Int = 1): Triple<PickUpRuleRepository, OwnerPickUpRules, FakeClock> {
+    private data class World(val repo: PickUpRuleRepository, val owner: OwnerPickUpRules, val clock: FakeClock, val folders: SharedFolderRepository)
+
+    /** [folderCount] read-only folders `fld_0`…, one folder agents may change (`fld_open`), and two spaces. */
+    private suspend fun world(folderCount: Int = 1): World {
         val repo = createRepository()
         val folders = createFolders()
         val memory = createMemory()
-        repeat(folderCount) { n -> folders.upsert(SharedFolder(FolderId("fld_$n"), "content://tree/$n", "Folder $n", addedAt = n.toLong())) }
+        repeat(folderCount) { n -> folders.upsert(SharedFolder(FolderId("fld_$n"), "content://tree/$n", "Folder $n", addedAt = n.toLong(), readOnly = true)) }
+        folders.upsert(SharedFolder(FolderId("fld_open"), "content://tree/open", "Exports", addedAt = 100, readOnly = false))
         memory.upsertSpace(KnowledgeSpace(id = SpaceId("spc_inbox"), name = "Inbox", description = "", createdAt = 1, updatedAt = 1))
         memory.upsertSpace(KnowledgeSpace(id = SpaceId("spc_other"), name = "Other", description = "", createdAt = 1, updatedAt = 1))
         val clock = FakeClock(5_000)
-        return Triple(repo, createOwnerPickUpRules(repo, folders, memory, clock, SequentialIdGenerator()), clock)
+        return World(repo, createOwnerPickUpRules(repo, folders, memory, clock, SequentialIdGenerator()), clock, folders)
     }
 
     @Test
@@ -343,5 +350,54 @@ abstract class OwnerPickUpRulesContract {
         assertEquals(0, repo.bytesImportedSince(0))
         assertIs<OwnerResult.Refused>(owner.setEnabled(rule.id, true))
         assertIs<OwnerResult.Refused>(owner.changeSpace(rule.id, SpaceId("spc_inbox")))
+    }
+
+    @Test
+    fun `a rule is refused for a folder agents may change, with what to do`() = runTest {
+        // Security review of wave 1, F1: an agent allowed to write into the folder could otherwise fill a space it may not write.
+        val (repo, owner, _) = world()
+        assertEquals(OwnerResult.Refused(PickUpSafety.FOLDER_NOT_READ_ONLY), owner.create(FolderId("fld_open"), SpaceId("spc_inbox")))
+        assertEquals(emptyList(), repo.getAll(), "nothing is stored")
+        assertTrue("read-only" in PickUpSafety.FOLDER_NOT_READ_ONLY && "Tools > Folders" in PickUpSafety.FOLDER_NOT_READ_ONLY)
+        assertEquals(OwnerResult.Refused(PickUpSafety.FOLDER_GONE), owner.create(FolderId("fld_missing"), SpaceId("spc_inbox")))
+    }
+
+    @Test
+    fun `a folder made writable later cannot be switched on, and its runs import nothing`() = runTest {
+        val w = world()
+        val rule = assertIs<OwnerResult.Done<PickUpRule>>(w.owner.create(FolderId("fld_0"), SpaceId("spc_inbox"))).value
+        assertNull(PickUpSafety.runProblem(rule, w.folders.get(rule.folderId), masterSwitchOn = true), "a read-only folder may be picked up")
+        // The owner lets agents change the folder again.
+        w.folders.upsert(w.folders.get(FolderId("fld_0"))!!.copy(readOnly = false))
+        // The runner reads the folder afresh at every run: this run imports nothing and says why.
+        assertEquals(PickUpSafety.RUN_FOLDER_NOT_READ_ONLY, PickUpSafety.runProblem(w.repo.get(rule.id), w.folders.get(rule.folderId), masterSwitchOn = true))
+        // Switching it off works; switching it on again is refused until the folder is read-only again.
+        assertFalse(assertIs<OwnerResult.Done<PickUpRule>>(w.owner.setEnabled(rule.id, false)).value.enabled)
+        assertEquals(OwnerResult.Refused(PickUpSafety.FOLDER_NOT_READ_ONLY), w.owner.setEnabled(rule.id, true))
+        assertFalse(w.repo.get(rule.id)!!.enabled)
+        w.folders.upsert(w.folders.get(FolderId("fld_0"))!!.copy(readOnly = true))
+        assertTrue(assertIs<OwnerResult.Done<PickUpRule>>(w.owner.setEnabled(rule.id, true)).value.enabled)
+        assertNull(PickUpSafety.runProblem(w.repo.get(rule.id), w.folders.get(rule.folderId), masterSwitchOn = true))
+        // A removed folder, a rule switched off and the master switch off import nothing either.
+        assertEquals(PickUpSafety.RUN_SWITCHED_OFF, PickUpSafety.runProblem(w.repo.get(rule.id), w.folders.get(rule.folderId), masterSwitchOn = false))
+        w.folders.delete(FolderId("fld_0"))
+        assertEquals(PickUpSafety.FOLDER_GONE, PickUpSafety.runProblem(w.repo.get(rule.id), w.folders.get(rule.folderId), masterSwitchOn = true))
+        assertEquals(OwnerResult.Refused(PickUpSafety.FOLDER_GONE), w.owner.setEnabled(rule.id, true))
+    }
+
+    @Test
+    fun `a picked-up memory is an import from the folder, in the rule's space, never the owner's words`() = runTest {
+        val w = world()
+        val rule = assertIs<OwnerResult.Done<PickUpRule>>(w.owner.create(FolderId("fld_0"), SpaceId("spc_inbox"))).value
+        val folder = w.folders.get(rule.folderId)!!
+        val draft = PickUpSafety.memoryDraft(rule, folder, "notes.txt", "Buy milk.", at = 7_000)
+        assertEquals(MemoryScope.Shared(SpaceId("spc_inbox")), draft.scope)
+        assertEquals(ProvenanceOrigin.IMPORT, draft.provenance.origin)
+        assertEquals("Picked up from Folder 0", draft.provenance.source)
+        assertNull(draft.provenance.agentId)
+        assertEquals("notes.txt", draft.title)
+        assertEquals("Buy milk.", draft.content)
+        assertTrue(PickUpSafety.TAG in draft.tags)
+        assertFailsWith<IllegalArgumentException>("only the rule's own folder") { PickUpSafety.memoryDraft(rule, w.folders.get(FolderId("fld_open"))!!, "x", "y", 1) }
     }
 }

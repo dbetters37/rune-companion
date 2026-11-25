@@ -4,7 +4,13 @@ import com.aicontrolcenter.core.FolderId
 import com.aicontrolcenter.core.MemoryId
 import com.aicontrolcenter.core.PickUpRuleId
 import com.aicontrolcenter.core.SpaceId
+import com.aicontrolcenter.core.memory.MemoryDraft
+import com.aicontrolcenter.core.memory.MemoryKind
+import com.aicontrolcenter.core.memory.MemoryScope
+import com.aicontrolcenter.core.memory.Provenance
+import com.aicontrolcenter.core.memory.ProvenanceOrigin
 import com.aicontrolcenter.core.operator.OwnerResult
+import com.aicontrolcenter.core.operator.SharedFolder
 import kotlinx.coroutines.flow.Flow
 
 /*
@@ -124,16 +130,115 @@ interface OwnerPickUpRules {
 
     /**
      * Creates a rule, switched on, from a shared folder the owner added to a memory space.
-     * Refused, with a sentence, when the folder or the space does not exist, the folder already
-     * has a rule, or [PickUpLimits.MAX_RULES] exist. It runs only while the master switch is on.
+     * Refused, with a sentence, when the folder or the space does not exist, the folder is not
+     * read-only for agents ([PickUpSafety.FOLDER_NOT_READ_ONLY]), the folder already has a rule,
+     * or [PickUpLimits.MAX_RULES] exist. It runs only while the master switch is on.
      */
     suspend fun create(folderId: FolderId, spaceId: SpaceId): OwnerResult<PickUpRule>
 
     /** Points the rule at another existing space. Refused when the rule or the space is missing. */
     suspend fun changeSpace(id: PickUpRuleId, spaceId: SpaceId): OwnerResult<PickUpRule>
 
+    /**
+     * Switches the rule on or off. Switching on is refused, with a sentence, when the rule's folder
+     * is gone or is no longer read-only for agents ([PickUpSafety.folderProblem]); switching off
+     * always works while the rule exists.
+     */
     suspend fun setEnabled(id: PickUpRuleId, enabled: Boolean): OwnerResult<PickUpRule>
 
     /** Deletes the rule and its import records; memories it made stay. Returns false when it did not exist. */
     suspend fun delete(id: PickUpRuleId): Boolean
+}
+
+/**
+ * The checks every pick-up makes, and the form of what it stores (security review of wave 1, F1).
+ * Pure: the owner's port ([OwnerPickUpRules]) and the runner (WP17) call them, and the contract
+ * suites pin them.
+ *
+ * The runner (WP17), at every run of every rule, before it lists the folder: reads the rule and the
+ * folder afresh and calls [runProblem]; when it gives a sentence, the run imports nothing, stores
+ * the sentence as the rule's `lastResult`, and (when the folder is the reason) switches the rule
+ * off, so the owner must make the folder read-only again and switch the rule on. Every file it
+ * imports becomes a memory made by [memoryDraft] (origin IMPORT, written through
+ * `MemoryActor.Owner` so the owner's chosen space accepts it, and kept as IMPORT by the memory
+ * service), never a memory with origin OWNER.
+ */
+object PickUpSafety {
+    /** Why a rule is not made or switched on for a folder agents may change: what the owner should do. */
+    const val FOLDER_NOT_READ_ONLY: String =
+        "Make this folder read-only for agents first: in Tools > Folders, switch on \"Read-only\" for it. Then try again."
+
+    /** The folder of a rule was removed. */
+    const val FOLDER_GONE: String = "That shared folder is no longer there. Add it again in Tools > Folders."
+
+    /** What a run that found the folder writable again stores as the rule's last result. */
+    const val RUN_FOLDER_NOT_READ_ONLY: String =
+        "Nothing was picked up: agents may change this folder again, so the rule was switched off. " +
+            "Make the folder read-only in Tools > Folders, then switch the rule on."
+
+    /** What a run stores when the master switch is off. */
+    const val RUN_SWITCHED_OFF: String = "Nothing was picked up: folder pick-up is switched off in Settings."
+
+    /** What a run stores when the rule is off. */
+    const val RUN_RULE_OFF: String = "Nothing was picked up: this rule is switched off."
+
+    /** Longest folder name kept in a memory's source line; a longer one is cut. */
+    const val MAX_SOURCE_NAME_CHARS: Int = 80
+
+    /** Why [folder] cannot feed a pick-up rule (a sentence for the owner), or null when it can: it exists and is read-only for agents. */
+    fun folderProblem(folder: SharedFolder?): String? = when {
+        folder == null -> FOLDER_GONE
+        !folder.readOnly -> FOLDER_NOT_READ_ONLY
+        else -> null
+    }
+
+    /**
+     * Why this run of [rule] imports nothing (the sentence stored as its last result), or null
+     * when it may import. Read [rule] and [folder] afresh at every run: the master switch
+     * ([masterSwitchOn], `FrameworkSettings.folderPickUpEnabled`) and the rule must be on, the
+     * folder must still exist and still be read-only for agents, and it must be the rule's folder.
+     */
+    fun runProblem(rule: PickUpRule?, folder: SharedFolder?, masterSwitchOn: Boolean): String? = when {
+        !masterSwitchOn -> RUN_SWITCHED_OFF
+        rule == null || !rule.enabled -> RUN_RULE_OFF
+        folder == null || folder.id != rule.folderId -> FOLDER_GONE
+        !folder.readOnly -> RUN_FOLDER_NOT_READ_ONLY
+        else -> null
+    }
+
+    /** The source line of a picked-up memory: "Picked up from <folder>". */
+    fun source(folder: SharedFolder): String = "Picked up from " + folder.displayName.trim().take(MAX_SOURCE_NAME_CHARS)
+
+    /**
+     * Where a picked-up memory came from: an import ([ProvenanceOrigin.IMPORT]) from [folder], no
+     * agent, task or model. Never [ProvenanceOrigin.OWNER]: the owner did not write it, and
+     * recall frames it as data like any other memory.
+     */
+    fun provenance(folder: SharedFolder, at: Long): Provenance =
+        Provenance(origin = ProvenanceOrigin.IMPORT, source = source(folder), recordedAt = at)
+
+    /** The longest memory title (the memory service's limit); a longer file name is cut. */
+    const val MAX_TITLE_CHARS: Int = 200
+
+    /**
+     * The memory a picked-up file (or one part of it) becomes: a NOTE in [rule]'s space, titled
+     * [title] (the file's name, cut to [MAX_TITLE_CHARS]), holding [text], with [provenance]. The
+     * runner checks the size limits ([PickUpLimits]) before; the memory service checks the
+     * content's length as for any memory (a file longer than one memory holds is split by the
+     * runner, each part titled "<name> (part 2 of 3)").
+     */
+    fun memoryDraft(rule: PickUpRule, folder: SharedFolder, title: String, text: String, at: Long): MemoryDraft {
+        require(folder.id == rule.folderId) { "The folder is not this rule's folder." }
+        return MemoryDraft(
+            scope = MemoryScope.Shared(rule.spaceId),
+            kind = MemoryKind.NOTE,
+            title = title.trim().take(MAX_TITLE_CHARS).ifEmpty { "Picked-up file" },
+            content = text,
+            tags = setOf(TAG),
+            provenance = provenance(folder, at),
+        )
+    }
+
+    /** The tag every picked-up memory carries, so the owner can find them. */
+    const val TAG: String = "picked-up"
 }

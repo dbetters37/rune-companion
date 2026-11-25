@@ -54,8 +54,8 @@ object WebAddressPolicy {
      * Why connecting to [address] is refused, or null if it is a public address. Refused:
      * unspecified, loopback, link-local, site-local (RFC 1918), carrier-grade NAT
      * (100.64.0.0/10), unique-local IPv6 (fc00::/7), multicast, broadcast, the 0.0.0.0/8 and
-     * 240.0.0.0/4 ranges, IPv4-mapped and NAT64 forms of any of these, and [ownAddresses] (this
-     * device's interface addresses).
+     * 240.0.0.0/4 ranges, IPv4-mapped, NAT64, IPv4-compatible (::/96) and 6to4 (2002::/16) forms of
+     * any of these, and [ownAddresses] (this device's interface addresses).
      */
     fun refusal(address: InetAddress, ownAddresses: Set<InetAddress> = emptySet()): String? {
         val why = when {
@@ -85,8 +85,8 @@ object WebAddressPolicy {
      *
      * Refused: an empty host; `localhost` and any `*.localhost`; names under `.local`,
      * `.internal`, `.home.arpa` and `.lan`; dotless names ("router", "nas"), which only a local
-     * resolver answers; a literal IPv4 or IPv6 address that [refusal] refuses (IPv4-mapped and
-     * NAT64 forms included); and every number in a form other than a plain `a.b.c.d`: decimal
+     * resolver answers; a literal IPv4 or IPv6 address that [refusal] refuses (IPv4-mapped, NAT64,
+     * IPv4-compatible and 6to4 forms included); and every number in a form other than a plain `a.b.c.d`: decimal
      * (`2130706433`), octal (`0177.0.0.1`), hexadecimal (`0x7f.0.0.1`), shortened (`127.1`)
      * and leading zeros, which systems read in different ways. Case, square brackets around an
      * IPv6 literal and trailing dots (`router.local.`) are ignored.
@@ -157,14 +157,17 @@ object WebAddressPolicy {
     private fun ipv6Refusal(b: ByteArray): String? {
         val first = b[0].toInt() and 0xFF
         if (first and 0xFE == 0xFC) return "a private network address"
-        // ::ffff:a.b.c.d (mapped) and 64:ff9b::a.b.c.d (NAT64) carry an IPv4 address in the last four bytes.
+        // ::ffff:a.b.c.d (mapped), 64:ff9b::a.b.c.d (NAT64) and the deprecated IPv4-compatible ::a.b.c.d (::/96) carry
+        // an IPv4 address in the last four bytes; 6to4 (2002:AABB:CCDD::/48, RFC 3056) carries one in bytes 2 to 5.
         val mapped = (0 until 10).all { b[it].toInt() == 0 } && (b[10].toInt() and 0xFF) == 0xFF && (b[11].toInt() and 0xFF) == 0xFF
         val nat64 = (b[0].toInt() and 0xFF) == 0x00 && (b[1].toInt() and 0xFF) == 0x64 && (b[2].toInt() and 0xFF) == 0xFF &&
             (b[3].toInt() and 0xFF) == 0x9B && (4 until 12).all { b[it].toInt() == 0 }
-        if (mapped || nat64) {
-            val v4 = InetAddress.getByAddress(b.copyOfRange(12, 16))
-            return refusal(v4)?.let { "an address that maps to a refused one" }
+        val compatible = (0 until 12).all { b[it].toInt() == 0 }
+        val embedded = when {
+            mapped || nat64 || compatible -> b.copyOfRange(12, 16)
+            (b[0].toInt() and 0xFF) == 0x20 && (b[1].toInt() and 0xFF) == 0x02 -> b.copyOfRange(2, 6)
+            else -> return null
         }
-        return null
+        return refusal(InetAddress.getByAddress(embedded))?.let { "an address that maps to a refused one" }
     }
 }

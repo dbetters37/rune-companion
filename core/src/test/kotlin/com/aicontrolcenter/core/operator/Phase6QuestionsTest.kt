@@ -124,13 +124,74 @@ class Phase6QuestionsTest {
         assertEquals(AnswerRisk.CODE, AnswerCheck.classify("What is the password?", "123 456"))
         assertEquals(AnswerRisk.KEY, AnswerCheck.classify(q, "sk-abcdefghijklmnopqrstu"), "a key wins over a code")
         // Ordinary answers.
-        assertEquals(AnswerRisk.NONE, AnswerCheck.classify("How many people?", "482913"), "a number is a code only when a code was asked for")
+        assertEquals(AnswerRisk.NONE, AnswerCheck.classify("How many people?", "We expect 482913 visitors"), "a number in a sentence is a code only when a code was asked for")
         assertEquals(AnswerRisk.NONE, AnswerCheck.classify(q, "123"), "too short to be a code")
         assertEquals(AnswerRisk.NONE, AnswerCheck.classify(q, "1234567890"), "too long to be a code")
         assertEquals(AnswerRisk.NONE, AnswerCheck.classify("Anything?", "Use the sk-ip option and the risk-free plan"))
         assertEquals(AnswerRisk.NONE, AnswerCheck.classify("Anything?", "Please cover Berlin and Paris, in under 300 words."))
         assertEquals(AnswerRisk.NONE, AnswerCheck.classify("Anything?", "abcdefghijklmnopqrstuvwxyzabcdefghij"), "letters only are not a key")
         assertEquals(AnswerRisk.NONE, AnswerCheck.classify("Which code style?", "Kotlin"), "a code word with no number")
+    }
+
+    @Test
+    fun `codes written with separators or as words, and bare codes whatever the question, are CODE`() {
+        // Security review of wave 1, F8.
+        val q = "Please type the verification code you received."
+        for (answer in listOf("4.8.2.9.1.3", "4,8,2,9,1,3", "4_8_2_9_1_3", "4-8-2-9-1-3", "4 8 2 9 1 3", "four eight two nine one three", "Four Eight Two Nine", "the code is 4. 8. 2. 9")) {
+            assertEquals(AnswerRisk.CODE, AnswerCheck.classify(q, answer), answer)
+        }
+        // A bare 4 to 8 digit answer is a code whatever the question says (the owner's second tap still sends it).
+        for ((question, answer) in listOf(
+            "What are the six numbers in the message your bank sent?" to "482913",
+            "How many people?" to "482913",
+            "Which one?" to " 4829 ",
+            "Anything?" to "4.8.2.9",
+            "Anything?" to "nine nine one one",
+        )) {
+            assertEquals(AnswerRisk.CODE, AnswerCheck.classify(question, answer), "$question / $answer")
+        }
+        // A question in other words than "code" still makes a number in the answer one.
+        assertEquals(AnswerRisk.CODE, AnswerCheck.classify("What are the six numbers in the message your bank sent?", "They are 482913"))
+        assertEquals(AnswerRisk.CODE, AnswerCheck.classify("What did the two-factor prompt show?", "it showed 48 29 13"))
+        // Still not codes: too few or too many digits, digits apart in a sentence, or no code asked for.
+        assertEquals(AnswerRisk.NONE, AnswerCheck.classify("Anything?", "123"))
+        assertEquals(AnswerRisk.NONE, AnswerCheck.classify("Anything?", "1234567890"))
+        assertEquals(AnswerRisk.NONE, AnswerCheck.classify("What is your phone number?", "+49 151 2345 6789 0"), "14 digits in one run are no code")
+        assertEquals(AnswerRisk.NONE, AnswerCheck.classify("How long should it be?", "Two pages, maybe three"))
+        assertEquals(AnswerRisk.NONE, AnswerCheck.classify("Which year?", "Use the 2024 figures"), "a year in a sentence, no code asked for")
+    }
+
+    @Test
+    fun `key prefixes match whatever their case, and common key shapes are known`() {
+        // Security review of wave 1, F8.
+        for (answer in listOf(
+            "my key is XAI-ABCDEFGHIJKLMNOP", "sk_live_abcdefghijklmnop12345", "AKIAIOSFODNN7EXAMPLE", "glpat-abcdefghij1234567890",
+            "SK-ANT-API03-ABCDEFGHIJKL", "Sk-proj-abcdefghijklmnop", "rk_live_abcdefghijklmnop", "ASIAIOSFODNN7EXAMPLE", "xoxb-1234567890-abcdefghij",
+            "xoxp-1234567890-abcdefghij", "hf_abcdefghijklmnopqrst", "rk_test_abcdefghijklmno", "sk_test_abcdefghijklmno", "ya29.a0AfH6SMBabcdefghij",
+        )) {
+            assertTrue(AnswerCheck.looksLikeKey(answer), answer)
+            assertEquals(AnswerRisk.KEY, AnswerCheck.classify("Anything?", answer), answer)
+        }
+        // Words that only start like a key are not keys.
+        for (answer in listOf("Asia-Pacific-Region", "Akiak in Alaska", "hf_x", "the risk-free plan", "XAI-short", "ask_live_events")) {
+            assertFalse(AnswerCheck.looksLikeKey(answer), answer)
+        }
+    }
+
+    @Test
+    fun `suggested answers that read like a go-ahead are refused`() {
+        // Security review of wave 1, F9.
+        for (option in listOf(
+            "Yes, go ahead", "Sure, proceed and pay", "OK", "okay", "Confirm the purchase", "Confirmed", "Go ahead", "Just do it", "I accept",
+            "Agreed", "Authorise it", "authorized", "You have my consent", "Pay now", "Paid", "Buy it", "bought", "Purchase the plan",
+            "Install the app", "Uninstall it", "Send it", "Sent", "Delete the files", "deletion", "Erase everything",
+        )) {
+            assertNotNull(QuestionRules.approvalWordIn(option), option)
+            assertFailsWith<IllegalArgumentException>(option) { question(options = listOf(option)) }
+        }
+        for (fine in listOf("Berlin", "The shorter report", "Use the 2024 figures", "Yes", "No", "Do both", "Shallow water", "Payton Street", "Sender unknown", "Okra soup")) {
+            assertNull(QuestionRules.approvalWordIn(fine), fine)
+        }
     }
 
     @Test
