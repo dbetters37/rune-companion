@@ -6,6 +6,7 @@ import android.app.job.JobScheduler
 import android.app.job.JobService
 import android.content.ComponentName
 import android.content.Context
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,8 +33,19 @@ class UpkeepJobService : JobService() {
     override fun onStartJob(params: JobParameters?): Boolean {
         val host = application as? UpkeepHost ?: return false
         work = scope.launch {
-            runCatching { host.upkeep.run() }
-            jobFinished(params, false)
+            try {
+                host.upkeep.run()
+            } catch (cancelled: CancellationException) {
+                // Stopped by Android (onStopJob): it runs again later; jobFinished is not called for a stopped job.
+                throw cancelled
+            } catch (_: Exception) {
+                // A step's failure is the step's; the job is done either way.
+            }
+            try {
+                jobFinished(params, false)
+            } catch (_: RuntimeException) {
+                // The job was already stopped by Android: nothing to report.
+            }
         }
         return true
     }

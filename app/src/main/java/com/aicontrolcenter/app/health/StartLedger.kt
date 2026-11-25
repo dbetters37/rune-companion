@@ -21,7 +21,6 @@ import java.nio.file.StandardOpenOption
  * [Entry.EMPTY]: nothing known, nothing held back. Writes replace the whole file atomically.
  */
 class StartLedger(private val file: File) {
-    private val lock = Any()
 
     /** What the ledger holds. */
     data class Entry(
@@ -50,13 +49,15 @@ class StartLedger(private val file: File) {
     }
 
     /** The ledger now, or [Entry.EMPTY] when there is none or it cannot be read. */
-    fun read(): Entry = synchronized(lock) { load() }
+    @Synchronized
+    fun read(): Entry = load()
 
     /** Applies [transform] and stores the result; returns it. A write that fails leaves the old ledger and throws [IOException]. */
-    fun update(transform: (Entry) -> Entry): Entry = synchronized(lock) {
+    @Synchronized
+    fun update(transform: (Entry) -> Entry): Entry {
         val next = transform(load())
         store(next)
-        next
+        return next
     }
 
     private fun load(): Entry {
