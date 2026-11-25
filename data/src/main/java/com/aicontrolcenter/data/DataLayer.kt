@@ -278,13 +278,14 @@ class DataLayer internal constructor(
     val ownerRecovery: OwnerRecovery by lazy {
         FileOwnerRecovery(
             health = databaseHealth,
-            generations = generations,
+            generationsOf = { generations },
             settings = settings,
-            files = RecoveryFiles(
-                databasesFolder = appContext.getDatabasePath(databaseName).absoluteFile.parentFile ?: appContext.filesDir,
-                noBackupFilesDir = appContext.noBackupFilesDir,
-                databaseName = databaseName,
-            ),
+            filesOf = {
+                RecoveryFiles(
+                    databasesFolder = appContext.getDatabasePath(databaseName).absoluteFile.parentFile ?: appContext.filesDir,
+                    noBackupFilesDir = appContext.noBackupFilesDir,
+                )
+            },
             beforeSettingAside = { retireForStartOver() },
             releaseFolderGrants = { FolderGrants.releaseAll(appContext) },
             clock = clock,

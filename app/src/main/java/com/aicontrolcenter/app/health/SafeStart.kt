@@ -17,7 +17,7 @@ enum class SafeStartReason(
 
 /**
  * Safe start (Phase 6, R2, rule 10; Tier B): after two starts in a row that never reached "ok", or three crashes of the
- * main process (CRASH, CRASH_NATIVE, ANR) within 15 minutes, nothing resumes by itself (interrupted objectives wait for the
+ * main process (CRASH, CRASH_NATIVE, ANR) within the 15 minutes before a start, nothing resumes by itself (interrupted objectives wait for the
  * owner, the upkeep job does nothing) until the owner chooses. Exits of the script process never count (rule 31): the
  * exit history reports the main process only. Pure: decided from the ledger and the new exits.
  */
@@ -43,7 +43,7 @@ object SafeStart {
         val reason = when {
             entry.safeStart -> entry.safeStartReason
             entry.startsWithoutOk >= STARTS_WITHOUT_OK -> SafeStartReason.STARTS_WITHOUT_OK
-            crashBurst(crashes) -> SafeStartReason.CRASHES
+            crashBurst(crashes, now) -> SafeStartReason.CRASHES
             else -> null
         }
         return entry.copy(
@@ -65,11 +65,11 @@ object SafeStart {
     fun left(entry: StartLedger.Entry): StartLedger.Entry =
         entry.copy(safeStart = false, safeStartReason = null, startsWithoutOk = 0, recentCrashes = emptyList())
 
-    /** True when [CRASHES] of [times] fall within [CRASH_WINDOW_MS] of each other. */
-    fun crashBurst(times: List<Long>): Boolean {
-        val sorted = times.sorted()
-        return sorted.windowed(CRASHES).any { it.last() - it.first() <= CRASH_WINDOW_MS }
-    }
+    /**
+     * True when [CRASHES] of [times] fall within the [CRASH_WINDOW_MS] before [now]: the app is crashing again and again
+     * right now. Older bursts (say, in the history Android kept from before an update) do not count.
+     */
+    fun crashBurst(times: List<Long>, now: Long): Boolean = times.count { it in (now - CRASH_WINDOW_MS)..now } >= CRASHES
 }
 
 /** What the safe-start banner shows (WP10): off, or on with its reason. */

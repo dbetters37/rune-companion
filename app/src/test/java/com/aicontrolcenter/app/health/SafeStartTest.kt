@@ -50,7 +50,7 @@ class SafeStartTest {
     @Test
     fun `three crashes of the main process within 15 minutes turn safe start on, spread out they do not`() {
         val burst = SafeStart.atStart(
-            StartLedger.Entry.EMPTY, 9, 20 * minute,
+            StartLedger.Entry.EMPTY, 9, 16 * minute,
             listOf(exit(1 * minute, ExitKind.CRASH), exit(6 * minute, ExitKind.ANR), exit(15 * minute, ExitKind.CRASH_NATIVE)),
         )
         assertTrue(burst.safeStart)
@@ -68,6 +68,15 @@ class SafeStartTest {
             listOf(exit(1 * minute, ExitKind.LOW_MEMORY), exit(2 * minute, ExitKind.USER_REQUESTED), exit(3 * minute, ExitKind.MEMORY_LIMIT)),
         )
         assertFalse(notCrashes.safeStart, "being closed by Android is no crash")
+    }
+
+    @Test
+    fun `a burst of crashes long before this start, as in the history Android kept from before an update, does not count`() {
+        val old = SafeStart.atStart(
+            StartLedger.Entry.EMPTY, 9, 5 * 24 * 60 * minute,
+            listOf(exit(1 * minute, ExitKind.CRASH), exit(2 * minute, ExitKind.CRASH), exit(3 * minute, ExitKind.CRASH)),
+        )
+        assertFalse(old.safeStart)
     }
 
     @Test
@@ -97,8 +106,9 @@ class SafeStartTest {
 
     @Test
     fun `crash times are kept sorted and bounded`() {
-        assertTrue(SafeStart.crashBurst(listOf(30 * minute, 16 * minute, 20 * minute)))
-        assertFalse(SafeStart.crashBurst(listOf(1L, 2L)))
+        assertTrue(SafeStart.crashBurst(listOf(30 * minute, 16 * minute, 20 * minute), now = 31 * minute))
+        assertFalse(SafeStart.crashBurst(listOf(30 * minute, 16 * minute, 20 * minute), now = 40 * minute), "an old burst does not count")
+        assertFalse(SafeStart.crashBurst(listOf(1L, 2L), now = 3))
         val many = StartLedger.Entry(recentCrashes = (14 downTo 0).map { it * 60 * minute })
         val read = StartLedger.parse(StartLedger.format(many)).recentCrashes
         assertEquals((5..14).map { it * 60 * minute }, read, "the ten newest, oldest first")

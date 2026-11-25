@@ -42,9 +42,11 @@ import java.time.format.DateTimeFormatter
  */
 class FileOwnerRecovery internal constructor(
     private val health: DatabaseHealth,
-    private val generations: KeyGenerations,
+    /** Read when Start over runs (off the main thread), never when this is built. */
+    private val generationsOf: () -> KeyGenerations,
     private val settings: SettingsRepository,
-    private val files: RecoveryFiles,
+    /** Read when Start over runs, never when this is built: finding the folders may create them. */
+    private val filesOf: () -> RecoveryFiles,
     private val beforeSettingAside: suspend () -> Unit,
     private val releaseFolderGrants: () -> Int,
     private val clock: Clock,
@@ -70,6 +72,7 @@ class FileOwnerRecovery internal constructor(
         } catch (_: Exception) {
             return@withLock RecoveryResult.Refused(SETTINGS_UNWRITABLE)
         }
+        val generations = withContext(io) { generationsOf() }
         val next = withContext(io) {
             try {
                 generations.advance()
@@ -81,6 +84,7 @@ class FileOwnerRecovery internal constructor(
         } ?: return@withLock RecoveryResult.Refused(STORAGE_UNWRITABLE)
         beforeSettingAside()
         withContext(io) {
+            val files = filesOf()
             val folder = files.newSetAsideFolder(clock.now(), zone())
             val moved = files.setAside((KeyGenerations.FIRST until next).map(generations::namesOf), folder)
             files.writeNote(folder, clock.now(), zone(), moved)
@@ -122,7 +126,6 @@ class FileOwnerRecovery internal constructor(
 internal class RecoveryFiles(
     private val databasesFolder: File,
     private val noBackupFilesDir: File,
-    private val databaseName: String,
 ) {
     /** A new, empty `set-aside-<date>` folder (`-2`, `-3`… when one of that date exists). */
     fun newSetAsideFolder(now: Long, zone: ZoneId): File {
