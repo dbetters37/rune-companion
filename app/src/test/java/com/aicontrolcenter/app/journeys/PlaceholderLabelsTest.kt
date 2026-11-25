@@ -47,15 +47,34 @@ class PlaceholderLabelsTest {
         assertEquals(0, this@PlaceholderLabelsTest.compose.onAllNodes(hasText(label)).fetchSemanticsNodes().size, "\"$label\" is still shown")
     }
 
+    /**
+     * Phase 6 made Reasoning and Coding real (agents are picked by them, the New objective form warns about a Basic
+     * Director, the agent editor's model picker shows them); Vision keeps "(test)": no photo is sent to a model in
+     * this version. It is the only control left marked.
+     */
     @Test
-    fun `the model capabilities nothing reads are marked`() {
+    fun `only Vision is still marked in the model editor`() {
         app().openSectionViaMore("Models")
             .tap("Models · 5")
             .tapItemContaining("Llama 3.2 3B")
-            // No image is ever sent to a model, and nothing picks models by tier.
+            .scrollTo("Vision (test)")
             .assertLabel("Vision (test)")
-            .assertLabel("Reasoning (test)")
-            .assertLabel("Coding (test)")
+            .scrollTo("Reasoning")
+            .assertLabel("Reasoning")
+            .assertNoLabel("Reasoning (test)")
+            .scrollTo("Coding")
+            .assertLabel("Coding")
+            .assertNoLabel("Coding (test)")
+    }
+
+    /** The source holds exactly one "(test)" control: [testLabel] is called for Vision only. */
+    @Test
+    fun `testLabel is used for Vision alone`() {
+        val root = listOf(java.io.File("src/main/java"), java.io.File("app/src/main/java")).first { it.isDirectory }
+        val uses = root.walkTopDown().filter { it.isFile && it.extension == "kt" }.flatMap { file ->
+            Regex("""testLabel\(\s*"([^"]*)"""").findAll(file.readText()).map { it.groupValues[1] }
+        }.toList()
+        assertEquals(listOf("Vision"), uses)
     }
 
     /** Phase 5 made these real: the broker asks the owner, and the Operator's phone tools exist. */

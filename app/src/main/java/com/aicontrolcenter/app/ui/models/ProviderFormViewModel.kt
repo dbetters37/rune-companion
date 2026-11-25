@@ -57,6 +57,8 @@ data class ProviderFormUiState(
     /** The preset this form started from, for its title and setup hint. */
     val presetTitle: String? = null,
     val setupHint: String? = null,
+    /** The preset's plain line on what using it costs, when adding from a preset. */
+    val costLine: String? = null,
     val needsApiKey: Boolean = false,
     val name: String = "",
     val baseUrl: String = "",
@@ -186,6 +188,7 @@ class ProviderFormViewModel(
                 kind = preset.kind,
                 presetTitle = preset.title,
                 setupHint = preset.setupHint,
+                costLine = presetDescription(preset).second,
                 needsApiKey = preset.needsApiKey,
                 name = uniqueName(preset.title, snapshot.providers.map { it.name }),
                 baseUrl = baseUrlOverride ?: preset.baseUrl.orEmpty(),

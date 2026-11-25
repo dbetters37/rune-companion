@@ -187,6 +187,7 @@ private fun ProviderFields(state: ProviderFormUiState, fields: ProviderTextField
                     Text(hint, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
+            state.costLine?.let { PresetCostLine(it) }
         }
     }
 

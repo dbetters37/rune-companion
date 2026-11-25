@@ -25,12 +25,23 @@ import com.aicontrolcenter.core.registry.ModelStatus
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.registry.RegistrySnapshot
 import com.aicontrolcenter.core.registry.effectiveLocality
+import com.aicontrolcenter.core.Clock
+import com.aicontrolcenter.core.WallClock
+import com.aicontrolcenter.core.operator.OwnerResult
+import com.aicontrolcenter.core.usage.ModelPrice
+import com.aicontrolcenter.core.usage.ModelPrices
+import com.aicontrolcenter.core.usage.OwnerModelPrices
+import com.aicontrolcenter.core.usage.UsageRange
+import com.aicontrolcenter.core.usage.UsageReports
+import com.aicontrolcenter.core.usage.UsageTotals
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.time.ZoneId
 
 /** The owner's description of a model: what can be edited about it. */
 @Immutable
@@ -68,6 +79,30 @@ data class ModelEditorUiState(
     /** Set once after the model was removed here; the route leaves. */
     val removed: Boolean = false,
     val message: UserMessage? = null,
+    /** The owner's price for this model (Phase 6, rule 29): typed from the provider's price page, never looked up. */
+    val price: PriceUi = PriceUi(),
+    /** How fast and reliable the model has been lately; null until read. */
+    val speed: SpeedUi? = null,
+    /** A cheaper model that can use tools, for helper agents (Tier B); null when there is nothing to suggest. */
+    val cheaper: CheaperHelperUi? = null,
+) {
+    /** Unsaved edits of the description or of the price. */
+    val hasUnsavedChanges: Boolean get() = isDirty || price.isDirty
+}
+
+/** The price section: the stored price and what the owner has typed. */
+@Immutable
+data class PriceUi(
+    /** False when prices cannot be stored here (no owner port); the section is then not shown. */
+    val available: Boolean = false,
+    val stored: ModelPrice? = null,
+    val isDirty: Boolean = false,
+    val isSaving: Boolean = false,
+    val inputError: String? = null,
+    val outputError: String? = null,
+    val cachedError: String? = null,
+    /** A problem with the price as a whole (too high, no currency). */
+    val error: String? = null,
 )
 
 /**
@@ -160,6 +195,12 @@ class ModelEditorViewModel(
     private val directory: RegistryDirectory,
     private val providerManager: ProviderManager,
     private val agentManager: AgentManager,
+    private val prices: ModelPrices = ModelPrices.None,
+    /** Where the owner's price is stored; null hides the price section. */
+    private val ownerPrices: OwnerModelPrices? = null,
+    private val usageReports: UsageReports = UsageReports.None,
+    private val clock: Clock = WallClock,
+    private val zone: () -> ZoneId = { ZoneId.systemDefault() },
 ) : ViewModel() {
 
     private val state = MutableStateFlow(ModelEditorUiState())
@@ -171,7 +212,39 @@ class ModelEditorViewModel(
     /** What is being typed into the editor's text fields. */
     val fields = ModelTextFields()
 
+    /** What is being typed into the price fields. */
+    val priceFields = ModelPriceFields()
+
     init {
+        state.update { it.copy(price = it.price.copy(available = ownerPrices != null)) }
+        // The price: the stored one fills the fields while the owner has changed nothing; what is typed marks it changed.
+        viewModelScope.launch {
+            prices.observeAll().collect { all ->
+                val stored = all.firstOrNull { it.modelId == modelId }
+                val current = state.value.price
+                if (!current.isDirty) priceFields.fill(stored)
+                state.update { it.copy(price = it.price.copy(stored = stored, isDirty = !PriceTexts.of(stored).sameAs(priceFields.read()))) }
+            }
+        }
+        viewModelScope.launch {
+            snapshotFlow { priceFields.read() }.collect { typed ->
+                state.update { it.copy(price = it.price.copy(isDirty = !PriceTexts.of(it.price.stored).sameAs(typed))) }
+            }
+        }
+        // The cheaper model for helpers follows the registry and every price.
+        viewModelScope.launch {
+            combine(directory.observe(), prices.observeAll()) { snapshot, all -> snapshot to all.associateBy { it.modelId } }.collect { (snapshot, byModel) ->
+                val model = snapshot.modelsById[modelId]
+                state.update { it.copy(cheaper = model?.takeUnless { m -> m.isSimulator }?.let { m -> snapshot.cheaperHelper(m, byModel) }) }
+            }
+        }
+        // Speed and reliability over the last days, again whenever a call of any model is recorded.
+        viewModelScope.launch {
+            usageReports.observeByModel(UsageRange.lastDays(SPEED_DAYS, clock.now(), zone())).collect { rows ->
+                val mine = rows.filter { it.modelId == modelId }.map { it.totals }.takeIf { it.isNotEmpty() }?.reduce(UsageTotals::plus)
+                state.update { it.copy(speed = speedOf(mine)) }
+            }
+        }
         // The draft follows what is typed. (Before the model has loaded, edits are ignored.)
         viewModelScope.launch { snapshotFlow { fields.read() }.collect { edit { it } } }
         viewModelScope.launch {
@@ -296,6 +369,67 @@ class ModelEditorViewModel(
         }
     }
 
+    /**
+     * Stores the price exactly as the fields hold it now. The owner types it from the provider's price page; the app
+     * never looks it up (rule 29). Saving a price leaves the model's description as it is.
+     */
+    fun savePrice() {
+        val port = ownerPrices ?: return
+        val current = state.value
+        if (current.isLoading || current.notFound || current.isSimulator || current.price.isSaving) return
+        when (val parsed = priceFields.read().toPrice(modelId)) {
+            is PriceParse.Invalid -> state.update {
+                it.copy(price = it.price.copy(inputError = parsed.inputError, outputError = parsed.outputError, cachedError = parsed.cachedError, error = parsed.general))
+            }
+            is PriceParse.Valid -> {
+                state.update { it.copy(price = it.price.copy(isSaving = true, inputError = null, outputError = null, cachedError = null, error = null)) }
+                viewModelScope.launch {
+                    val text = try {
+                        when (val result = port.set(parsed.price)) {
+                            is OwnerResult.Done -> {
+                                priceFields.fill(result.value)
+                                state.update { it.copy(price = it.price.copy(stored = result.value, isDirty = false)) }
+                                "Price saved. Costs with this model are now estimated from it."
+                            }
+                            is OwnerResult.Refused -> result.reason
+                        }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Exception) {
+                        "The price could not be saved: ${failure.message ?: "storage error"}"
+                    }
+                    state.update { it.copy(price = it.price.copy(isSaving = false), message = message(text)) }
+                }
+            }
+        }
+    }
+
+    /** Removes the price: this model's costs are no longer estimated (its tokens are still counted). */
+    fun removePrice() {
+        val port = ownerPrices ?: return
+        if (state.value.price.isSaving) return
+        state.update { it.copy(price = it.price.copy(isSaving = true)) }
+        viewModelScope.launch {
+            val text = try {
+                port.remove(modelId)
+                priceFields.fill(null)
+                state.update { it.copy(price = it.price.copy(stored = null, isDirty = false, inputError = null, outputError = null, cachedError = null, error = null)) }
+                "Price removed. Costs with this model are no longer estimated."
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                "The price could not be removed: ${failure.message ?: "storage error"}"
+            }
+            state.update { it.copy(price = it.price.copy(isSaving = false), message = message(text)) }
+        }
+    }
+
+    /** Puts back the stored price, dropping what was typed. */
+    fun discardPriceChanges() {
+        priceFields.fill(state.value.price.stored)
+        state.update { it.copy(price = it.price.copy(isDirty = false, inputError = null, outputError = null, cachedError = null, error = null)) }
+    }
+
     fun setEnabled(enabled: Boolean) = act("Changing the model") { providerManager.setModelEnabled(modelId, enabled) }
 
     fun remove() = act("Removing the model") {
@@ -313,6 +447,21 @@ class ModelEditorViewModel(
         state.update {
             it.copy(useForAgents = UseForAgentsUi(choices, choices.map { c -> c.id }.toSet(), snapshot.useWarning(model)))
         }
+    }
+
+    /**
+     * "Use for helpers…" from the cheaper-model suggestion: the same chooser as "Use for agents…", with only the
+     * helpers on dearer models ticked, so the Director keeps its model unless the owner ticks it.
+     */
+    fun openUseForHelpers() {
+        val snapshot = latest ?: return
+        val model = snapshot.modelsById[modelId] ?: return
+        val helpers = state.value.cheaper?.takeIf { it.isThisModel }?.helpers ?: return
+        if (state.value.useForAgents != null) return
+        val choices = snapshot.agentChoices()
+        val selected = helpers.filterTo(mutableSetOf()) { id -> choices.any { it.id == id } }
+        if (selected.isEmpty()) return
+        state.update { it.copy(useForAgents = UseForAgentsUi(choices, selected, snapshot.useWarning(model))) }
     }
 
     fun toggleAgentChoice(id: AgentId) = state.update { current ->

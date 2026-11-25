@@ -1,6 +1,5 @@
 package com.aicontrolcenter.app.ui.models
 
-import com.aicontrolcenter.app.Phase6Stub
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -52,6 +51,11 @@ import com.aicontrolcenter.app.ui.components.AgentAvatar
 import com.aicontrolcenter.app.ui.components.AppCard
 import com.aicontrolcenter.app.ui.components.AppTextField
 import com.aicontrolcenter.app.ui.components.digitsOnly
+import com.aicontrolcenter.app.ui.components.atMostChars
+import com.aicontrolcenter.app.ui.chat.TOKENS_EXPLAINED
+import com.aicontrolcenter.core.usage.ModelPrice
+import androidx.compose.ui.semantics.semantics
+import com.aicontrolcenter.app.ui.icons.Insights
 import com.aicontrolcenter.app.ui.components.ConfirmDialog
 import com.aicontrolcenter.app.ui.components.EmptyState
 import com.aicontrolcenter.app.ui.components.InfoBanner
@@ -80,27 +84,33 @@ import com.aicontrolcenter.core.registry.CapabilityTier
 import com.aicontrolcenter.core.registry.ModelSource
 
 /**
- * Wave 3 (WP11b): price fields (`graph.ownerModelPrices`), "Speed and reliability" (`graph.usageReports`), whose rows link
- * to [onOpenUsage] (Activity › Usage and cost), the cheaper-helper suggestion; Reasoning and Coding lose "(test)".
+ * A model's page: how it is described, the owner's price for it (`graph.ownerModelPrices`; typed from the
+ * provider's price page, never looked up), "Speed and reliability" (`graph.usageReports`), which links to
+ * [onOpenUsage] (Activity › Usage and cost), and the cheaper model for helpers.
  */
-@Phase6Stub("WP11b")
 @Composable
-fun ModelEditorRoute(modelId: ModelId, onBack: () -> Unit, @Suppress("UNUSED_PARAMETER") onOpenUsage: () -> Unit = {}) {
+fun ModelEditorRoute(modelId: ModelId, onBack: () -> Unit, onOpenUsage: () -> Unit = {}) {
     val graph = LocalAppGraph.current
-    val viewModel = viewModel { ModelEditorViewModel(modelId, graph.registryDirectory, graph.providerManager, graph.agentManager) }
+    val viewModel = viewModel {
+        ModelEditorViewModel(
+            modelId, graph.registryDirectory, graph.providerManager, graph.agentManager,
+            prices = graph.modelPrices, ownerPrices = graph.ownerModelPrices, usageReports = graph.usageReports,
+            clock = graph.clock, zone = graph.zone,
+        )
+    }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     LaunchedEffect(state.removed) { if (state.removed) onBack() }
-    ModelEditorScreen(state, viewModel, onBack)
+    ModelEditorScreen(state, viewModel, onBack, onOpenUsage)
 }
 
 @Composable
-internal fun ModelEditorScreen(state: ModelEditorUiState, viewModel: ModelEditorViewModel, onBack: () -> Unit) {
+internal fun ModelEditorScreen(state: ModelEditorUiState, viewModel: ModelEditorViewModel, onBack: () -> Unit, onOpenUsage: () -> Unit = {}) {
     var confirmRemove by rememberSaveable { mutableStateOf(false) }
     var confirmDiscard by rememberSaveable { mutableStateOf(false) }
-    BackHandler(enabled = state.isDirty) { confirmDiscard = true }
+    BackHandler(enabled = state.hasUnsavedChanges) { confirmDiscard = true }
     ScreenScaffold(
         title = state.draft.displayName.ifBlank { "Model" },
-        onBack = { if (state.isDirty) confirmDiscard = true else onBack() },
+        onBack = { if (state.hasUnsavedChanges) confirmDiscard = true else onBack() },
         actions = {
             if (!state.isLoading && !state.notFound && !state.isSimulator) {
                 TextButton(onClick = viewModel::save, enabled = state.isDirty && !state.isSaving) { Text("Save") }
@@ -137,6 +147,9 @@ internal fun ModelEditorScreen(state: ModelEditorUiState, viewModel: ModelEditor
                         icon = AppIcons.Sparkle,
                     )
                 } else {
+                    state.cheaper?.let { CheaperHelperCard(it, viewModel::openUseForHelpers) }
+                    if (state.price.available) PriceEditor(state, viewModel)
+                    state.speed?.let { SpeedCard(it, onOpenUsage) }
                     DescriptionEditor(state, viewModel)
                     CapabilitiesEditor(state, viewModel)
                     Button(
@@ -199,7 +212,7 @@ internal fun ModelEditorScreen(state: ModelEditorUiState, viewModel: ModelEditor
     if (confirmDiscard) {
         ConfirmDialog(
             title = "Discard changes?",
-            message = "Your edits to this model have not been saved.",
+            message = if (state.price.isDirty && !state.isDirty) "The price you typed has not been saved." else "Your edits to this model have not been saved.",
             confirmLabel = "Discard",
             dismissLabel = "Keep editing",
             destructive = true,
@@ -302,8 +315,13 @@ private fun CapabilitiesEditor(state: ModelEditorUiState, viewModel: ModelEditor
                     onCheckedChange = { on -> viewModel.setCapabilities { it.copy(vision = on) } },
                 )
                 RowDivider()
-                TierPicker(testLabel("Reasoning"), caps.reasoning, viewModel::setReasoning)
-                TierPicker(testLabel("Coding"), caps.coding, viewModel::setCoding)
+                TierPicker(
+                    "Reasoning",
+                    "Agents on a stronger model are picked first for planning, comparing and deciding, and the New objective form warns when the Director's model is Basic.",
+                    caps.reasoning,
+                    viewModel::setReasoning,
+                )
+                TierPicker("Coding", "Agents on a stronger model are picked first for tasks about code, scripts and programs.", caps.coding, viewModel::setCoding)
                 RowDivider()
                 val digits = remember { digitsOnly(ModelTextFields.MAX_DIGITS) }
                 AppTextField(
@@ -327,9 +345,10 @@ private fun CapabilitiesEditor(state: ModelEditorUiState, viewModel: ModelEditor
 }
 
 @Composable
-private fun TierPicker(title: String, selected: CapabilityTier, onSelect: (CapabilityTier) -> Unit) {
+private fun TierPicker(title: String, description: String, selected: CapabilityTier, onSelect: (CapabilityTier) -> Unit) {
     Column(Modifier.padding(vertical = Spacing.xs)) {
         Text(title, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+        Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(
             modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
@@ -340,6 +359,130 @@ private fun TierPicker(title: String, selected: CapabilityTier, onSelect: (Capab
                     onClick = { onSelect(tier) },
                     label = { Text(tier.name.lowercase().replaceFirstChar(Char::uppercase)) },
                 )
+            }
+        }
+    }
+}
+
+/**
+ * The owner's price for this model. Typed from the provider's price page, per million tokens; the app never looks
+ * prices up (rule 29). Saving it is separate from the description, so a listed model stays updated by its provider.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun PriceEditor(state: ModelEditorUiState, viewModel: ModelEditorViewModel) {
+    val price = state.price
+    val fields = viewModel.priceFields
+    val amount = remember { amountOnly() }
+    val currencyChars = remember { atMostChars(ModelPrice.MAX_CURRENCY_CHARS) }
+    val numbers = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+    Column {
+        SectionHeader("Price")
+        AppCard {
+            Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                Text(
+                    "You enter these from your provider's price page; the app never looks them up.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(TOKENS_EXPLAINED, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                AppTextField(
+                    state = fields.input,
+                    label = "Input, per million tokens",
+                    placeholder = "For example 3",
+                    errorText = price.inputError,
+                    keyboardOptions = numbers,
+                    inputTransformation = amount,
+                )
+                AppTextField(
+                    state = fields.output,
+                    label = "Output, per million tokens",
+                    placeholder = "For example 15",
+                    errorText = price.outputError,
+                    keyboardOptions = numbers,
+                    inputTransformation = amount,
+                )
+                AppTextField(
+                    state = fields.cachedInput,
+                    label = "Cached input, per million tokens",
+                    placeholder = "Same as input",
+                    supportingText = "Some providers charge less for text they have seen recently. Leave it empty if yours does not say.",
+                    errorText = price.cachedError,
+                    keyboardOptions = numbers,
+                    inputTransformation = amount,
+                )
+                AppTextField(
+                    state = fields.currency,
+                    label = "Currency",
+                    supportingText = "For example US$ or €.",
+                    inputTransformation = currencyChars,
+                )
+                price.error?.let { InfoBanner(text = it, tone = StatusTone.ATTENTION) }
+                price.stored?.takeIf { !price.isDirty }?.let { stored ->
+                    Text(typicalCostLine(stored), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } ?: run {
+                    if (price.stored == null && !price.isDirty) {
+                        Text(
+                            "Without a price, this model's tokens are counted but no cost is shown, and the daily money limit does not count it.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(Spacing.sm), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                    Button(onClick = viewModel::savePrice, enabled = price.isDirty && !price.isSaving, modifier = Modifier.heightIn(min = 48.dp)) {
+                        Text("Save price")
+                    }
+                    if (price.isDirty && price.stored != null) {
+                        TextButton(onClick = viewModel::discardPriceChanges, enabled = !price.isSaving, modifier = Modifier.heightIn(min = 48.dp)) {
+                            Text("Undo changes")
+                        }
+                    }
+                    if (price.stored != null) {
+                        TextButton(onClick = viewModel::removePrice, enabled = !price.isSaving, modifier = Modifier.heightIn(min = 48.dp)) {
+                            Text("Remove price")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** How fast and reliable the model has been lately, in words, with the way to the Usage and cost tab. */
+@Composable
+private fun SpeedCard(speed: SpeedUi, onOpenUsage: () -> Unit) {
+    Column {
+        SectionHeader("Speed and reliability")
+        AppCard {
+            Column(Modifier.semantics(mergeDescendants = true) {}, verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                speed.lines.forEach { line ->
+                    Text(line, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+                }
+            }
+            TextButton(onClick = onOpenUsage, modifier = Modifier.padding(top = Spacing.xs).heightIn(min = 48.dp)) {
+                Icon(AppIcons.Insights, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+                Text("See usage and cost", modifier = Modifier.padding(start = 8.dp))
+            }
+        }
+    }
+}
+
+/** The cheaper model that can use tools, for helper agents (Tier B), offered through "Use for agents…". */
+@Composable
+private fun CheaperHelperCard(cheaper: CheaperHelperUi, onUseForHelpers: () -> Unit) {
+    AppCard(borderColor = appColors.ready.copy(alpha = 0.45f)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm), verticalAlignment = Alignment.Top) {
+            Icon(AppIcons.Insights, contentDescription = null, tint = appColors.ready, modifier = Modifier.padding(top = 2.dp).size(20.dp))
+            Column(Modifier.weight(1f).semantics(mergeDescendants = true) {}, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(cheaper.title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+                Text(cheaper.text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        if (cheaper.isThisModel) {
+            OutlinedButton(onClick = onUseForHelpers, modifier = Modifier.padding(top = Spacing.sm).heightIn(min = 48.dp)) {
+                Icon(AppIcons.Agent, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+                Text("Use for helpers…", modifier = Modifier.padding(start = 8.dp))
             }
         }
     }
