@@ -379,16 +379,21 @@ class DailyLimitTest {
     }
 
     @Test
-    fun `the money sentence names the currency the prices are in`() = runTest {
+    fun `a price in another currency does not count, and the money sentence is in US dollars`() = runTest {
+        // D3A-8: the app keeps one currency, US$. A price stored in euros is no price: never added into the money limit.
         val metered = MeteredWorld(this)
         metered.settings { it.copy(maxTokensPerDay = 1_000_000_000) }
-        val model = metered.cloud(ScriptedLlmClient.script(ScriptStep.Reply("costly", TokenUsage(1_000_000, 0))))
+        val model = metered.cloud(ScriptedLlmClient.script(ScriptStep.Reply("costly", TokenUsage(1_000_000, 0)), ScriptStep.Reply("again", TokenUsage(1_000_000, 0))))
         metered.ownerPrices.set(ModelPrice(model.id, 1_000_000, 1_000_000, currencyLabel = "€"))
         metered.gateway.chat(model.id, ask)
+        metered.gateway.chat(model.id, ask)
+        assertEquals(0, metered.limiter.today().spendMicros, "euros are not added into the US$ total")
+        assertFalse(metered.limiter.today().priced)
 
+        // The same price in "USD" counts as US$ and stops the next call with a US$ sentence.
+        metered.ownerPrices.set(ModelPrice(model.id, 1_000_000, 1_000_000, currencyLabel = "USD"))
         val refused = assertFailsWith<LlmException.DailyLimitReached> { metered.gateway.chat(model.id, ask) }
-
-        assertTrue(refused.message!!.startsWith("Today's spending limit of €1.00 is reached."))
+        assertTrue(refused.message!!.startsWith("Today's spending limit of US$1.00 is reached."), refused.message)
     }
 
     @Test

@@ -22,6 +22,7 @@ import com.aicontrolcenter.framework.llm.VaultKeyCheck
 import com.aicontrolcenter.framework.registry.DefaultRegistryDirectory
 import kotlinx.coroutines.CoroutineScope
 import java.time.ZoneId
+import com.aicontrolcenter.core.usage.counted
 
 /*
  * Models, providers and the registry (Phase 6: WP4 owns this file in wave 2; usage, cost, daily limits, provider
@@ -70,7 +71,8 @@ class ModelsAssembly(
      * Today's limits of model answers, tokens and estimated money (rule 6; the owner's Q2: 200 answers, 500,000
      * tokens, US$1.00 once a price is entered, on from the start). One per process: every call reserves under its lock.
      */
-    val dailyLimiter: DailyLimiter = DailyLimiter(ports.usageReports, ports.modelPrices, settings, ports.clock, zone)
+    // Only the prices that count (US$, D3A-8), as every screen reads them.
+    val dailyLimiter: DailyLimiter = DailyLimiter(ports.usageReports, ports.modelPrices.counted(), settings, ports.clock, zone)
 
     val modelGateway: ModelGateway = DefaultModelGateway(
         providers = ReadOnlyRegistry.providers(ports.providers),

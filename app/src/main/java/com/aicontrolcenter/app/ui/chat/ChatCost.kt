@@ -27,16 +27,18 @@ const val TOKENS_EXPLAINED: String = "Tokens are the pieces of words a model rea
 
 /**
  * The cost line of a chat from its usage rows ([WorkUsage] of kind CHAT, one per model) and the
- * owner's [prices]; null while the chat has used nothing. Money is added per currency, never
- * across currencies; models without a price add tokens only, and the line says so. Models in
- * [onPhone] cost nothing, even with a price entered (D3A-10, as the daily limits and Usage count).
+ * owner's [prices]; null while the chat has used nothing. Money is in US$, the app's one currency
+ * (D3A-8): a price in another currency is no price. Models without a price add tokens only, and the
+ * line says so. Models in [onPhone] cost nothing, even with a price entered (D3A-10, as the daily
+ * limits and Usage count).
  */
 fun chatCostOf(rows: List<WorkUsage>, prices: Map<ModelId, ModelPrice>, onPhone: Set<ModelId> = emptySet()): ChatCostUi? {
     val tokens = rows.sumOf { it.inputTokens + it.outputTokens }
     if (rows.isEmpty() || tokens == 0L) return null
+    val counted = prices.filterValues { it.counts }
     val charged = rows.filter { it.modelId !in onPhone }
-    val money = moneyByCurrency(charged, prices)
-    val unpriced = charged.any { it.modelId !in prices && it.inputTokens + it.outputTokens > 0 }
+    val money = moneyOf(charged, counted)
+    val unpriced = charged.any { it.modelId !in counted && it.inputTokens + it.outputTokens > 0 }
     val free = charged.none { it.inputTokens + it.outputTokens > 0 }
     val line = buildString {
         append("This chat so far: ").append(formatCount(tokens)).append(if (tokens == 1L) " token" else " tokens")
@@ -56,16 +58,12 @@ fun chatCostOf(rows: List<WorkUsage>, prices: Map<ModelId, ModelPrice>, onPhone:
     return ChatCostUi(line, explanation, priced = money != null)
 }
 
-/** "US$0.03", or "US$0.03 and €0.01" when the owner priced models in more than one currency; null without any price. */
-internal fun moneyByCurrency(rows: List<WorkUsage>, prices: Map<ModelId, ModelPrice>): String? {
-    val byCurrency = LinkedHashMap<String, Long>()
-    rows.forEach { row ->
-        val price = prices[row.modelId] ?: return@forEach
-        val cost = CostEstimate.of(row.tokens, price) ?: return@forEach
-        byCurrency[price.currencyLabel] = (byCurrency[price.currencyLabel] ?: 0L).let { if (Long.MAX_VALUE - it < cost) Long.MAX_VALUE else it + cost }
-    }
-    if (byCurrency.isEmpty()) return null
-    return byCurrency.entries.joinToString(" and ") { (currency, micros) -> moneyText(micros, currency) }
+/** "US$0.03": the estimated cost of [rows] at the [prices] that count (US$ only, D3A-8); null without any. */
+internal fun moneyOf(rows: List<WorkUsage>, prices: Map<ModelId, ModelPrice>): String? {
+    val costs = rows.mapNotNull { row -> CostEstimate.of(row.tokens, prices[row.modelId]) }
+    if (costs.isEmpty()) return null
+    val micros = costs.fold(0L) { sum, cost -> if (Long.MAX_VALUE - sum < cost) Long.MAX_VALUE else sum + cost }
+    return moneyText(micros, ModelPrice.DEFAULT_CURRENCY)
 }
 
 /** [micros] of [currency] as the owner reads it: "US$0.03"; a cost under half a cent is "less than US$0.01", never "US$0.00". */

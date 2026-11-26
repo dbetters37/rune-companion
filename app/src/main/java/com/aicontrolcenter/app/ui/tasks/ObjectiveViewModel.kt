@@ -6,7 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aicontrolcenter.app.ui.activity.TOKENS_IN_PLAIN_WORDS
 import com.aicontrolcenter.app.ui.activity.aboutMoney
-import com.aicontrolcenter.app.ui.chat.moneyByCurrency
+import com.aicontrolcenter.app.ui.chat.moneyOf
 import com.aicontrolcenter.app.ui.components.localityOf
 import com.aicontrolcenter.app.ui.components.onPhoneModels
 import com.aicontrolcenter.app.ui.approvals.RequestUi
@@ -641,8 +641,8 @@ fun pauseOf(objective: TaskRecord): PauseNoticeUi? {
 /**
  * The cost so far of an objective or a task from its usage rows: "So far: about US$0.03 · 12,400 tokens · 3 model
  * answers" once a used model has a price, else the tokens alone, with what a token is and that money is an estimate
- * (rule 29). Money is added per currency, never across currencies ("about US$0.03 and €0.01", as the chat's line,
- * D3A-8); models in [onPhone] cost nothing, even with a price entered (D3A-10). Null before any model call.
+ * (rule 29). Money is in US$, the app's one currency, as the chat's line (D3A-8): a price in another currency is no
+ * price; models in [onPhone] cost nothing, even with a price entered (D3A-10). Null before any model call.
  */
 fun costLineOf(
     rows: List<WorkUsage>,
@@ -652,12 +652,13 @@ fun costLineOf(
     if (rows.isEmpty()) return null
     val tokens = rows.sumOf { it.inputTokens + it.outputTokens }
     val calls = rows.sumOf { it.calls }
+    val counted = prices.filterValues { it.counts }
     val charged = rows.filter { it.modelId !in onPhone }
-    val money = moneyByCurrency(charged, prices)
+    val money = moneyOf(charged, counted)
     val words = "%,d".format(java.util.Locale.ENGLISH, tokens) + " tokens · " + "%,d".format(java.util.Locale.ENGLISH, calls) + if (calls == 1L) " model answer" else " model answers"
     return when {
         money != null -> CostLineUi(
-            "So far: ${aboutMoney(money)} · $words" + if (charged.any { it.modelId !in prices }) " (some models have no price)" else "",
+            "So far: ${aboutMoney(money)} · $words" + if (charged.any { it.modelId !in counted }) " (some models have no price)" else "",
             com.aicontrolcenter.core.usage.CostEstimate.DISCLAIMER + " $TOKENS_IN_PLAIN_WORDS",
         )
         charged.isEmpty() -> CostLineUi("So far: $words · free on this phone", "$TOKENS_IN_PLAIN_WORDS Models on this phone cost nothing.")

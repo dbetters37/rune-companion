@@ -34,6 +34,7 @@ import com.aicontrolcenter.core.usage.OwnerModelPrices
 import com.aicontrolcenter.core.usage.UsageRange
 import com.aicontrolcenter.core.usage.UsageReports
 import com.aicontrolcenter.core.usage.UsageTotals
+import com.aicontrolcenter.core.usage.counted
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -101,9 +102,12 @@ data class PriceUi(
     val inputError: String? = null,
     val outputError: String? = null,
     val cachedError: String? = null,
-    /** A problem with the price as a whole (too high, no currency). */
+    /** A problem with the price as a whole (too high). */
     val error: String? = null,
-)
+) {
+    /** The stored price is in another currency (D3A-8): it counts as no price until it is entered again in US$. */
+    val otherCurrency: Boolean get() = stored?.counts == false
+}
 
 /**
  * The model editor's text fields. The fields read these and the keyboard writes them directly, so
@@ -235,7 +239,8 @@ class ModelEditorViewModel(
         }
         // The cheaper model for helpers follows the registry and every price.
         viewModelScope.launch {
-            combine(directory.observe(), prices.observeAll()) { snapshot, all -> snapshot to all.associateBy { it.modelId } }.collect { (snapshot, byModel) ->
+            // Only the prices that count (US$, D3A-8) compare costs.
+            combine(directory.observe(), prices.observeAll()) { snapshot, all -> snapshot to all.counted().associateBy { it.modelId } }.collect { (snapshot, byModel) ->
                 val model = snapshot.modelsById[modelId]
                 state.update { it.copy(cheaper = model?.takeUnless { m -> m.isSimulator }?.let { m -> snapshot.cheaperHelper(m, byModel) }) }
             }

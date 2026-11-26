@@ -51,6 +51,12 @@ class TodayUsageTest {
         assertEquals(1_100, seen.last().use.tokens)
         assertFalse(seen.last().use.priced, "no price: no money")
 
+        // One currency (D3A-8): a price in euros is no price, as the limiter counts it.
+        prices.set(ModelPrice(ModelId("mdl_grok"), inputPerMTokMicros = 2_000_000, outputPerMTokMicros = 6_000_000, currencyLabel = "€"))
+        runCurrent()
+        assertFalse(seen.last().use.priced, "a price in another currency does not count")
+        assertEquals(0, seen.last().use.spendMicros)
+
         prices.set(ModelPrice(ModelId("mdl_grok"), inputPerMTokMicros = 2_000_000, outputPerMTokMicros = 6_000_000, cachedInputPerMTokMicros = 500_000, currencyLabel = "US$"))
         runCurrent()
         assertTrue(seen.last().use.priced)

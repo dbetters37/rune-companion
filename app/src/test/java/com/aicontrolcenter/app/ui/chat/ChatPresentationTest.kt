@@ -73,7 +73,7 @@ class ChatPresentationTest {
     }
 
     @Test
-    fun `the cost is added per currency, says less than a cent rather than nothing, and leaves unpriced models out of the money`() {
+    fun `the cost is in US dollars, says less than a cent rather than nothing, and leaves unpriced models out of the money`() {
         fun row(model: String, input: Long, output: Long) = WorkUsage(WorkKind.CHAT, "cnv_1", ModelId(model), 1, input, output, 0, 0)
         val prices = mapOf(
             ModelId("a") to ModelPrice(ModelId("a"), 3_000_000, 15_000_000),
@@ -82,10 +82,12 @@ class ChatPresentationTest {
         assertNull(chatCostOf(emptyList(), prices))
         assertEquals("This chat so far: 120 tokens, less than US$0.01.", chatCostOf(listOf(row("a", 100, 20)), prices)?.line)
         assertEquals("This chat so far: 1,200 tokens, about US$0.01.", chatCostOf(listOf(row("a", 1_000, 200)), prices)?.line)
+        // One currency (D3A-8): a price in euros is no price, never added into the US$ figure.
         assertEquals(
-            "This chat so far: 140,000 tokens, about US$0.60 and €0.02.",
+            "This chat so far: 140,000 tokens, about US$0.60 for the models with a price.",
             chatCostOf(listOf(row("a", 100_000, 20_000), row("e", 10_000, 10_000)), prices)?.line,
         )
+        assertEquals(false, chatCostOf(listOf(row("e", 10_000, 10_000)), prices)?.priced, "euros alone show no money")
         val mixed = chatCostOf(listOf(row("a", 100_000, 20_000), row("x", 5_000, 0)), prices)
         assertEquals("This chat so far: 125,000 tokens, about US$0.60 for the models with a price.", mixed?.line)
         assertTrue(mixed!!.priced)

@@ -40,6 +40,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.time.ZoneId
+import com.aicontrolcenter.core.usage.counted
 
 /*
  * Routines (objectives started at set times) and automatic folder pick-up (Phase 6, owner decision Q1 = "Yes, both";
@@ -121,7 +122,7 @@ class RoutinesAssembly(
             tasks = ports.tasks,
             orchestrator = orchestrator,
             settings = settings,
-            dailyLimits = UsageDailyLimitCheck(ports.usageReports, ports.modelPrices, ports.clock, ports.routines.zone),
+            dailyLimits = UsageDailyLimitCheck(ports.usageReports, ports.modelPrices.counted(), ports.clock, ports.routines.zone),
             localOnly = RegistryLocalOnlyCheck(ReadOnlyRegistry.agents(ports.agents), ReadOnlyRegistry.providers(ports.providers), ReadOnlyRegistry.models(ports.models)),
             gate = ports.maintenanceGate,
             activity = activity,

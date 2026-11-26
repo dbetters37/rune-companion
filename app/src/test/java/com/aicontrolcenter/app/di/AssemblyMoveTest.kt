@@ -28,6 +28,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import org.junit.After
+import com.aicontrolcenter.core.usage.counted
 import org.junit.Test
 import java.lang.reflect.Modifier
 import java.util.IdentityHashMap
@@ -94,7 +95,9 @@ class AssemblyMoveTest {
     @Test
     fun `the Phase 6 members come from the ports, and the gate is the process's one`() {
         assertSame(app.ports.usageReports, graph.usageReports)
-        assertSame(app.ports.modelPrices, graph.modelPrices)
+        // The prices as entered (the model editor, Usage), and the view every money figure is added up from (D3A-8).
+        assertSame(app.ports.modelPrices, graph.enteredModelPrices)
+        assertSame(graph.modelPrices, graph.modelPrices.counted(), "only the prices that count, in US$")
         assertSame(app.prices, graph.ownerModelPrices)
         assertSame(app.usage, graph.ownerUsage)
         assertSame(app.backgroundHealth, graph.backgroundHealth)

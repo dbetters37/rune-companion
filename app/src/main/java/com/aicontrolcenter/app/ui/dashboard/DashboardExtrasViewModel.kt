@@ -191,7 +191,7 @@ class DashboardExtrasViewModel(
             DashboardExtrasUiState(
                 isLoading = false,
                 today = todayTile(built.use, built.usage),
-                gettingStarted = if (built.onboarded) null else gettingStarted(built.snapshot, built.use.limits, built.use.currency),
+                gettingStarted = if (built.onboarded) null else gettingStarted(built.snapshot, built.use.limits, ModelPrice.DEFAULT_CURRENCY),
                 phone = phoneItems(built.phone),
                 safeStart = if (safe.on) SafeStartUi(safe.reason?.ownerText ?: "The app did not start normally.", isLeaving) else null,
             )
@@ -231,7 +231,8 @@ class DashboardExtrasViewModel(
 
     private fun todayTile(use: TodayUse, usage: UsageDetail?): TodayTileUi {
         val counted = use.use
-        val currency = use.currency
+        // The app's one currency (D3A-8).
+        val currency = ModelPrice.DEFAULT_CURRENCY
         val used = counted.calls > 0 || counted.tokens > 0
         val unpriced = usage?.day.orEmpty()
             .filter { it.locality.leavesDevice && countedAnswers(it.totals) + it.totals.totalTokens > 0 && it.modelId !in usage!!.prices }
@@ -272,7 +273,7 @@ class DashboardExtrasViewModel(
             costNote = costNote,
             unpriced = unpriced.map { UnpricedModelUi(it.modelId, it.modelLabel) },
             month = usage?.let { monthLine(it, currency) },
-            reached = use.limits.reachedBy(counted.calls, counted.tokens, counted.spendMicros)?.let { use.limits.sentence(it, currency) },
+            reached = use.limits.reachedBy(counted.calls, counted.tokens, counted.spendMicros)?.let { use.limits.sentence(it) },
             currency = currency,
             phoneNote = phoneAnswers.takeIf { it > 0 }?.let { phoneWords(it, alsoOthers = used) },
         )

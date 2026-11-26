@@ -6,7 +6,6 @@ import com.aicontrolcenter.core.llm.LlmException
 import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.usage.CostEstimate
-import com.aicontrolcenter.core.usage.DailyLimitKind
 import com.aicontrolcenter.core.usage.ErrorClass
 import com.aicontrolcenter.core.usage.ModelPrice
 import com.aicontrolcenter.core.usage.ModelPrices
@@ -15,6 +14,7 @@ import com.aicontrolcenter.core.usage.TokenCounts
 import com.aicontrolcenter.core.usage.UsageRange
 import com.aicontrolcenter.core.usage.UsageReports
 import com.aicontrolcenter.core.usage.UsageTotals
+import com.aicontrolcenter.core.usage.counted
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
@@ -45,7 +45,7 @@ data class DailyUse(val calls: Long, val tokens: Long, val spendMicros: Long, va
                 calls = limited.sumOf { counted(it.totals) },
                 tokens = tokens.values.sumOf { it.total },
                 spendMicros = spend(tokens, prices),
-                priced = tokens.keys.any { it in prices },
+                priced = tokens.keys.any { prices[it]?.counts == true },
             )
         }
 
@@ -153,7 +153,7 @@ class DailyLimiter(
                     held?.estimate?.let { own -> held.modelId?.let { counted[it] = minus(counted[it], own) } }
                     val spend = DailyUse.spend(counted, priced)
                     limits.reachedBy(calls + others, counted.values.sumOf { it.total }, spend)?.let { kind ->
-                        throw LlmException.DailyLimitReached(limits.sentence(kind, currencyOf(priced, kind)))
+                        throw LlmException.DailyLimitReached(limits.sentence(kind))
                     }
                     if (held != null) return held
                     inFlight++
@@ -245,18 +245,14 @@ class DailyLimiter(
         day = range
     }
 
+    // Only the prices that count (US$, D3A-8): one in another currency is no price here, as on every screen.
     private suspend fun readPrices(): Map<ModelId, ModelPrice> = try {
-        prices.getAll().associateBy { it.modelId }
+        prices.getAll().counted().associateBy { it.modelId }
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
         throw LlmException.DailyLimitReached(PRICES_UNREADABLE)
     }
-
-    /** The currency the money sentence names: the one every price shares, else the default label. */
-    private fun currencyOf(priced: Map<ModelId, ModelPrice>, kind: DailyLimitKind): String =
-        if (kind != DailyLimitKind.SPEND) ModelPrice.DEFAULT_CURRENCY
-        else priced.values.map { it.currencyLabel }.distinct().singleOrNull() ?: ModelPrice.DEFAULT_CURRENCY
 
     private class Seed(val range: UsageRange, val rows: List<ModelUsage>?)
 

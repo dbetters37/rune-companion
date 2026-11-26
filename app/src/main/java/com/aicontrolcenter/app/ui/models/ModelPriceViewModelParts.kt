@@ -30,44 +30,48 @@ import java.math.RoundingMode
  * model for helper agents (Tier B). Pure functions and the price fields, so each is tested without a screen.
  */
 
-/** The price fields. The keyboard writes them directly; the view model reads them at Save. */
+/**
+ * The price fields, in US$: the app keeps one currency for prices and the money limit (D3A-8), so there is no currency
+ * field. The keyboard writes them directly; the view model reads them at Save.
+ */
 class ModelPriceFields {
     val input = TextFieldState()
     val output = TextFieldState()
 
     /** Empty means cached input costs the input price. */
     val cachedInput = TextFieldState()
-    val currency = TextFieldState(ModelPrice.DEFAULT_CURRENCY)
 
-    internal fun read() = PriceTexts(input.text.toString(), output.text.toString(), cachedInput.text.toString(), currency.text.toString())
+    internal fun read() = PriceTexts(input.text.toString(), output.text.toString(), cachedInput.text.toString())
 
-    /** Shows [price] (or empty fields and the usual currency without one). */
+    /** Shows [price]; empty fields without one, or for one in another currency, which is entered again in US$. */
     internal fun fill(price: ModelPrice?) {
-        input.putText(price?.inputPerMTokMicros?.let(::perMillionText).orEmpty())
-        output.putText(price?.outputPerMTokMicros?.let(::perMillionText).orEmpty())
-        cachedInput.putText(price?.cachedInputPerMTokMicros?.let(::perMillionText).orEmpty())
-        currency.putText(price?.currencyLabel ?: ModelPrice.DEFAULT_CURRENCY)
+        val shown = PriceTexts.of(price)
+        input.putText(shown.input)
+        output.putText(shown.output)
+        cachedInput.putText(shown.cachedInput)
     }
 }
 
 /** What the price fields hold, as typed. */
-internal data class PriceTexts(val input: String, val output: String, val cachedInput: String, val currency: String) {
+internal data class PriceTexts(val input: String, val output: String, val cachedInput: String) {
     val isEmpty: Boolean get() = input.isBlank() && output.isBlank() && cachedInput.isBlank()
 
-    /** The texts [price] is shown as, to tell whether the owner changed anything. */
+    /** The texts [price] is shown as, to tell whether the owner changed anything: none for a price that does not count. */
     companion object {
-        fun of(price: ModelPrice?) = PriceTexts(
-            price?.inputPerMTokMicros?.let(::perMillionText).orEmpty(),
-            price?.outputPerMTokMicros?.let(::perMillionText).orEmpty(),
-            price?.cachedInputPerMTokMicros?.let(::perMillionText).orEmpty(),
-            price?.currencyLabel ?: ModelPrice.DEFAULT_CURRENCY,
-        )
+        fun of(price: ModelPrice?): PriceTexts {
+            val counted = price?.takeIf { it.counts }
+            return PriceTexts(
+                counted?.inputPerMTokMicros?.let(::perMillionText).orEmpty(),
+                counted?.outputPerMTokMicros?.let(::perMillionText).orEmpty(),
+                counted?.cachedInputPerMTokMicros?.let(::perMillionText).orEmpty(),
+            )
+        }
     }
 
     /** Same values, whatever spaces or trailing zeros were typed. */
     fun sameAs(other: PriceTexts): Boolean =
         amountOrText(input) == amountOrText(other.input) && amountOrText(output) == amountOrText(other.output) &&
-            amountOrText(cachedInput) == amountOrText(other.cachedInput) && currency.trim() == other.currency.trim()
+            amountOrText(cachedInput) == amountOrText(other.cachedInput)
 
     private fun amountOrText(text: String): Any = parseAmountMicros(text) ?: text.trim()
 }
@@ -98,9 +102,8 @@ internal fun PriceTexts.toPrice(modelId: ModelId): PriceParse {
     }
     val cachedError = if (cachedInput.isNotBlank() && cachedMicros == null) AMOUNT_HINT else null
     if (inputError != null || outputError != null || cachedError != null) return PriceParse.Invalid(inputError, outputError, cachedError)
-    val label = currency.trim()
-    ModelPrice.check(inputMicros!!, outputMicros!!, cachedMicros, label)?.let { return PriceParse.Invalid(general = it) }
-    return PriceParse.Valid(ModelPrice(modelId, inputMicros, outputMicros, cachedMicros, label))
+    ModelPrice.check(inputMicros!!, outputMicros!!, cachedMicros, ModelPrice.DEFAULT_CURRENCY)?.let { return PriceParse.Invalid(general = it) }
+    return PriceParse.Valid(ModelPrice(modelId, inputMicros, outputMicros, cachedMicros, ModelPrice.DEFAULT_CURRENCY))
 }
 
 /**

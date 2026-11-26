@@ -38,7 +38,8 @@ class UsageViewModelTest {
     private val day = 24 * 60 * minute
 
     private fun TestScope.usage(app: TestApp, requests: (Int) -> Flow<List<OwnerRequest>> = { app.graph.ownerRequests.observeRecent(it) }) =
-        UsageViewModel(app.graph.usageReports, app.graph.modelPrices, app.graph.registryDirectory, requests, app.clock, { ZoneOffset.UTC })
+        // As ActivityRoute: every stored price as entered, so one in another currency says so on its row (D3A-8).
+        UsageViewModel(app.graph.usageReports, app.graph.enteredModelPrices, app.graph.registryDirectory, requests, app.clock, { ZoneOffset.UTC })
             .also { it.uiState.activeIn(backgroundScope) }
 
     private fun sample(
@@ -188,6 +189,14 @@ class UsageViewModelTest {
         val llama = viewModel.uiState.value.models.single { it.name == "Llama 3" }
         assertTrue(llama.needsPrice)
         assertEquals("No price entered", llama.cost)
+
+        // One currency (D3A-8): a price in euros is no price. It is never added in, and its row says why.
+        app.prices.set(ModelPrice(ModelId("mdl_llama"), inputPerMTokMicros = 1_000_000_000, outputPerMTokMicros = 1_000_000_000, currencyLabel = "€"))
+        summary = assertNotNull(viewModel.uiState.value.summary)
+        assertEquals("US$0.01", summary.cost, "the euros are not added")
+        val inEuros = viewModel.uiState.value.models.single { it.name == "Llama 3" }
+        assertEquals(ModelPrice.OTHER_CURRENCY, inEuros.cost)
+        assertTrue(inEuros.needsPrice, "Add its price leads to the model, to enter it in US$")
     }
 
     @Test

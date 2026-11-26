@@ -10,6 +10,7 @@ import com.aicontrolcenter.core.operator.OwnerResult
 import com.aicontrolcenter.core.registry.Locality
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import java.math.BigInteger
 import java.time.Instant
 import java.time.ZoneId
@@ -434,6 +435,11 @@ data class TokenCounts(val input: Long, val output: Long, val cachedInput: Long 
  * A model's price, as the owner typed it from their provider's price page, in millionths of the
  * currency unit per million tokens ("micros per Mtok": US$3.00 per million tokens is 3_000_000).
  * [cachedInputPerMTokMicros] null means cached input costs the input price. Never fetched.
+ *
+ * **One currency** (wave 3, D3A-8; the lead's decision, which the owner may change later): the app keeps prices and the
+ * money limit in US$, since every provider the owner uses prices in US$. The price fields offer no other currency. A
+ * price stored in another currency (typed before this rule, or brought by a backup) does not [count]: it is treated as
+ * no price everywhere (the limiter, the routine checks, every screen) and never added into a US$ total.
  */
 data class ModelPrice(
     val modelId: ModelId,
@@ -448,9 +454,21 @@ data class ModelPrice(
         check(inputPerMTokMicros, outputPerMTokMicros, cachedInputPerMTokMicros, currencyLabel)?.let { throw IllegalArgumentException(it) }
     }
 
+    /** Whether this price counts: it is in US$ ("US$", "USD" or "$", any case, spaces ignored). */
+    val counts: Boolean get() = isUsDollars(currencyLabel)
+
     /** Bounds and validation. */
     companion object {
+        /** The app's one currency (D3A-8). */
         const val DEFAULT_CURRENCY: String = "US$"
+
+        /** What a screen says of a stored price in another currency, which does not count. */
+        const val OTHER_CURRENCY: String = "This price is in another currency. Enter it in US$ to count it."
+
+        /** True for the labels that mean US dollars. */
+        fun isUsDollars(label: String): Boolean = label.filterNot(Char::isWhitespace).uppercase() in US_DOLLARS
+
+        private val US_DOLLARS = setOf("US$", "USD", "$")
 
         /** The highest price accepted: 10,000 per million tokens. */
         const val MAX_PER_MTOK_MICROS: Long = 10_000_000_000L
@@ -466,6 +484,24 @@ data class ModelPrice(
             else -> null
         }
     }
+}
+
+/** The prices that count ([ModelPrice.counts]), each labelled [ModelPrice.DEFAULT_CURRENCY]; the others are left out. */
+fun Iterable<ModelPrice>.counted(): List<ModelPrice> =
+    filter { it.counts }.map { if (it.currencyLabel == ModelPrice.DEFAULT_CURRENCY) it else it.copy(currencyLabel = ModelPrice.DEFAULT_CURRENCY) }
+
+/**
+ * [ModelPrices] as everything that adds up money reads them (D3A-8): only the prices that count, each in US$. Only the
+ * model editor reads every stored price, to say that one in another currency does not count.
+ */
+fun ModelPrices.counted(): ModelPrices = this as? CountedModelPrices ?: CountedModelPrices(this)
+
+private class CountedModelPrices(private val stored: ModelPrices) : ModelPrices {
+    override fun observeAll(): Flow<List<ModelPrice>> = stored.observeAll().map { it.counted() }
+
+    override suspend fun getAll(): List<ModelPrice> = stored.getAll().counted()
+
+    override suspend fun get(modelId: ModelId): ModelPrice? = stored.get(modelId)?.let { listOf(it).counted().singleOrNull() }
 }
 
 /** The owner's prices, read (the daily limiter, the Usage tab). Implementations pass `ModelPricesContract`. */
@@ -505,13 +541,13 @@ object CostEstimate {
     const val DISCLAIMER: String = "Estimated from the prices you entered; your provider's bill is what counts."
 
     /**
-     * The cost of [tokens] at [price], in millionths of the price's currency, rounded half up;
-     * null without a price (no money is shown then). Cached input tokens are charged at the
-     * cached price (the input price when none is set), the rest of the input at the input price.
-     * Cached tokens above the input count are treated as input.
+     * The cost of [tokens] at [price], in millionths of a US dollar, rounded half up; null without a
+     * price, or with one in another currency, which does not count (D3A-8; no money is shown then).
+     * Cached input tokens are charged at the cached price (the input price when none is set), the
+     * rest of the input at the input price. Cached tokens above the input count are treated as input.
      */
     fun of(tokens: TokenCounts, price: ModelPrice?): Long? {
-        if (price == null) return null
+        if (price == null || !price.counts) return null
         val cached = minOf(tokens.cachedInput, tokens.input)
         val uncached = tokens.input - cached
         val cachedPrice = price.cachedInputPerMTokMicros ?: price.inputPerMTokMicros
@@ -521,7 +557,7 @@ object CostEstimate {
         return if (rounded.bitLength() < 63) rounded.toLong() else Long.MAX_VALUE
     }
 
-    /** The cost of every row of [usage] at [prices]: null when no row's model has a price. Rows without a price add nothing. */
+    /** The cost of every row of [usage] at [prices]: null when no row's model has a price that counts. Rows without one add nothing. */
     fun of(usage: List<WorkUsage>, prices: Map<ModelId, ModelPrice>): Long? {
         val costs = usage.mapNotNull { row -> of(row.tokens, prices[row.modelId]) }
         if (costs.isEmpty()) return null
@@ -567,13 +603,16 @@ data class DailyLimits(val maxCalls: Int?, val maxTokens: Long?, val maxSpendMic
         else -> null
     }
 
-    /** The sentence for the owner when [kind] was reached, also the message of `LlmException.DailyLimitReached`. */
-    fun sentence(kind: DailyLimitKind, currencyLabel: String = ModelPrice.DEFAULT_CURRENCY): String {
+    /**
+     * The sentence for the owner when [kind] was reached, also the message of `LlmException.DailyLimitReached`. Money is
+     * in the app's one currency, US$ (D3A-8).
+     */
+    fun sentence(kind: DailyLimitKind): String {
         val what = when (kind) {
             // "1 model answer", "200 model answers" (wave 3: plain words with a limit of one).
             DailyLimitKind.CALLS -> "today's limit of ${grouped(maxCalls?.toLong() ?: 0)} model ${if (maxCalls == 1) "answer" else "answers"}"
             DailyLimitKind.TOKENS -> "today's limit of ${grouped(maxTokens ?: 0)} ${if (maxTokens == 1L) "token" else "tokens"}"
-            DailyLimitKind.SPEND -> "today's spending limit of ${money(maxSpendMicros ?: 0, currencyLabel)}"
+            DailyLimitKind.SPEND -> "today's spending limit of ${money(maxSpendMicros ?: 0, ModelPrice.DEFAULT_CURRENCY)}"
         }
         return what.replaceFirstChar { it.uppercase() } + " is reached. It starts again at midnight, or you can raise it in Settings › Daily limits."
     }

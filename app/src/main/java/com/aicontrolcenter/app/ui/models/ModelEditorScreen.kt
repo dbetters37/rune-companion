@@ -51,7 +51,6 @@ import com.aicontrolcenter.app.ui.components.AgentAvatar
 import com.aicontrolcenter.app.ui.components.AppCard
 import com.aicontrolcenter.app.ui.components.AppTextField
 import com.aicontrolcenter.app.ui.components.digitsOnly
-import com.aicontrolcenter.app.ui.components.atMostChars
 import com.aicontrolcenter.app.ui.chat.TOKENS_EXPLAINED
 import com.aicontrolcenter.core.usage.ModelPrice
 import androidx.compose.ui.semantics.semantics
@@ -96,7 +95,7 @@ fun ModelEditorRoute(modelId: ModelId, onBack: () -> Unit, onOpenUsage: () -> Un
     val viewModel = viewModel {
         ModelEditorViewModel(
             modelId, graph.registryDirectory, graph.providerManager, graph.agentManager,
-            prices = graph.modelPrices, ownerPrices = graph.ownerModelPrices, usageReports = graph.usageReports,
+            prices = graph.enteredModelPrices, ownerPrices = graph.ownerModelPrices, usageReports = graph.usageReports,
             clock = graph.clock, zone = graph.zone,
         )
     }
@@ -386,7 +385,6 @@ private fun PriceEditor(state: ModelEditorUiState, viewModel: ModelEditorViewMod
     val price = state.price
     val fields = viewModel.priceFields
     val amount = remember { amountOnly() }
-    val currencyChars = remember { atMostChars(ModelPrice.MAX_CURRENCY_CHARS) }
     val numbers = KeyboardOptions(keyboardType = KeyboardType.Decimal)
     Column {
         SectionHeader("Price")
@@ -397,7 +395,12 @@ private fun PriceEditor(state: ModelEditorUiState, viewModel: ModelEditorViewMod
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
+                // One currency for every price and the money limit (D3A-8).
+                Text(PRICES_IN_US_DOLLARS, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
                 Text(TOKENS_EXPLAINED, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                price.stored?.takeIf { price.otherCurrency }?.let { stored ->
+                    InfoBanner(text = "${ModelPrice.OTHER_CURRENCY} Stored now: ${priceSentence(stored)}.", tone = StatusTone.ATTENTION)
+                }
                 AppTextField(
                     state = fields.input,
                     label = "Input, per million tokens",
@@ -423,14 +426,8 @@ private fun PriceEditor(state: ModelEditorUiState, viewModel: ModelEditorViewMod
                     keyboardOptions = numbers,
                     inputTransformation = amount,
                 )
-                AppTextField(
-                    state = fields.currency,
-                    label = "Currency",
-                    supportingText = "For example US$ or €.",
-                    inputTransformation = currencyChars,
-                )
                 price.error?.let { InfoBanner(text = it, tone = StatusTone.ATTENTION) }
-                price.stored?.takeIf { !price.isDirty }?.let { stored ->
+                price.stored?.takeIf { !price.isDirty && !price.otherCurrency }?.let { stored ->
                     Text(typicalCostLine(stored), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } ?: run {
                     if (price.stored == null && !price.isDirty) {
@@ -590,3 +587,6 @@ private fun AgentChoiceRow(choice: AgentChoiceUi, checked: Boolean, enabled: Boo
         }
     }
 }
+
+/** The line under the price fields' heading: every price is in US dollars (D3A-8). */
+internal const val PRICES_IN_US_DOLLARS: String = "Prices are in US dollars (US$), as your providers' price pages show them."

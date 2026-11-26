@@ -519,6 +519,9 @@ class RoutineRunnerTest {
         val priced = FrameworkSettings(maxModelCallsPerDay = 1_000, maxSpendPerDayMicros = 1_000)
         prices.set(ModelPrice(ModelId("mdl_grok"), inputPerMTokMicros = 1_000_000, outputPerMTokMicros = 1_000_000))
         assertEquals(priced.dailyLimits.sentence(com.aicontrolcenter.core.usage.DailyLimitKind.SPEND), check.reached(priced))
+        // D3A-8: the same rule as the limiter and every screen: a price in another currency is no price here either.
+        prices.set(ModelPrice(ModelId("mdl_grok"), inputPerMTokMicros = 1_000_000, outputPerMTokMicros = 1_000_000, currencyLabel = "€"))
+        assertNull(check.reached(priced))
         assertNull(check.reached(FrameworkSettings(maxModelCallsPerDay = 1_000, maxSpendPerDayMicros = null, maxTokensPerDay = 1_000_000)))
         assertEquals(UsageSource.OBJECTIVE, UsageSamples.call(at = 0).source)
         assertEquals(ProviderId("prv_mdl_grok"), UsageSamples.call(at = 0).providerId)

@@ -41,7 +41,8 @@ class ModelEditorViewModelTest {
     /** The editor as the route builds it, with the owner's prices and the usage reports. */
     private fun pricedEditor(app: TestApp, id: ModelId) = ModelEditorViewModel(
         id, app.graph.registryDirectory, app.graph.providerManager, app.graph.agentManager,
-        prices = app.graph.modelPrices, ownerPrices = app.graph.ownerModelPrices, usageReports = app.graph.usageReports,
+        // As ModelEditorRoute: every stored price as entered, so one in another currency can be told apart (D3A-8).
+        prices = app.graph.enteredModelPrices, ownerPrices = app.graph.ownerModelPrices, usageReports = app.graph.usageReports,
         clock = app.clock, zone = { ZoneOffset.UTC },
     )
 
@@ -238,7 +239,6 @@ class ModelEditorViewModelTest {
             assertNull(stored)
             assertFalse(isDirty)
         }
-        assertEquals("US$", viewModel.priceFields.currency.text.toString(), "the usual currency to begin with")
 
         viewModel.priceFields.input.type("3")
         viewModel.priceFields.output.type("15,00")
@@ -284,11 +284,31 @@ class ModelEditorViewModelTest {
         viewModel.priceFields.output.type("1")
         viewModel.savePrice()
         assertEquals("A price can be at most 10,000 per million tokens.", viewModel.uiState.value.price.error)
-        viewModel.priceFields.input.type("2")
-        viewModel.priceFields.currency.type("  ")
-        viewModel.savePrice()
-        assertEquals("Say which currency the price is in, for example US$.", viewModel.uiState.value.price.error)
         assertNull(app.prices.get(id))
+    }
+
+    @Test
+    fun `a price stored in another currency is no price, the fields are empty, it says so, and Save stores US dollars`() = runTest(mainRule.dispatcher) {
+        // D3A-8: the app keeps one currency, US$. A price typed in euros before (or brought by a backup) does not count.
+        val app = TestApp(backgroundScope)
+        app.registerSampleModel()
+        val id = ModelId("mdl_sample")
+        app.prices.set(ModelPrice(id, 3_000_000, 15_000_000, currencyLabel = "€"))
+        val viewModel = pricedEditor(app, id)
+        with(viewModel.uiState.value.price) {
+            assertTrue(otherCurrency)
+            assertFalse(isDirty, "nothing typed yet")
+        }
+        assertEquals("", viewModel.priceFields.input.text.toString(), "entered again in US$, not shown as if it were")
+        assertEquals("", viewModel.priceFields.output.text.toString())
+
+        viewModel.priceFields.input.type("3")
+        viewModel.priceFields.output.type("15")
+        viewModel.savePrice()
+        val stored = assertNotNull(app.prices.get(id))
+        assertEquals(ModelPrice(id, 3_000_000, 15_000_000, null, "US$", stored.updatedAt), stored)
+        assertFalse(viewModel.uiState.value.price.otherCurrency)
+        assertEquals("3", viewModel.priceFields.input.text.toString())
     }
 
     @Test

@@ -218,7 +218,7 @@ class ObjectiveStatesTest {
     }
 
     @Test
-    fun `the cost line adds money per currency and leaves models on this phone free (D3A-8, D3A-10)`() {
+    fun `the cost line is in US dollars, leaves other currencies out and models on this phone free (D3A-8, D3A-10)`() {
         val rows = listOf(
             com.aicontrolcenter.core.usage.WorkUsage(com.aicontrolcenter.core.usage.WorkKind.OBJECTIVE, root.value, ModelId("usd"), 1, 1_000_000, 0, 0, 0),
             com.aicontrolcenter.core.usage.WorkUsage(com.aicontrolcenter.core.usage.WorkKind.OBJECTIVE, root.value, ModelId("eur"), 1, 1_000_000, 0, 0, 0),
@@ -230,7 +230,8 @@ class ObjectiveStatesTest {
             ModelId("phone") to ModelPrice(ModelId("phone"), inputPerMTokMicros = 9_000_000, outputPerMTokMicros = 0),
         )
         val line = assertNotNull(costLineOf(rows, prices, onPhone = setOf(ModelId("phone"))))
-        assertEquals("So far: about US$1.00 and €2.00 · 3,000,000 tokens · 3 model answers", line.text)
+        // One currency: the euro price is no price, so it is not added and the line says some models have none.
+        assertEquals("So far: about US$1.00 · 3,000,000 tokens · 3 model answers (some models have no price)", line.text)
         assertEquals("So far: 1,000,000 tokens · 1 model answer · free on this phone", assertNotNull(costLineOf(rows.takeLast(1), prices, setOf(ModelId("phone")))).text)
     }
 

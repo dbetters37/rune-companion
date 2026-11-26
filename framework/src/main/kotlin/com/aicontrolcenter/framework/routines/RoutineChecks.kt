@@ -12,10 +12,10 @@ import com.aicontrolcenter.core.registry.ModelDirectory
 import com.aicontrolcenter.core.registry.ProviderDirectory
 import com.aicontrolcenter.core.routines.RoutineRun
 import com.aicontrolcenter.core.settings.FrameworkSettings
-import com.aicontrolcenter.core.usage.ModelPrice
 import com.aicontrolcenter.core.usage.ModelPrices
 import com.aicontrolcenter.core.usage.UsageRange
 import com.aicontrolcenter.core.usage.UsageReports
+import com.aicontrolcenter.core.usage.counted
 import com.aicontrolcenter.framework.llm.DailyUse
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
@@ -45,11 +45,12 @@ class UsageDailyLimitCheck(
 ) : DailyLimitCheck {
     override suspend fun reached(settings: FrameworkSettings): String? {
         val now = clock.now()
-        val priced = prices.getAll()
+        // The same rule as the limiter and every screen (D3A-8): only prices in US$ count, and the sentence says US$.
+        val priced = prices.getAll().counted()
         val use = DailyUse.of(reports.byModel(UsageRange.day(now, zone())), priced.associateBy { it.modelId })
         val limits = settings.dailyLimits
         val kind = limits.reachedBy(use.calls, use.tokens, use.spendMicros) ?: return null
-        return limits.sentence(kind, priced.firstOrNull()?.currencyLabel ?: ModelPrice.DEFAULT_CURRENCY)
+        return limits.sentence(kind)
     }
 }
 

@@ -8,6 +8,9 @@ import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.llm.LlmException
 import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.settings.FrameworkSettings
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -183,5 +186,41 @@ class UsageModelTest {
         assertFalse(day.containsHour(day.untilMs))
         assertEquals(-UsageRange.HOUR_MS, UsageRange.hourStart(-1), "hours before 1970 floor downwards")
         assertFailsWith<IllegalArgumentException> { UsageRange(2, 1) }
+    }
+
+    @Test
+    fun `one currency, US dollars, only those prices count, others are no price and are never added (D3A-8)`() {
+        val model = ModelId("mdl_1")
+        val tokens = TokenCounts(input = 1_000_000, output = 0)
+        for (label in listOf("US$", "USD", "usd", " US $ ", "$")) {
+            assertTrue(ModelPrice(model, 2_000_000, 0, currencyLabel = label).counts, label)
+            assertEquals(2_000_000, CostEstimate.of(tokens, ModelPrice(model, 2_000_000, 0, currencyLabel = label)), label)
+        }
+        for (label in listOf("€", "EUR", "CA$", "£", "A$")) {
+            val price = ModelPrice(model, 2_000_000, 0, currencyLabel = label)
+            assertFalse(price.counts, label)
+            assertNull(CostEstimate.of(tokens, price), "a price in $label is no price")
+        }
+        assertEquals("This price is in another currency. Enter it in US$ to count it.", ModelPrice.OTHER_CURRENCY)
+
+        // Lists and the read port keep only the prices that count, each labelled US$.
+        val euro = ModelPrice(ModelId("mdl_eu"), 1_000_000, 1_000_000, currencyLabel = "€")
+        val usd = ModelPrice(ModelId("mdl_us"), 1_000_000, 1_000_000, currencyLabel = "USD")
+        assertEquals(listOf(usd.copy(currencyLabel = "US$")), listOf(euro, usd).counted())
+        val stored = object : ModelPrices {
+            override fun observeAll() = flowOf(listOf(euro, usd))
+            override suspend fun getAll() = listOf(euro, usd)
+            override suspend fun get(modelId: ModelId) = listOf(euro, usd).firstOrNull { it.modelId == modelId }
+        }
+        val counted = stored.counted()
+        runBlocking {
+            assertEquals(listOf("US$"), counted.getAll().map { it.currencyLabel })
+            assertEquals(listOf(ModelId("mdl_us")), counted.observeAll().first().map { it.modelId })
+            assertNull(counted.get(ModelId("mdl_eu")))
+            assertEquals("US$", counted.get(ModelId("mdl_us"))?.currencyLabel)
+        }
+        assertTrue(counted.counted() === counted, "counted once")
+        // The money limit's sentence is in US$.
+        assertTrue(DailyLimits.DEFAULT.sentence(DailyLimitKind.SPEND).startsWith("Today's spending limit of US$1.00 is reached."))
     }
 }

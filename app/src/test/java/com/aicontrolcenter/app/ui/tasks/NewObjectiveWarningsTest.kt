@@ -57,9 +57,9 @@ class NewObjectiveWarningsTest {
             "no money spent is shown without a price, but the money limit is (D3A-8)",
         )
 
-        // Prices in euros: the money limit is read in them, as the limiter's sentence does (D3A-8).
-        today.value = TodayUse(DailyUse(37, 12_400, 120_000, priced = true), DailyLimits.DEFAULT, currency = "€")
-        assertEquals("Today: 37 of 200 answers · 12,400 of 500,000 tokens · €0.12 of €1.00", vm.uiState.value.today?.text)
+        // One currency (D3A-8): the money limit is in US$, as the limiter's sentence.
+        today.value = TodayUse(DailyUse(37, 12_400, 120_000, priced = true), DailyLimits.DEFAULT)
+        assertEquals("Today: 37 of 200 answers · 12,400 of 500,000 tokens · US$0.12 of US$1.00", vm.uiState.value.today?.text)
 
         today.value = TodayUse(DailyUse(200, 12_400, 0, priced = false), DailyLimits.DEFAULT)
         assertTrue(vm.uiState.value.today!!.reached)

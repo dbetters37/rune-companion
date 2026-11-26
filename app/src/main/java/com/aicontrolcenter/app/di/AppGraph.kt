@@ -90,6 +90,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 import kotlin.coroutines.CoroutineContext
+import com.aicontrolcenter.core.usage.counted
 
 /**
  * The adapters that connect real providers: the built-in simulator, the HTTP protocols
@@ -396,8 +397,17 @@ class AppGraph(
     /** Usage by day, month, model, agent and work item (numbers only, rule 7). */
     val usageReports: UsageReports = ports.usageReports
 
-    /** The owner's prices, read only. */
-    val modelPrices: ModelPrices = ports.modelPrices
+    /**
+     * The owner's prices as every screen adds up money with them, read only: only the prices that count, in US$ (D3A-8;
+     * one in another currency is no price), the same rule as the limiter and the routine checks.
+     */
+    val modelPrices: ModelPrices = ports.modelPrices.counted()
+
+    /**
+     * Every stored price as it was entered, other currencies included, read only: only for the screens that say of a
+     * price in another currency that it does not count (the model editor, Usage and cost). Never added up.
+     */
+    val enteredModelPrices: ModelPrices = ports.modelPrices
 
     /** Owner-only: typing a model's price. */
     val ownerModelPrices: OwnerModelPrices = ports.ownerModelPrices
@@ -427,7 +437,7 @@ class AppGraph(
      * Today's use as the daily limits count it, with the limits, read only (wave 3): the Today tile, the Daily limits
      * screen and the New objective form show the same numbers as the limiter.
      */
-    val todayUsage: TodayUsage = TodayUsage(ports.usageReports, ports.modelPrices, settingsView, ports.clock, ports.zone, dayChanges)
+    val todayUsage: TodayUsage = TodayUsage(ports.usageReports, modelPrices, settingsView, ports.clock, ports.zone, dayChanges)
 
     /** The owner's time zone, read at each use: one "today" everywhere (wave 3). */
     val zone: () -> java.time.ZoneId = ports.zone

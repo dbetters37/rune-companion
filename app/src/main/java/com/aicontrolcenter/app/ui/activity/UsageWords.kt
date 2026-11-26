@@ -2,7 +2,6 @@ package com.aicontrolcenter.app.ui.activity
 
 import com.aicontrolcenter.app.ui.components.LIMIT_PAUSES_OBJECTIVES
 import com.aicontrolcenter.app.ui.components.formatCount
-import com.aicontrolcenter.app.usage.limitCurrencyOf
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.usage.AgentModelUsage
@@ -119,37 +118,23 @@ internal fun slowDownCalls(totals: UsageTotals): Long = totals.errors[ErrorClass
 internal fun ModelUsage.tokenCounts(): TokenCounts = TokenCounts(totals.inputTokens, totals.outputTokens, totals.cachedInputTokens)
 
 /**
- * The estimated cost of [rows] at [prices], per currency ("US$0.03", or "US$0.03 and €0.01" when the owner priced models
- * in more than one currency); null when none of the rows' models has a price. Models without a price add nothing.
+ * The estimated cost of [rows] at [prices], in US$ ("US$0.03"); null when none of the rows' models has a price that
+ * counts. Models without one add nothing, and a price in another currency is no price (D3A-8: one currency, never added).
  */
-internal fun costWords(rows: List<ModelUsage>, prices: Map<ModelId, ModelPrice>): String? {
-    val byCurrency = LinkedHashMap<String, Long>()
-    rows.forEach { row ->
-        val price = prices[row.modelId] ?: return@forEach
-        val cost = CostEstimate.of(row.tokenCounts(), price) ?: return@forEach
-        byCurrency[price.currencyLabel] = (byCurrency[price.currencyLabel] ?: 0L).let { if (Long.MAX_VALUE - it < cost) Long.MAX_VALUE else it + cost }
-    }
-    if (byCurrency.isEmpty()) return null
-    return byCurrency.entries.joinToString(" and ") { (currency, micros) -> moneyWords(micros, currency) }
-}
+internal fun costWords(rows: List<ModelUsage>, prices: Map<ModelId, ModelPrice>): String? =
+    sumOfCosts(rows.map { row -> CostEstimate.of(row.tokenCounts(), prices[row.modelId]) })?.let { moneyWords(it, ModelPrice.DEFAULT_CURRENCY) }
 
 /** As [costWords], for an agent's rows by model (wave 3, `UsageReports.byAgentAndModel`). */
-internal fun agentMoney(rows: List<AgentModelUsage>, prices: Map<ModelId, ModelPrice>): String? {
-    val byCurrency = LinkedHashMap<String, Long>()
-    rows.forEach { row ->
-        val price = prices[row.modelId] ?: return@forEach
-        val cost = CostEstimate.of(TokenCounts(row.totals.inputTokens, row.totals.outputTokens, row.totals.cachedInputTokens), price) ?: return@forEach
-        byCurrency[price.currencyLabel] = (byCurrency[price.currencyLabel] ?: 0L).let { if (Long.MAX_VALUE - it < cost) Long.MAX_VALUE else it + cost }
-    }
-    if (byCurrency.isEmpty()) return null
-    return byCurrency.entries.joinToString(" and ") { (currency, micros) -> moneyWords(micros, currency) }
-}
+internal fun agentMoney(rows: List<AgentModelUsage>, prices: Map<ModelId, ModelPrice>): String? =
+    sumOfCosts(rows.map { row -> CostEstimate.of(TokenCounts(row.totals.inputTokens, row.totals.outputTokens, row.totals.cachedInputTokens), prices[row.modelId]) })
+        ?.let { moneyWords(it, ModelPrice.DEFAULT_CURRENCY) }
 
-/**
- * The currency the money limit is read in: the one the owner's prices are in when they all share one, else US$ (the
- * limiter adds the estimated cost of every priced model, whatever its currency).
- */
-internal fun limitCurrency(prices: Map<ModelId, ModelPrice>): String = limitCurrencyOf(prices.values)
+/** The sum of the costs known (null: none known), never overflowing. */
+private fun sumOfCosts(costs: List<Long?>): Long? {
+    val known = costs.filterNotNull()
+    if (known.isEmpty()) return null
+    return known.fold(0L) { sum, cost -> if (Long.MAX_VALUE - sum < cost) Long.MAX_VALUE else sum + cost }
+}
 
 /** "about US$0.12" or "less than US$0.01" (never "about less than …"). */
 internal fun aboutMoney(money: String): String = if (money.startsWith("less than")) money else "about $money"

@@ -116,7 +116,7 @@ fun DailyLimitsScreen(viewModel: DailyLimitsViewModel, onBack: () -> Unit) {
                         AppTextField(
                             state = viewModel.money,
                             label = "Money a day (estimated)",
-                            supportingText = if (state.moneyLimitOn) "In the currency of your prices, for example 1.00 for one US dollar." else "Off: no money limit.",
+                            supportingText = if (state.moneyLimitOn) "In US dollars (US$), the currency of every price in the app: for example 1.00 for one dollar." else "Off: no money limit.",
                             errorText = state.errors.money,
                             enabled = state.moneyLimitOn,
                             inputTransformation = DailyLimitsViewModel.MoneyInput,

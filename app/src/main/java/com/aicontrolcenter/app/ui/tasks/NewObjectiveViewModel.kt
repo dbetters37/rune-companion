@@ -27,6 +27,7 @@ import com.aicontrolcenter.core.health.StorageLevel
 import com.aicontrolcenter.core.health.StorageWatch
 import com.aicontrolcenter.core.registry.CapabilityTier
 import com.aicontrolcenter.core.usage.DailyLimits
+import com.aicontrolcenter.core.usage.ModelPrice
 import com.aicontrolcenter.app.ui.activity.moneyWords
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.CancellationException
@@ -304,10 +305,10 @@ class NewObjectiveViewModel(
             val parts = listOfNotNull(
                 limits.maxCalls?.let { "${formatCount(use.calls)} of ${formatCount(it.toLong())} answers" },
                 limits.maxTokens?.let { "${formatCount(use.tokens)} of ${formatCount(it)} tokens" },
-                // The money limit is said even before any price exists (D3A-8), in the currency the limiter names.
+                // The money limit is said even before any price exists, in the app's one currency, US$ (D3A-8).
                 limits.maxSpendMicros?.let {
-                    if (use.priced) "${moneyWords(use.spendMicros, today.currency)} of ${DailyLimits.money(it, today.currency)}"
-                    else "${DailyLimits.money(it, today.currency)} (counted once you enter prices)"
+                    if (use.priced) "${moneyWords(use.spendMicros, ModelPrice.DEFAULT_CURRENCY)} of ${DailyLimits.money(it, ModelPrice.DEFAULT_CURRENCY)}"
+                    else "${DailyLimits.money(it, ModelPrice.DEFAULT_CURRENCY)} (counted once you enter prices)"
                 },
             )
             if (parts.isEmpty()) return null

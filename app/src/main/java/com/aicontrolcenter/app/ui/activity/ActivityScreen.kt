@@ -104,7 +104,7 @@ fun ActivityRoute(
     val usage = viewModel {
         UsageViewModel(
             reports = graph.usageReports,
-            prices = graph.modelPrices,
+            prices = graph.enteredModelPrices,
             directory = graph.registryDirectory,
             recentRequests = graph.ownerRequests::observeRecent,
             clock = graph.clock,

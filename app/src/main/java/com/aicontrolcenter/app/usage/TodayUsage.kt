@@ -21,22 +21,19 @@ import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.onStart
 import java.time.Instant
 import java.time.ZoneId
+import com.aicontrolcenter.core.usage.counted
 
 /**
  * Today's use as the daily limits count it, with the limits themselves (Phase 6, rule 6, Q2): what the Today tile, the
  * Daily limits screen and the New objective form show ("Today: 37 of 200 answers").
  *
  * It counts exactly what the gateway's limiter counts ([DailyUse.of] over today's usage rows and the owner's prices):
- * calls to providers off the phone that sent a request, their reported tokens, and money only for models with a price.
+ * calls to providers off the phone that sent a request, their reported tokens, and money only for models with a price
+ * that counts. Money is in the app's one currency, US$ ([ModelPrice.DEFAULT_CURRENCY], D3A-8).
  */
 data class TodayUse(
     val use: DailyUse,
     val limits: DailyLimits,
-    /**
-     * The currency the money limit is read in ([limitCurrencyOf] the owner's prices): every screen that says "US$0.12 of
-     * US$1.00" uses it, as the limiter's own sentence does (D3A-8).
-     */
-    val currency: String = ModelPrice.DEFAULT_CURRENCY,
 ) {
     /** Which limit is reached now, if any (the limiter refuses the next call off the phone then). */
     val reached: Boolean get() = limits.reachedBy(use.calls, use.tokens, use.spendMicros) != null
@@ -70,7 +67,7 @@ class TodayUsage(
             .distinctUntilChanged()
             .flatMapLatest { range ->
                 combine(reports.observeByModel(range), prices.observeAll(), settings.settings) { rows, priced, current ->
-                    TodayUse(DailyUse.of(rows, priced.associateBy { it.modelId }), current.dailyLimits, limitCurrencyOf(priced))
+                    TodayUse(DailyUse.of(rows, priced.counted().associateBy { it.modelId }), current.dailyLimits)
                 }
             }
             .distinctUntilChanged()
@@ -78,17 +75,10 @@ class TodayUsage(
     /** Today's use and limits once. */
     suspend fun now(): TodayUse {
         val range = UsageRange.day(clock.now(), zone())
-        val priced = prices.getAll()
-        return TodayUse(DailyUse.of(reports.byModel(range), priced.associateBy { it.modelId }), settings.get().dailyLimits, limitCurrencyOf(priced))
+        val priced = prices.getAll().counted()
+        return TodayUse(DailyUse.of(reports.byModel(range), priced.associateBy { it.modelId }), settings.get().dailyLimits)
     }
 }
-
-/**
- * The currency the money limit is read in: the one the owner's prices are in when they all share one, else US$ (the
- * limiter adds the estimated cost of every priced model, whatever its currency, and names its sentence the same way).
- */
-fun limitCurrencyOf(prices: Collection<ModelPrice>): String =
-    prices.map { it.currencyLabel }.distinct().singleOrNull() ?: ModelPrice.DEFAULT_CURRENCY
 
 /** When the owner's day changes, for [TodayUsage] in the app. */
 object DayChanges {

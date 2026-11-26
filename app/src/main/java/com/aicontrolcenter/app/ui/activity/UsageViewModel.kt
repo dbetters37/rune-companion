@@ -17,6 +17,7 @@ import com.aicontrolcenter.core.usage.AgentModelUsage
 import com.aicontrolcenter.core.usage.AgentUsage
 import com.aicontrolcenter.core.usage.ModelPrice
 import com.aicontrolcenter.core.usage.ModelPrices
+import com.aicontrolcenter.core.usage.counted
 import com.aicontrolcenter.core.usage.ModelUsage
 import com.aicontrolcenter.core.usage.UsageRange
 import com.aicontrolcenter.core.usage.UsageReports
@@ -160,8 +161,10 @@ class UsageViewModel(
         val usage = reports.observeByModel(range).distinctUntilChanged().mapLatest { rows ->
             Triple(rows, reports.byAgent(range), reports.byAgentAndModel(range))
         }
-        combine(usage, prices.observeAll(), directory.observe(), recentRequests(REQUEST_LIMIT)) { (models, agents, pairs), priced, snapshot, requests ->
-            build(selected, range, models, agents, pairs, priced.associateBy { it.modelId }, snapshot, requests)
+        combine(usage, prices.observeAll(), directory.observe(), recentRequests(REQUEST_LIMIT)) { (models, agents, pairs), entered, snapshot, requests ->
+            // One currency (D3A-8): only prices in US$ are added up; a model priced in another currency says so on its row.
+            val otherCurrency = entered.filterNot { it.counts }.map { it.modelId }.toSet()
+            build(selected, range, models, agents, pairs, entered.counted().associateBy { it.modelId }, otherCurrency, snapshot, requests)
         }
     }.flowOn(computation).conflate().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), UsageUiState())
 
@@ -176,6 +179,7 @@ class UsageViewModel(
         agents: List<AgentUsage>,
         pairs: List<AgentModelUsage>,
         prices: Map<ModelId, ModelPrice>,
+        otherCurrency: Set<ModelId>,
         snapshot: RegistrySnapshot,
         requests: List<OwnerRequest>,
     ): UsageUiState {
@@ -186,7 +190,7 @@ class UsageViewModel(
             isLoading = false,
             period = selected,
             summary = if (used.isEmpty()) null else summary(selected, used, prices, snapshot),
-            models = used.map { modelRow(it, prices) },
+            models = used.map { modelRow(it, prices, otherCurrency) },
             agents = agents.filter { it.totals.calls > 0 }.map { agentRow(it, byAgent[it.agentId].orEmpty(), modelsById, prices, snapshot) },
             waiting = waiting(requests, range),
         )
@@ -208,9 +212,8 @@ class UsageViewModel(
                 limits.maxTokens?.let { append(" of ").append(formatCount(it)) }
                 val spendLimit = limits.maxSpendMicros
                 if (counted.priced && spendLimit != null) {
-                    val currency = limitCurrency(prices)
-                    append(", and ").append(moneyWords(counted.spendMicros, currency))
-                        .append(" of ").append(moneyWords(spendLimit, currency))
+                    append(", and ").append(moneyWords(counted.spendMicros, ModelPrice.DEFAULT_CURRENCY))
+                        .append(" of ").append(moneyWords(spendLimit, ModelPrice.DEFAULT_CURRENCY))
                 }
                 append('.')
             }
@@ -234,7 +237,7 @@ class UsageViewModel(
             answers = offPhone.sumOf { countedAnswers(it.totals) },
             tokens = offPhone.sumOf { it.totals.totalTokens },
             // Models on this phone cost nothing, even with a price entered (D3A-10): only models off the phone are priced.
-            cost = if (offPhone.isEmpty()) moneyWords(0, limitCurrency(prices)) else costWords(offPhone, prices),
+            cost = if (offPhone.isEmpty()) moneyWords(0, ModelPrice.DEFAULT_CURRENCY) else costWords(offPhone, prices),
             lines = lines,
             unpriced = unpriced.map { UnpricedModelUi(it.modelId, it.modelLabel) },
             phoneAnswers = onPhone.sumOf { countedAnswers(it.totals) },
@@ -242,12 +245,13 @@ class UsageViewModel(
         )
     }
 
-    private fun modelRow(row: ModelUsage, prices: Map<ModelId, ModelPrice>): ModelUsageUi {
+    private fun modelRow(row: ModelUsage, prices: Map<ModelId, ModelPrice>, otherCurrency: Set<ModelId>): ModelUsageUi {
         val price = prices[row.modelId]
         val cost = when {
             // On this phone a model costs nothing, whatever price was entered for it (D3A-10).
             !row.locality.leavesDevice -> "Free: on this phone"
             price != null -> costWords(listOf(row), prices)?.let(::aboutMoney) ?: "No price entered"
+            row.modelId in otherCurrency -> ModelPrice.OTHER_CURRENCY
             else -> "No price entered"
         }
         return ModelUsageUi(

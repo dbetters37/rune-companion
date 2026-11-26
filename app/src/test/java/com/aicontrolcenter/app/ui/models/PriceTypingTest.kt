@@ -9,7 +9,6 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
-import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aicontrolcenter.app.testing.AppRobot
@@ -23,6 +22,7 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 /**
  * Rule 27 for the model editor's price fields (Phase 6): what is typed is exactly what the field holds and what is
@@ -50,16 +50,17 @@ class PriceTypingTest {
         labelled("Input, per million tokens").typeFast("3.25")
         labelled("Output, per million tokens").typeFast("1x5,5")
         labelled("Cached input, per million tokens").typeFast("0.3.0")
-        labelled("Currency").also { it.performTextClearance() }.typeFast("€")
         assertEquals("3.25", labelled("Input, per million tokens").typed())
         assertEquals("15,5", labelled("Output, per million tokens").typed(), "only an amount is taken")
         assertEquals("0.30", labelled("Cached input, per million tokens").typed(), "one decimal point")
-        assertEquals("€", labelled("Currency").typed())
+        // One currency (D3A-8): no currency field; the price is in US$.
+        assertTrue(compose.onAllNodes(hasSetTextAction() and hasText("Currency")).fetchSemanticsNodes().isEmpty())
+        robot.assertShown(PRICES_IN_US_DOLLARS)
 
         robot.scrollTo("Save price").tap("Save price").waitUntilShown("Price saved.")
         val model = runBlocking { app.models.getAll() }.single { it.modelName == "claude-sonnet-4-5" }
         val stored = assertNotNull(runBlocking { app.prices.get(model.id) })
-        assertEquals(ModelPrice(model.id, 3_250_000, 15_500_000, 300_000, "€", stored.updatedAt), stored)
+        assertEquals(ModelPrice(model.id, 3_250_000, 15_500_000, 300_000, "US$", stored.updatedAt), stored)
     }
 
     private fun labelled(label: String): SemanticsNodeInteraction = compose.onNode(hasSetTextAction() and hasText(label))
