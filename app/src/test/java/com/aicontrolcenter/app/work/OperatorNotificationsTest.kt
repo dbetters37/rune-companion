@@ -34,7 +34,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * The "Approvals" notifications (one per waiting request, opening only its Approval screen,
+ * The "Waiting for you" notifications (one per waiting request, opening only its Approval screen,
  * removed once answered) and the "is operating" notification with its Stop.
  */
 @RunWith(AndroidJUnit4::class)
@@ -59,10 +59,24 @@ class OperatorNotificationsTest {
     private fun tagsOfApprovals(): Set<String?> = manager.activeNotifications.filter { it.id == ApprovalNotifications.NOTIFICATION_ID }.map { it.tag }.toSet()
 
     @Test
+    fun `a channel an earlier version made as Approvals is renamed Waiting for you, keeping the owner's choices`() {
+        // Wave 3 (WP8; handoff-wp11a.md item 5): the list and the shell say "Waiting for you"; so does Android's setting.
+        manager.createNotificationChannel(
+            android.app.NotificationChannel(ApprovalNotifications.CHANNEL_ID, "Approvals", NotificationManager.IMPORTANCE_HIGH),
+        )
+        ApprovalNotifications.ensureChannel(context)
+        val channel = assertNotNull(manager.getNotificationChannel(ApprovalNotifications.CHANNEL_ID))
+        assertEquals("Waiting for you", channel.name)
+        assertEquals(ApprovalNotifications.CHANNEL_DESCRIPTION, channel.description)
+        assertEquals(NotificationManager.IMPORTANCE_HIGH, channel.importance)
+        assertEquals(1, manager.notificationChannels.count { it.id == ApprovalNotifications.CHANNEL_ID })
+    }
+
+    @Test
     fun `each waiting request has a notification that only opens its Approval screen, removed once answered`() {
         ApprovalNotifier(context, app.graph.ownerRequests.pending, app.clock, scope).start()
         val channel = assertNotNull(manager.getNotificationChannel(ApprovalNotifications.CHANNEL_ID))
-        assertEquals("Approvals", channel.name)
+        assertEquals("Waiting for you", channel.name)
         assertEquals(NotificationManager.IMPORTANCE_HIGH, channel.importance)
 
         runBlocking {

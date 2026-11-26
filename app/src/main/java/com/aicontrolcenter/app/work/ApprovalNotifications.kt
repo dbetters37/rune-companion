@@ -32,7 +32,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 
 /**
- * The "Approvals" notifications: one per question waiting for the owner. A notification only
+ * The "Waiting for you" notifications: one per request or question waiting for the owner. A notification only
  * opens the request's Approval screen. It carries no Approve or Allow action, and Android is
  * told not to add suggested actions, so the owner answers in the app and nowhere else.
  */
@@ -42,16 +42,26 @@ internal object ApprovalNotifications {
     /** With the request id as the tag, so each request has its own notification. */
     const val NOTIFICATION_ID = 4_101
 
-    /** High importance: an agent is blocked until the owner answers. */
+    /**
+     * High importance: an agent is blocked until the owner answers. Named as the app names the list ("Waiting for you",
+     * wave 3); a channel made by an earlier version under "Approvals" is renamed in place. Android then updates only its
+     * name and description: the owner's own choices for it (sound, importance, off) stay as they are.
+     */
     fun ensureChannel(context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
-        if (manager.getNotificationChannel(CHANNEL_ID) != null) return
-        val channel = NotificationChannel(CHANNEL_ID, "Approvals", NotificationManager.IMPORTANCE_HIGH).apply {
-            description = "An agent is waiting for your answer: a permission, or an action that is hard to undo. " +
-                "The notification only opens the app; you answer there."
+        val existing = manager.getNotificationChannel(CHANNEL_ID)
+        if (existing != null && existing.name == CHANNEL_NAME && existing.description == CHANNEL_DESCRIPTION) return
+        val channel = NotificationChannel(CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_HIGH).apply {
+            description = CHANNEL_DESCRIPTION
         }
         manager.createNotificationChannel(channel)
     }
+
+    /** The channel's name in Android's notification settings: the app's own name for the list. */
+    const val CHANNEL_NAME = "Waiting for you"
+
+    const val CHANNEL_DESCRIPTION = "An agent is waiting for your answer: a permission, an action that is hard to undo, " +
+        "or a question. The notification only opens the app; you answer there."
 
     /**
      * The notification for [request], removed by Android at its expiry if nothing else removed it first. [reminder]: the
