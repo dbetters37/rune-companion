@@ -294,8 +294,7 @@ class TeamViewModel(
             val bodies = try {
                 withContext(computation) {
                     val ids = link.messageIds.toSet()
-                    val roots = uiState.value.graph.let { _ -> currentRoots() }
-                    roots.flatMap { root -> messages.list(root) }.filter { it.id in ids }.sortedWith(compareBy({ it.at }, { it.id.value }))
+                    lastRoots.flatMap { root -> messages.list(root) }.filter { it.id in ids }.sortedWith(compareBy({ it.at }, { it.id.value }))
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -311,9 +310,9 @@ class TeamViewModel(
 
     fun messageShown() = local.update { it.copy(message = null) }
 
+    /** The objectives the picture was last built from: where an open link's messages are read. */
+    @Volatile
     private var lastRoots: List<TaskId> = emptyList()
-
-    private fun currentRoots(): List<TaskId> = lastRoots
 
     // --- Building ---
 
