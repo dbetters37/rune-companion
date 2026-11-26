@@ -2,7 +2,7 @@ package com.aicontrolcenter.app.ui.dashboard
 
 import com.aicontrolcenter.app.ui.dashboard.network.AgentTraffic
 import com.aicontrolcenter.app.ui.dashboard.network.EdgeKind
-import com.aicontrolcenter.app.ui.dashboard.network.MAX_MESSAGE_PULSES
+import com.aicontrolcenter.app.ui.dashboard.network.MESSAGE_CANDIDATES
 import com.aicontrolcenter.app.ui.dashboard.network.toAgentNetwork
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.agents.AgentActivity
@@ -31,7 +31,7 @@ class NetworkTrafficTest {
     )
 
     @Test
-    fun `agents that talked outside the reporting lines are joined, and the newest messages travel`() {
+    fun `agents that talked outside the reporting lines are joined, and the newest messages can travel in sending order`() {
         val traffic = listOf(
             AgentTraffic(analyst, researcher, "m5"),
             AgentTraffic(researcher, analyst, "m4"),
@@ -44,19 +44,22 @@ class NetworkTrafficTest {
         assertEquals(3, network.edges.count { it.kind == EdgeKind.REPORTS })
         val exchanges = network.edges.filter { it.kind == EdgeKind.EXCHANGE }
         assertEquals(listOf(setOf(analyst.value, researcher.value)), exchanges.map { setOf(it.fromId, it.toId) }, "one edge per pair, none to the Director")
-        assertEquals(listOf("m5", "m4", "m3", "m2"), network.pulses.map { it.messageId }, "the newest $MAX_MESSAGE_PULSES messages")
-        assertEquals(analyst.value to researcher.value, network.pulses.first().let { it.fromId to it.toId })
-        assertEquals(2, network.pulses.first().colorIndex, "a pulse has its sender's colour")
+        assertEquals(listOf("m1", "m2", "m3", "m4", "m5"), network.pulses.map { it.messageId }, "oldest first; the card sends a dot only for new ones")
+        assertEquals(analyst.value to researcher.value, network.pulses.last().let { it.fromId to it.toId })
+        assertEquals(2, network.pulses.last().colorIndex, "a dot has its sender's colour")
+        val many = (1..30).map { AgentTraffic(director, researcher, "n$it") }
+        assertEquals(MESSAGE_CANDIDATES, snapshot.toAgentNetwork(traffic = many).pulses.size)
     }
 
     @Test
-    fun `an agent working in a chat pulses towards the Director unless it is already sending a message`() {
+    fun `an agent working in a chat is ringed, and nothing loops towards the Director (N2)`() {
         val working = mapOf(
             researcher to AgentRuntimeState(researcher, AgentActivity.WORKING, "Waiting for the model"),
             writer to AgentRuntimeState(writer, AgentActivity.WORKING, "Writing"),
         )
         val network = snapshot.toAgentNetwork(working, listOf(AgentTraffic(researcher, analyst, "m1")))
-        assertEquals(listOf("m1" to researcher.value, null to writer.value), network.pulses.map { it.messageId to it.fromId })
+        assertEquals(listOf("m1"), network.pulses.map { it.messageId })
+        assertEquals(listOf(true, true), listOf(researcher, writer).map { network.node(it.value)!!.working })
     }
 
     @Test

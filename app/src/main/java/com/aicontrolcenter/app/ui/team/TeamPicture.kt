@@ -119,6 +119,8 @@ internal fun TeamPicture(
 ) {
     val calm = LocalCalmMotion.current
     val clock = rememberPulseClock(graph.pulses, calm, resetKey)
+    // Read here (it changes only when dots leave or the last one arrives), so the semantics below stay current.
+    val inFlight = clock.inFlight
     val density = LocalDensity.current
     BoxWithConstraints(
         modifier
@@ -126,7 +128,7 @@ internal fun TeamPicture(
             .testTag(TEAM_PICTURE_TAG)
             .semantics {
                 isTraversalGroup = true
-                dotsInFlight = clock.inFlight
+                dotsInFlight = inFlight
             },
     ) {
         val viewWidth = maxWidth.value

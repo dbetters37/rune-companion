@@ -6,6 +6,7 @@ import com.aicontrolcenter.app.testing.activeIn
 import com.aicontrolcenter.app.ui.shell.Section
 import com.aicontrolcenter.app.ui.shell.ShellViewModel
 import com.aicontrolcenter.app.ui.theme.StatusTone
+import com.aicontrolcenter.app.ui.dashboard.network.toAgentNetwork
 import com.aicontrolcenter.app.testing.GatedLlmClient
 import com.aicontrolcenter.app.testing.serveModel
 import com.aicontrolcenter.core.ModelId
@@ -346,7 +347,7 @@ class DashboardViewModelTest {
     }
 
     @Test
-    fun `agents at work are listed with what they are doing and pulse in the network`() = runTest(mainRule.dispatcher) {
+    fun `agents at work are listed with what they are doing and ringed in the network, with no dot looping`() = runTest(mainRule.dispatcher) {
         val app = TestApp(backgroundScope)
         app.graph.start().join()
         val client = GatedLlmClient(listOf("Thinking it over", " and done."))
@@ -365,10 +366,49 @@ class DashboardViewModelTest {
         val node = assertNotNull(viewModel.uiState.value.network.node(researcher.id.value))
         assertTrue(node.working)
         assertEquals(StatusTone.WORKING, node.status.tone)
-        assertEquals(listOf(researcher.id.value), viewModel.uiState.value.network.pulses.map { it.fromId })
+        assertEquals(emptyList(), viewModel.uiState.value.network.pulses, "a chat sends no message between agents: nothing travels (N2)")
 
         client.release()
         assertEquals(emptyList(), viewModel.uiState.value.working)
         assertEquals(emptyList(), viewModel.uiState.value.network.pulses)
+    }
+
+    @Test
+    fun `memories are counted by the store's count, not read (P4)`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.graph.agentManager.ensureDefaults()
+        val counted = java.util.concurrent.atomic.AtomicInteger()
+        val viewModel = DashboardViewModel(
+            app.graph.registryDirectory, app.graph.activityLog, app.graph.aiAppRegistry, app.clock, ZoneOffset.UTC,
+            monitor = app.graph.activityMonitor, memory = app.graph.memoryService,
+            memoryCount = { filter -> counted.incrementAndGet(); kotlinx.coroutines.flow.flowOf(42).also { assertEquals(com.aicontrolcenter.core.memory.MemoryFilter(), filter) } },
+        ).also { it.uiState.activeIn(backgroundScope) }
+        assertEquals(42, viewModel.uiState.value.memory?.memoryCount)
+        assertEquals(1, counted.get())
+    }
+
+    @Test
+    fun `an agent waiting for you or for a teammate is never shown as working (N3)`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.graph.agentManager.ensureDefaults()
+        val snapshot = app.snapshot()
+        val researcher = app.agentNamed("Researcher").profile.id
+        val analyst = app.agentNamed("Analyst").profile.id
+        val network = snapshot.toAgentNetwork(
+            mapOf(
+                researcher to com.aicontrolcenter.core.agents.AgentRuntimeState(researcher, com.aicontrolcenter.core.agents.AgentActivity.WAITING_FOR_APPROVAL, "Waiting for your answer: Delete files"),
+                analyst to com.aicontrolcenter.core.agents.AgentRuntimeState(analyst, com.aicontrolcenter.core.agents.AgentActivity.WAITING_FOR_AGENT, "Waiting for Researcher's answer"),
+            ),
+        )
+        with(network.node(researcher.value)!!) {
+            assertFalse(working)
+            assertTrue(waiting)
+            assertEquals("Waiting for you", status.text)
+            assertEquals(StatusTone.ATTENTION, status.tone)
+        }
+        with(network.node(analyst.value)!!) {
+            assertFalse(working)
+            assertEquals("Waiting for a teammate", status.text)
+        }
     }
 }
