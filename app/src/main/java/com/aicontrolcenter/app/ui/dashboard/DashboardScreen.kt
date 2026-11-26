@@ -96,24 +96,31 @@ class DashboardSlots(
 @Composable
 fun DashboardRoute(navigation: DashboardNavigation) {
     val graph = LocalAppGraph.current
+    // Phase 6 (wave 3): the Dashboard's parts are built on the background pool the app hands the screens (LocalUsageWork,
+    // the same pool as LocalScreenWork; tests keep their own dispatcher).
+    val work = LocalUsageWork.current
     val viewModel = viewModel {
         DashboardViewModel(
             directory = graph.registryDirectory,
             activityLog = graph.activityLog,
             aiAppRegistry = graph.aiAppRegistry,
             clock = graph.clock,
+            // The owner's one zone, as every other screen (wave 3): the activity's times.
+            zone = graph.zone(),
             monitor = graph.activityMonitor,
             agentManager = graph.agentManager,
             memory = graph.memoryService,
             orchestrator = graph.orchestrator,
             tasks = graph.tasks,
             messages = graph.messages,
+            // P4 (D35): the memory count is the store's COUNT query, never every memory read on every recall write.
+            memoryCount = graph.ports.memories::observeCount,
+            // P2: the state is built off the main thread, latest first (handoff-WP9.md item 1).
+            computation = work,
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    // Phase 6 (wave 3): one view model for the Today tile, Getting started, the phone's attention items and safe start,
-    // built on the background pool the app hands the screens (LocalUsageWork).
-    val work = LocalUsageWork.current
+    // One view model for the Today tile, Getting started, the phone's attention items and safe start.
     val extras = viewModel {
         DashboardExtrasViewModel(
             today = graph.todayUsage,
