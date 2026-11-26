@@ -105,6 +105,12 @@ class UsageModelTest {
             "Today's spending limit of US$1.00 is reached. It starts again at midnight, or you can raise it in Settings > Daily limits.",
             limits.sentence(DailyLimitKind.SPEND),
         )
+        assertEquals(
+            "Today's limit of 1 model answer is reached. It starts again at midnight, or you can raise it in Settings > Daily limits.",
+            DailyLimits(1, null, null).sentence(DailyLimitKind.CALLS),
+            "one answer is said in the singular",
+        )
+        assertEquals("Today's limit of 1 token is reached.", DailyLimits(null, 1, null).sentence(DailyLimitKind.TOKENS).substringBefore(" It starts"))
         assertEquals("US$0.25", DailyLimits.money(250_000, "US$"))
         assertEquals("US$1,234.57", DailyLimits.money(1_234_567_890, "US$"))
         assertFalse(LlmException.DailyLimitReached("x").retryable)

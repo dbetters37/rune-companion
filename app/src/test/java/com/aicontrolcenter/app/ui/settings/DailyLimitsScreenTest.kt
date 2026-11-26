@@ -103,7 +103,7 @@ class DailyLimitsScreenTest {
         compose.onAllNodes(hasContentDescription("Answers: 1 of 1 today. Reached.")).onFirst().assertExists()
         compose.onAllNodes(hasContentDescription("Tokens: 15 of 500,000 today")).onFirst().assertExists()
         compose.onAllNodes(hasText("Change daily limits") and hasClickAction()).onFirst().assertHeightIsAtLeast(48.dp)
-        robot.assertShown("Today's limit of 1 model answers is reached.")
+        robot.assertShown("Today's limit of 1 model answer is reached.")
 
         robot.tap("Change daily limits")
         compose.onAllNodes(hasText("Save limits") and hasClickAction()).onFirst().performScrollTo().assertHeightIsAtLeast(48.dp)

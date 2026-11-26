@@ -558,8 +558,9 @@ data class DailyLimits(val maxCalls: Int?, val maxTokens: Long?, val maxSpendMic
     /** The sentence for the owner when [kind] was reached, also the message of `LlmException.DailyLimitReached`. */
     fun sentence(kind: DailyLimitKind, currencyLabel: String = ModelPrice.DEFAULT_CURRENCY): String {
         val what = when (kind) {
-            DailyLimitKind.CALLS -> "today's limit of ${grouped(maxCalls?.toLong() ?: 0)} model answers"
-            DailyLimitKind.TOKENS -> "today's limit of ${grouped(maxTokens ?: 0)} tokens"
+            // "1 model answer", "200 model answers" (wave 3: plain words with a limit of one).
+            DailyLimitKind.CALLS -> "today's limit of ${grouped(maxCalls?.toLong() ?: 0)} model ${if (maxCalls == 1) "answer" else "answers"}"
+            DailyLimitKind.TOKENS -> "today's limit of ${grouped(maxTokens ?: 0)} ${if (maxTokens == 1L) "token" else "tokens"}"
             DailyLimitKind.SPEND -> "today's spending limit of ${money(maxSpendMicros ?: 0, currencyLabel)}"
         }
         return what.replaceFirstChar { it.uppercase() } + " is reached. It starts again at midnight, or you can raise it in Settings > Daily limits."
