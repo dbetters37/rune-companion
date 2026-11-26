@@ -4,6 +4,7 @@ import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aicontrolcenter.app.testing.AppRobot
@@ -77,6 +78,8 @@ class QuestionScreenshotTest {
                 question = "Should the hotels be in the old town (Ribeira) or near the beach (Foz)? The prices differ by about a third.",
                 options = listOf("Ribeira, the old town", "Foz, near the beach", "Whichever is cheaper"),
                 reason = "The brief does not say where to stay.",
+                // The owner's answer window (Q3: 20 minutes), so the pictures show what the owner sees (D3A-18b).
+                minutes = 20,
             ),
         )
         raise(sampleApproval(agentNamed("Operator").profile.id, createdAt = clock.current + 1, minutes = 240))
@@ -107,6 +110,16 @@ class QuestionScreenshotTest {
                 at = now, modelId = ModelId("mdl_grok"), modelLabel = "Grok", providerId = ProviderId("prv_xai"), providerLabel = "xAI",
                 locality = Locality.CLOUD, rootTaskId = root, taskId = TaskId("tsk_hotels"), source = UsageSource.OBJECTIVE, outcome = CallOutcome.OK,
                 inputTokens = 18_200, outputTokens = 3_100, answerMs = 2_400,
+            ),
+        )
+        // The cloud call's own log entry, as the gateway writes it (D3A-5: the header's privacy line reads it).
+        activityLog.record(
+            com.aicontrolcenter.core.activity.ActivityEvent(
+                id = com.aicontrolcenter.core.EventId("evt_porto_grok"), at = now, type = com.aicontrolcenter.core.activity.ActivityType.MODEL_CALL,
+                agentId = researcher, taskId = TaskId("tsk_hotels"), rootTaskId = root, title = "Model call", detail = "Grok via xAI",
+                egress = com.aicontrolcenter.core.activity.EgressInfo(
+                    destinationHost = "api.x.ai", locality = Locality.CLOUD, providerId = ProviderId("prv_xai"), purpose = "prompt and conversation",
+                ),
             ),
         )
     }
@@ -147,7 +160,10 @@ class QuestionScreenshotTest {
         val robot = openQuestion()
         compose.onNode(hasContentDescription(ANSWER_FIELD) and hasSetTextAction()).performTextReplacement("482913")
         compose.waitForIdle()
-        robot.scrollTo(QuestionTexts.SEND).tap(QuestionTexts.SEND).waitUntilShown("Is this a code?").scrollTo(QuestionTexts.SEND_ANYWAY)
+        robot.scrollTo(QuestionTexts.SEND).tap(QuestionTexts.SEND).waitUntilShown("Is this a code?")
+        // The button itself, not the warning that names it (D3A-18a): its exact text and a click action.
+        compose.onNode(androidx.compose.ui.test.hasText(QuestionTexts.SEND_ANYWAY) and androidx.compose.ui.test.hasClickAction()).performScrollTo()
+        compose.waitForIdle()
         shoot("p6_question_3_code_second_tap_phone")
     }
 
@@ -246,15 +262,59 @@ class QuestionScreenshotTest {
         shoot("p6_objective_paused_by_limit_wide")
     }
 
+    /** Two more unfinished steps, so the composer has four recipients (D3A-17: every one wraps into view). */
+    private suspend fun TestApp.moreSteps() {
+        val director = director().profile.id
+        val now = clock.current
+        listOf("tsk_trains" to ("Writer" to "Compare the train and the flight"), "tsk_sights" to ("Analyst" to "Plan two days of sights")).forEach { (id, who) ->
+            tasks.upsert(
+                TaskRecord(
+                    id = TaskId(id), rootId = root, parentId = root, kind = TaskKind.WORK, title = who.second, instructions = "${who.second}.",
+                    assignee = agentNamed(who.first).profile.id, requestedBy = TaskRequester.Agent(director), status = TaskStatus.RUNNING,
+                    createdAt = now - 10 * 60_000L, updatedAt = now,
+                ),
+            )
+        }
+    }
+
+    private fun notesOpen(): AppRobot = AppRobot(compose).given {
+        teamOnSimulator()
+        objective(TaskStatus.RUNNING)
+        moreSteps()
+    }.launch().also { robot = it }.openSection("Tasks").tapItemContaining("Plan a weekend in Porto").tap("Conversation")
+
     @Test
     fun notesComposer() {
-        AppRobot(compose).given {
-            teamOnSimulator()
-            objective(TaskStatus.RUNNING)
-        }.launch().also { robot = it }.openSection("Tasks").tapItemContaining("Plan a weekend in Porto").tap("Conversation")
+        notesOpen()
         shoot("p6_objective_notes_folded_phone")
         robot!!.tap(WRITE_TO_THE_TEAM)
         shoot("p6_objective_notes_composer_phone")
+    }
+
+    @Test
+    @Config(qualifiers = SMALL_PHONE, fontScale = 2.0f)
+    fun notesComposerLargestFont() {
+        notesOpen().tap(WRITE_TO_THE_TEAM)
+        shoot("p6_objective_notes_composer_360dp_font200")
+    }
+
+    /** D3A-4: the task screen's own cost so far, with what a token is and that money is an estimate. */
+    @Test
+    fun taskCost() {
+        AppRobot(compose).given {
+            teamOnSimulator()
+            objective(TaskStatus.PAUSED, DailyLimits.PAUSED_TEXT)
+            prices.set(com.aicontrolcenter.core.usage.ModelPrice(ModelId("mdl_grok"), inputPerMTokMicros = 3_000_000, outputPerMTokMicros = 15_000_000))
+        }.launch().also { robot = it }.openSection("Tasks").tapItemContaining("Plan a weekend in Porto")
+            .tapItemContaining("Find three hotels").waitUntilShown("So far: about US$")
+        shoot("p6_task_cost_phone")
+    }
+
+    @Test
+    @Config(qualifiers = SMALL_PHONE, fontScale = 2.0f)
+    fun waitingForYouLargestFont() {
+        waitingList()
+        shoot("p6_waiting_for_you_360dp_font200")
     }
 
     private fun newObjective(dark: Boolean = true): AppRobot =

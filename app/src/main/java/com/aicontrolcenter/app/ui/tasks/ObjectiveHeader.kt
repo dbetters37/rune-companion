@@ -1,6 +1,5 @@
 package com.aicontrolcenter.app.ui.tasks
 
-import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -57,6 +56,7 @@ import androidx.compose.ui.semantics.semantics
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.app.ui.theme.appColors
+import com.aicontrolcenter.app.ui.components.calmAnimateContentSize
 
 /** The owner's controls over an objective. */
 class ObjectiveControls(
@@ -221,7 +221,7 @@ private fun CollapsibleText(text: String, style: TextStyle, collapsedLines: Int,
     } else {
         Modifier
     }
-    Column(Modifier.animateContentSize().then(toggle)) {
+    Column(Modifier.calmAnimateContentSize().then(toggle)) {
         Text(
             text,
             style = style,

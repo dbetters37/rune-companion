@@ -81,6 +81,6 @@ class DailyLimitJourneyTest {
 
     private companion object {
         const val OBJECTIVE = "Research offline note apps, compare the best three, and write a recommendation"
-        const val DAILY_LIMIT_WORDS = "A running objective pauses instead of failing"
+        const val DAILY_LIMIT_WORDS = "Objectives pause instead of failing. When a limit is reached, running objectives pause."
     }
 }

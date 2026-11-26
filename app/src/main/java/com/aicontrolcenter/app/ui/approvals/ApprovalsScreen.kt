@@ -4,6 +4,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -46,15 +48,15 @@ fun ApprovalsRoute(onBack: (() -> Unit)?, onOpenRequest: (RequestId) -> Unit, on
 const val WAITING_FOR_YOU = "Waiting for you"
 
 /**
- * "Waiting for you · 2 requests and 1 question, oldest first": what waits, in words (requests are approvals and
- * permission requests; questions are agents' questions).
+ * "2 requests and 1 question, oldest first": what waits, in words (requests are approvals and permission requests;
+ * questions are agents' questions). The screen's title already says "Waiting for you" (D3A-12c).
  */
 fun waitingSummary(requests: Int, questions: Int): String {
     val parts = listOfNotNull(
         requests.takeIf { it > 0 }?.let { plural(it, "request") },
         questions.takeIf { it > 0 }?.let { plural(it, "question") },
     )
-    return "$WAITING_FOR_YOU · " + parts.joinToString(" and ") + ", oldest first"
+    return parts.joinToString(" and ") + ", oldest first"
 }
 
 /**
@@ -84,6 +86,7 @@ fun ApprovalsScreen(state: ApprovalsUiState, onBack: (() -> Unit)?, onOpenReques
                 val questions = state.requests.count { it.isQuestion }
                 item(key = "header") {
                     SectionHeader(waitingSummary(state.requests.size - questions, questions))
+                    Spacer(Modifier.height(Spacing.xs))
                     Text(
                         buildString {
                             append("Each agent waits until you answer. ")

@@ -1,14 +1,13 @@
 package com.aicontrolcenter.app.ui.tasks
 
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.material3.Button
@@ -49,6 +48,7 @@ const val WRITE_TO_THE_TEAM = "Write to the team"
  * team from their next step (stage 2, reaching a step that runs, is not built); they never answer a request and
  * never change a setting. A refusal is shown in the app's own words.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun NotesComposer(notes: NotesUi, note: TextFieldState, onRecipient: (TaskId?) -> Unit, onSend: () -> Unit, onOpen: (Boolean) -> Unit = {}) {
     if (!notes.isOpen) {
@@ -64,15 +64,16 @@ internal fun NotesComposer(notes: NotesUi, note: TextFieldState, onRecipient: (T
         AppCard {
             Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 Text("To", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Row(
-                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                // Every recipient wraps into view (D3A-17): a sideways strip hid all but the first one or two.
+                FlowRow(
+                    Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
                 ) {
                     notes.recipients.forEach { recipient ->
                         FilterChip(
                             selected = notes.to == recipient.taskId,
                             onClick = { onRecipient(recipient.taskId) },
-                            label = { Text(recipient.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            label = { Text(recipient.label, maxLines = 2, overflow = TextOverflow.Ellipsis) },
                             modifier = Modifier.heightIn(min = Spacing.touchTarget),
                         )
                     }

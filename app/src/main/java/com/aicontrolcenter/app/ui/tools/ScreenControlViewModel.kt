@@ -205,7 +205,8 @@ class ScreenControlViewModel(
             },
             isBusy = local.isBusy,
             message = local.message,
-            switchedOffNotice = switchedOff,
+            // Once the service is on again the notice is out of date (the device clears its flag then too, D3A-18c).
+            switchedOffNotice = switchedOff.takeIf { state != ScreenServiceState.READY },
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ScreenControlUiState())
 

@@ -1,5 +1,7 @@
 package com.aicontrolcenter.app.ui.approvals
 
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -212,16 +214,25 @@ fun QuestionCard(request: RequestUi, onOpen: () -> Unit, modifier: Modifier = Mo
                 }
             }
             request.question?.let { PreviewTextView("“$it”", MaterialTheme.typography.bodyMedium, MaterialTheme.colorScheme.onSurface) }
-            Row(Modifier, verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Not a permission: your answer is only text.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
-                )
-                TextButton(onClick = onOpen) {
+            val answerButton: @Composable () -> Unit = {
+                TextButton(onClick = onOpen, modifier = Modifier.heightIn(min = 48.dp)) {
                     Text(if (request.isOpen) "Answer" else "Details")
                     Icon(AppIcons.ChevronRight, contentDescription = null, modifier = Modifier.size(18.dp))
+                }
+            }
+            if (LocalDensity.current.fontScale >= 1.5f) {
+                // Large fonts: the line above the button, not squeezed into a narrow column beside it (D3A-12d).
+                Text("Not a permission: your answer is only text.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                answerButton()
+            } else {
+                Row(Modifier, verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Not a permission: your answer is only text.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    answerButton()
                 }
             }
         }

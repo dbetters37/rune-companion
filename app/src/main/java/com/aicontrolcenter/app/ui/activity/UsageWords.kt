@@ -58,8 +58,9 @@ internal fun times(count: Long): String = if (count == 1L) "once" else "${format
 fun moneyWords(micros: Long, currency: String): String =
     if (micros in 1 until HALF_CENT_MICROS) "less than ${DailyLimits.money(CENT_MICROS, currency)}" else DailyLimits.money(micros, currency)
 
-/** "0.8 seconds", "3.2 seconds", "1 minute 5 seconds". */
+/** "under a second", "0.8 seconds", "3.2 seconds", "1 minute 5 seconds" (never "0 seconds", D3A-16). */
 internal fun secondsWords(ms: Long): String = when {
+    ms < 500 -> "under a second"
     ms < 60_000 -> BigDecimal.valueOf(ms, 3).setScale(1, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString().let {
         "$it ${if (it == "1") "second" else "seconds"}"
     }
@@ -70,6 +71,9 @@ internal fun secondsWords(ms: Long): String = when {
         "$minutes ${if (minutes == 1L) "minute" else "minutes"}" + if (rest > 0) " $rest ${if (rest == 1L) "second" else "seconds"}" else ""
     }
 }
+
+/** "after 3.2 seconds", or "in under a second" (not "after under a second"). */
+internal fun afterWords(ms: Long): String = secondsWords(ms).let { if (it == "under a second") "in $it" else "after $it" }
 
 /** "under a minute", "3 minutes", "1 hour 5 minutes": how long something waited for the owner. */
 internal fun waitWords(ms: Long): String {
@@ -205,7 +209,7 @@ internal fun speedLine(totals: UsageTotals): String? {
     val whole = totals.averageAnswerMs ?: return null
     val first = totals.averageTtftMs
     return if (first != null) {
-        "On average the first words came after ${secondsWords(first)}, the whole answer after ${secondsWords(whole)}."
+        "On average the first words came ${afterWords(first)}, the whole answer ${afterWords(whole)}."
     } else {
         "On average a whole answer took ${secondsWords(whole)}."
     }

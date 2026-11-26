@@ -257,7 +257,7 @@ class ToolsJourneysTest {
         robot.given { raise(sampleApproval(agentNamed("Operator").profile.id, createdAt = clock.current, minutes = 240)) }
             .waitUntilShown("1 request waits for your answer")
             .tap("1 request waits for your answer")
-            .assertShown("Waiting for you · 1 request".uppercase())
+            .assertShown("1 request, oldest first".uppercase())
             .assertShown("Notifications are off")
             .tap("Review")
             .scrollTo("Deny")

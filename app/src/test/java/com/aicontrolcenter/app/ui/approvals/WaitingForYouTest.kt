@@ -51,9 +51,9 @@ class WaitingForYouTest {
         assertEquals("Which city should the report cover?", question.question)
         assertTrue(question.choices.isEmpty(), "never an approval's answers")
         assertNull(requests.single { !it.isQuestion }.question)
-        assertEquals("Waiting for you · 1 request and 1 question, oldest first", waitingSummary(1, 1))
-        assertEquals("Waiting for you · 2 requests, oldest first", waitingSummary(2, 0))
-        assertEquals("Waiting for you · 1 question, oldest first", waitingSummary(0, 1))
+        assertEquals("1 request and 1 question, oldest first", waitingSummary(1, 1))
+        assertEquals("2 requests, oldest first", waitingSummary(2, 0))
+        assertEquals("1 question, oldest first", waitingSummary(0, 1))
         assertTrue(OwnerRequestKind.QUESTION.icon != OwnerRequestKind.APPROVAL.icon, "a question never wears an approval's glyph")
     }
 

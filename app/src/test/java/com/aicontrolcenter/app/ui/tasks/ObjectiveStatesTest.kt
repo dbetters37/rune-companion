@@ -172,11 +172,86 @@ class ObjectiveStatesTest {
         val vm = screen(app)
         val tokensOnly = assertNotNull(vm.uiState.value.header?.cost)
         assertEquals("So far: 12,400 tokens · 1 model answer", tokensOnly.text)
-        assertTrue("Tokens are the pieces of text" in tokensOnly.note)
+        assertTrue(com.aicontrolcenter.app.ui.activity.TOKENS_IN_PLAIN_WORDS in tokensOnly.note)
 
         app.prices.set(ModelPrice(model, inputPerMTokMicros = 2_000_000, outputPerMTokMicros = 10_000_000))
         val priced = assertNotNull(vm.uiState.value.header?.cost)
         assertEquals("So far: about US$0.04 · 12,400 tokens · 1 model answer", priced.text)
+        assertTrue(priced.note.startsWith(CostEstimate.DISCLAIMER))
+    }
+
+    private fun call(model: String, root: TaskId? = this.root, task: TaskId? = TaskId("tsk_x"), input: Long = 10_000, output: Long = 2_400, locality: Locality = Locality.CLOUD) =
+        ModelCallSample(
+            at = TestApp.START_TIME, modelId = ModelId(model), modelLabel = model, providerId = ProviderId("prv_$model"), providerLabel = model,
+            locality = locality, rootTaskId = root, taskId = task, source = UsageSource.OBJECTIVE, outcome = CallOutcome.OK,
+            inputTokens = input, outputTokens = output, answerMs = 1_200,
+        )
+
+    @Test
+    fun `the privacy line never says nothing left the phone when a model off the phone answered (D3A-5)`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.objective(TaskStatus.RUNNING)
+        val vm = screen(app)
+        assertFalse(vm.uiState.value.egress.away)
+        assertEquals("Nothing has left this phone for this objective.", egressWords(vm.uiState.value.egress))
+
+        // Its log entries are gone (kept 30 days, newest 200 only); the usage rows still say a cloud model answered.
+        app.usage.record(call("mdl_grok"))
+        app.usage.record(call("mdl_grok"))
+        val egress = vm.uiState.value.egress
+        assertTrue(egress.away)
+        assertEquals(0, egress.transfers)
+        assertEquals(2, egress.offPhoneAnswers, "a model no longer registered counts as off the phone")
+        assertEquals("2 model answers went to models off this phone; the details are no longer in the log.", egressWords(egress))
+        assertEquals(
+            "1 model call left this phone, to api.x.ai. See the Log. In all, 2 model answers came from models off this phone; the log no longer holds the rest.",
+            egressWords(EgressUi(transfers = 1, destinations = listOf("api.x.ai"), offPhoneAnswers = 2)),
+        )
+    }
+
+    @Test
+    fun `a call refused before anything was sent is no proof that something left`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.objective(TaskStatus.RUNNING)
+        app.usage.record(call("mdl_grok").copy(outcome = CallOutcome.BLOCKED, inputTokens = null, outputTokens = null, answerMs = null))
+        assertFalse(screen(app).uiState.value.egress.away)
+    }
+
+    @Test
+    fun `the cost line adds money per currency and leaves models on this phone free (D3A-8, D3A-10)`() {
+        val rows = listOf(
+            com.aicontrolcenter.core.usage.WorkUsage(com.aicontrolcenter.core.usage.WorkKind.OBJECTIVE, root.value, ModelId("usd"), 1, 1_000_000, 0, 0, 0),
+            com.aicontrolcenter.core.usage.WorkUsage(com.aicontrolcenter.core.usage.WorkKind.OBJECTIVE, root.value, ModelId("eur"), 1, 1_000_000, 0, 0, 0),
+            com.aicontrolcenter.core.usage.WorkUsage(com.aicontrolcenter.core.usage.WorkKind.OBJECTIVE, root.value, ModelId("phone"), 1, 1_000_000, 0, 0, 0),
+        )
+        val prices = mapOf(
+            ModelId("usd") to ModelPrice(ModelId("usd"), inputPerMTokMicros = 1_000_000, outputPerMTokMicros = 0),
+            ModelId("eur") to ModelPrice(ModelId("eur"), inputPerMTokMicros = 2_000_000, outputPerMTokMicros = 0, currencyLabel = "€"),
+            ModelId("phone") to ModelPrice(ModelId("phone"), inputPerMTokMicros = 9_000_000, outputPerMTokMicros = 0),
+        )
+        val line = assertNotNull(costLineOf(rows, prices, onPhone = setOf(ModelId("phone"))))
+        assertEquals("So far: about US$1.00 and €2.00 · 3,000,000 tokens · 3 model answers", line.text)
+        assertEquals("So far: 1,000,000 tokens · 1 model answer · free on this phone", assertNotNull(costLineOf(rows.takeLast(1), prices, setOf(ModelId("phone")))).text)
+    }
+
+    @Test
+    fun `the task screen shows its own cost so far, with what a token is (D3A-4)`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.objective(TaskStatus.RUNNING, steps = listOf(app.step("w", TaskStatus.RUNNING)))
+        app.usage.record(call("mdl_grok", task = TaskId("w"), input = 2_400, output = 700))
+        app.usage.record(call("mdl_grok", task = TaskId("other")))
+        val vm = TaskDetailViewModel(
+            TaskId("w"), app.graph.tasks, app.graph.messages, app.graph.registryDirectory, app.graph.agentChat, app.graph.toolRegistry,
+            app.graph.orchestrator, app.graph.activityMonitor, app.clock, ZoneOffset.UTC,
+            workUsage = app.graph.usageReports.observeWorkUsage(com.aicontrolcenter.core.usage.WorkKind.TASK, "w"), prices = app.graph.modelPrices.observeAll(),
+        ).also { it.uiState.activeIn(backgroundScope) }
+        val tokensOnly = assertNotNull(vm.uiState.value.task?.cost)
+        assertEquals("So far: 3,100 tokens · 1 model answer", tokensOnly.text, "this task's rows only")
+        assertTrue(tokensOnly.note.startsWith(com.aicontrolcenter.app.ui.activity.TOKENS_IN_PLAIN_WORDS))
+
+        app.prices.set(ModelPrice(ModelId("mdl_grok"), inputPerMTokMicros = 3_000_000, outputPerMTokMicros = 15_000_000))
+        val priced = assertNotNull(vm.uiState.value.task?.cost)
+        assertEquals("So far: about US$0.02 · 3,100 tokens · 1 model answer", priced.text)
         assertTrue(priced.note.startsWith(CostEstimate.DISCLAIMER))
     }
 

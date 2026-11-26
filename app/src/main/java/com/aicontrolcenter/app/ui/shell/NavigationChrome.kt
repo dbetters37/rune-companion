@@ -35,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -142,6 +143,9 @@ internal fun AppBottomBar(
 ) {
     Column {
         HorizontalDivider(color = appColors.hairline)
+        // At large font sizes only the chosen section shows its name: five names do not fit a phone's width (D3A-13).
+        // Every item keeps its name for screen readers (contentDescription below).
+        val allLabels = LocalDensity.current.fontScale < 1.5f
         NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
             val itemColors = NavigationBarItemDefaults.colors(
                 selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -157,6 +161,7 @@ internal fun AppBottomBar(
                     onClick = { onOpenSection(section) },
                     icon = { BadgedIcon(section.icon, badge) },
                     label = { Text(section.title, maxLines = 1) },
+                    alwaysShowLabel = allLabels,
                     colors = itemColors,
                     modifier = Modifier.semantics { contentDescription = section.title + attentionSuffix(badge) },
                 )
@@ -167,6 +172,7 @@ internal fun AppBottomBar(
                 onClick = onOpenMore,
                 icon = { BadgedIcon(AppIcons.MoreHoriz, moreBadge) },
                 label = { Text("More", maxLines = 1) },
+                alwaysShowLabel = allLabels,
                 colors = itemColors,
                 modifier = Modifier.semantics { contentDescription = "More sections" + attentionSuffix(moreBadge) },
             )

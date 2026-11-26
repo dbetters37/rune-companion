@@ -18,6 +18,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import org.junit.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -87,5 +89,24 @@ class ChatPresentationTest {
         val mixed = chatCostOf(listOf(row("a", 100_000, 20_000), row("x", 5_000, 0)), prices)
         assertEquals("This chat so far: 125,000 tokens, about US$0.60 for the models with a price.", mixed?.line)
         assertTrue(mixed!!.priced)
+    }
+
+    @Test
+    fun `a model on this phone costs nothing in the chat's line, even with a price entered (D3A-10)`() {
+        fun row(model: String, input: Long, output: Long) = WorkUsage(WorkKind.CHAT, "cnv_1", ModelId(model), 1, input, output, 0, 0)
+        val prices = mapOf(
+            ModelId("a") to ModelPrice(ModelId("a"), 3_000_000, 15_000_000),
+            ModelId("phone") to ModelPrice(ModelId("phone"), 3_000_000, 15_000_000),
+        )
+        val phone = setOf(ModelId("phone"))
+        val free = assertNotNull(chatCostOf(listOf(row("phone", 100_000, 20_000)), prices, phone))
+        assertEquals("This chat so far: 120,000 tokens, free on this phone.", free.line)
+        assertFalse(free.priced)
+        assertTrue(free.explanation.endsWith("Models on this phone cost nothing."))
+        assertEquals(
+            "This chat so far: 240,000 tokens, about US$0.60.",
+            chatCostOf(listOf(row("a", 100_000, 20_000), row("phone", 100_000, 20_000)), prices, phone)?.line,
+            "the cloud model's cost only, and no \"for the models with a price\": the phone's model needs none",
+        )
     }
 }

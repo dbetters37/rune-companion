@@ -404,7 +404,7 @@ class DashboardExtrasViewModel(
                 PhoneItemUi(
                     "phone-paused-more", StatusTone.ATTENTION,
                     if (more == 1) "1 more objective paused by today's limit" else "$more more objectives paused by today's limit",
-                    "Raise the limit, or wait until midnight; then open each one in Tasks and tap Resume.", PhoneTarget.DailyLimits,
+                    "Raise the limit (or wait until after midnight), then open each one in Tasks and tap Resume.", PhoneTarget.DailyLimits,
                 ),
             )
         }

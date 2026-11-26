@@ -1,6 +1,5 @@
 package com.aicontrolcenter.app.ui.tasks
 
-import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -34,6 +33,7 @@ import com.aicontrolcenter.app.ui.icons.ExpandMore
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.appColors
 import com.aicontrolcenter.framework.orchestration.OrchestrationProtocol
+import com.aicontrolcenter.app.ui.components.calmAnimateContentSize
 
 /**
  * A task's transcript, read-only, drawn with the chat's own renderers. The "user" side of a task
@@ -69,7 +69,7 @@ private fun BriefCard(text: String) {
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surfaceContainer,
         border = BorderStroke(1.dp, appColors.hairline),
-        modifier = Modifier.fillMaxWidth().animateContentSize(),
+        modifier = Modifier.fillMaxWidth().calmAnimateContentSize(),
     ) {
         Column(
             Modifier

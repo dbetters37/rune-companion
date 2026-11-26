@@ -52,7 +52,14 @@ class NewObjectiveWarningsTest {
         assertFalse(line.reached)
 
         today.value = TodayUse(DailyUse(37, 12_400, 0, priced = false), DailyLimits.DEFAULT)
-        assertEquals("Today: 37 of 200 answers · 12,400 of 500,000 tokens", vm.uiState.value.today?.text, "no money without a price")
+        assertEquals(
+            "Today: 37 of 200 answers · 12,400 of 500,000 tokens · US$1.00 (counted once you enter prices)", vm.uiState.value.today?.text,
+            "no money spent is shown without a price, but the money limit is (D3A-8)",
+        )
+
+        // Prices in euros: the money limit is read in them, as the limiter's sentence does (D3A-8).
+        today.value = TodayUse(DailyUse(37, 12_400, 120_000, priced = true), DailyLimits.DEFAULT, currency = "€")
+        assertEquals("Today: 37 of 200 answers · 12,400 of 500,000 tokens · €0.12 of €1.00", vm.uiState.value.today?.text)
 
         today.value = TodayUse(DailyUse(200, 12_400, 0, priced = false), DailyLimits.DEFAULT)
         assertTrue(vm.uiState.value.today!!.reached)
@@ -96,7 +103,8 @@ class NewObjectiveWarningsTest {
         val vm = form(app, storage = storage)
         assertEquals(StorageLevel.CRITICAL, storage.check())
         assertTrue(vm.uiState.value.storageFull)
-        assertEquals(NewObjectiveViewModel.STORAGE_FULL, vm.uiState.value.storageWarning)
+        // Under the banner's title "The phone is almost full": the body does not say it again (D3A-12a).
+        assertEquals("Free some room on the phone before starting an objective.", vm.uiState.value.storageWarning)
 
         vm.setText("Plan a weekend in Porto.")
         vm.start()

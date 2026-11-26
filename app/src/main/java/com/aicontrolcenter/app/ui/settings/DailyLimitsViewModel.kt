@@ -54,6 +54,11 @@ data class DailyLimitsUiState(
     val lines: List<LimitLineUi> = emptyList(),
     /** The limiter's sentence when a limit is reached now; null otherwise. */
     val reached: String? = null,
+    /**
+     * On the Daily limits screen itself: which limit is reached and what to do here, instead of the limiter's "raise it in
+     * Settings › Daily limits", which is this screen (D3A-16); null when no limit is reached.
+     */
+    val reachedHere: String? = null,
     /** Whether the money limit is on in the form (it can be switched off: no money limit). */
     val moneyLimitOn: Boolean = true,
     val errors: DailyLimitErrors = DailyLimitErrors(),
@@ -114,6 +119,7 @@ class DailyLimitsViewModel(
             limits = use.limits,
             lines = linesOf(use),
             reached = reachedSentence(use),
+            reachedHere = reachedSentence(use)?.let(::hereSentence),
             moneyLimitOn = current.moneyLimitOn,
             errors = current.errors,
             savedMessage = current.savedMessage,
@@ -267,6 +273,13 @@ class DailyLimitsViewModel(
                 ),
             )
         }
+
+        /** What the Daily limits screen says when a limit is reached: the limiter's first sentence, then what to do here. */
+        fun hereSentence(sentence: String): String =
+            sentence.substringBefore(" It starts again").trim() + " " + RAISE_HERE
+
+        /** The rest of [hereSentence]. */
+        const val RAISE_HERE: String = "Raise a limit below, then tap Resume on each paused objective. The counts start again at midnight."
 
         /** The limiter's own sentence when a limit is reached, else null. */
         fun reachedSentence(use: TodayUse): String? =

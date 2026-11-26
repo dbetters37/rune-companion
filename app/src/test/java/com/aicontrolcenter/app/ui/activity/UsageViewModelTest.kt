@@ -76,8 +76,11 @@ class UsageViewModelTest {
 
         assertFalse(state.isLoading)
         val summary = assertNotNull(state.summary)
-        assertEquals(3, summary.answers)
-        assertEquals(4_500, summary.tokens)
+        // The same counted figures as the Dashboard's Today tile; the simulator on this phone beside them (D3A-2).
+        assertEquals(2, summary.answers)
+        assertEquals(3_000, summary.tokens)
+        assertEquals(1, summary.phoneAnswers)
+        assertEquals(1_500, summary.phoneTokens)
         assertEquals("US$0.02", summary.cost)
         assertEquals("Today's limits count 2 answers of 200 and 3,000 tokens of 500,000, and US$0.02 of US$1.00.", summary.lines[0])
         assertTrue("1 answer came from models on this phone: they cost nothing, and the daily limits do not count them." in summary.lines, summary.lines.toString())
@@ -196,7 +199,7 @@ class UsageViewModelTest {
 
         app.usage.record(sample(answerMs = 2_000, ttftMs = 400))
         assertEquals(
-            "On average the first words came after 0.4 seconds, the whole answer after 2 seconds.",
+            "On average the first words came in under a second, the whole answer after 2 seconds.",
             viewModel.uiState.value.models.single().speed,
         )
     }
@@ -241,7 +244,9 @@ class UsageViewModelTest {
 
     @Test
     fun `plain words for times and money`() {
-        assertEquals("0.4 seconds", secondsWords(400))
+        assertEquals("under a second", secondsWords(40), "never \"0 seconds\" (D3A-16)")
+        assertEquals("under a second", secondsWords(0))
+        assertEquals("0.5 seconds", secondsWords(500))
         assertEquals("1 second", secondsWords(1_000))
         assertEquals("1 minute 5 seconds", secondsWords(65_000))
         assertEquals("under a minute", waitWords(20_000))

@@ -1,6 +1,7 @@
 package com.aicontrolcenter.app.ui.questions
 
 import androidx.compose.runtime.Immutable
+import com.aicontrolcenter.app.ui.models.isSimulator
 import com.aicontrolcenter.app.ui.approvals.hiddenCharacterWarning
 import com.aicontrolcenter.app.ui.approvals.inWords
 import com.aicontrolcenter.app.ui.approvals.isOpenAt
@@ -22,6 +23,7 @@ import com.aicontrolcenter.core.operator.PreviewText
 import com.aicontrolcenter.core.operator.QuestionRules
 import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.registry.RegistrySnapshot
+import com.aicontrolcenter.framework.operator.DefaultOwnerRequests
 import com.aicontrolcenter.core.registry.effectiveLocality
 import java.time.ZoneId
 
@@ -103,8 +105,13 @@ object QuestionTexts {
     const val ALLOWS_NOTHING = "An answer gives no permission and approves nothing. Requests that need your approval still ask you."
 
     const val SEND = "Send"
-    const val DECIDE_YOURSELF = "Decide yourself"
     const val SEND_ANYWAY = "Send it anyway"
+
+    /** The button that sends no words: "Let Researcher decide" (D3A-12f: "Decide yourself" read as an order to the owner). */
+    fun letDecide(agentName: String): String = "Let $agentName decide"
+
+    /** The code warning (rule 32), with the screen's curly quotes around the button's name (D3A-12e). */
+    val CODE_WARNING: String = DefaultOwnerRequests.CODE_ASK_AGAIN.replace("\"$SEND_ANYWAY\"", "“$SEND_ANYWAY”")
     const val USE_THIS_ANSWER = "Use this answer"
 
     /** Rule 32: after any answer, the objective's next tool call that sends something off the phone asks first. */
@@ -187,7 +194,9 @@ fun whereAnswerGoes(request: OwnerRequest, snapshot: RegistrySnapshot?, agentNam
         return "Your answer goes to the model $agentName uses, with its next request. If that model is on the internet, your " +
             "answer leaves this phone. Nothing else is sent by answering." to true
     }
-    val name = "${model.displayName} from ${provider.name}"
+    // "Grok 4 from xAI", but not "Simulator (not a real model) from Simulator" (D3A-12b).
+    val name = if (model.displayName.contains(provider.name, ignoreCase = true)) model.displayName else "${model.displayName} from ${provider.name}"
+    if (model.isSimulator) return "Your answer stays on this phone: $agentName uses the built-in simulator, which runs here." to false
     return when (provider.effectiveLocality) {
         Locality.ON_DEVICE -> "Your answer stays on this phone: $agentName's model, $name, runs here." to false
         Locality.LOCAL_NETWORK ->

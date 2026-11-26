@@ -372,7 +372,11 @@ class ChatViewModelTest {
     @Test
     fun `the cost line shows the chat's tokens, and money once the model has a price`() = runTest(mainRule.dispatcher) {
         val app = TestApp(backgroundScope)
-        val model = app.serveModel(ScriptedLlmClient.script(ScriptStep.Reply("Hi.", TokenUsage(100_000, 20_000))))
+        // In the cloud: a model on this phone is free whatever its price (D3A-10).
+        val model = app.serveModel(
+            ScriptedLlmClient.script(ScriptStep.Reply("Hi.", TokenUsage(100_000, 20_000))),
+            baseUrl = com.aicontrolcenter.app.testing.CLOUD_MODEL_URL, apiKey = "test-key-not-real",
+        )
         val agent = app.agentOn(model)
         val conversation = app.graph.agentChat.startConversation(agent)
         val chat = ChatViewModel(

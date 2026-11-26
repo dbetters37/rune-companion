@@ -196,7 +196,7 @@ internal fun speedOf(totals: UsageTotals?): SpeedUi {
     }
     if (totals.ok >= SPEED_MIN_ANSWERS) {
         totals.averageAnswerMs?.let { lines += "A whole answer took ${seconds(it)} on average." }
-        totals.averageTtftMs?.let { lines += "The first words came after ${seconds(it)} on average." }
+        totals.averageTtftMs?.let { lines += "The first words came ${seconds(it).let { s -> if (s == "under a second") "in $s" else "after $s" }} on average." }
     } else if (totals.ok > 0) {
         lines += "Average times are shown once it has given $SPEED_MIN_ANSWERS answers."
     }
@@ -223,8 +223,9 @@ private fun count(n: Long, word: String) = "${formatCount(n)} ${if (n == 1L) wor
 
 private fun times(n: Long) = if (n == 1L) "once" else "${formatCount(n)} times"
 
-/** "0.8 seconds", "3.2 seconds", "1 minute 5 seconds". */
+/** "under a second", "0.8 seconds", "3.2 seconds", "1 minute 5 seconds" (never "0 seconds", D3A-16). */
 internal fun seconds(ms: Long): String = when {
+    ms < 500 -> "under a second"
     ms < 60_000 -> BigDecimal.valueOf(ms, 3).setScale(1, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString().let {
         "$it ${if (it == "1") "second" else "seconds"}"
     }

@@ -16,11 +16,15 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.filterNotNull
@@ -60,12 +64,31 @@ fun ScreenScaffold(
             snackbarHostState.showSnackbar(shown.text)
         }
     }
+    // With large fonts a title that does not fit on one line gets a second one and a taller bar, so "A question from
+    // Researcher" keeps the agent's name (D3A-11); otherwise one line, as before.
+    val density = LocalDensity.current
+    val largeFont = density.fontScale >= 1.3f
+    var twoLines by remember(title, largeFont) { mutableStateOf(false) }
+    val titleStyle = MaterialTheme.typography.titleLarge
+    val barHeight = if (twoLines) {
+        with(density) { maxOf(TopAppBarDefaults.TopAppBarExpandedHeight, titleStyle.lineHeight.toDp() * 2 + 12.dp) }
+    } else {
+        TopAppBarDefaults.TopAppBarExpandedHeight
+    }
     Scaffold(
         modifier = modifier,
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
-                title = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                title = {
+                    Text(
+                        title,
+                        maxLines = if (twoLines) 2 else 1,
+                        overflow = TextOverflow.Ellipsis,
+                        onTextLayout = { layout -> if (largeFont && !twoLines && layout.hasVisualOverflow) twoLines = true },
+                    )
+                },
+                expandedHeight = barHeight,
                 navigationIcon = {
                     if (onBack != null) {
                         IconButton(onClick = onBack) { Icon(AppIcons.Back, contentDescription = "Back") }

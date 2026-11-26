@@ -1,6 +1,5 @@
 package com.aicontrolcenter.app.ui.chat
 
-import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -43,6 +42,7 @@ import com.aicontrolcenter.app.ui.theme.MonoTextStyle
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.app.ui.theme.appColors
+import com.aicontrolcenter.app.ui.components.calmAnimateContentSize
 
 /*
  * How the pieces of a transcript look: the owner's messages, the agent's replies with their
@@ -131,7 +131,7 @@ internal fun AgentBubble(text: String, modifier: Modifier = Modifier, markdown: 
 @Composable
 internal fun ReasoningSummary(text: String, live: Boolean, answering: Boolean = false) {
     var expanded by rememberSaveable { mutableStateOf(false) }
-    Column(Modifier.animateContentSize()) {
+    Column(Modifier.calmAnimateContentSize()) {
         Row(
             modifier = Modifier
                 .clickable(onClickLabel = if (expanded) "Hide reasoning" else "Show reasoning") { expanded = !expanded }
@@ -177,7 +177,7 @@ internal fun ToolCallRow(call: ToolCallUi) {
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surfaceContainer,
         border = BorderStroke(1.dp, appColors.hairline),
-        modifier = Modifier.fillMaxWidth().animateContentSize(),
+        modifier = Modifier.fillMaxWidth().calmAnimateContentSize(),
     ) {
         Column(
             Modifier

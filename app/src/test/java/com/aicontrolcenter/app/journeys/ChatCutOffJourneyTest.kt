@@ -77,7 +77,11 @@ class ChatCutOffJourneyTest {
     @Test
     fun `a chat's cost line shows tokens, and money once the model's price is typed in`() {
         val robot = AppRobot(compose).given {
-            val model = serveModel(ScriptedLlmClient.script(ScriptStep.Reply("Done.", TokenUsage(100_000, 20_000))), displayName = "Priced model")
+            // In the cloud: a model on this phone costs nothing and takes no price (D3A-10).
+            val model = serveModel(
+                ScriptedLlmClient.script(ScriptStep.Reply("Done.", TokenUsage(100_000, 20_000))), displayName = "Priced model",
+                baseUrl = com.aicontrolcenter.app.testing.CLOUD_MODEL_URL, apiKey = "test-key-not-real",
+            )
             graph.agentManager.create(AgentDraft(name = "Counter", kind = AgentKind.SPECIALIST, modelId = model.id, description = "Counts things."))
             graph.start().join()
         }.launch().also { robot = it }

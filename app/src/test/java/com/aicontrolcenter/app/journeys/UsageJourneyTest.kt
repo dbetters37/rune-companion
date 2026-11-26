@@ -66,8 +66,9 @@ class UsageJourneyTest {
             .assertShown("Free: on this phone")
             .assertShown("came from models on this phone: they cost nothing")
             .assertNotShown("Nothing used today")
-        // The answers tile says the same number the store holds, counted as the limits count.
-        assertDescribed("$answers Answers")
+        // The answers tile says what the limits count (nothing: the simulator is on this phone) and, beside it, the free
+        // answers on the phone: the number the store holds (D3A-2).
+        assertDescribed("0 Answers, +$answers on this phone (free)")
         robot.scrollListTo("Estimated from the prices you entered")
             .assertShown("Estimated from the prices you entered; your provider's bill is what counts.")
             .scrollListTo("Simulator (not a real model)")
@@ -110,7 +111,7 @@ class UsageJourneyTest {
             compose.onAllNodes(hasContentDescription("US$", substring = true) and hasContentDescription("Estimated cost", substring = true)).fetchSemanticsNodes().isNotEmpty(),
             "the tile shows a cost in money",
         )
-        assertTrue(compose.onAllNodes(hasContentDescription("a price is missing", substring = true)).fetchSemanticsNodes().isEmpty())
+        assertTrue(compose.onAllNodes(hasContentDescription("No cost", substring = true)).fetchSemanticsNodes().isEmpty())
     }
 
     /** A tile reads as one phrase ("37 Answers, of 200"): it is found by what screen readers say. */

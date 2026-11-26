@@ -13,10 +13,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.app.ui.theme.appColors
 
@@ -48,7 +48,8 @@ fun AgentAvatar(
                 text = monogramOf(name),
                 color = accent,
                 fontWeight = FontWeight.SemiBold,
-                fontSize = (size.value * 0.36f).sp,
+                // From the circle's size in dp, not scaled again by the font size: at font scale 2.0 the letter must still fit (D3A-13).
+                fontSize = with(LocalDensity.current) { (size * 0.36f).toSp() },
                 maxLines = 1,
             )
         }
