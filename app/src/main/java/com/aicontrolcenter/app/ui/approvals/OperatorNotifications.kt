@@ -36,7 +36,7 @@ import kotlinx.coroutines.flow.update
  * The phone operator's notifications: "Approval needed" when an agent waits for the owner's
  * answer, and "<agent> is operating <app> · Stop". On Android 13 and later they need the owner's
  * permission, which is asked for, with an explanation first, when the owner turns the phone
- * operator on (or at the first start with it already on), and while it is off the Approvals list
+ * operator on (or at the first start with it already on), and while it is off the "Waiting for you" list
  * and Tools say so, with a way to the system settings. Requests still wait in the app either way.
  */
 
@@ -86,7 +86,7 @@ fun OperatorNotificationsAsk() {
         title = "Be told when an agent waits for you?",
         message = "With the phone operator on, agents sometimes need your permission or approval before they act. A notification " +
             "tells you when one is waiting, also when the app is closed, and another shows while an agent operates an app's " +
-            "screen, with Stop. Android asks for permission next. If you say no, requests still wait in Approvals and in the " +
+            "screen, with Stop. Android asks for permission next. If you say no, requests still wait in Waiting for you and in the " +
             "chat or task that asked, and are refused if nobody answers in time.",
         confirmLabel = "Continue",
         dismissLabel = "Not now",
@@ -107,7 +107,7 @@ fun ApprovalNotificationsOffBanner(modifier: Modifier = Modifier) {
         InfoBanner(
             title = "Notifications are off",
             text = "You are not told when an agent waits for your answer, or while an agent operates an app's screen. Requests " +
-                "still wait in Approvals and in the chat or task that asked, and are refused if nobody answers in time.",
+                "still wait in Waiting for you and in the chat or task that asked, and are refused if nobody answers in time.",
             tone = StatusTone.ATTENTION,
         )
         TextButton(onClick = {

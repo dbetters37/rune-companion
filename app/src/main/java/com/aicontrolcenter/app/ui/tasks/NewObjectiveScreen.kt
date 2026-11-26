@@ -1,6 +1,5 @@
 package com.aicontrolcenter.app.ui.tasks
 
-import com.aicontrolcenter.app.Phase6Stub
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -56,6 +55,9 @@ import com.aicontrolcenter.app.ui.components.readableWidth
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.Cloud
 import com.aicontrolcenter.app.ui.icons.OnDevice
+import com.aicontrolcenter.app.ui.icons.Speed
+import com.aicontrolcenter.app.ui.icons.Storage
+import androidx.compose.material3.TextButton
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.app.ui.theme.appColors
@@ -71,23 +73,29 @@ class NewObjectiveActions(
     val onMessageShown: () -> Unit,
     /** Asks Android for the notification permission; the answer goes to [onNotificationsAnswered]. */
     val onRequestPermission: () -> Unit,
+    /** The daily-limit line's link: Settings › Daily limits. */
+    val onOpenDailyLimits: () -> Unit = {},
+    /** The background warning's link: Settings (Working in the background). */
+    val onOpenSettings: () -> Unit = {},
 )
 
 /**
- * Wave 3 (WP11a): the daily-limit line ("Today: 37 of 200 answers", `graph.todayUsage`) links to [onOpenDailyLimits];
- * the background warning (A3) to [onOpenSettings] (Settings > Working in the background).
+ * The New objective form. The daily-limit line ("Today: 37 of 200 answers", `graph.todayUsage`) links to
+ * [onOpenDailyLimits]; the background warning (A3) to [onOpenSettings] (Settings › Working in the background).
  */
-@Phase6Stub("WP11a")
 @Composable
 fun NewObjectiveRoute(
     onBack: () -> Unit,
     onStarted: (TaskId) -> Unit,
-    @Suppress("UNUSED_PARAMETER") onOpenDailyLimits: () -> Unit = {},
-    @Suppress("UNUSED_PARAMETER") onOpenSettings: () -> Unit = {},
+    onOpenDailyLimits: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
 ) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel {
-        NewObjectiveViewModel(graph.orchestrator, graph.registryDirectory, graph.memoryService, graph.notifications, awaitStartup = graph::awaitStartup)
+        NewObjectiveViewModel(
+            graph.orchestrator, graph.registryDirectory, graph.memoryService, graph.notifications, awaitStartup = graph::awaitStartup,
+            today = graph.todayUsage.observe(), storage = graph.storageWatch, background = graph.backgroundHealth.state,
+        )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     LaunchedEffect(state.startedId) {
@@ -110,6 +118,8 @@ fun NewObjectiveRoute(
             onNotificationsAnswered = viewModel::notificationsAnswered,
             onMessageShown = viewModel::messageShown,
             onRequestPermission = { if (permission != null) launcher.launch(permission) else viewModel.notificationsAnswered() },
+            onOpenDailyLimits = onOpenDailyLimits,
+            onOpenSettings = onOpenSettings,
         ),
     )
 }
@@ -136,6 +146,15 @@ fun NewObjectiveScreen(state: NewObjectiveUiState, objective: TextFieldState, ac
             verticalArrangement = Arrangement.spacedBy(Spacing.md),
         ) {
             DirectorLine(state.director)
+            state.reasoningWarning?.let { InfoBanner(title = "The Director's model plans less well", text = it, tone = StatusTone.ATTENTION) }
+            state.storageWarning?.let {
+                InfoBanner(
+                    title = if (state.storageFull) "The phone is almost full" else "Little room left",
+                    text = it,
+                    tone = if (state.storageFull) StatusTone.UNAVAILABLE else StatusTone.ATTENTION,
+                    icon = AppIcons.Storage,
+                )
+            }
             ObjectiveField(state, objective)
             Column {
                 SectionHeader("Options")
@@ -160,6 +179,8 @@ fun NewObjectiveScreen(state: NewObjectiveUiState, objective: TextFieldState, ac
                 }
             }
             WhereTheWorkGoes(state.team)
+            state.today?.let { TodayLine(it, actions.onOpenDailyLimits) }
+            state.backgroundWarning?.let { BackgroundWarning(it, actions.onOpenSettings) }
             StartButton(state, actions.onStart)
         }
     }
@@ -294,6 +315,38 @@ private fun WhereTheWorkGoes(team: TeamDestinationsUi) {
                 }
             }
         }
+    }
+}
+
+/** "Today: 37 of 200 answers · …" with what happens at the limit, and the way to the limits. */
+@Composable
+private fun TodayLine(today: TodayLineUi, onOpenDailyLimits: () -> Unit) {
+    Column {
+        SectionHeader("Today's limits")
+        AppCard {
+            Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        AppIcons.Speed,
+                        contentDescription = null,
+                        tint = if (today.reached) appColors.status(StatusTone.ATTENTION) else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Text(today.text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f))
+                }
+                Text(today.note, style = MaterialTheme.typography.bodySmall, color = if (today.reached) appColors.status(StatusTone.ATTENTION) else MaterialTheme.colorScheme.onSurfaceVariant)
+                TextButton(onClick = onOpenDailyLimits, modifier = Modifier.heightIn(min = Spacing.touchTarget)) { Text("Daily limits") }
+            }
+        }
+    }
+}
+
+/** A3: what may stop the work while the owner is away, with the way to Settings. */
+@Composable
+private fun BackgroundWarning(text: String, onOpenSettings: () -> Unit) {
+    Column {
+        InfoBanner(title = "Work may stop in the background", text = text, tone = StatusTone.ATTENTION)
+        TextButton(onClick = onOpenSettings, modifier = Modifier.heightIn(min = Spacing.touchTarget)) { Text("Open Settings") }
     }
 }
 

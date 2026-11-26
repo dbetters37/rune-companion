@@ -22,6 +22,8 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -51,11 +53,12 @@ import com.aicontrolcenter.core.TaskId
 @Composable
 fun ObjectivesRoute(onOpenObjective: (TaskId) -> Unit, onNewObjective: () -> Unit) {
     val graph = LocalAppGraph.current
+    val work = LocalScreenWork.current
     val viewModel = viewModel {
-        ObjectivesViewModel(graph.tasks, graph.registryDirectory, graph.orchestrator, graph.notifications, graph.clock)
+        ObjectivesViewModel(graph.tasks, graph.registryDirectory, graph.orchestrator, graph.notifications, graph.clock, graph.zone(), computation = work)
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    ObjectivesScreen(state, viewModel::setFilter, onOpenObjective, onNewObjective)
+    ObjectivesScreen(state, viewModel::setFilter, onOpenObjective, onNewObjective, viewModel::showOlder)
 }
 
 /** The Tasks section: the owner's objectives, active or finished, and the way to give a new one. */
@@ -65,6 +68,7 @@ fun ObjectivesScreen(
     onFilterChange: (ObjectiveFilter) -> Unit,
     onOpenObjective: (TaskId) -> Unit,
     onNewObjective: () -> Unit,
+    onShowOlder: () -> Unit = {},
 ) {
     ScreenScaffold(
         title = "Tasks",
@@ -109,6 +113,13 @@ fun ObjectivesScreen(
                     }
                 }
                 items(state.rows, key = { it.id.value }) { row -> ObjectiveCard(row, onClick = { onOpenObjective(row.id) }) }
+                if (state.hasOlder) {
+                    item(key = "older") {
+                        OutlinedButton(onClick = onShowOlder, modifier = Modifier.fillMaxWidth().heightIn(min = Spacing.touchTarget)) {
+                            Text("Show older objectives")
+                        }
+                    }
+                }
             }
         }
     }

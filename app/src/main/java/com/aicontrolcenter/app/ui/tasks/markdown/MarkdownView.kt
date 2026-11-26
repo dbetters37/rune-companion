@@ -21,6 +21,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
+import androidx.compose.foundation.lazy.LazyListScope
+import com.aicontrolcenter.app.ui.tasks.LocalScreenWork
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.heading
@@ -42,12 +47,49 @@ import androidx.compose.ui.unit.dp
 import com.aicontrolcenter.app.ui.theme.MonoTextStyle
 import com.aicontrolcenter.app.ui.theme.appColors
 
-/** Renders Markdown written by an agent as readable text in the app's type scale. */
+/**
+ * Renders Markdown written by an agent as readable text in the app's type scale. A long text is parsed off the main
+ * thread (P7, [LocalScreenWork]); until it is, its beginning is shown as plain text.
+ */
 @Composable
 fun MarkdownText(source: String, modifier: Modifier = Modifier, textStyle: TextStyle = MaterialTheme.typography.bodyLarge) {
-    val blocks = remember(source) { Markdown.parse(source) }
-    MarkdownView(blocks, modifier, textStyle)
+    val blocks = rememberMarkdown(source)
+    if (blocks == null) {
+        Text(source.take(PLACEHOLDER_CHARS), style = textStyle, color = MaterialTheme.colorScheme.onSurface, modifier = modifier)
+    } else {
+        MarkdownView(blocks, modifier, textStyle)
+    }
 }
+
+/**
+ * [source] parsed: at once when it is short, off the main thread on [LocalScreenWork] when it is long (P7); null until
+ * then.
+ */
+@Composable
+fun rememberMarkdown(source: String): List<MarkdownBlock>? {
+    if (source.length <= PARSE_AT_ONCE_CHARS) return remember(source) { Markdown.parse(source) }
+    val work = LocalScreenWork.current
+    val parsed by produceState<List<MarkdownBlock>?>(null, source, work) { value = withContext(work) { Markdown.parse(source) } }
+    return parsed
+}
+
+/**
+ * One lazy item per block of [blocks] (P7): a long document composes and measures only what is on screen. Keys are the
+ * block's place and content, so an edit above does not reuse a block below.
+ */
+fun LazyListScope.markdownItems(blocks: List<MarkdownBlock>, keyPrefix: String, modifier: Modifier = Modifier) {
+    items(blocks.size, key = { index -> "$keyPrefix-$index-${blocks[index].hashCode()}" }) { index ->
+        val block = blocks[index]
+        val gap = if (index == 0) 0.dp else gapBefore(block, blocks[index - 1])
+        Box(modifier.padding(top = gap)) { Block(block, MaterialTheme.typography.bodyLarge) }
+    }
+}
+
+/** Texts up to this long are parsed while composing; longer ones off the main thread. */
+const val PARSE_AT_ONCE_CHARS = 4_000
+
+/** How much of a long text shows as plain text while it is parsed. */
+private const val PLACEHOLDER_CHARS = 1_500
 
 @Composable
 fun MarkdownView(blocks: List<MarkdownBlock>, modifier: Modifier = Modifier, textStyle: TextStyle = MaterialTheme.typography.bodyLarge) {
