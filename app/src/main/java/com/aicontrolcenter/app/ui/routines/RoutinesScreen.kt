@@ -235,7 +235,7 @@ internal fun RoutineCard(row: RoutineRowUi, onClick: () -> Unit) {
             row.next?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             row.pausedNote?.let {
                 Text(
-                    "$it Open it to switch it on again.",
+                    "$it Open it to see its recent runs.",
                     style = MaterialTheme.typography.bodySmall,
                     color = appColors.status(StatusTone.ATTENTION),
                 )

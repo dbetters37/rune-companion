@@ -75,8 +75,10 @@ class RoutinesSettingsViewModel(
         pickUpAvailable = pickUpRules != null,
         routinesOn = current.routinesEnabled,
         pickUpOn = current.folderPickUpEnabled,
-        routinesLine = countLine(routineList.size, routineList.count { it.enabled }, "routine", "No routines yet."),
-        pickUpLine = countLine(ruleList.size, ruleList.count { it.enabled }, "rule", "No folder pick-up rules yet."),
+        routinesLine = countLine(routineList.size, routineList.count { it.enabled }, "routine", "No routines yet.")
+            .whileOff(current.routinesEnabled || routineList.isEmpty(), "None runs while routines are off."),
+        pickUpLine = countLine(ruleList.size, ruleList.count { it.enabled }, "rule", "No folder pick-up rules yet.")
+            .whileOff(current.folderPickUpEnabled || ruleList.isEmpty(), "Nothing is picked up while folder pick-up is off."),
         confirming = local.confirming,
         isSaving = local.isSaving,
         problem = local.problem,
@@ -114,6 +116,9 @@ class RoutinesSettingsViewModel(
     }
 
     companion object {
+        /** [this] line, followed by [sentence] when the master switch is off ([on] false). */
+        private fun String.whileOff(on: Boolean, sentence: String): String = if (on) this else "$this $sentence"
+
         /** "No routines yet.", "1 routine, switched on.", "3 routines, 2 of them switched on." */
         fun countLine(count: Int, on: Int, noun: String, none: String): String = when {
             count == 0 -> none

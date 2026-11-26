@@ -21,6 +21,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -51,7 +52,6 @@ import com.aicontrolcenter.app.ui.components.RowDivider
 import com.aicontrolcenter.app.ui.components.RowText
 import com.aicontrolcenter.app.ui.components.ScreenScaffold
 import com.aicontrolcenter.app.ui.components.SectionHeader
-import com.aicontrolcenter.app.ui.components.StepperRow
 import com.aicontrolcenter.app.ui.components.SwitchRow
 import com.aicontrolcenter.app.ui.components.atMostChars
 import com.aicontrolcenter.app.ui.components.formatCount
@@ -222,7 +222,7 @@ fun RoutineEditorScreen(state: RoutineEditorUiState, title: TextFieldState, obje
 private fun OnOffCard(state: RoutineEditorUiState, actions: RoutineEditorActions) {
     AppCard(contentPadding = PaddingValues(horizontal = Spacing.lg, vertical = Spacing.sm)) {
         if (state.pausedNote != null) {
-            InfoBanner(title = "Paused", text = state.pausedNote, tone = StatusTone.ATTENTION, modifier = Modifier.padding(vertical = Spacing.sm))
+            InfoBanner(title = "It switched itself off", text = state.pausedNote, tone = StatusTone.ATTENTION, modifier = Modifier.padding(vertical = Spacing.sm))
             Button(onClick = { actions.onEnabled(true) }, enabled = !state.isSaving, modifier = Modifier.padding(bottom = Spacing.sm).heightIn(min = 48.dp)) {
                 Text("Switch it on again")
             }
@@ -290,14 +290,17 @@ private fun WhenSection(state: RoutineEditorUiState, actions: RoutineEditorActio
                     ChoiceChip("Every few hours", state.kind == ScheduleKind.EVERY_HOURS) { actions.onKind(ScheduleKind.EVERY_HOURS) }
                 }
                 if (state.kind == ScheduleKind.EVERY_HOURS) {
-                    StepperRow(
-                        title = "How often",
-                        value = state.everyHours,
-                        onValueChange = actions.onEveryHours,
-                        range = RoutineLimits.MIN_HOURS_APART..RoutineLimits.MAX_HOURS_APART,
-                        valueText = if (state.everyHours == 1) "every hour" else "every ${state.everyHours} hours",
-                        description = "Runs start again each day from the first time.",
-                    )
+                    // The label above its buttons, as the time below: "every 12 hours" is wide at large font sizes.
+                    Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                        RowText("How often", "Runs start again each day from the first time.")
+                        NumericStepper(
+                            value = state.everyHours,
+                            onValueChange = actions.onEveryHours,
+                            range = RoutineLimits.MIN_HOURS_APART..RoutineLimits.MAX_HOURS_APART,
+                            name = "How often",
+                            valueText = if (state.everyHours == 1) "every hour" else "every ${state.everyHours} hours",
+                        )
+                    }
                 }
                 TimeRow(if (state.kind == ScheduleKind.DAILY) "At" else "First time each day", state.minuteOfDay, actions)
                 RowDivider()
@@ -309,6 +312,7 @@ private fun WhenSection(state: RoutineEditorUiState, actions: RoutineEditorActio
                             selected = day in state.days,
                             onClick = { actions.onToggleDay(day) },
                             label = { Text(RoutineWords.shortDayName(day)) },
+                            leadingIcon = checkIf(day in state.days),
                             modifier = Modifier.heightIn(min = 48.dp).semantics { contentDescription = name },
                         )
                     }
@@ -330,17 +334,14 @@ private fun WhenSection(state: RoutineEditorUiState, actions: RoutineEditorActio
     }
 }
 
-/** The time as an hour and minutes, each with its own buttons (TalkBack: "Hour, 07"; "Increase hour"). */
-@OptIn(ExperimentalLayoutApi::class)
+/**
+ * The time as an hour and minutes, each with its own buttons (TalkBack: "Hour, 07"; "Increase Hour"), under its label so
+ * neither is squeezed at large font sizes or on a narrow phone.
+ */
 @Composable
 private fun TimeRow(title: String, minuteOfDay: Int, actions: RoutineEditorActions) {
-    FlowRow(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(Spacing.md),
-        verticalArrangement = Arrangement.spacedBy(Spacing.sm),
-        itemVerticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(title, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f))
+    Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+        Text(title, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.xs)) {
             NumericStepper(value = minuteOfDay / 60, onValueChange = actions.onHour, range = 0..23, name = "Hour", valueText = "%02d".format(minuteOfDay / 60))
             Text(":", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
@@ -411,9 +412,14 @@ private fun ChoiceChip(label: String, selected: Boolean, onClick: () -> Unit) {
         selected = selected,
         onClick = onClick,
         label = { Text(label) },
+        leadingIcon = checkIf(selected),
         modifier = Modifier.heightIn(min = 48.dp).semantics { role = Role.RadioButton },
     )
 }
+
+/** A check mark on a chosen chip: the choice is never shown by colour alone. */
+private fun checkIf(selected: Boolean): (@Composable () -> Unit)? =
+    if (selected) ({ Icon(AppIcons.Check, contentDescription = null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }) else null
 
 @Composable
 private fun SaveButton(state: RoutineEditorUiState, onSave: () -> Unit) {

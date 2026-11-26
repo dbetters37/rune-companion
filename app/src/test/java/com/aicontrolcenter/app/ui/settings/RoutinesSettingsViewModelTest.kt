@@ -81,6 +81,8 @@ class RoutinesSettingsViewModelTest {
         val app = TestApp(backgroundScope)
         val viewModel = section(app)
         val first = app.makeRoutine("Morning news")
+        assertEquals("1 routine, switched on. None runs while routines are off.", viewModel.uiState.value.routinesLine)
+        app.settings.update { it.copy(routinesEnabled = true, folderPickUpEnabled = true) }
         assertEquals("1 routine, switched on.", viewModel.uiState.value.routinesLine)
         app.makeRoutine("Evening digest")
         app.makeRoutine("Weekly review")
