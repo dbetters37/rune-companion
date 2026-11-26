@@ -132,11 +132,20 @@ internal class SwitchedOffWatch(
     private fun forceStopped(): Boolean =
         sdkInt >= Build.VERSION_CODES.VANILLA_ICE_CREAM && (runCatching { startRecords().firstOrNull()?.wasForceStopped }.getOrNull() == true)
 
-    /** The owner's sentences. */
+    /** The owner's sentences ([ScreenSwitchedOffSentences]). */
     companion object {
-        const val STOPPED =
-            "Android switched screen control off after the app was stopped. Turn it on again in Android's accessibility settings."
-        const val FORCE_STOPPED =
-            "Android switched screen control off after the app was force-stopped. Turn it on again in Android's accessibility settings."
+        const val STOPPED = ScreenSwitchedOffSentences.STOPPED
+        const val FORCE_STOPPED = ScreenSwitchedOffSentences.FORCE_STOPPED
     }
+}
+
+/**
+ * The owner's sentences for screen control that Android switched off after the app was stopped (D7). Public so that the
+ * app's Tools › Screen, which says [STOPPED] when the device layer gave no sentence, stays in step with these words.
+ */
+object ScreenSwitchedOffSentences {
+    const val STOPPED =
+        "Android switched screen control off after the app was stopped. Turn it on again in Android's accessibility settings."
+    const val FORCE_STOPPED =
+        "Android switched screen control off after the app was force-stopped. Turn it on again in Android's accessibility settings."
 }

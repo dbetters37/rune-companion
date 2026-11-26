@@ -122,8 +122,9 @@ data class ScreenControlUiState(
 }
 
 /**
- * The generic D7 sentence, when the device layer gave none: the device's own wording for "stopped" (its watch is
- * internal to the device module), which cannot tell a force stop from a swipe from Recents before Android 15.
+ * The generic D7 sentence, when the device layer gave none: the device's own wording for "stopped"
+ * (`ScreenSwitchedOffSentences.STOPPED`; `SwitchedOffWordsTest` keeps the two in step), which cannot tell a force stop
+ * from a swipe from Recents before Android 15.
  */
 internal const val SWITCHED_OFF: String =
     "Android switched screen control off after the app was stopped. Turn it on again in Android's accessibility settings."
