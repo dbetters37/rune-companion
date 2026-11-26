@@ -110,10 +110,23 @@ data class ScreenControlUiState(
     val picker: AppPickerUi? = null,
     val isBusy: Boolean = false,
     val message: UserMessage? = null,
+    /**
+     * D7: Android switched screen control off (the app was stopped or force-stopped while the service was on), in the
+     * device layer's words; null otherwise. Android's own rule: only the owner can switch it on again, in Android's
+     * accessibility settings.
+     */
+    val switchedOffNotice: String? = null,
 ) {
     /** Everything needed for an agent to operate an authorised app, apart from its permission. */
     val ready: Boolean get() = service.state == ScreenServiceState.READY && operatorEnabled && screenControlEnabled && !stopped
 }
+
+/**
+ * The generic D7 sentence, when the device layer gave none: the device's own wording for "stopped" (its watch is
+ * internal to the device module), which cannot tell a force stop from a swipe from Recents before Android 15.
+ */
+internal const val SWITCHED_OFF: String =
+    "Android switched screen control off after the app was stopped. Turn it on again in Android's accessibility settings."
 
 /**
  * The Screen control tab: whether Android's accessibility service is on (and if not, the exact
@@ -142,6 +155,8 @@ class ScreenControlViewModel(
      * display only (nothing decides from it). Null where no registry is shown.
      */
     private val registry: AiAppRegistry? = null,
+    /** Why Android switched screen control off, in the device layer's words (owner-only); null when it has none. */
+    switchedOffSentence: StateFlow<String?> = MutableStateFlow(null),
 ) : ViewModel() {
 
     private data class Local(val picker: AppPickerUi? = null, val isBusy: Boolean = false, val message: UserMessage? = null)
@@ -151,7 +166,13 @@ class ScreenControlViewModel(
 
     private val facts = combine(serviceState, control.stopped, settings.settings) { state, stopped, settings -> Triple(state, stopped, settings) }
 
-    val uiState: StateFlow<ScreenControlUiState> = combine(facts, apps.observeAll(), grants.observeAll(), directory.observe(), local) { facts, list, all, snapshot, local ->
+    private val switchedOff = combine(control.switchedOffByAndroid, switchedOffSentence) { off, sentence ->
+        if (off) sentence?.takeIf { it.isNotBlank() } ?: SWITCHED_OFF else null
+    }
+
+    val uiState: StateFlow<ScreenControlUiState> = combine(
+        combine(facts, switchedOff, ::Pair), apps.observeAll(), grants.observeAll(), directory.observe(), local,
+    ) { (facts, switchedOff), list, all, snapshot, local ->
         val (state, stopped, settings) = facts
         val now = clock.now()
         val agents = snapshot.agents.map { it.profile }
@@ -183,6 +204,7 @@ class ScreenControlViewModel(
             },
             isBusy = local.isBusy,
             message = local.message,
+            switchedOffNotice = switchedOff,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ScreenControlUiState())
 

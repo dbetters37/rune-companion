@@ -120,6 +120,11 @@ class AgentDetailViewModel(
     tasks: TaskRepository? = null,
     private val clock: Clock = WallClock,
     private val zone: ZoneId = ZoneId.systemDefault(),
+    /**
+     * Counts memories without reading them (D35: the store's COUNT query, `MemoryRepository.observeCount`); without it
+     * the private memories are read through [memory] and counted here.
+     */
+    private val memoryCount: ((MemoryFilter) -> Flow<Int>)? = null,
 ) : ViewModel() {
     private val toolTitles: Map<ToolId, String> = tools.associate { it.id to it.title }
 
@@ -133,8 +138,9 @@ class AgentDetailViewModel(
     private val local = MutableStateFlow(Local())
     private var messageCounter = 0L
 
-    private val privateCount = memory?.observe(MemoryActor.Owner, MemoryFilter(scopes = setOf(MemoryScope.Agent(agentId))))?.map { it.size }
-        ?: flowOf(null)
+    private val privateCount: Flow<Int?> = MemoryFilter(scopes = setOf(MemoryScope.Agent(agentId))).let { filter ->
+        memoryCount?.invoke(filter) ?: memory?.observe(MemoryActor.Owner, filter)?.map { it.size }
+    } ?: flowOf(null)
 
     /** Its tasks across the newest objectives, newest change first. */
     @OptIn(ExperimentalCoroutinesApi::class)

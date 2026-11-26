@@ -6,6 +6,17 @@ import com.aicontrolcenter.app.testing.TestApp
 import com.aicontrolcenter.app.testing.activeIn
 import com.aicontrolcenter.app.testing.serveModel
 import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.ConversationId
+import com.aicontrolcenter.core.chat.ConversationEntry
+import com.aicontrolcenter.core.llm.ChatMessage
+import com.aicontrolcenter.core.llm.ChatRole
+import com.aicontrolcenter.core.settings.FrameworkSettings
+import com.aicontrolcenter.core.usage.CostEstimate
+import com.aicontrolcenter.core.usage.DailyLimitKind
+import com.aicontrolcenter.core.usage.DailyLimits
+import com.aicontrolcenter.core.usage.ModelPrice
+import com.aicontrolcenter.core.usage.WorkKind
+import com.aicontrolcenter.framework.chat.DefaultAgentChat
 import com.aicontrolcenter.core.agents.AgentDraft
 import com.aicontrolcenter.core.agents.AgentKind
 import com.aicontrolcenter.core.llm.LlmException
@@ -32,6 +43,15 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+
+/** Counts how many entries the chat reads, to show that a long chat is read in parts (P5). */
+private class CountingPages(private val pages: ConversationPages) : ConversationPages by pages {
+    var entriesRead = 0
+
+    override suspend fun entriesAfter(id: ConversationId, seq: Int) = pages.entriesAfter(id, seq).also { entriesRead += it.size }
+
+    override suspend fun entriesBefore(id: ConversationId, seq: Int, limit: Int) = pages.entriesBefore(id, seq, limit).also { entriesRead += it.size }
+}
 
 class ChatViewModelTest {
     @get:Rule val mainRule = MainDispatcherRule()
@@ -201,7 +221,23 @@ class ChatViewModelTest {
         val footer = assertNotNull(assertIs<TranscriptItem.Agent>(chat.uiState.value.items.last()).footer)
         assertEquals("router/other-model", footer.answeredBy)
         assertEquals("scripted-1", footer.assignedModel)
-        assertTrue(sameModel("gpt-4o-2024-08-06", "gpt-4o"), "a dated version of the alias is the same model")
+    }
+
+    @Test
+    fun `an alias answered by its dated version is not flagged, another model is (D29)`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        val model = app.serveModel(ScriptedLlmClient.script(ScriptStep.Reply("Hi."), modelName = "grok-4-0709"), modelName = "grok-4-latest")
+        val chat = chatWith(app, app.agentOn(model))
+        chat.say("Hello")
+        val footer = assertNotNull(assertIs<TranscriptItem.Agent>(chat.uiState.value.items.last()).footer)
+        assertEquals("grok-4-0709", footer.answeredBy)
+        assertFalse(footer.differs, "grok-4-latest resolved to grok-4-0709 is the same model")
+
+        val other = app.serveModel(ScriptedLlmClient.script(ScriptStep.Reply("Hi."), modelName = "gpt-4o-mini"), name = "Other", baseUrl = "http://127.0.0.1:9101/v1", modelName = "gpt-4o")
+        val second = chatWith(app, app.agentOn(other, name = "Second"))
+        second.say("Hello")
+        val flagged = assertNotNull(assertIs<TranscriptItem.Agent>(second.uiState.value.items.last()).footer)
+        assertEquals("gpt-4o", flagged.assignedModel, "gpt-4o answered as gpt-4o-mini is another model")
     }
 
     @Test
@@ -253,6 +289,139 @@ class ChatViewModelTest {
         val later = ChatViewModel(conversation, app.graph.registryDirectory, app.graph.agentChat, app.graph.toolRegistry, app.graph.providerManager)
             .also { it.uiState.activeIn(backgroundScope) }
         assertEquals(model.providerId, later.uiState.value.checkProviderId)
+    }
+
+    // --- Phase 6: cut-off replies (R3), long chats (P5), the cost line (goal 1) and today's limit (rule 6) ---
+
+    @Test
+    fun `a reply the app stopped in the middle of says so and Send again runs the last message once more`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        val client = ScriptedLlmClient.replies("Here is the whole answer.")
+        val model = app.serveModel(client)
+        val agent = app.agentOn(model)
+        val conversation = app.graph.agentChat.startConversation(agent)
+        // The app stopped during a turn: the owner's message is stored, the turn's mark is left.
+        app.conversations.appendEntry(ConversationEntry(conversation.id, -1, ChatMessage.user("Tell me about tides"), app.clock.now()))
+        app.conversations.markTurnStarted(conversation.id, app.clock.now())
+        assertEquals(1, app.graph.agentChat.recoverInterruptedTurns())
+
+        val chat = ChatViewModel(conversation.id, app.graph.registryDirectory, app.graph.agentChat, app.graph.toolRegistry, app.graph.providerManager)
+            .also { it.uiState.activeIn(backgroundScope) }
+        val notice = assertIs<TranscriptItem.Notice>(chat.uiState.value.items.last())
+        assertEquals(NoticeKind.APP_STOPPED, notice.kind)
+        assertEquals(DefaultAgentChat.cutOff("Scout"), notice.text)
+        assertTrue(chat.uiState.value.canSendAgain)
+
+        chat.sendAgain()
+        advanceUntilIdle()
+        val items = chat.uiState.value.items
+        assertEquals("Here is the whole answer.", assertIs<TranscriptItem.Agent>(items.last()).text)
+        assertEquals(1, items.count { it is TranscriptItem.Owner }, "the message is not stored a second time")
+        assertEquals("Tell me about tides", client.requests.single().messages.last { it.role == ChatRole.USER }.text)
+        assertFalse(chat.uiState.value.canSendAgain, "a finished reply needs no second try")
+    }
+
+    @Test
+    fun `Send again with nothing to send says so once and stores nothing`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        val model = app.serveModel(ScriptedLlmClient.replies("never"))
+        val conversation = app.graph.agentChat.startConversation(app.agentOn(model))
+        app.conversations.appendEntry(ConversationEntry(conversation.id, -1, ChatMessage.system("Gone"), app.clock.now(), error = "Something failed."))
+        val chat = ChatViewModel(conversation.id, app.graph.registryDirectory, app.graph.agentChat, app.graph.toolRegistry, app.graph.providerManager)
+            .also { it.uiState.activeIn(backgroundScope) }
+        assertTrue(chat.uiState.value.canSendAgain)
+        chat.sendAgain()
+        advanceUntilIdle()
+        assertEquals(DefaultAgentChat.NOTHING_TO_SEND_AGAIN, chat.uiState.value.message?.text)
+        assertEquals(1, app.conversations.getEntries(conversation.id).size)
+    }
+
+    @Test
+    fun `a long chat reads only its newest messages and Show earlier reads the part before them`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        val model = app.serveModel(ScriptedLlmClient.replies("never"))
+        val conversation = app.graph.agentChat.startConversation(app.agentOn(model))
+        repeat(60) { turn ->
+            app.conversations.appendEntry(ConversationEntry(conversation.id, -1, ChatMessage.user("Question $turn"), app.clock.now()))
+            app.conversations.appendEntry(ConversationEntry(conversation.id, -1, ChatMessage.assistant("Answer $turn"), app.clock.now(), modelName = "scripted-1"))
+        }
+        val reads = CountingPages(ConversationPages.of(app.conversations))
+        val chat = ChatViewModel(
+            conversation.id, app.graph.registryDirectory, app.graph.agentChat, app.graph.toolRegistry, app.graph.providerManager, pages = reads,
+        ).also { it.uiState.activeIn(backgroundScope) }
+
+        val first = chat.uiState.value
+        assertEquals(50, first.items.size, "the newest 50 entries")
+        assertEquals("Question 35", assertIs<TranscriptItem.Owner>(first.items.first()).text, "starting with the owner's message of the first turn shown")
+        assertEquals("Answer 59", assertIs<TranscriptItem.Agent>(first.items.last()).text)
+        assertTrue(first.hasEarlier)
+        assertTrue(reads.entriesRead <= 51, "at most a page and the look-back of one entry were read, not all 120 (read ${reads.entriesRead})")
+
+        chat.showEarlier()
+        advanceUntilIdle()
+        assertEquals(100, chat.uiState.value.items.size)
+        assertEquals("Question 10", assertIs<TranscriptItem.Owner>(chat.uiState.value.items.first()).text)
+        chat.showEarlier()
+        advanceUntilIdle()
+        val all = chat.uiState.value
+        assertEquals(120, all.items.size)
+        assertFalse(all.hasEarlier, "everything is shown")
+        assertEquals("Question 0", assertIs<TranscriptItem.Owner>(all.items.first()).text)
+    }
+
+    @Test
+    fun `the cost line shows the chat's tokens, and money once the model has a price`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        val model = app.serveModel(ScriptedLlmClient.script(ScriptStep.Reply("Hi.", TokenUsage(100_000, 20_000))))
+        val agent = app.agentOn(model)
+        val conversation = app.graph.agentChat.startConversation(agent)
+        val chat = ChatViewModel(
+            conversation.id, app.graph.registryDirectory, app.graph.agentChat, app.graph.toolRegistry, app.graph.providerManager,
+            usage = app.graph.usageReports.observeWorkUsage(WorkKind.CHAT, conversation.id.value),
+            prices = app.graph.modelPrices.observeAll(),
+        ).also { it.uiState.activeIn(backgroundScope) }
+        assertNull(chat.uiState.value.cost, "nothing used yet")
+
+        chat.say("Hello")
+        advanceUntilIdle()
+        val unpriced = assertNotNull(chat.uiState.value.cost)
+        assertEquals("This chat so far: 120,000 tokens.", unpriced.line)
+        assertFalse(unpriced.priced)
+        assertTrue("Enter the model's prices in Models" in unpriced.explanation)
+        assertTrue(TOKENS_EXPLAINED in unpriced.explanation, "tokens are explained where they are counted")
+
+        // US$3 per million in, US$15 per million out: 0.30 + 0.30.
+        app.graph.ownerModelPrices.set(ModelPrice(model.id, 3_000_000, 15_000_000))
+        advanceUntilIdle()
+        val priced = assertNotNull(chat.uiState.value.cost)
+        assertEquals("This chat so far: 120,000 tokens, about US$0.60.", priced.line)
+        assertTrue(CostEstimate.DISCLAIMER in priced.explanation, "rule 29: the cost is an estimate from the owner's prices")
+    }
+
+    @Test
+    fun `today's limit is said in its own sentence, with the way to Daily limits`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope, FrameworkSettings(maxModelCallsPerDay = 1))
+        val client = ScriptedLlmClient.replies("First answer.", "Never sent.")
+        val model = app.serveModel(client, name = "Hosted", baseUrl = "https://api.example.com/v1", apiKey = "sk-test-0123456789abcdef")
+        val agent = app.agentOn(model)
+        val conversation = app.graph.agentChat.startConversation(agent)
+        val chat = ChatViewModel(
+            conversation.id, app.graph.registryDirectory, app.graph.agentChat, app.graph.toolRegistry, app.graph.providerManager,
+            today = app.graph.todayUsage.observe(),
+        ).also { it.uiState.activeIn(backgroundScope) }
+        assertNull(chat.uiState.value.limitReached)
+
+        chat.say("One")
+        advanceUntilIdle()
+        val sentence = DailyLimits(1, 500_000, 1_000_000).sentence(DailyLimitKind.CALLS)
+        assertEquals(sentence, chat.uiState.value.limitReached, "the limit is reached and this chat's text leaves the phone")
+
+        chat.say("Two")
+        advanceUntilIdle()
+        val notice = assertIs<TranscriptItem.Notice>(chat.uiState.value.items.last())
+        assertEquals(NoticeKind.LIMIT, notice.kind)
+        assertEquals(sentence, notice.text, "the limit's sentence alone")
+        assertEquals(1, client.requests.size, "the second message was not sent")
     }
 
     private companion object {

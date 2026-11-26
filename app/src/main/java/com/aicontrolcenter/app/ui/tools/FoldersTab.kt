@@ -39,6 +39,10 @@ import com.aicontrolcenter.app.ui.components.plural
 import com.aicontrolcenter.app.ui.components.readableWidth
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.Folder
+import com.aicontrolcenter.app.ui.icons.Import
+import com.aicontrolcenter.app.ui.components.InfoBanner
+import com.aicontrolcenter.app.ui.theme.StatusTone
+import androidx.compose.material3.OutlinedButton
 import com.aicontrolcenter.app.ui.icons.Storage
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.core.AgentId
@@ -51,6 +55,10 @@ class FoldersActions(
     val onRemove: (FolderId) -> Unit,
     val onSetReadOnly: (FolderId, Boolean) -> Unit,
     val onSetAccess: (FolderId, AgentId, AccessLevel) -> Unit,
+    /** The owner's folder pick-up rules (WP10c's list). */
+    val onOpenPickUpRules: () -> Unit = {},
+    /** A new pick-up rule for a read-only folder (WP10c's editor). */
+    val onNewPickUpRule: (FolderId) -> Unit = {},
 )
 
 /**
@@ -83,6 +91,12 @@ fun FoldersTab(state: FoldersUiState, actions: FoldersActions) {
                     Icon(AppIcons.Add, contentDescription = null, modifier = Modifier.padding(end = Spacing.sm))
                     Text("Add a folder")
                 }
+                if (state.pickUpAvailable) {
+                    OutlinedButton(onClick = actions.onOpenPickUpRules, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                        Icon(AppIcons.Import, contentDescription = null, modifier = Modifier.padding(end = Spacing.sm))
+                        Text("Folder pick-up rules")
+                    }
+                }
             }
         }
         if (state.folders.isEmpty()) {
@@ -95,7 +109,7 @@ fun FoldersTab(state: FoldersUiState, actions: FoldersActions) {
             }
         }
         items(state.folders, key = { it.id.value }) { folder ->
-            FolderCard(folder, state.isBusy, actions, onRemove = { confirmRemove = folder.id.value })
+            FolderCard(folder, state.isBusy, state.pickUpAvailable, actions, onRemove = { confirmRemove = folder.id.value })
         }
     }
     val removing = state.folders.firstOrNull { it.id.value == confirmRemove }
@@ -119,7 +133,7 @@ fun FoldersTab(state: FoldersUiState, actions: FoldersActions) {
 }
 
 @Composable
-private fun FolderCard(folder: FolderUi, isBusy: Boolean, actions: FoldersActions, onRemove: () -> Unit) {
+private fun FolderCard(folder: FolderUi, isBusy: Boolean, pickUpAvailable: Boolean, actions: FoldersActions, onRemove: () -> Unit) {
     AppCard {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
             Icon(AppIcons.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -134,13 +148,26 @@ private fun FolderCard(folder: FolderUi, isBusy: Boolean, actions: FoldersAction
                 modifier = Modifier.semantics { contentDescription = "Remove ${folder.name}" },
             ) { Text("Remove") }
         }
+        // Another app's storage (a cloud drive, a file manager): Android does not say whether it shows the phone's own files.
+        folder.otherAppNote?.let { InfoBanner(text = it, tone = StatusTone.ATTENTION, modifier = Modifier.padding(top = Spacing.sm)) }
         SwitchRow(
             title = "Read-only",
-            description = "No agent can create, change, rename or delete anything in it, whatever is allowed below.",
+            description = "No agent can create, change, rename or delete anything in it, whatever is allowed below." +
+                if (folder.hasPickUpRule && folder.readOnly) " A folder pick-up rule reads it: making it changeable switches that rule off." else "",
             checked = folder.readOnly,
             onCheckedChange = { actions.onSetReadOnly(folder.id, it) },
             enabled = !isBusy,
         )
+        if (pickUpAvailable && folder.readOnly && !folder.hasPickUpRule) {
+            OutlinedButton(
+                onClick = { actions.onNewPickUpRule(folder.id) },
+                enabled = !isBusy,
+                modifier = Modifier.heightIn(min = 48.dp).semantics { contentDescription = "Pick up new files from ${folder.name}" },
+            ) {
+                Icon(AppIcons.Import, contentDescription = null, modifier = Modifier.padding(end = Spacing.sm))
+                Text("Pick up new files")
+            }
+        }
         RowDivider(Modifier.padding(vertical = Spacing.xs))
         SectionHeader("Who may use it")
         folder.agents.forEach { access ->

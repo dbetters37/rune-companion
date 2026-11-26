@@ -32,7 +32,10 @@ import com.aicontrolcenter.app.ui.components.readableWidth
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.ChevronRight
 import com.aicontrolcenter.app.ui.icons.Key
+import com.aicontrolcenter.app.ui.icons.Insights
 import com.aicontrolcenter.app.ui.icons.Lightbulb
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.appColors
 import com.aicontrolcenter.core.llm.ProviderPreset
@@ -87,6 +90,24 @@ internal fun PresetGalleryScreen(groups: List<PresetGroup>, onBack: () -> Unit, 
     }
 }
 
+/** A preset's description in its two parts: what it is, and the plain line on what using it costs (null when it has none). */
+internal fun presetDescription(preset: ProviderPreset): Pair<String, String?> {
+    val lines = preset.description.lines().map { it.trim() }.filter { it.isNotEmpty() }
+    return if (lines.size < 2) preset.description.trim() to null else lines.dropLast(1).joinToString(" ") to lines.last()
+}
+
+/** "What it costs", set apart from what the preset is, with the usage icon. */
+@Composable
+internal fun PresetCostLine(cost: String, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier.semantics(mergeDescendants = true) { contentDescription = "What it costs: $cost" },
+        horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+    ) {
+        Icon(AppIcons.Insights, contentDescription = null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.padding(top = 1.dp).size(16.dp))
+        Text(cost, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PresetCard(preset: ProviderPreset, onClick: () -> Unit) {
@@ -95,7 +116,9 @@ private fun PresetCard(preset: ProviderPreset, onClick: () -> Unit) {
         Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
                 Text(preset.title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
-                Text(preset.description, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                val (what, cost) = presetDescription(preset)
+                Text(what, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                cost?.let { PresetCostLine(it) }
                 FlowRow(
                     modifier = Modifier.padding(top = 2.dp),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),

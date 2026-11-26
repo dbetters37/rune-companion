@@ -102,6 +102,8 @@ fun AgentDetailRoute(
             graph.memoryService,
             graph.tasks,
             graph.clock,
+            zone = graph.zone(),
+            memoryCount = graph.ports.memories::observeCount,
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()

@@ -55,6 +55,8 @@ import com.aicontrolcenter.app.ui.theme.appColors
 internal fun TranscriptNotice(item: TranscriptItem.Notice) {
     when (item.kind) {
         NoticeKind.CUT_OFF -> InfoBanner(title = "Reply cut off", text = item.text, tone = StatusTone.ATTENTION)
+        NoticeKind.APP_STOPPED -> InfoBanner(title = "The app stopped", text = item.text, tone = StatusTone.ATTENTION)
+        NoticeKind.LIMIT -> InfoBanner(title = "Today's limit is reached", text = item.text, tone = StatusTone.ATTENTION)
         NoticeKind.FAILURE -> InfoBanner(title = "The turn failed", text = item.text, tone = StatusTone.UNAVAILABLE)
     }
 }

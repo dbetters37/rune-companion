@@ -143,19 +143,24 @@ class MemoryGraphViewModelTest {
         assertEquals(inTeam.map { "mem:${it.id.value}" }.toSet(), decoded.nodes.map { it.id }.toSet())
     }
 
+    /** Rule 21 (D37): the owner's own export through the share sheet is allowed in local-only mode, with the line about the receiving app. */
     @Test
-    fun `local-only mode refuses the export and records that it did`() = runTest(mainRule.dispatcher) {
+    fun `local-only mode allows the owner's own export and says the chosen app may send it off the phone`() = runTest(mainRule.dispatcher) {
         val app = TestApp(backgroundScope)
         app.populateWithMemories()
         app.settings.update { it.copy(localOnlyMode = true) }
         val viewModel = graphOf(app)
+        assertEquals("The app you choose may send it off the phone.", viewModel.uiState.value.exportNote)
 
         viewModel.exportGraph()
 
-        assertNull(viewModel.uiState.value.pendingExport)
-        assertTrue(viewModel.uiState.value.message!!.text.startsWith("Local-only mode is on."))
-        assertTrue(app.activityLog.recent(ActivityFilter(egressOnly = true)).none { it.title == "Memory graph exported" })
-        assertEquals("Memory graph export blocked", app.activityLog.recent().first().title)
+        val export = assertNotNull(viewModel.uiState.value.pendingExport)
+        assertTrue(export.localOnly)
+        assertTrue(viewModel.uiState.value.message!!.text.endsWith("The app you choose may send it off the phone."))
+        viewModel.exportHandled(failure = null)
+        val event = app.activityLog.recent(ActivityFilter(egressOnly = true)).single { it.title == "Memory graph exported" }
+        assertTrue("Local-only mode was on; this was your own export." in event.detail, event.detail)
+        assertTrue(app.activityLog.recent().none { it.title == "Memory graph export blocked" })
     }
 
     @Test

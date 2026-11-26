@@ -42,6 +42,8 @@ class RequestsActions(
     val onOpenRequest: (RequestId) -> Unit,
     /** After a refused permission: end the wait before its agent may ask again. */
     val onLetAskAgain: (RequestId) -> Unit = {},
+    /** A question from an agent opens its own screen (rule 13), never the Approval screen. */
+    val onOpenQuestion: (RequestId) -> Unit = onOpenRequest,
 )
 
 /** Every permission and approval request, newest first, with how it ended; filterable once there is something to filter. */
@@ -59,8 +61,8 @@ fun RequestsTab(state: RequestsUiState, actions: RequestsActions) {
         item(key = "filters") {
             Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
                 Text(
-                    "Every time an agent asked you for a permission or an approval, and what happened. Open one to see exactly what it " +
-                        "asked for; one that is still waiting can be answered there. After you refuse a permission, its agent cannot " +
+                    "Every time an agent asked you for a permission or an approval, or asked you a question, and what happened. Open one " +
+                        "to see exactly what it asked; one that is still waiting can be answered there. After you refuse a permission, its agent cannot " +
                         "ask for it again for ${OwnerRequest.REFUSAL_COOLDOWN_MS / 60_000} minutes, unless you let it here.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -71,7 +73,11 @@ fun RequestsTab(state: RequestsUiState, actions: RequestsActions) {
                             ChoiceChip(
                                 selected = state.filter.kind == kind,
                                 onClick = { actions.onKind(kind) },
-                                label = if (kind == OwnerRequestKind.PERMISSION) "Permissions" else "Approvals",
+                                label = when (kind) {
+                                    OwnerRequestKind.PERMISSION -> "Permissions"
+                                    OwnerRequestKind.APPROVAL -> "Approvals"
+                                    OwnerRequestKind.QUESTION -> "Questions"
+                                },
                             )
                         }
                     }
@@ -117,7 +123,11 @@ fun RequestsTab(state: RequestsUiState, actions: RequestsActions) {
             item(key = "clear") { TextButton(onClick = actions.onClear) { Text("Clear filters") } }
         }
         items(state.requests, key = { it.id.value }) { request ->
-            RequestCard(request, onOpen = { actions.onOpenRequest(request.id) }, onLetAskAgain = { actions.onLetAskAgain(request.id) })
+            RequestCard(
+                request,
+                onOpen = { if (request.kind == OwnerRequestKind.QUESTION) actions.onOpenQuestion(request.id) else actions.onOpenRequest(request.id) },
+                onLetAskAgain = { actions.onLetAskAgain(request.id) },
+            )
         }
     }
 }

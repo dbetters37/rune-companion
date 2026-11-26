@@ -40,8 +40,9 @@ import androidx.compose.foundation.selection.toggleable
 import com.aicontrolcenter.app.ui.icons.ExpandLess
 import com.aicontrolcenter.app.ui.icons.ExpandMore
 import com.aicontrolcenter.app.ui.tools.icon
-import com.aicontrolcenter.app.ui.tools.offPhoneMark
+import com.aicontrolcenter.app.ui.chat.TOKENS_EXPLAINED
 import androidx.compose.ui.semantics.semantics
+import com.aicontrolcenter.app.ui.tools.offPhoneMark
 import androidx.compose.ui.text.input.KeyboardType
 import com.aicontrolcenter.app.ui.components.AppCard
 import com.aicontrolcenter.app.ui.components.AppTextField
@@ -232,6 +233,15 @@ internal fun ToolsEditor(state: AgentEditorUiState, actions: AgentEditorActions)
                 }
                 if (state.tools.isEmpty()) {
                     Text("No tools are registered.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                state.toolCostLine?.let { line ->
+                    Column(
+                        modifier = Modifier.padding(bottom = Spacing.sm).semantics(mergeDescendants = true) {},
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(line, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+                        Text(TOKENS_EXPLAINED, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
                 state.toolFamilies.forEach { (family, tools) ->
                     val isOpen = family.name in expanded

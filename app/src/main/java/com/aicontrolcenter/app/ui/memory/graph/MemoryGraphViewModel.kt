@@ -80,7 +80,14 @@ data class SelectedNodeUi(val index: Int, val memoryId: MemoryId, val title: Str
 
 /** An export ready to be written and handed to the share sheet. */
 @Immutable
-data class GraphExportUi(val fileName: String, val json: String, val nodeCount: Int, val edgeCount: Int)
+data class GraphExportUi(
+    val fileName: String,
+    val json: String,
+    val nodeCount: Int,
+    val edgeCount: Int,
+    /** Exported while local-only mode was on (allowed: it is the owner's own act, rule 21). */
+    val localOnly: Boolean = false,
+)
 
 @Immutable
 data class GraphUiState(
@@ -97,6 +104,8 @@ data class GraphUiState(
     val isExporting: Boolean = false,
     val pendingExport: GraphExportUi? = null,
     val message: UserMessage? = null,
+    /** The line under the export button (rule 21): the receiving app may send the file anywhere. */
+    val exportNote: String = MemoryGraphViewModel.EXPORT_NOTE,
 )
 
 /**
@@ -105,9 +114,11 @@ data class GraphUiState(
  * second), re-built whenever memories, spaces, agents or the filters change.
  *
  * Export turns the same view into the neutral "aicc.memory-graph" JSON ([MemoryGraphJson]) for
- * external graph viewers. It hands memory content to another app, which may send it anywhere,
- * so it is refused while local-only mode is on and every hand-off is logged as data leaving
- * the device. The log names counts and the format, never what the memories say.
+ * external graph viewers. It hands memory content to another app, which may send it anywhere.
+ * It is the owner's own act through Android's share sheet, so it is allowed in local-only mode
+ * too, with the line "The app you choose may send it off the phone" (rule 21, D37); agents'
+ * hand-overs stay blocked there. Every hand-off is logged as data leaving the device. The log
+ * names counts and the format, never what the memories say.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class MemoryGraphViewModel(
@@ -198,24 +209,15 @@ class MemoryGraphViewModel(
         local.update { it.copy(isExporting = true) }
         viewModelScope.launch {
             try {
-                if (settings.get().localOnlyMode) {
-                    activity.record(
-                        ActivityType.USER_ACTION,
-                        "Memory graph export blocked",
-                        "Local-only mode is on, so no memories were handed to another app.",
-                    )
-                    local.update {
-                        it.copy(
-                            isExporting = false,
-                            message = message("Local-only mode is on. Exporting hands your memories to another app, so it is off until you turn that mode off in Settings."),
-                        )
-                    }
-                    return@launch
-                }
+                // Rule 21 (D37): the export is the owner's own act through Android's share sheet, so it is allowed in
+                // local-only mode too; the owner is told that the app they choose may send it off the phone.
+                val localOnly = settings.get().localOnlyMode
                 val snapshot = memory.graph(MemoryActor.Owner, filters.value.request(MAX_EXPORT_NODES))
                 val json = MemoryGraphJson.encode(snapshot, prettyPrint = true)
-                val export = GraphExportUi(fileNameFor(clock.now(), zone), json, snapshot.nodes.size, snapshot.edges.size)
-                local.update { it.copy(isExporting = false, pendingExport = export) }
+                val export = GraphExportUi(fileNameFor(clock.now(), zone), json, snapshot.nodes.size, snapshot.edges.size, localOnly = localOnly)
+                local.update {
+                    it.copy(isExporting = false, pendingExport = export, message = if (localOnly) message(LOCAL_ONLY_EXPORT) else it.message)
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
@@ -238,7 +240,8 @@ class MemoryGraphViewModel(
                     ActivityType.DATA_EGRESS,
                     "Memory graph exported",
                     "${export.nodeCount} memories and ${export.edgeCount} links were handed to the share sheet as an " +
-                        "aicc.memory-graph file, full text included. Where they go is up to the app you chose.",
+                        "aicc.memory-graph file, full text included. Where they go is up to the app you chose." +
+                        if (export.localOnly) " Local-only mode was on; this was your own export." else "",
                     egress = EgressInfo(
                         destinationHost = SHARE_SHEET_DESTINATION,
                         // The receiving app is unknown, so assume the widest reach.
@@ -264,6 +267,11 @@ class MemoryGraphViewModel(
         const val MAX_VIEW_NODES = 400
 
         const val MAX_EXPORT_NODES = 10_000
+
+        /** Under the export button, and said once more when exporting in local-only mode (rule 21). */
+        const val EXPORT_NOTE = "The app you choose may send it off the phone."
+
+        const val LOCAL_ONLY_EXPORT = "Local-only mode keeps agents' work on this phone; this export is yours. $EXPORT_NOTE"
 
         /** Marks an egress whose destination is an app the owner picks in the Android share sheet. */
         const val SHARE_SHEET_DESTINATION = "app:share-sheet"

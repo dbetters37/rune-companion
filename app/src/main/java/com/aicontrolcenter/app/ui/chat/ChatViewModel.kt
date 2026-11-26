@@ -32,7 +32,13 @@ import com.aicontrolcenter.core.registry.effectiveLocality
 import com.aicontrolcenter.core.tools.Capability
 import com.aicontrolcenter.core.tools.CapabilityInfo
 import com.aicontrolcenter.core.tools.ToolRegistry
+import com.aicontrolcenter.app.usage.TodayUse
+import com.aicontrolcenter.core.backup.MaintenanceGate
+import com.aicontrolcenter.core.usage.ModelPrice
+import com.aicontrolcenter.core.usage.WorkUsage
+import com.aicontrolcenter.framework.chat.DefaultAgentChat
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,6 +47,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -68,9 +75,24 @@ data class ChatUiState(
     val draft: String = "",
     val deleted: Boolean = false,
     val message: UserMessage? = null,
+    /** Older entries exist than the ones shown (P5: the newest 50 first, then "Show earlier"). */
+    val hasEarlier: Boolean = false,
+    val isLoadingEarlier: Boolean = false,
+    /** What this chat has used so far, with its estimated cost when the owner entered prices; null before any use. */
+    val cost: ChatCostUi? = null,
+    /** Today's limit's sentence while it is reached and this chat's text leaves the phone (rule 6); null otherwise. */
+    val limitReached: String? = null,
 ) {
     val isRunning: Boolean get() = live != null
     val canSend: Boolean get() = canSend(draft)
+
+    /**
+     * The last thing in the chat is a note that the turn failed, was cut off, or was stopped by the app or by today's
+     * limit, and the agent could answer now: "Send again" runs the owner's last message again (R3).
+     */
+    val canSendAgain: Boolean
+        get() = !isLoading && !notFound && blockedReason == null && !isRunning &&
+            items.lastOrNull { it !is TranscriptItem.Request } is TranscriptItem.Notice
 
     /** Whether [text], as typed in the field now, could be sent. */
     fun canSend(text: CharSequence): Boolean = !isLoading && !notFound && blockedReason == null && !isRunning && text.isNotBlank()
@@ -85,9 +107,18 @@ data class ChatUiState(
  * transcript where they were raised, each with the way to its Approval screen; they are never
  * answered here.
  *
+ * Only the newest [ConversationPages.PAGE] entries are read at first (P5, D31); [showEarlier]
+ * reads the page before them. The transcript is rebuilt when the conversation, its entries, the
+ * live turn or the registry change, never for a key typed into [draft].
+ *
  * @param awaitStartup waits for start-up, which withdraws requests left open when the app last
  *   stopped; a message sent before it finished could otherwise have its fresh request withdrawn.
+ * @param pages the conversation's entries in parts (the store in the app)
+ * @param usage this chat's usage rows (`UsageReports.observeWorkUsage(CHAT, id)`), for the cost line
+ * @param prices the owner's prices, read only
+ * @param today today's use and limits as the gateway counts them, for the limit sentence
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class ChatViewModel(
     private val conversationId: ConversationId,
     directory: RegistryDirectory,
@@ -99,6 +130,10 @@ class ChatViewModel(
     private val clock: Clock = WallClock,
     private val awaitStartup: suspend () -> Unit = {},
     private val zone: ZoneId = ZoneId.systemDefault(),
+    private val pages: ConversationPages = ConversationPages.of(chat),
+    usage: Flow<List<WorkUsage>> = flowOf(emptyList()),
+    prices: Flow<List<ModelPrice>> = flowOf(emptyList()),
+    today: Flow<TodayUse> = flowOf(TodayUse.NONE),
 ) : ViewModel() {
 
     private data class Local(
@@ -106,6 +141,7 @@ class ChatViewModel(
         /** Whether the turn this screen last saw fail could succeed if tried again (network, time-out, overload). */
         val lastFailureRetryable: Boolean? = null,
         val isCheckingProvider: Boolean = false,
+        val isLoadingEarlier: Boolean = false,
         val deleted: Boolean = false,
         val message: UserMessage? = null,
     )
@@ -126,27 +162,66 @@ class ChatViewModel(
     private val conversation = chat.observeConversations(null).map { all -> all.firstOrNull { it.id == conversationId } }.distinctUntilChanged()
     private val live = chat.liveTurns.map { it[conversationId] }.distinctUntilChanged()
 
-    val uiState: StateFlow<ChatUiState> = combine(
-        directory.observe(),
-        conversation,
-        chat.observeEntries(conversationId),
-        live,
-        combine(local, requests, ::Pair),
-    ) { snapshot, conversation, entries, live, (local, requests) ->
-        build(snapshot, conversation, entries, live, local, requests)
+    /** The lowest entry number shown once "Show earlier" was used; null shows the newest page. */
+    private val shownFrom = MutableStateFlow<Int?>(null)
+    private var window: EntryWindow = EntryWindow.EMPTY
+
+    private val entries: Flow<EntryWindow> = combine(pages.observeLatestSeq(conversationId), shownFrom, ::Pair)
+        .mapLatest { (latest, from) -> pages.window(conversationId, latest, from) }
+        .distinctUntilChanged()
+
+    /** Everything but what changes while the owner types: rebuilt only when the chat itself changes. */
+    private val transcript: Flow<Built> = combine(directory.observe(), conversation, entries, live, requests) { snapshot, conversation, window, live, requests ->
+        this.window = window
+        build(snapshot, conversation, window, live, requests)
+    }
+
+    private val cost: Flow<ChatCostUi?> = combine(usage, prices) { rows, priced -> chatCostOf(rows, priced.associateBy { it.modelId }) }.distinctUntilChanged()
+
+    val uiState: StateFlow<ChatUiState> = combine(transcript, local, cost, today) { built, local, cost, today ->
+        built.withLocal(local, cost, today)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatUiState())
+
+    /** The transcript and what it says about the agent, before what the owner is doing on the screen is added. */
+    private data class Built(
+        val state: ChatUiState,
+        /** The agent's own provider (not the simulator), worth checking when something looks like connectivity. */
+        val provider: ProviderId?,
+        val providerName: String?,
+        val providerHasProblem: Boolean,
+        val blockedByConnection: Boolean,
+    )
+
+    private fun Built.withLocal(local: Local, cost: ChatCostUi?, today: TodayUse): ChatUiState {
+        if (state.notFound) return state.copy(deleted = local.deleted, message = local.message)
+        val lastIsFailure = (state.items.lastOrNull { it !is TranscriptItem.Request } as? TranscriptItem.Notice)?.kind == NoticeKind.FAILURE
+        val connectionFailure = lastIsFailure && state.live == null && (local.lastFailureRetryable == true || providerHasProblem)
+        val offerCheck = provider != null && (blockedByConnection || connectionFailure)
+        val limit = today.limits.reachedBy(today.use.calls, today.use.tokens, today.use.spendMicros)
+        return state.copy(
+            checkProviderId = provider?.takeIf { offerCheck },
+            checkProviderName = providerName?.takeIf { offerCheck },
+            isCheckingProvider = local.isCheckingProvider,
+            isLoadingEarlier = local.isLoadingEarlier,
+            draft = local.draft,
+            deleted = local.deleted,
+            message = local.message,
+            cost = cost,
+            limitReached = limit?.takeIf { state.destination?.locality?.leavesDevice == true }?.let { today.limits.sentence(it) },
+        )
+    }
 
     private fun build(
         snapshot: RegistrySnapshot,
         conversation: Conversation?,
-        entries: List<ConversationEntry>,
+        window: EntryWindow,
         live: LiveTurn?,
-        local: Local,
         requests: List<OwnerRequest>,
-    ): ChatUiState {
+    ): Built {
         if (conversation == null) {
-            return ChatUiState(isLoading = false, notFound = true, deleted = local.deleted, message = local.message)
+            return Built(ChatUiState(isLoading = false, notFound = true), null, null, providerHasProblem = false, blockedByConnection = false)
         }
+        val entries = window.entries
         val entry = snapshot.agentsById[conversation.agentId]
         val profile = entry?.profile
         val availability = entry?.availability
@@ -177,6 +252,8 @@ class ChatViewModel(
         val provider = primary?.let(snapshot::provider)?.takeUnless { it.isSimulator }
         val blockedByConnection = (availability as? AgentAvailability.Unavailable)?.reason in CONNECTION_REASONS
         val now = clock.now()
+        // Requests raised before the first entry shown belong to the earlier part.
+        val shownSince = if (window.hasEarlier) entries.firstOrNull()?.at else null
         val items = withRequests(
             transcriptOf(
                 entries = entries,
@@ -186,13 +263,9 @@ class ChatViewModel(
                 activeToolCallId = live?.activeTool?.id,
             ),
             entries,
-            requests.map { it.createdAt to requestUi(it, snapshot, capabilityInfo, now, zone) },
+            requests.filter { shownSince == null || it.createdAt >= shownSince }.map { it.createdAt to requestUi(it, snapshot, capabilityInfo, now, zone) },
         )
-        val lastIsFailure = (items.lastOrNull { it !is TranscriptItem.Request } as? TranscriptItem.Notice)?.kind == NoticeKind.FAILURE
-        val connectionFailure = lastIsFailure && live == null &&
-            (local.lastFailureRetryable == true || provider?.status in PROBLEM_STATUSES)
-        val offerCheck = provider != null && (blockedByConnection || connectionFailure)
-        return ChatUiState(
+        val state = ChatUiState(
             isLoading = false,
             title = conversation.title,
             agentId = conversation.agentId,
@@ -202,16 +275,13 @@ class ChatViewModel(
             live = live?.toUi { toolInfo(it)?.title },
             destination = destination,
             blockedReason = blocked,
-            checkProviderId = provider?.id?.takeIf { offerCheck },
-            checkProviderName = provider?.name?.takeIf { offerCheck },
-            isCheckingProvider = local.isCheckingProvider,
-            draft = local.draft,
-            deleted = local.deleted,
-            message = local.message,
+            hasEarlier = window.hasEarlier,
         )
+        return Built(state, provider?.id, provider?.name, provider?.status in PROBLEM_STATUSES, blockedByConnection)
     }
 
-    private fun toolInfo(functionName: String): ToolInfo? = tools.byFunctionName(functionName)?.spec?.let { ToolInfo(it.title, it.risk) }
+    private fun toolInfo(functionName: String): ToolInfo? =
+        toolInfoOf(functionName) { name -> tools.byFunctionName(name)?.spec?.let { ToolInfo(it.title, it.risk) } }
 
     /** Replaces the message from code; typing goes into [draft] directly. */
     fun setDraft(text: String) {
@@ -229,14 +299,59 @@ class ChatViewModel(
         viewModelScope.launch {
             try {
                 awaitStartup()
-                val result = chat.send(conversationId, text)
-                if (result is TurnResult.Failed) local.update { it.copy(lastFailureRetryable = result.retryable) }
+                ended(chat.send(conversationId, text))
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (busy: IllegalStateException) {
                 show(busy.message ?: "The agent is still answering.")
             } catch (failure: Exception) {
                 show(failure.message ?: "The message could not be sent.")
+            }
+        }
+    }
+
+    /**
+     * "Send again" (R3): runs the owner's last message again after the turn failed, was cut off, or was stopped by the
+     * app or today's limit, without storing the message a second time. The turn runs on if this screen is left.
+     */
+    fun sendAgain() {
+        if (!uiState.value.canSendAgain) return
+        local.update { it.copy(lastFailureRetryable = null) }
+        viewModelScope.launch {
+            try {
+                awaitStartup()
+                ended(chat.sendAgain(conversationId))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (busy: IllegalStateException) {
+                show(busy.message ?: "The agent is still answering.")
+            } catch (failure: Exception) {
+                show(failure.message ?: "The message could not be sent again.")
+            }
+        }
+    }
+
+    /** A failure the chat does not store (nothing was run) is said once on the screen; one it stored is in the transcript. */
+    private fun ended(result: TurnResult) {
+        if (result !is TurnResult.Failed) return
+        if (result.message in NOT_STORED) show(result.message) else local.update { it.copy(lastFailureRetryable = result.retryable) }
+    }
+
+    /** Reads the page of entries before the first one shown (P5), back to the start of its turn. */
+    fun showEarlier() {
+        val first = window.entries.firstOrNull() ?: return
+        if (!window.hasEarlier || local.value.isLoadingEarlier) return
+        local.update { it.copy(isLoadingEarlier = true) }
+        viewModelScope.launch {
+            try {
+                val older = pages.toTurnStart(conversationId, pages.entriesBefore(conversationId, first.seq, ConversationPages.PAGE))
+                older.firstOrNull()?.let { shownFrom.value = minOf(shownFrom.value ?: it.seq, it.seq) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                show("Earlier messages could not be read: ${failure.message ?: "storage error"}")
+            } finally {
+                local.update { it.copy(isLoadingEarlier = false) }
             }
         }
     }
@@ -306,5 +421,8 @@ class ChatViewModel(
     private companion object {
         val CONNECTION_REASONS = setOf(UnavailableReason.PROVIDER_OFFLINE, UnavailableReason.PROVIDER_AUTH_ERROR)
         val PROBLEM_STATUSES = setOf(ConnectionStatus.OFFLINE, ConnectionStatus.AUTH_ERROR, ConnectionStatus.ERROR)
+
+        /** Refusals before anything ran: the chat stores no note for them. */
+        val NOT_STORED = setOf(DefaultAgentChat.NOTHING_TO_SEND_AGAIN, MaintenanceGate.RESTORING)
     }
 }

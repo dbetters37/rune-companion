@@ -1,6 +1,18 @@
 package com.aicontrolcenter.app.ui.models
 
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
+import androidx.compose.runtime.snapshots.Snapshot
 import com.aicontrolcenter.app.testing.MainDispatcherRule
+import com.aicontrolcenter.app.testing.populateWithProviders
+import com.aicontrolcenter.core.ProviderId
+import com.aicontrolcenter.core.registry.Locality
+import com.aicontrolcenter.core.usage.CallOutcome
+import com.aicontrolcenter.core.usage.ErrorClass
+import com.aicontrolcenter.core.usage.ModelCallSample
+import com.aicontrolcenter.core.usage.ModelPrice
+import com.aicontrolcenter.core.usage.UsageSource
+import java.time.ZoneOffset
 import com.aicontrolcenter.app.testing.TestApp
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.registry.CapabilityTier
@@ -22,6 +34,18 @@ class ModelEditorViewModelTest {
     @get:Rule val mainRule = MainDispatcherRule()
 
     private fun editor(app: TestApp, id: ModelId) = ModelEditorViewModel(id, app.graph.registryDirectory, app.graph.providerManager, app.graph.agentManager)
+
+    /** The editor as the route builds it, with the owner's prices and the usage reports. */
+    private fun pricedEditor(app: TestApp, id: ModelId) = ModelEditorViewModel(
+        id, app.graph.registryDirectory, app.graph.providerManager, app.graph.agentManager,
+        prices = app.graph.modelPrices, ownerPrices = app.graph.ownerModelPrices, usageReports = app.graph.usageReports,
+        clock = app.clock, zone = { ZoneOffset.UTC },
+    )
+
+    private fun TextFieldState.type(text: String) {
+        setTextAndPlaceCursorAtEnd(text)
+        Snapshot.sendApplyNotifications()
+    }
 
     @Test
     fun `display name, capabilities and notes are saved, and the owner's description then stands`() = runTest(mainRule.dispatcher) {
@@ -195,6 +219,161 @@ class ModelEditorViewModelTest {
             )
             assertEquals(sample, app.director().profile.modelId)
             assertFalse(app.director().availability.isReady)
+        }
+
+    // --- Phase 6: the owner's price, speed and reliability, the cheaper model for helpers ---
+
+    @Test
+    fun `the price is typed from the provider's page, saved apart from the description, shown again and removed`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.registerSampleModel()
+        val id = ModelId("mdl_sample")
+        val viewModel = pricedEditor(app, id)
+        val sourceBefore = app.models.get(id)?.source
+        with(viewModel.uiState.value.price) {
+            assertTrue(available)
+            assertNull(stored)
+            assertFalse(isDirty)
+        }
+        assertEquals("US$", viewModel.priceFields.currency.text.toString(), "the usual currency to begin with")
+
+        viewModel.priceFields.input.type("3")
+        viewModel.priceFields.output.type("15,00")
+        viewModel.priceFields.cachedInput.type("0.3")
+        assertTrue(viewModel.uiState.value.price.isDirty)
+        assertTrue(viewModel.uiState.value.hasUnsavedChanges, "leaving would ask first")
+        viewModel.savePrice()
+
+        val stored = assertNotNull(app.prices.get(id))
+        assertEquals(ModelPrice(id, 3_000_000, 15_000_000, 300_000, "US$", stored.updatedAt), stored)
+        assertEquals("Price saved. Costs with this model are now estimated from it.", viewModel.uiState.value.message?.text)
+        assertFalse(viewModel.uiState.value.price.isDirty)
+        assertEquals("15", viewModel.priceFields.output.text.toString(), "shown as stored")
+        assertEquals(sourceBefore, app.models.get(id)?.source, "the description is not touched")
+        assertFalse(viewModel.uiState.value.isDirty)
+
+        // A second screen shows what is stored.
+        val again = pricedEditor(app, id)
+        assertEquals("3", again.priceFields.input.text.toString())
+        assertEquals("0.3", again.priceFields.cachedInput.text.toString())
+        assertEquals(stored, again.uiState.value.price.stored)
+
+        viewModel.removePrice()
+        assertNull(app.prices.get(id))
+        assertEquals("", viewModel.priceFields.input.text.toString())
+        assertEquals("Price removed. Costs with this model are no longer estimated.", viewModel.uiState.value.message?.text)
+    }
+
+    @Test
+    fun `a price that cannot be one is refused with a sentence and nothing is stored`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.registerSampleModel()
+        val id = ModelId("mdl_sample")
+        val viewModel = pricedEditor(app, id)
+
+        viewModel.priceFields.input.type("3.5.1")
+        viewModel.savePrice()
+        with(viewModel.uiState.value.price) {
+            assertEquals(AMOUNT_HINT, inputError)
+            assertEquals("Enter the output price.", outputError)
+        }
+        viewModel.priceFields.input.type("20000")
+        viewModel.priceFields.output.type("1")
+        viewModel.savePrice()
+        assertEquals("A price can be at most 10,000 per million tokens.", viewModel.uiState.value.price.error)
+        viewModel.priceFields.input.type("2")
+        viewModel.priceFields.currency.type("  ")
+        viewModel.savePrice()
+        assertEquals("Say which currency the price is in, for example US$.", viewModel.uiState.value.price.error)
+        assertNull(app.prices.get(id))
+    }
+
+    @Test
+    fun `amounts are read as the owner types them`() {
+        assertEquals(3_000_000, parseAmountMicros("3"))
+        assertEquals(150_000, parseAmountMicros("0,15"))
+        assertEquals(500_000, parseAmountMicros(".5"))
+        assertEquals(2_500_000, parseAmountMicros(" 2.50 "))
+        assertEquals(1, parseAmountMicros("0.000001"))
+        assertNull(parseAmountMicros("0.0000001"), "smaller than a millionth")
+        assertNull(parseAmountMicros("1e3"))
+        assertNull(parseAmountMicros("US$3"))
+        assertNull(parseAmountMicros(""))
+        assertEquals("0.15", perMillionText(150_000))
+        assertEquals("3", perMillionText(3_000_000))
+        assertEquals("0.075", amountText(75_000))
+        assertEquals("1234.50", amountText(1_234_500_000))
+        assertEquals("US$3.00 in, US$15.00 out per million tokens, cached input US$0.30", priceSentence(ModelPrice(ModelId("m"), 3_000_000, 15_000_000, 300_000)))
+    }
+
+    @Test
+    fun `speed and reliability say in words how the model did, with times only after five answers`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.registerSampleModel()
+        val id = ModelId("mdl_sample")
+        val viewModel = pricedEditor(app, id)
+        assertEquals(listOf("No calls in the last 30 days."), viewModel.uiState.value.speed?.lines)
+
+        fun sample(outcome: CallOutcome, error: ErrorClass? = null, answerMs: Long? = null, ttftMs: Long? = null, waits: Int = 0) = ModelCallSample(
+            at = app.clock.current, modelId = id, modelLabel = "Gemma 3 4B", providerId = ProviderId("prv_sample"), providerLabel = "Home server",
+            locality = Locality.LOCAL_NETWORK, source = UsageSource.CHAT, outcome = outcome, errorClass = error,
+            inputTokens = if (outcome == CallOutcome.OK) 100 else null, outputTokens = if (outcome == CallOutcome.OK) 10 else null,
+            answerMs = answerMs, ttftMs = ttftMs, rateLimitedWaits = waits,
+        )
+        repeat(4) { app.usage.record(sample(CallOutcome.OK, answerMs = 3_000, ttftMs = 800)) }
+        assertTrue("Average times are shown once it has given 5 answers." in viewModel.uiState.value.speed!!.lines)
+        app.usage.record(sample(CallOutcome.OK, answerMs = 4_000, ttftMs = 1_000, waits = 2))
+        app.usage.record(sample(CallOutcome.FAILED, ErrorClass.NETWORK))
+        app.usage.record(sample(CallOutcome.FAILED, ErrorClass.TIMEOUT))
+        assertEquals(
+            listOf(
+                "Last 30 days: 5 answers from 7 calls (2 failed).",
+                "A whole answer took 3.2 seconds on average.",
+                "The first words came after 0.8 seconds on average.",
+                "Why calls failed: 1 took too long, 1 could not connect.",
+                "The provider asked the app to slow down 2 times.",
+            ),
+            viewModel.uiState.value.speed?.lines,
+        )
+    }
+
+    @Test
+    fun `the cheapest priced model that can use tools is offered to the helpers through Use for agents, the Director keeps its model`() =
+        runTest(mainRule.dispatcher) {
+            val app = TestApp(backgroundScope)
+            app.populateWithProviders()
+            app.graph.agentManager.ensureDefaults()
+            val claude = app.models.getAll().single { it.modelName == "claude-sonnet-4-5" }
+            val llama = app.models.getAll().single { it.modelName == "llama3.2:3b" }
+            val qwen = app.models.getAll().single { it.modelName == "qwen3:1.7b" }
+            // Everyone on the dear model; the Analyst on a free model without a price stays where it is.
+            for (agent in app.agents.getAll()) app.graph.agentManager.assignModel(agent.id, claude.id)
+            app.graph.agentManager.assignModel(app.agentNamed("Analyst").profile.id, qwen.id)
+            app.graph.ownerModelPrices.set(ModelPrice(claude.id, 3_000_000, 15_000_000))
+            app.graph.ownerModelPrices.set(ModelPrice(llama.id, 100_000, 300_000))
+
+            val cheap = pricedEditor(app, llama.id)
+            val offer = assertNotNull(cheap.uiState.value.cheaper)
+            assertTrue(offer.isThisModel)
+            assertEquals("Cheaper model for helpers", offer.title)
+            val helpers = listOf("Operator", "Researcher", "Reviewer", "Writer").map { app.agentNamed(it).profile.id }.toSet()
+            assertEquals(helpers, offer.helpers, "every helper on the dear model, not the Director")
+            assertTrue("Operator, Researcher, Reviewer and Writer" in offer.text, offer.text)
+            assertTrue("The Director keeps its own model." in offer.text)
+
+            cheap.openUseForHelpers()
+            val open = assertNotNull(cheap.uiState.value.useForAgents)
+            assertEquals(helpers, open.selected, "the helpers are ticked, the Director is not")
+            cheap.useForChosenAgents()
+            assertEquals(claude.id, app.director().profile.modelId)
+            assertTrue(helpers.all { id -> app.snapshot().agents.single { it.profile.id == id }.profile.modelId == llama.id })
+            assertNull(cheap.uiState.value.cheaper, "nothing left to suggest")
+
+            val dear = pricedEditor(app, claude.id)
+            val hint = assertNotNull(dear.uiState.value.cheaper)
+            assertFalse(hint.isThisModel)
+            assertEquals("A cheaper model can use tools", hint.title)
+            assertTrue(hint.text.startsWith("Llama 3.2 3B costs about 40 times less"), hint.text)
         }
 
     @Test
