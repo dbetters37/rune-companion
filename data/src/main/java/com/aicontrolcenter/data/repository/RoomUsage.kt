@@ -4,6 +4,7 @@ import android.database.SQLException
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.operator.OwnerResult
+import com.aicontrolcenter.core.usage.AgentModelUsage
 import com.aicontrolcenter.core.usage.AgentUsage
 import com.aicontrolcenter.core.usage.ModelCallSample
 import com.aicontrolcenter.core.usage.ModelPrice
@@ -128,6 +129,10 @@ class RoomUsageReports internal constructor(
 
     override suspend fun byAgent(range: UsageRange): List<AgentUsage> = withContext(dispatcher) {
         dao.byAgent(range.fromMs, range.untilMs).map { it.toDomain() }
+    }
+
+    override suspend fun byAgentAndModel(range: UsageRange): List<AgentModelUsage> = withContext(dispatcher) {
+        dao.byAgentAndModel(range.fromMs, range.untilMs).map { it.toDomain() }
     }
 
     override suspend fun byProvider(range: UsageRange): List<ProviderUsage> = withContext(dispatcher) {

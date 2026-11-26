@@ -122,7 +122,7 @@ internal fun UsageContent(
                         Column {
                             SectionHeader("By agent · ${state.agents.size}")
                             Text(
-                                "The cost is shown for each model above.",
+                                "Each agent's cost is estimated from the prices of the models it used.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -261,7 +261,7 @@ private fun AgentsCard(agents: List<AgentUsageUi>, onOpenLog: (AgentId?, String?
     AppCard(contentPadding = PaddingValues(0.dp)) {
         agents.forEachIndexed { index, agent ->
             if (index > 0) RowDivider()
-            val summary = "${answers(agent.answers)} · ${tokens(agent.tokens)}"
+            val summary = listOfNotNull(answers(agent.answers), tokens(agent.tokens), agent.cost).joinToString(" · ")
             val id = agent.agentId
             Row(
                 modifier = Modifier

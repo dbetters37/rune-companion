@@ -128,6 +128,13 @@ internal data class AgentUsageRow(
     @Embedded val counts: UsageCounts,
 )
 
+/** Usage of one agent with one model over a range (wave 3). */
+internal data class AgentModelUsageRow(
+    @ColumnInfo(name = "agent_id") val agentId: String,
+    @ColumnInfo(name = "model_id") val modelId: String,
+    @Embedded val counts: UsageCounts,
+)
+
 /** Usage of one provider over a range, with the labels of its newest row (the one whose `last_call_at` is [newest]). */
 internal data class ProviderUsageRow(
     @ColumnInfo(name = "provider_id") val providerId: String,

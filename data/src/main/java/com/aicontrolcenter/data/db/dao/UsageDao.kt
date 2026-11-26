@@ -5,6 +5,7 @@ import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Upsert
 import com.aicontrolcenter.core.usage.ModelCallSample
+import com.aicontrolcenter.data.db.entity.AgentModelUsageRow
 import com.aicontrolcenter.data.db.entity.AgentUsageRow
 import com.aicontrolcenter.data.db.entity.ModelPriceEntity
 import com.aicontrolcenter.data.db.entity.ModelUsageRow
@@ -68,6 +69,13 @@ internal interface UsageDao {
             "GROUP BY agent_id ORDER BY SUM(calls) DESC, agent_id = '${UsageHourEntity.NO_AGENT}' ASC, agent_id ASC",
     )
     suspend fun byAgent(from: Long, until: Long): List<AgentUsageRow>
+
+    /** By agent and model together (wave 3): what a cost per agent needs, since prices are per model. */
+    @Query(
+        "SELECT agent_id, model_id, $SUMS FROM usage_hours WHERE hour_start >= :from AND hour_start < :until " +
+            "GROUP BY agent_id, model_id ORDER BY SUM(calls) DESC, agent_id = '${UsageHourEntity.NO_AGENT}' ASC, agent_id ASC, model_id ASC",
+    )
+    suspend fun byAgentAndModel(from: Long, until: Long): List<AgentModelUsageRow>
 
     @Query(
         "SELECT provider_id, provider_label, locality, MAX(last_call_at) AS newest, $SUMS FROM usage_hours " +

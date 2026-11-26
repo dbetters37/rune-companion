@@ -132,6 +132,34 @@ abstract class UsageLedgerContract {
     }
 
     @Test
+    fun `usage by agent and model together sums each pair over the range, most calls first and no agent last`() = runTest {
+        // Wave 3 (WP8; handoff-WP10a.md item 2.6): what an estimated cost per agent needs, since prices are per model.
+        val stores = createStores(FakeClock(u.at("2026-11-25T12:00")), zone)
+        stores.ledger.record(u.call(u.at("2026-11-24T23:30"), model = "mdl_a", agent = "agt_writer"))
+        stores.ledger.record(u.call(u.at("2026-11-25T09:00"), model = "mdl_a", agent = "agt_writer"))
+        stores.ledger.record(u.call(u.at("2026-11-25T10:00"), model = "mdl_a", agent = "agt_writer", source = UsageSource.CHAT, task = null, root = null, conversation = "cnv_1"))
+        stores.ledger.record(u.call(u.at("2026-11-25T10:05"), model = "mdl_b", agent = "agt_writer"))
+        stores.ledger.record(u.call(u.at("2026-11-25T10:10"), model = "mdl_b", agent = "agt_researcher"))
+        stores.ledger.record(u.call(u.at("2026-11-25T10:20"), model = "mdl_a", agent = null, source = UsageSource.OTHER, task = null, root = null))
+        stores.ledger.record(u.call(u.at("2026-11-25T10:21"), model = "mdl_a", agent = null, source = UsageSource.OTHER, task = null, root = null))
+        val rows = stores.reports.byAgentAndModel(today)
+        assertEquals(
+            listOf("agt_writer/mdl_a", "-/mdl_a", "agt_researcher/mdl_b", "agt_writer/mdl_b"),
+            rows.map { "${it.agentId?.value ?: "-"}/${it.modelId.value}" },
+            "two calls each first (an agent before no agent), then one call each by agent",
+        )
+        assertEquals(2, rows.first().totals.calls, "two hours and two sources of one pair are one row; yesterday is outside")
+        assertEquals(2_000, rows.first().totals.inputTokens)
+        assertEquals(stores.reports.totals(today), rows.fold(UsageTotals()) { sum, row -> sum + row.totals }, "the pairs add up to the day")
+        assertEquals(
+            stores.reports.byAgent(today).associate { it.agentId to it.totals.calls },
+            rows.groupBy { it.agentId }.mapValues { (_, of) -> of.sumOf { it.totals.calls } },
+            "and to each agent's own row",
+        )
+        assertEquals(emptyList(), stores.reports.byAgentAndModel(UsageRange(0, 1)))
+    }
+
+    @Test
     fun `a model's and a provider's labels are those of the row with the newest call, also when calls arrive out of order`() = runTest {
         // Wave 3 (WP8; WP1b's hand-off): two rows of one model in one hour (two agents); the newer call is recorded first.
         val stores = createStores(FakeClock(u.at("2026-11-25T12:00")), zone)

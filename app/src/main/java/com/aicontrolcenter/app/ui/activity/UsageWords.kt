@@ -3,6 +3,7 @@ package com.aicontrolcenter.app.ui.activity
 import com.aicontrolcenter.app.ui.components.formatCount
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.registry.Locality
+import com.aicontrolcenter.core.usage.AgentModelUsage
 import com.aicontrolcenter.core.usage.CostEstimate
 import com.aicontrolcenter.core.usage.DailyLimits
 import com.aicontrolcenter.core.usage.ErrorClass
@@ -120,6 +121,18 @@ internal fun costWords(rows: List<ModelUsage>, prices: Map<ModelId, ModelPrice>)
     rows.forEach { row ->
         val price = prices[row.modelId] ?: return@forEach
         val cost = CostEstimate.of(row.tokenCounts(), price) ?: return@forEach
+        byCurrency[price.currencyLabel] = (byCurrency[price.currencyLabel] ?: 0L).let { if (Long.MAX_VALUE - it < cost) Long.MAX_VALUE else it + cost }
+    }
+    if (byCurrency.isEmpty()) return null
+    return byCurrency.entries.joinToString(" and ") { (currency, micros) -> moneyWords(micros, currency) }
+}
+
+/** As [costWords], for an agent's rows by model (wave 3, `UsageReports.byAgentAndModel`). */
+internal fun agentMoney(rows: List<AgentModelUsage>, prices: Map<ModelId, ModelPrice>): String? {
+    val byCurrency = LinkedHashMap<String, Long>()
+    rows.forEach { row ->
+        val price = prices[row.modelId] ?: return@forEach
+        val cost = CostEstimate.of(TokenCounts(row.totals.inputTokens, row.totals.outputTokens, row.totals.cachedInputTokens), price) ?: return@forEach
         byCurrency[price.currencyLabel] = (byCurrency[price.currencyLabel] ?: 0L).let { if (Long.MAX_VALUE - it < cost) Long.MAX_VALUE else it + cost }
     }
     if (byCurrency.isEmpty()) return null

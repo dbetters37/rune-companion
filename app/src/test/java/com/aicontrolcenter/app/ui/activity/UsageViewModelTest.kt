@@ -100,6 +100,24 @@ class UsageViewModelTest {
 
         assertEquals(listOf("Researcher" to 2L, "The app itself" to 1L), state.agents.map { it.name to it.answers })
         assertEquals(AgentId("agt_sample"), state.agents.first().agentId)
+        // Wave 3 hand-off (handoff-WP10a.md item 2.6): each agent's cost from the prices of the models it used.
+        assertEquals(listOf("about US$0.02", "Free: on this phone"), state.agents.map { it.cost })
+    }
+
+    @Test
+    fun `an agent's cost counts only priced models, and says so when one of its models has no price`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.agents.upsert(Samples.agent())
+        app.usage.record(sample(input = 100_000, output = 20_000))
+        app.usage.record(sample(model = "mdl_llama", label = "Llama 3.3 70B", provider = "prv_groq", providerLabel = "Groq"))
+        app.usage.record(sample(model = "mdl_llama", label = "Llama 3.3 70B", provider = "prv_groq", providerLabel = "Groq", agent = "agt_other"))
+        app.prices.set(ModelPrice(ModelId("mdl_grok"), inputPerMTokMicros = 3_000_000, outputPerMTokMicros = 15_000_000))
+        val state = usage(app).uiState.value
+
+        val researcher = state.agents.single { it.agentId == AgentId("agt_sample") }
+        assertEquals("about US$0.60 for the models with a price", researcher.cost, "Grok's tokens at Grok's price; Llama's are not in it")
+        val other = state.agents.single { it.agentId == AgentId("agt_other") }
+        assertEquals("No price entered", other.cost)
     }
 
     @Test

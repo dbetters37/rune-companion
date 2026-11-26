@@ -4,6 +4,7 @@ import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.ProviderId
 import com.aicontrolcenter.core.registry.Locality
+import com.aicontrolcenter.core.usage.AgentModelUsage
 import com.aicontrolcenter.core.usage.AgentUsage
 import com.aicontrolcenter.core.usage.ErrorClass
 import com.aicontrolcenter.core.usage.ModelCallSample
@@ -14,6 +15,7 @@ import com.aicontrolcenter.core.usage.UsageTotals
 import com.aicontrolcenter.core.usage.WorkItem
 import com.aicontrolcenter.core.usage.WorkKind
 import com.aicontrolcenter.core.usage.WorkUsage
+import com.aicontrolcenter.data.db.entity.AgentModelUsageRow
 import com.aicontrolcenter.data.db.entity.AgentUsageRow
 import com.aicontrolcenter.data.db.entity.ModelPriceEntity
 import com.aicontrolcenter.data.db.entity.ModelUsageRow
@@ -112,6 +114,12 @@ internal fun ModelUsageRow.toDomain(): ModelUsage = ModelUsage(
 
 internal fun AgentUsageRow.toDomain(): AgentUsage =
     AgentUsage(agentId = agentId.takeUnless { it == UsageHourEntity.NO_AGENT }?.let(::AgentId), totals = counts.toTotals())
+
+internal fun AgentModelUsageRow.toDomain(): AgentModelUsage = AgentModelUsage(
+    agentId = agentId.takeUnless { it == UsageHourEntity.NO_AGENT }?.let(::AgentId),
+    modelId = ModelId(modelId),
+    totals = counts.toTotals(),
+)
 
 /** @throws com.aicontrolcenter.data.StoredDataException naming the column, if the row cannot be read. */
 internal fun ProviderUsageRow.toDomain(): ProviderUsage = ProviderUsage(

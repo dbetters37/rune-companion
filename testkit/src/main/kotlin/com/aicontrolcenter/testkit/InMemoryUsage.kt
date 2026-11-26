@@ -6,6 +6,7 @@ import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.ProviderId
 import com.aicontrolcenter.core.operator.OwnerResult
 import com.aicontrolcenter.core.registry.Locality
+import com.aicontrolcenter.core.usage.AgentModelUsage
 import com.aicontrolcenter.core.usage.AgentUsage
 import com.aicontrolcenter.core.usage.ModelCallSample
 import com.aicontrolcenter.core.usage.ModelPrice
@@ -148,6 +149,14 @@ class InMemoryUsageStore(
     override suspend fun byAgent(range: UsageRange): List<AgentUsage> =
         state.value.inRange(range).entries.groupBy { it.key.agentId }.map { (agentId, rows) -> AgentUsage(agentId, rows.sumTotals()) }
             .sortedWith(compareByDescending<AgentUsage> { it.totals.calls }.thenBy { it.agentId == null }.thenBy { it.agentId?.value })
+
+    override suspend fun byAgentAndModel(range: UsageRange): List<AgentModelUsage> =
+        state.value.inRange(range).entries.groupBy { it.key.agentId to it.key.modelId }
+            .map { (key, rows) -> AgentModelUsage(key.first, key.second, rows.sumTotals()) }
+            .sortedWith(
+                compareByDescending<AgentModelUsage> { it.totals.calls }.thenBy { it.agentId == null }.thenBy { it.agentId?.value }
+                    .thenBy { it.modelId.value },
+            )
 
     override suspend fun byProvider(range: UsageRange): List<ProviderUsage> =
         state.value.inRange(range).entries.groupBy { it.value.providerId }.map { (providerId, rows) ->

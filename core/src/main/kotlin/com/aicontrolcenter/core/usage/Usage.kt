@@ -275,6 +275,12 @@ data class ModelUsage(
 /** Usage of one agent over a range; [agentId] null for calls made for no agent. */
 data class AgentUsage(val agentId: AgentId?, val totals: UsageTotals)
 
+/**
+ * Usage of one agent with one model over a range (wave 3): what an estimated cost per agent needs, since prices are per
+ * model. [agentId] null for calls made for no agent.
+ */
+data class AgentModelUsage(val agentId: AgentId?, val modelId: ModelId, val totals: UsageTotals)
+
 /** Usage of one provider over a range: its reliability (failures by class) and speed. Labels as recorded by its newest sample. */
 data class ProviderUsage(val providerId: ProviderId, val providerLabel: String, val locality: Locality, val totals: UsageTotals)
 
@@ -367,6 +373,12 @@ interface UsageReports {
     fun observeByModel(range: UsageRange): Flow<List<ModelUsage>>
 
     suspend fun byAgent(range: UsageRange): List<AgentUsage>
+
+    /**
+     * Usage by agent and model together over [range], most calls first (then by agent, calls for no agent last, then by
+     * model): for an estimated cost per agent from the per-model prices. Nothing for a store that cannot tell.
+     */
+    suspend fun byAgentAndModel(range: UsageRange): List<AgentModelUsage> = emptyList()
 
     /** Reliability and speed per provider. */
     suspend fun byProvider(range: UsageRange): List<ProviderUsage>

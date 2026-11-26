@@ -13,6 +13,7 @@ import com.aicontrolcenter.core.operator.OwnerRequestStatus
 import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.registry.RegistryDirectory
 import com.aicontrolcenter.core.registry.RegistrySnapshot
+import com.aicontrolcenter.core.usage.AgentModelUsage
 import com.aicontrolcenter.core.usage.AgentUsage
 import com.aicontrolcenter.core.usage.ModelPrice
 import com.aicontrolcenter.core.usage.ModelPrices
@@ -90,9 +91,13 @@ data class ModelUsageUi(
     val logText: String,
 )
 
-/** One agent's row. [agentId] null: calls the app made for no agent. */
+/**
+ * One agent's row. [agentId] null: calls the app made for no agent. [cost]: "about US$0.12" (every model it used off
+ * this phone has a price), "about US$0.12 for the models with a price", "No price entered" or "Free: on this phone";
+ * null when nothing is known of its models.
+ */
 @Immutable
-data class AgentUsageUi(val agentId: AgentId?, val name: String, val answers: Long, val tokens: Long)
+data class AgentUsageUi(val agentId: AgentId?, val name: String, val answers: Long, val tokens: Long, val cost: String? = null)
 
 /** How long requests waited for the owner in the period. */
 @Immutable
@@ -143,9 +148,11 @@ class UsageViewModel(
 
     val uiState: StateFlow<UsageUiState> = period.flatMapLatest { selected ->
         val range = selected.range(clock.now(), zone())
-        val usage = reports.observeByModel(range).distinctUntilChanged().mapLatest { rows -> rows to reports.byAgent(range) }
-        combine(usage, prices.observeAll(), directory.observe(), recentRequests(REQUEST_LIMIT)) { (models, agents), priced, snapshot, requests ->
-            build(selected, range, models, agents, priced.associateBy { it.modelId }, snapshot, requests)
+        val usage = reports.observeByModel(range).distinctUntilChanged().mapLatest { rows ->
+            Triple(rows, reports.byAgent(range), reports.byAgentAndModel(range))
+        }
+        combine(usage, prices.observeAll(), directory.observe(), recentRequests(REQUEST_LIMIT)) { (models, agents, pairs), priced, snapshot, requests ->
+            build(selected, range, models, agents, pairs, priced.associateBy { it.modelId }, snapshot, requests)
         }
     }.flowOn(computation).conflate().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), UsageUiState())
 
@@ -158,17 +165,20 @@ class UsageViewModel(
         range: UsageRange,
         models: List<ModelUsage>,
         agents: List<AgentUsage>,
+        pairs: List<AgentModelUsage>,
         prices: Map<ModelId, ModelPrice>,
         snapshot: RegistrySnapshot,
         requests: List<OwnerRequest>,
     ): UsageUiState {
         val used = models.filter { it.totals.calls > 0 }
+        val byAgent = pairs.groupBy { it.agentId }
+        val modelsById = models.associateBy { it.modelId }
         return UsageUiState(
             isLoading = false,
             period = selected,
             summary = if (used.isEmpty()) null else summary(selected, used, prices, snapshot),
             models = used.map { modelRow(it, prices) },
-            agents = agents.filter { it.totals.calls > 0 }.map { agentRow(it, snapshot) },
+            agents = agents.filter { it.totals.calls > 0 }.map { agentRow(it, byAgent[it.agentId].orEmpty(), modelsById, prices, snapshot) },
             waiting = waiting(requests, range),
         )
     }
@@ -240,12 +250,33 @@ class UsageViewModel(
         )
     }
 
-    private fun agentRow(row: AgentUsage, snapshot: RegistrySnapshot): AgentUsageUi {
+    private fun agentRow(
+        row: AgentUsage,
+        pairs: List<AgentModelUsage>,
+        models: Map<ModelId, ModelUsage>,
+        prices: Map<ModelId, ModelPrice>,
+        snapshot: RegistrySnapshot,
+    ): AgentUsageUi {
         val name = when (val id = row.agentId) {
             null -> "The app itself"
             else -> snapshot.agentsById[id]?.profile?.name ?: "An agent that no longer exists"
         }
-        return AgentUsageUi(row.agentId, name, countedAnswers(row.totals), row.totals.totalTokens)
+        return AgentUsageUi(row.agentId, name, countedAnswers(row.totals), row.totals.totalTokens, agentCost(pairs, models, prices))
+    }
+
+    /**
+     * An agent's estimated cost from the prices of the models it used (rule 29: never a cost without a price): its
+     * tokens on each model at that model's price, added per currency. Models on this phone cost nothing. Null when the
+     * store cannot tell which models the agent used.
+     */
+    private fun agentCost(pairs: List<AgentModelUsage>, models: Map<ModelId, ModelUsage>, prices: Map<ModelId, ModelPrice>): String? {
+        val used = pairs.filter { it.totals.totalTokens > 0 }
+        if (used.isEmpty()) return null
+        val offPhone = used.filter { models[it.modelId]?.locality?.leavesDevice != false }
+        if (offPhone.isEmpty()) return "Free: on this phone"
+        val priced = offPhone.filter { it.modelId in prices }
+        val money = agentMoney(priced, prices) ?: return "No price entered"
+        return if (priced.size == offPhone.size) aboutMoney(money) else "${aboutMoney(money)} for the models with a price"
     }
 
     /** How long the owner's answers took in [range]: approvals, permission requests and questions, each on its own line. */
