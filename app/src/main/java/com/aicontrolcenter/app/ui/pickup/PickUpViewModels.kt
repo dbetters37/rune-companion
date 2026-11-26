@@ -408,6 +408,8 @@ class PickUpRuleEditorViewModel(
             }
         } else {
             act {
+                // The same space: nothing to change (and nothing to log), the page just goes back.
+                if (rules.observeAll().first().firstOrNull { it.id == ruleId }?.spaceId == space) return@act Outcome(saved = ruleId)
                 when (val result = rules.changeSpace(ruleId, space)) {
                     is OwnerResult.Done -> Outcome(saved = result.value.id)
                     is OwnerResult.Refused -> Outcome(problem = result.reason)

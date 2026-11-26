@@ -488,7 +488,13 @@ class RoutineEditorViewModel(
         form.update { it.copy(isSaving = true, titleError = null, objectiveError = null, daysError = null, problem = null) }
         viewModelScope.launch {
             val result = try {
-                if (routineId == null) routines.create(draft) else routines.change(routineId, draft)
+                when {
+                    routineId == null -> routines.create(draft)
+                    // Nothing changed: saving again would count as the owner's change (and start the failures in a
+                    // row afresh, WP17), so the page just goes back.
+                    unchanged(routineId, draft) -> OwnerResult.Done(stored.first()!!)
+                    else -> routines.change(routineId, draft)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -553,6 +559,10 @@ class RoutineEditorViewModel(
     }
 
     fun messageShown() = form.update { it.copy(message = null) }
+
+    /** True when [draft] is what the stored routine [id] already holds. */
+    private suspend fun unchanged(id: RoutineId, draft: RoutineDraft): Boolean =
+        stored.first()?.takeIf { it.id == id }?.draft == draft
 
     private fun scheduleOf(form: Form): RoutineSchedule? {
         if (form.days.isEmpty()) return null

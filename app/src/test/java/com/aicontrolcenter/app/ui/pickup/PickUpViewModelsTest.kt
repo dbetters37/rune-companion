@@ -241,6 +241,11 @@ class PickUpViewModelsTest {
         assertEquals(first.id, state.selectedSpace)
         assertTrue(state.enabled)
 
+        val logged = app.activityLog.all.size
+        viewModel.save()
+        assertEquals(rule.id, viewModel.uiState.value.saved, "the same space: the page just goes back")
+        assertEquals(logged, app.activityLog.all.size, "nothing changed, nothing logged")
+        viewModel.savedHandled()
         viewModel.selectSpace(second.id)
         viewModel.save()
         assertEquals(second.id, app.pickUpRuleStore.get(rule.id)!!.spaceId)

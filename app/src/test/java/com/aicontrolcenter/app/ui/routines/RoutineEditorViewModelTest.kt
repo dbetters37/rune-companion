@@ -183,6 +183,12 @@ class RoutineEditorViewModelTest {
         assertEquals("It waited for your tap and was not started.", state.runs[2].note)
         assertTrue(state.enabled)
 
+        // Save without a change goes back without changing anything (the failures in a row are not started afresh).
+        val before = app.routineStore.get(routine.id)!!
+        viewModel.save()
+        assertEquals(routine.id, viewModel.uiState.value.saved)
+        assertEquals(before.updatedAt, app.routineStore.get(routine.id)!!.updatedAt)
+        viewModel.savedHandled()
         viewModel.title.setTextAndPlaceCursorAtEnd("Morning headlines")
         viewModel.save()
         assertEquals("Morning headlines", app.routineStore.get(routine.id)!!.title)
