@@ -15,8 +15,8 @@ android {
         applicationId = "com.aicontrolcenter.hq"
         minSdk = 28
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.5.2"
+        versionCode = 9
+        versionName = "0.6.0-preview"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
