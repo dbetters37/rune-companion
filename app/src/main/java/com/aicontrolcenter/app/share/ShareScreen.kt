@@ -31,9 +31,12 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -41,6 +44,7 @@ import androidx.compose.ui.semantics.isSensitiveData
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -161,7 +165,7 @@ private fun Saved(done: ShareDone, modifier: Modifier, onDone: () -> Unit) {
             modifier = Modifier.semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
         ) {
             Text(done.headline, style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onSurface)
-            Text(done.detail, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(done.detail, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
         }
         Button(onClick = onDone, modifier = Modifier.fillMaxWidth().heightIn(min = Spacing.touchTarget)) { Text(ShareTexts.DONE) }
     }
@@ -170,40 +174,55 @@ private fun Saved(done: ShareDone, modifier: Modifier, onDone: () -> Unit) {
 @Composable
 private fun Form(state: ShareUiState, title: TextFieldState, actions: ShareActions, modifier: Modifier) {
     val busy = state.saving != null
-    Column(
-        modifier = modifier
-            .imePadding()
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .readableWidth()
-            .padding(horizontal = Spacing.screen)
-            .padding(bottom = Spacing.xl),
-        verticalArrangement = Arrangement.spacedBy(Spacing.lg),
-    ) {
-        if (state.leftOut.isNotEmpty()) {
-            InfoBanner(
-                title = if (state.leftOut.size == 1) "One part was left out" else "Some parts were left out",
-                text = state.leftOut.joinToString("\n"),
-                tone = StatusTone.ATTENTION,
-                icon = AppIcons.StatusAttention,
-            )
+    // At usual font sizes Save stays in view at the bottom; with large fonts the screen is one list, Save at its end, so
+    // the pinned bar never takes half the screen (lists first when fonts are large).
+    val pinned = LocalDensity.current.fontScale < LARGE_FONT
+    Column(modifier.fillMaxSize().imePadding()) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .readableWidth()
+                .padding(horizontal = Spacing.screen)
+                .padding(bottom = Spacing.xl),
+            verticalArrangement = Arrangement.spacedBy(Spacing.lg),
+        ) {
+            if (state.leftOut.isNotEmpty()) {
+                InfoBanner(
+                    title = if (state.leftOut.size == 1) "One part was left out" else "Some parts were left out",
+                    text = state.leftOut.joinToString("\n"),
+                    tone = StatusTone.ATTENTION,
+                    icon = AppIcons.StatusAttention,
+                )
+            }
+            WhatWasShared(state)
+            InfoBanner(text = ShareTexts.AS_DATA, icon = AppIcons.Shield)
+            if (state.asksTitle) {
+                AppTextField(
+                    state = title,
+                    label = ShareTexts.TITLE_FIELD,
+                    modifier = Modifier.fillMaxWidth().semantics { contentDescription = SHARE_TITLE_FIELD },
+                    supportingText = "What it is called in your memory. You can change it later.",
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                    inputTransformation = remember { atMostChars(ShareSaving.MAX_TYPED_TITLE_CHARS) },
+                    enabled = !busy,
+                )
+            }
+            WhereToSave(state, actions.onSelect, enabled = !busy)
+            PrivacyAndCost(state.localOnly)
+            if (!pinned) SaveArea(state, actions, pinned = false)
         }
-        WhatWasShared(state)
-        InfoBanner(text = ShareTexts.AS_DATA, icon = AppIcons.Shield)
-        if (state.asksTitle) {
-            AppTextField(
-                state = title,
-                label = ShareTexts.TITLE_FIELD,
-                modifier = Modifier.fillMaxWidth().semantics { contentDescription = SHARE_TITLE_FIELD },
-                supportingText = "What it is called in your memory. You can change it later.",
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                inputTransformation = remember { atMostChars(ShareSaving.MAX_TYPED_TITLE_CHARS) },
-                enabled = !busy,
-            )
+        if (pinned) {
+            Surface(color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
+                Column {
+                    RowDivider()
+                    Box(Modifier.readableWidth().padding(horizontal = Spacing.screen, vertical = Spacing.md)) {
+                        SaveArea(state, actions, pinned = true)
+                    }
+                }
+            }
         }
-        WhereToSave(state, actions.onSelect, enabled = !busy)
-        PrivacyAndCost(state.localOnly)
-        SaveArea(state, actions)
     }
 }
 
@@ -211,17 +230,18 @@ private fun Form(state: ShareUiState, title: TextFieldState, actions: ShareActio
 private fun WhatWasShared(state: ShareUiState) {
     Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
         SectionHeader("What was shared")
-        // With one item its own size says it all; with several, the whole share's size comes first.
+        // With one item its own size says it all; with several, the whole share's size comes first and each shows less.
         if (state.items.size > 1) Text(state.summary, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        state.items.forEach { item -> SharedItemCard(item) }
+        state.items.forEach { item -> SharedItemCard(item, maxLines = if (state.items.size > 1) 4 else 8) }
     }
 }
 
 /** One shared item: its name and size, and how it starts, quoted on a quiet ground (it is another app's text). */
 @Composable
-private fun SharedItemCard(item: SharedItemUi) {
+private fun SharedItemCard(item: SharedItemUi, maxLines: Int) {
     val markColor = appColors.attention
     val shown = remember(item.preview, markColor) { previewAnnotated("“" + item.preview + if (item.previewIsStart) "…”" else "”", markColor) }
+    var cut by remember(item.preview, maxLines) { mutableStateOf(false) }
     AppCard(modifier = Modifier.semantics(mergeDescendants = true) {}) {
         Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
             Text(item.title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface, maxLines = 3, overflow = TextOverflow.Ellipsis)
@@ -238,11 +258,12 @@ private fun SharedItemCard(item: SharedItemUi) {
                         shown,
                         style = MaterialTheme.typography.bodyMedium.copy(textDirection = TextDirection.Ltr),
                         color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 8,
+                        maxLines = maxLines,
                         overflow = TextOverflow.Ellipsis,
+                        onTextLayout = { layout -> cut = layout.hasVisualOverflow },
                     )
                     Text(
-                        if (item.previewIsStart) "The start of it, as the other app wrote it." else "As the other app wrote it.",
+                        if (item.previewIsStart || cut) "The start of it, as the other app wrote it." else "As the other app wrote it.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -312,53 +333,64 @@ private fun PrivacyAndCost(localOnly: Boolean) {
     }
 }
 
+/**
+ * What Save will do, why the last Save did not, and Save and "Don't save" (side by side when [pinned] at the bottom,
+ * one under the other at the end of the list); while saving, the progress and "Stop saving".
+ */
 @Composable
-private fun SaveArea(state: ShareUiState, actions: ShareActions) {
+private fun SaveArea(state: ShareUiState, actions: ShareActions, pinned: Boolean) {
     // Marked sensitive: on Android 14 and later only accessibility tools that help the owner can press it.
-    val sensitive = Modifier.fillMaxWidth().heightIn(min = Spacing.touchTarget).semantics { isSensitiveData = true }
-    Column(verticalArrangement = Arrangement.spacedBy(Spacing.md)) {
+    val sensitive = Modifier.heightIn(min = Spacing.touchTarget).semantics { isSensitiveData = true }
+    Column(verticalArrangement = Arrangement.spacedBy(if (pinned) Spacing.sm else Spacing.md)) {
         Text(
             state.saveLine ?: ShareTexts.CHOOSE_FIRST,
-            style = MaterialTheme.typography.bodyMedium,
+            style = if (pinned) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurface,
         )
         state.problem?.let { InfoBanner(title = "Not saved", text = it, tone = StatusTone.ATTENTION, icon = AppIcons.StatusAttention) }
         val saving = state.saving
         if (saving != null) {
-            Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-                if (saving.total > 0 || LocalCalmMotion.current) {
-                    LinearProgressIndicator(progress = { saving.fraction }, modifier = Modifier.fillMaxWidth())
-                } else {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            if (saving.total > 0 || LocalCalmMotion.current) {
+                LinearProgressIndicator(progress = { saving.fraction }, modifier = Modifier.fillMaxWidth())
+            } else {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+            Text(
+                (if (saving.total > 0) "Saving ${saving.done} of ${saving.total}…" else "Getting it ready…") +
+                    " Stopping takes back what was saved so far.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+            )
+            OutlinedButton(onClick = actions.onStop, modifier = Modifier.fillMaxWidth().heightIn(min = Spacing.touchTarget)) { Text(ShareTexts.STOP) }
+        } else if (pinned) {
+            Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = actions.onClose, modifier = Modifier.weight(1f).heightIn(min = Spacing.touchTarget)) {
+                    Text(ShareTexts.DONT_SAVE, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                Text(
-                    if (saving.total > 0) "Saving ${saving.done} of ${saving.total}…" else "Getting it ready…",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
-                )
-                OutlinedButton(onClick = actions.onStop, modifier = Modifier.fillMaxWidth().heightIn(min = Spacing.touchTarget)) { Text(ShareTexts.STOP) }
-                Text(
-                    "Stopping takes back what was saved so far.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                SaveButton(state.canSave, actions.onSave, sensitive.weight(1f))
             }
         } else {
-            Button(onClick = actions.onSave, enabled = state.canSave, modifier = sensitive) {
-                Icon(AppIcons.Check, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
-                Text(ShareTexts.SAVE, modifier = Modifier.padding(start = Spacing.sm))
-            }
+            SaveButton(state.canSave, actions.onSave, sensitive.fillMaxWidth())
             OutlinedButton(onClick = actions.onClose, modifier = Modifier.fillMaxWidth().heightIn(min = Spacing.touchTarget)) {
                 Text(ShareTexts.DONT_SAVE)
             }
-            Box(Modifier.fillMaxWidth()) {
-                Text(
-                    "Nothing is saved until you tap ${ShareTexts.SAVE}.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            Text(
+                "Nothing is saved until you tap ${ShareTexts.SAVE}.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
+
+@Composable
+private fun SaveButton(enabled: Boolean, onSave: () -> Unit, modifier: Modifier) {
+    Button(onClick = onSave, enabled = enabled, modifier = modifier) {
+        Icon(AppIcons.Check, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+        Text(ShareTexts.SAVE, modifier = Modifier.padding(start = Spacing.sm))
+    }
+}
+
+/** From this font scale on, the screen is one list with Save at its end. */
+private const val LARGE_FONT = 1.5f

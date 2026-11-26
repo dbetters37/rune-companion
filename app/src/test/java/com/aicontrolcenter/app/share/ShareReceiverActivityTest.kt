@@ -13,6 +13,7 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsNodeInteraction
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
@@ -106,7 +107,16 @@ class ShareReceiverActivityTest {
     private fun waitFor(text: String, substring: Boolean = false) =
         compose.waitUntil(10_000) { compose.onAllNodesWithText(text, substring = substring).fetchSemanticsNodes().isNotEmpty() }
 
-    private fun tap(text: String) = compose.onNode(hasText(text) and hasClickAction()).performScrollTo().performClick()
+    private fun tap(text: String) = compose.onNode(hasText(text) and hasClickAction()).inView().performClick()
+
+    /** Scrolled into view when it is in the list; Save and "Don't save" stay in view at the bottom at usual font sizes. */
+    private fun SemanticsNodeInteraction.inView(): SemanticsNodeInteraction = apply {
+        try {
+            performScrollTo()
+        } catch (_: AssertionError) {
+            // Not inside the scrolling list.
+        }
+    }
 
     @Test
     fun `a shared text is shown with its size, nothing is stored until Save, and Save stores it as an import in the chosen space`() {
@@ -117,14 +127,14 @@ class ShareReceiverActivityTest {
         waitFor(ShareTexts.TITLE)
         waitFor("Tuesday: the boiler engineer comes at nine.", substring = true)
         compose.onNodeWithText("7 words · 43\u00A0bytes").assertExists()
-        compose.onNodeWithText(ShareTexts.STORING).performScrollTo().assertExists()
+        compose.onNodeWithText(ShareTexts.STORING).inView().assertExists()
         assertEquals(emptyList(), app.stored(), "nothing is stored before Save")
 
-        compose.onNode(hasText(ShareTexts.SAVE) and hasClickAction()).performScrollTo().performClick()
+        compose.onNode(hasText(ShareTexts.SAVE) and hasClickAction()).inView().performClick()
         assertEquals(emptyList(), app.stored(), "Save without a place is not possible")
 
         tap("Memory space “Screen notes”")
-        compose.onNodeWithText("Saves 1 memory in “Screen notes”.").performScrollTo().assertExists()
+        compose.onNodeWithText("Saves 1 memory in “Screen notes”.").assertIsDisplayed()
         assertEquals(emptyList(), app.stored(), "picking a place stores nothing")
         tap(ShareTexts.SAVE)
         waitFor(ShareTexts.SAVED)
