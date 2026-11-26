@@ -18,6 +18,7 @@ import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
@@ -109,6 +110,15 @@ class ShareReceiverActivityTest {
 
     private fun tap(text: String) = compose.onNode(hasText(text) and hasClickAction()).inView().performClick()
 
+    /**
+     * Picks where to save and waits until the screen took it in: the screen works out what Save will do on the app's
+     * background pool, so Save turns on a moment later (wave 3 merge: tapping Save at once was a race).
+     */
+    private fun pick(place: String) {
+        tap(place)
+        compose.waitUntil(10_000) { compose.onAllNodes(hasText(ShareTexts.SAVE) and hasClickAction() and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+    }
+
     /** Scrolled into view when it is in the list; Save and "Don't save" stay in view at the bottom at usual font sizes. */
     private fun SemanticsNodeInteraction.inView(): SemanticsNodeInteraction = apply {
         try {
@@ -133,7 +143,8 @@ class ShareReceiverActivityTest {
         compose.onNode(hasText(ShareTexts.SAVE) and hasClickAction()).inView().performClick()
         assertEquals(emptyList(), app.stored(), "Save without a place is not possible")
 
-        tap("Memory space “Screen notes”")
+        pick("Memory space “Screen notes”")
+        waitFor("Saves 1 memory in “Screen notes”.")
         compose.onNodeWithText("Saves 1 memory in “Screen notes”.").assertIsDisplayed()
         assertEquals(emptyList(), app.stored(), "picking a place stores nothing")
         tap(ShareTexts.SAVE)
@@ -182,7 +193,7 @@ class ShareReceiverActivityTest {
         waitFor("monday.txt")
         compose.onNodeWithText("“photo.png” was left out: it is not a text file.", substring = true).assertExists()
         compose.onNodeWithText("“huge.txt” was left out: it is larger than 1 MB", substring = true).assertExists()
-        tap(ShareTexts.WORKSPACE)
+        pick(ShareTexts.WORKSPACE)
         tap(ShareTexts.SAVE)
         waitFor(ShareTexts.SAVED)
 
@@ -197,7 +208,7 @@ class ShareReceiverActivityTest {
         app.space("Screen notes")
         launch(sendText("Stays here."))
         waitFor(ShareTexts.LOCAL_ONLY_ON)
-        tap("Memory space “Screen notes”")
+        pick("Memory space “Screen notes”")
         tap(ShareTexts.SAVE)
         waitFor(ShareTexts.SAVED)
         assertEquals("Stays here.", app.stored().single().content)
@@ -239,7 +250,7 @@ class ShareReceiverActivityTest {
         field.typeFast(TITLE)
         assertEquals(TITLE, field.typed())
 
-        tap("Memory space “Screen notes”")
+        pick("Memory space “Screen notes”")
         tap(ShareTexts.SAVE)
         waitFor(ShareTexts.SAVED)
         assertEquals(TITLE, app.stored().single().title)
