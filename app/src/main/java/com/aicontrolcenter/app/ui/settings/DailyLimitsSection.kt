@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aicontrolcenter.app.ui.activity.LIMITS_STOP_WORK
 import com.aicontrolcenter.app.ui.components.AppCard
+import com.aicontrolcenter.app.ui.components.LIMIT_PAUSES_OBJECTIVES
 import com.aicontrolcenter.app.ui.components.InfoBanner
 import com.aicontrolcenter.app.ui.components.RowDivider
 import com.aicontrolcenter.app.ui.components.SectionHeader
@@ -47,8 +48,8 @@ fun DailyLimitsSection(
         SectionHeader("Daily limits")
         AppCard {
             Text(
-                "Agents stop asking models for the rest of the day when one of these is reached. A running objective pauses " +
-                    "instead of failing; raise a limit, then tap Resume on it.",
+                "Agents stop asking models off this phone for the rest of the day when one of these is reached. " +
+                    LIMIT_PAUSES_OBJECTIVES,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

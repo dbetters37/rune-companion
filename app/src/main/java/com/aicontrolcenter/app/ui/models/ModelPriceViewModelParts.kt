@@ -9,6 +9,8 @@ import com.aicontrolcenter.app.ui.components.formatCount
 import com.aicontrolcenter.app.ui.components.putText
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.agents.AgentKind
+import com.aicontrolcenter.core.registry.CapabilityTier
+import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.registry.ModelDescriptor
 import com.aicontrolcenter.core.registry.ModelStatus
 import com.aicontrolcenter.core.registry.RegistrySnapshot
@@ -18,6 +20,7 @@ import com.aicontrolcenter.core.usage.ErrorClass
 import com.aicontrolcenter.core.usage.ModelPrice
 import com.aicontrolcenter.core.usage.TokenCounts
 import com.aicontrolcenter.core.usage.UsageTotals
+import com.aicontrolcenter.framework.llm.DailyUse
 import java.math.BigDecimal
 import java.math.RoundingMode
 
@@ -175,15 +178,21 @@ internal const val SPEED_MIN_ANSWERS = 5
 internal fun speedOf(totals: UsageTotals?): SpeedUi {
     if (totals == null || totals.calls == 0L) return SpeedUi(listOf("No calls in the last $SPEED_DAYS days."), hasCalls = false)
     val lines = mutableListOf<String>()
+    // "Answers" as the daily limits and Usage and cost count them: every request a model received, even one that
+    // failed, but not one the provider asked the app to slow down for (D3A-9). "Came back" and "failed" are outcomes.
+    val counted = DailyUse.counted(totals)
+    val slowDown = totals.errors[ErrorClass.RATE_LIMITED] ?: 0
     lines += buildString {
-        append("Last $SPEED_DAYS days: ").append(count(totals.ok, "answer")).append(" from ").append(count(totals.calls, "call"))
-        val notAnswered = listOfNotNull(
-            totals.failed.takeIf { it > 0 }?.let { "$it failed" },
+        append("Last $SPEED_DAYS days: ").append(count(counted, "answer")).append(" counted")
+        val outcomes = listOfNotNull(
+            "${formatCount(totals.ok)} came back".takeIf { totals.ok != counted || totals.failed > 0 || totals.cancelled > 0 },
+            (totals.failed - slowDown).takeIf { it > 0 }?.let { "$it failed" },
             totals.cancelled.takeIf { it > 0 }?.let { "$it stopped" },
-            totals.blocked.takeIf { it > 0 }?.let { "$it not sent" },
         )
-        if (notAnswered.isNotEmpty()) append(" (").append(notAnswered.joinToString(", ")).append(")")
+        if (outcomes.isNotEmpty()) append(" (").append(outcomes.joinToString(", ")).append(")")
         append('.')
+        if (slowDown > 0) append(" ").append(count(slowDown, "request")).append(" ended because the provider asked the app to slow down; they are not counted.")
+        if (totals.blocked > 0) append(" ").append(count(totals.blocked, "request")).append(" not sent.")
     }
     if (totals.ok >= SPEED_MIN_ANSWERS) {
         totals.averageAnswerMs?.let { lines += "A whole answer took ${seconds(it)} on average." }
@@ -241,6 +250,13 @@ data class CheaperHelperUi(
     val text: String,
     /** The helper agents that would change, for "Use for helpers…" (empty when this is not the cheapest). */
     val helpers: Set<com.aicontrolcenter.core.AgentId> = emptySet(),
+    /**
+     * Ticked when "Use for helpers…" opens: none when this model is rated lower at reasoning than a model the helpers use
+     * now, so the owner chooses one at a time (D3A-10).
+     */
+    val preselected: Set<com.aicontrolcenter.core.AgentId> = helpers,
+    /** "Llama 3.2 3B is rated Basic at reasoning; …": the quality trade-off, also said in the chooser; null when there is none. */
+    val tradeOff: String? = null,
 )
 
 /**
@@ -252,13 +268,17 @@ internal fun RegistrySnapshot.cheapestPriced(prices: Map<ModelId, ModelPrice>, c
         .filter { it.enabled && it.capabilities.toolCalling && !it.isSimulator && it.status != ModelStatus.UNAVAILABLE }
         .filter { model ->
             val provider = provider(model)
-            provider != null && provider.enabled && !(settings.localOnlyMode && provider.effectiveLocality.leavesDevice)
+            // A model on this phone costs nothing and takes no price (D3A-10): it is never "the cheapest priced".
+            provider != null && provider.enabled && provider.effectiveLocality != Locality.ON_DEVICE &&
+                !(settings.localOnlyMode && provider.effectiveLocality.leavesDevice)
         }
         .mapNotNull { model -> prices[model.id]?.takeIf { it.currencyLabel == currency }?.let { model to it } }
         .minWithOrNull(compareBy<Pair<ModelDescriptor, ModelPrice>> { typicalCostMicros(it.second) }.thenBy { it.first.displayName.lowercase() })
 
 /** The suggestion for the editor of [model], or null when there is nothing to suggest. */
 internal fun RegistrySnapshot.cheaperHelper(model: ModelDescriptor, prices: Map<ModelId, ModelPrice>): CheaperHelperUi? {
+    // A model on this phone is free already: no cheaper one to suggest, and it is never offered as the cheapest (D3A-10).
+    if (provider(model)?.effectiveLocality == Locality.ON_DEVICE) return null
     val own = prices[model.id]
     val currency = own?.currencyLabel ?: ModelPrice.DEFAULT_CURRENCY
     val (cheapest, cheapestPrice) = cheapestPriced(prices, currency) ?: return null
@@ -272,12 +292,16 @@ internal fun RegistrySnapshot.cheaperHelper(model: ModelDescriptor, prices: Map<
         }
         if (helpers.isEmpty()) return null
         val names = listNames(helpers.map { it.profile.name }.sortedBy { it.lowercase() })
+        val tradeOff = tradeOffOf(model, helpers.mapNotNull { it.profile.modelId?.let(modelsById::get) })
         return CheaperHelperUi(
             isThisModel = true,
             title = "Cheaper model for helpers",
             text = "${model.displayName} costs the least of your models that can use tools (${priceSentence(cheapestPrice)}). " +
-                "Helpers do most of an objective's work, so giving it to them spends less: $names. The Director keeps its own model.",
+                "Helpers do most of an objective's work, so giving it to them spends less: $names. The Director keeps its own model." +
+                (tradeOff?.let { " $it" } ?: ""),
             helpers = helpers.map { it.profile.id }.toSet(),
+            preselected = if (tradeOff != null) emptySet() else helpers.map { it.profile.id }.toSet(),
+            tradeOff = tradeOff,
         )
     }
     if (own == null || typicalCostMicros(own) <= cheapestCost) return null
@@ -289,6 +313,30 @@ internal fun RegistrySnapshot.cheaperHelper(model: ModelDescriptor, prices: Map<
         text = "${cheapest.displayName} costs $howMuch for the same work (${priceSentence(cheapestPrice)}). " +
             "To spend less, open it in Models and give it to helper agents with \"Use for agents…\".",
     )
+}
+
+/**
+ * What giving the helpers [model] trades away, by the reasoning ratings (D3A-10): "Llama 3.2 3B is rated Basic at
+ * reasoning; the helpers now use Claude Sonnet 4.5, rated Strong. Cheaper models can give weaker results; try it on one
+ * helper first." Null when no model the helpers use now is rated higher (or a rating is not known).
+ */
+internal fun tradeOffOf(model: ModelDescriptor, helperModels: List<ModelDescriptor>): String? {
+    val tier = model.capabilities.reasoning
+    if (tier == CapabilityTier.UNKNOWN) return null
+    val stronger = helperModels.distinctBy { it.id }
+        .filter { it.capabilities.reasoning != CapabilityTier.UNKNOWN && it.capabilities.reasoning > tier }
+        .sortedWith(compareByDescending<ModelDescriptor> { it.capabilities.reasoning }.thenBy { it.displayName.lowercase() })
+    if (stronger.isEmpty()) return null
+    val now = listNames(stronger.map { "${it.displayName}, rated ${tierName(it.capabilities.reasoning)}" })
+    return "${model.displayName} is rated ${tierName(tier)} at reasoning; the helpers now use $now. " +
+        "Cheaper models can give weaker results; try it on one helper first."
+}
+
+private fun tierName(tier: CapabilityTier): String = when (tier) {
+    CapabilityTier.UNKNOWN -> "unknown"
+    CapabilityTier.BASIC -> "Basic"
+    CapabilityTier.GOOD -> "Good"
+    CapabilityTier.STRONG -> "Strong"
 }
 
 /** "about US$0.45 for a typical million tokens", for the price section. */

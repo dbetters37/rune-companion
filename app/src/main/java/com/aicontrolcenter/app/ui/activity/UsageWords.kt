@@ -1,6 +1,8 @@
 package com.aicontrolcenter.app.ui.activity
 
+import com.aicontrolcenter.app.ui.components.LIMIT_PAUSES_OBJECTIVES
 import com.aicontrolcenter.app.ui.components.formatCount
+import com.aicontrolcenter.app.usage.limitCurrencyOf
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.usage.AgentModelUsage
@@ -32,10 +34,10 @@ const val ANSWERS_IN_PLAIN_WORDS: String =
 /** What a limit does, in one sentence (wave-2a minors: "Limits stop work, not cost already spent"). */
 const val LIMITS_STOP_WORK: String = "Limits stop work, not cost already spent: the last answer let through can take the day a little past a limit."
 
-/** What happens when a limit is reached, for the Daily limits screens. */
+/** What happens when a limit is reached, for the Daily limits screens; its last sentence is [LIMIT_PAUSES_OBJECTIVES] (D3A-3). */
 const val WHEN_A_LIMIT_IS_REACHED: String =
-    "When one is reached, agents stop asking models that are not on this phone until midnight. A running objective pauses " +
-        "instead of failing, and a chat says so. Raise the limit, then open the paused objective and tap Resume."
+    "When one is reached, agents stop asking models that are not on this phone until midnight, and a chat says so. " +
+        "Objectives pause instead of failing. $LIMIT_PAUSES_OBJECTIVES"
 
 /** "1 answer", "37 answers". */
 internal fun answers(count: Long): String = counted(count, "answer")
@@ -143,8 +145,7 @@ internal fun agentMoney(rows: List<AgentModelUsage>, prices: Map<ModelId, ModelP
  * The currency the money limit is read in: the one the owner's prices are in when they all share one, else US$ (the
  * limiter adds the estimated cost of every priced model, whatever its currency).
  */
-internal fun limitCurrency(prices: Map<ModelId, ModelPrice>): String =
-    prices.values.map { it.currencyLabel }.distinct().singleOrNull() ?: ModelPrice.DEFAULT_CURRENCY
+internal fun limitCurrency(prices: Map<ModelId, ModelPrice>): String = limitCurrencyOf(prices.values)
 
 /** "about US$0.12" or "less than US$0.01" (never "about less than …"). */
 internal fun aboutMoney(money: String): String = if (money.startsWith("less than")) money else "about $money"

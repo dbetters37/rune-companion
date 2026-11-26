@@ -176,6 +176,8 @@ data class UseForAgentsUi(
     val selected: Set<AgentId>,
     val warning: ModelUseWarning? = null,
     val isAssigning: Boolean = false,
+    /** From the cheaper-model suggestion: what the helpers would trade away in quality (D3A-10); null otherwise. */
+    val tradeOff: String? = null,
 ) {
     /** Chosen agents that do not use this model as their primary one yet. */
     val changeCount: Int get() = choices.count { it.id in selected && !it.alreadyUsesThis }
@@ -456,12 +458,13 @@ class ModelEditorViewModel(
     fun openUseForHelpers() {
         val snapshot = latest ?: return
         val model = snapshot.modelsById[modelId] ?: return
-        val helpers = state.value.cheaper?.takeIf { it.isThisModel }?.helpers ?: return
+        val cheaper = state.value.cheaper?.takeIf { it.isThisModel } ?: return
         if (state.value.useForAgents != null) return
         val choices = snapshot.agentChoices()
-        val selected = helpers.filterTo(mutableSetOf()) { id -> choices.any { it.id == id } }
-        if (selected.isEmpty()) return
-        state.update { it.copy(useForAgents = UseForAgentsUi(choices, selected, snapshot.useWarning(model))) }
+        if (cheaper.helpers.none { id -> choices.any { it.id == id } }) return
+        // Rated lower at reasoning than what the helpers use now: nobody is ticked, and the chooser says why (D3A-10).
+        val selected = cheaper.preselected.filterTo(mutableSetOf()) { id -> choices.any { it.id == id } }
+        state.update { it.copy(useForAgents = UseForAgentsUi(choices, selected, snapshot.useWarning(model), tradeOff = cheaper.tradeOff)) }
     }
 
     fun toggleAgentChoice(id: AgentId) = state.update { current ->

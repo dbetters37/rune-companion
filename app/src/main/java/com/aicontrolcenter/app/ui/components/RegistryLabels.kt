@@ -6,6 +6,7 @@ import com.aicontrolcenter.app.ui.icons.Cloud
 import com.aicontrolcenter.app.ui.icons.Lan
 import com.aicontrolcenter.app.ui.icons.OnDevice
 import com.aicontrolcenter.app.ui.theme.StatusTone
+import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.agents.AgentAvailability
 import com.aicontrolcenter.core.agents.UnavailableReason
 import com.aicontrolcenter.core.registry.AiAppCapability
@@ -16,6 +17,8 @@ import com.aicontrolcenter.core.registry.DiscoverySource
 import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.registry.ModelStatus
 import com.aicontrolcenter.core.registry.ProviderKind
+import com.aicontrolcenter.core.registry.RegistrySnapshot
+import com.aicontrolcenter.core.registry.effectiveLocality
 
 /*
  * The single place where registry values become words and tones. Screens and view models call
@@ -179,3 +182,15 @@ fun ModelStatus.toStatusLabel(): StatusLabel = when (this) {
     ModelStatus.AVAILABLE -> StatusLabel("Available", StatusTone.READY)
     ModelStatus.UNAVAILABLE -> StatusLabel("Unavailable", StatusTone.UNAVAILABLE)
 }
+
+/**
+ * Where [modelId]'s text goes, from the registry (the provider's effective locality), or null when the model is no
+ * longer registered. The cost lines leave models on this phone out (they cost nothing, D3A-10) and the objective's
+ * privacy line counts every other model as one that left the phone (D3A-5).
+ */
+fun RegistrySnapshot.localityOf(modelId: ModelId): Locality? =
+    modelsById[modelId]?.let { provider(it) }?.effectiveLocality
+
+/** The registered models whose provider runs on this phone: free, and never counted by the daily limits. */
+fun RegistrySnapshot.onPhoneModels(): Set<ModelId> =
+    models.filter { localityOf(it.id) == Locality.ON_DEVICE }.mapTo(HashSet()) { it.id }

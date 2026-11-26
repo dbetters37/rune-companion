@@ -35,6 +35,7 @@ import com.aicontrolcenter.app.ui.approvals.WaitingForYou
 import com.aicontrolcenter.app.ui.approvals.icon
 import com.aicontrolcenter.core.RequestId
 import com.aicontrolcenter.core.TaskId
+import com.aicontrolcenter.core.usage.WorkKind
 
 class TaskDetailActions(
     val onBack: () -> Unit,
@@ -66,6 +67,7 @@ fun TaskDetailRoute(
             taskId, graph.tasks, graph.messages, graph.registryDirectory, graph.agentChat, graph.toolRegistry, graph.orchestrator,
             graph.activityMonitor, graph.clock, graph.zone(), requests = graph.ownerRequests.pending, capabilityInfo = graph.capabilities::info,
             awaitStartup = graph::awaitStartup, spaces = graph.memoryService.observeSpaces(), computation = work,
+            workUsage = graph.usageReports.observeWorkUsage(WorkKind.TASK, taskId.value), prices = graph.modelPrices.observeAll(),
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()

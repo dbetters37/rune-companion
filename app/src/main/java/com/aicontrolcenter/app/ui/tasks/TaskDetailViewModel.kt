@@ -3,6 +3,7 @@ package com.aicontrolcenter.app.ui.tasks
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aicontrolcenter.app.ui.components.onPhoneModels
 import com.aicontrolcenter.app.ui.approvals.RequestUi
 import com.aicontrolcenter.app.ui.approvals.isOpenAt
 import com.aicontrolcenter.app.ui.approvals.requestUi
@@ -34,6 +35,8 @@ import com.aicontrolcenter.core.tasks.TaskRecord
 import com.aicontrolcenter.core.tasks.TaskRepository
 import com.aicontrolcenter.core.tasks.TaskStatus
 import com.aicontrolcenter.core.tasks.TaskUsage
+import com.aicontrolcenter.core.usage.ModelPrice
+import com.aicontrolcenter.core.usage.WorkUsage
 import com.aicontrolcenter.core.tools.Capability
 import com.aicontrolcenter.core.tools.CapabilityInfo
 import com.aicontrolcenter.core.tools.ToolRegistry
@@ -104,6 +107,8 @@ data class TaskDetailUi(
     val result: String?,
     val reviews: List<ReviewUi>,
     val usage: String?,
+    /** Its model answers, tokens and estimated cost so far, from its usage rows (goal 1, D3A-4); null before any call. */
+    val cost: CostLineUi? = null,
     val timing: String,
     val canRetry: Boolean,
     val canCancel: Boolean,
@@ -155,6 +160,10 @@ class TaskDetailViewModel(
     spaces: Flow<List<KnowledgeSpace>> = flowOf(emptyList()),
     /** Where the state is built (the app's background pool; tests stay on their dispatcher). */
     computation: CoroutineContext = EmptyCoroutineContext,
+    /** This task's usage rows (`UsageReports.observeWorkUsage(WorkKind.TASK, id)`), for its cost line (D3A-4). */
+    workUsage: Flow<List<WorkUsage>> = flowOf(emptyList()),
+    /** The owner's prices, read only. */
+    prices: Flow<List<ModelPrice>> = flowOf(emptyList()),
 ) : ViewModel() {
 
     private data class Local(val isBusy: Boolean = false, val message: UserMessage? = null)
@@ -198,7 +207,14 @@ class TaskDetailViewModel(
         .distinctUntilChanged()
         .flatMapLatest { id -> if (id == null) flowOf(emptyList()) else chat.observeEntries(id) }
 
-    val uiState: StateFlow<TaskDetailUiState> = combine(stored, entries, local, requests) { stored, entries, local, requests -> build(stored, entries, local, requests) }
+    /** The task's cost so far: its usage rows at the owner's prices, models on this phone free (D3A-4, D3A-10). */
+    private val cost: Flow<CostLineUi?> = combine(workUsage, prices, directory.observe()) { rows, priced, snapshot ->
+        costLineOf(rows, priced.associateBy { it.modelId }, snapshot.onPhoneModels())
+    }.distinctUntilChanged()
+
+    val uiState: StateFlow<TaskDetailUiState> = combine(stored, entries, local, requests, cost) { stored, entries, local, requests, cost ->
+        build(stored, entries, local, requests, cost)
+    }
         .flowOn(computation).conflate()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TaskDetailUiState())
 
@@ -211,7 +227,7 @@ class TaskDetailViewModel(
 
     fun messageShown() = local.update { it.copy(message = null) }
 
-    private fun build(stored: Stored?, entries: List<ConversationEntry>, local: Local, requests: List<OwnerRequest>): TaskDetailUiState {
+    private fun build(stored: Stored?, entries: List<ConversationEntry>, local: Local, requests: List<OwnerRequest>, cost: CostLineUi?): TaskDetailUiState {
         val task = stored?.tree?.task?.takeIf { record -> stored.tree.summaries.any { it.id == record.id } }
             ?: return TaskDetailUiState(isLoading = false, notFound = true, message = local.message)
         val faces = AgentFaces(stored.snapshot, stored.spaces.associate { it.id to it.name })
@@ -247,7 +263,9 @@ class TaskDetailViewModel(
                 reviews = task.reviews.map { verdict ->
                     ReviewUi(faces.of(verdict.reviewer), verdict.decision.toStatusLabel(), verdict.summary, verdict.issues, formatCompactTimestamp(verdict.at, now, zone))
                 },
-                usage = usageOf(task.usage),
+                // With a cost line, the answers and tokens are said there, once.
+                usage = usageOf(task.usage, withModelCalls = cost == null),
+                cost = cost,
                 timing = timingOf(task, now, limitPaused = limitPaused(task.id, task.status, task.kind, tree, requests, now)),
                 canRetry = task.status in RETRYABLE && task.kind != TaskKind.REVIEW && task.kind != TaskKind.OBJECTIVE && task.delegationChain.isEmpty(),
                 canCancel = !task.status.isFinished && task.kind != TaskKind.OBJECTIVE,
@@ -266,14 +284,15 @@ class TaskDetailViewModel(
         if (functionName == ToolMenu.FUNCTION_NAME) ToolInfo(ToolMenu.TITLE, RiskLevel.SAFE)
         else tools.byFunctionName(functionName)?.spec?.let { ToolInfo(it.title, it.risk) }
 
-    private fun usageOf(usage: TaskUsage): String? {
+    /** "8 model answers · 2 tool calls · 1,200 tokens in · 300 out" ("answers" as the limits and Usage count them, D3A-9). */
+    private fun usageOf(usage: TaskUsage, withModelCalls: Boolean = true): String? {
         if (usage == TaskUsage()) return null
         return listOfNotNull(
-            plural(usage.modelCalls, "model call"),
+            plural(usage.modelCalls, "model answer").takeIf { withModelCalls },
             usage.toolCalls.takeIf { it > 0 }?.let { plural(it, "tool call") },
-            "${formatCount(usage.inputTokens)} tokens in · ${formatCount(usage.outputTokens)} out",
+            "${formatCount(usage.inputTokens)} tokens in · ${formatCount(usage.outputTokens)} out".takeIf { withModelCalls },
             usage.messagesSent.takeIf { it > 0 }?.let { plural(it, "message") + " sent" },
-        ).joinToString(" · ")
+        ).joinToString(" · ").ifEmpty { null }
     }
 
     /**

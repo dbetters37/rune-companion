@@ -53,11 +53,12 @@ fun StatTile(
         Spacer(Modifier.height(6.dp))
         Text(text = value, style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onSurface)
         if (caption != null) {
+            // Two lines: a caption such as "+2,520 on this phone (free)" must not lose its end on a half-width tile.
             Text(
                 text = caption,
                 style = MaterialTheme.typography.labelMedium,
                 color = captionColor,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
         }

@@ -150,11 +150,11 @@ class DailyLimitsViewModel(
             val result = try {
                 settings.update { it.withLimits(limits) }
                 if (refill) fill(limits)
-                val now = TodayUse(before?.use ?: com.aicontrolcenter.framework.llm.DailyUse.NONE, limits)
+                val now = TodayUse(before?.use ?: com.aicontrolcenter.framework.llm.DailyUse.NONE, limits, before?.currency ?: ModelPrice.DEFAULT_CURRENCY)
                 when {
                     before?.reached == true && !now.reached ->
                         "Saved. Paused objectives do not go on by themselves: open each one and tap Resume."
-                    now.reached -> "Saved. Today's use is already at a limit, so agents still wait until midnight or a higher limit."
+                    now.reached -> "Saved. Today's use is already at a limit, so agents still cannot ask models off this phone until midnight or a higher limit."
                     else -> "Saved."
                 }
             } catch (e: CancellationException) {
@@ -240,7 +240,8 @@ class DailyLimitsViewModel(
         /** The three limits in [limits] in words against today's use. */
         fun linesOf(use: TodayUse): List<LimitLineUi> {
             val counts = use.use
-            val currency = ModelPrice.DEFAULT_CURRENCY
+            // The limiter's currency (D3A-8), as the Today tile and Usage and cost say it.
+            val currency = use.currency
             val maxCalls = use.limits.maxCalls
             val maxTokens = use.limits.maxTokens
             val maxSpend = use.limits.maxSpendMicros
@@ -269,7 +270,7 @@ class DailyLimitsViewModel(
 
         /** The limiter's own sentence when a limit is reached, else null. */
         fun reachedSentence(use: TodayUse): String? =
-            use.limits.reachedBy(use.use.calls, use.use.tokens, use.use.spendMicros)?.let { use.limits.sentence(it) }
+            use.limits.reachedBy(use.use.calls, use.use.tokens, use.use.spendMicros)?.let { use.limits.sentence(it, use.currency) }
     }
 }
 

@@ -27,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.aicontrolcenter.app.ui.components.AgentAvatar
 import com.aicontrolcenter.app.ui.components.AppCard
@@ -100,6 +101,13 @@ internal fun TaskHeader(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            // Goal 1: what this task's model answers cost so far, with what a token is and that it is an estimate (D3A-4).
+            task.cost?.let { cost ->
+                Column(Modifier.semantics(mergeDescendants = true) {}, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(cost.text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+                    Text(cost.note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
             if (task.canRetry || task.canCancel) {
                 Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                     if (task.canRetry) {

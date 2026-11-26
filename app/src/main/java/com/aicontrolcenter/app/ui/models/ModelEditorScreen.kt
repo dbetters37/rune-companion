@@ -73,6 +73,7 @@ import com.aicontrolcenter.app.ui.components.testLabel
 import com.aicontrolcenter.app.ui.icons.Agent
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.ModelChip
+import com.aicontrolcenter.app.ui.icons.OnDevice
 import com.aicontrolcenter.app.ui.icons.Sparkle
 import com.aicontrolcenter.app.ui.theme.MonoTextStyle
 import com.aicontrolcenter.app.ui.theme.Spacing
@@ -81,6 +82,7 @@ import com.aicontrolcenter.app.ui.theme.appColors
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.registry.CapabilityTier
+import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.registry.ModelSource
 
 /**
@@ -148,7 +150,17 @@ internal fun ModelEditorScreen(state: ModelEditorUiState, viewModel: ModelEditor
                     )
                 } else {
                     state.cheaper?.let { CheaperHelperCard(it, viewModel::openUseForHelpers) }
-                    if (state.price.available) PriceEditor(state, viewModel)
+                    if (state.locality == Locality.ON_DEVICE) {
+                        // A model on this phone costs nothing: no price fields, so it is never charged anywhere (D3A-10).
+                        InfoBanner(
+                            title = "Free on this phone",
+                            text = "Models on this phone cost nothing; no price is needed. The daily limits do not count them.",
+                            tone = StatusTone.READY,
+                            icon = AppIcons.OnDevice,
+                        )
+                    } else if (state.price.available) {
+                        PriceEditor(state, viewModel)
+                    }
                     state.speed?.let { SpeedCard(it, onOpenUsage) }
                     DescriptionEditor(state, viewModel)
                     CapabilitiesEditor(state, viewModel)
@@ -519,6 +531,7 @@ private fun UseForAgentsDialog(
                         tone = if (it.blocksRunning) StatusTone.UNAVAILABLE else StatusTone.ATTENTION,
                     )
                 }
+                state.tradeOff?.let { InfoBanner(title = "Cheaper can mean weaker", text = it, tone = StatusTone.ATTENTION) }
                 LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
                     items(state.choices, key = { it.id.value }) { choice ->
                         AgentChoiceRow(

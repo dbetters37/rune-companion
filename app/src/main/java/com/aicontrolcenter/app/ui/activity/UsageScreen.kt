@@ -42,7 +42,6 @@ import com.aicontrolcenter.app.ui.components.readableWidth
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.ChevronRight
 import com.aicontrolcenter.app.ui.icons.Insights
-import com.aicontrolcenter.app.ui.icons.Schedule
 import com.aicontrolcenter.app.ui.icons.Speed
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.core.AgentId
@@ -50,6 +49,9 @@ import com.aicontrolcenter.core.usage.CostEstimate
 
 /** What the Usage tab's numbers mean; also the cost line's last words (rule 29). */
 private const val COST_DISCLAIMER = CostEstimate.DISCLAIMER
+
+/** The cost tile when no used model has a price: not known, which is not the same as free (D3A-1). */
+private const val COST_NOT_KNOWN = "Not known"
 
 /**
  * Activity › "Usage and cost" (goals 1-2, rules 7 and 29; WP10a): Today / 7 days / 30 days / this month; answers, tokens
@@ -150,10 +152,24 @@ internal fun UsageContent(
 @Composable
 private fun SummaryCard(summary: UsageSummaryUi, period: UsagePeriod, navigation: ActivityNavigation) {
     AppCard {
+        // The same counted figures as the Dashboard's Today tile; the free part on this phone beside them (D3A-2).
         UsageStatTiles(
-            answers = UsageStat(formatCount(summary.answers), if (summary.answers == 1L) "Answer" else "Answers"),
-            tokens = UsageStat(formatCount(summary.tokens), if (summary.tokens == 1L) "Token" else "Tokens"),
-            cost = UsageStat(summary.cost ?: "No price", "Estimated cost"),
+            answers = UsageStat(
+                formatCount(summary.answers), if (summary.answers == 1L) "Answer" else "Answers",
+                summary.phoneAnswers.takeIf { it > 0 }?.let { "+${formatCount(it)} on this phone (free)" },
+            ),
+            tokens = UsageStat(
+                formatCount(summary.tokens), if (summary.tokens == 1L) "Token" else "Tokens",
+                summary.phoneTokens.takeIf { it > 0 }?.let { "+${formatCount(it)} on this phone (free)" },
+            ),
+            cost = UsageStat(
+                summary.cost ?: COST_NOT_KNOWN, "Estimated cost",
+                when {
+                    summary.cost == null -> "no price entered"
+                    summary.answers == 0L && summary.tokens == 0L -> "models on this phone are free"
+                    else -> null
+                },
+            ),
         )
         Column(Modifier.padding(top = Spacing.md), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
             summary.lines.forEach { line ->
@@ -213,7 +229,7 @@ internal fun UsageStatTiles(answers: UsageStat, tokens: UsageStat, cost: UsageSt
                     Tile(tokens, AppIcons.Speed, Modifier.weight(1f))
                 }
             }
-            Tile(cost, AppIcons.Schedule, Modifier.fillMaxWidth())
+            Tile(cost, AppIcons.Payments, Modifier.fillMaxWidth())
         }
     }
 }

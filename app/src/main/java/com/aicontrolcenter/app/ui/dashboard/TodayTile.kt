@@ -16,7 +16,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aicontrolcenter.app.ui.activity.UsageStat
 import com.aicontrolcenter.app.ui.activity.UsageStatTiles
-import com.aicontrolcenter.app.ui.activity.moneyWords
+import com.aicontrolcenter.app.ui.activity.TOKENS_IN_PLAIN_WORDS
 import com.aicontrolcenter.app.ui.components.AppCard
 import com.aicontrolcenter.app.ui.components.InfoBanner
 import com.aicontrolcenter.app.ui.components.SectionHeader
@@ -25,9 +25,13 @@ import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.app.ui.theme.appColors
 
+/** Under the tile's numbers (rule 29). */
+private const val COST_DISCLAIMER = "Costs are estimated from the prices you entered; your provider's bill is what counts."
+
 /**
- * The Today tile: answers, tokens and estimated cost today against today's limits, and this month; cost only when every
- * model used today has a price, otherwise which models have none. Opens Activity › Usage and cost
+ * The Today tile: answers, tokens and estimated cost today against today's limits, and this month. The cost is what the
+ * money limit counts (the models with a price), as Activity › Usage and cost and Settings › Daily limits show it; the
+ * models without a price are named under it (D3A-1). Opens Activity › Usage and cost
  * (navigation.onOpenUsage) and Settings › Daily limits (navigation.onOpenDailyLimits). A slot of `DashboardScreen`.
  */
 @Composable
@@ -63,15 +67,12 @@ internal fun TodayTileContent(today: TodayTileUi, navigation: DashboardNavigatio
                     listOfNotNull(maxTokens?.let { "of ${formatCount(it)}" }, "reached".takeIf { tokensReached }).joinToString(", ").ifEmpty { null },
                     attention.takeIf { tokensReached },
                 ),
-                cost = UsageStat(
-                    today.cost ?: if (today.used) "No cost" else moneyWords(0, today.currency), "Estimated cost",
-                    if (today.cost != null || !today.used) limits.maxSpendMicros?.let { "of ${moneyWords(it, today.currency)}" } else "a price is missing",
-                ),
+                cost = UsageStat(today.cost, "Estimated cost", today.costCaption, attention.takeIf { today.costReached }),
                 onClick = navigation.onOpenUsage,
             )
             Column(Modifier.padding(top = Spacing.sm), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
                 today.reached?.let { InfoBanner(it, tone = StatusTone.ATTENTION, title = "Today's limit is reached") }
-                if (!today.used) {
+                if (!today.used && today.phoneNote == null) {
                     Text(
                         "Nothing used yet today. Models on this phone are free and not counted.",
                         style = MaterialTheme.typography.bodySmall,
@@ -79,14 +80,14 @@ internal fun TodayTileContent(today: TodayTileUi, navigation: DashboardNavigatio
                     )
                 }
                 today.costNote?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface) }
+                today.phoneNote?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface) }
                 today.month?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface) }
-                if (today.cost != null || today.month != null) {
-                    Text(
-                        "Costs are estimated from the prices you entered; your provider's bill is what counts.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                // The owner's rule: no "token" without plain words near it (D3A-7).
+                Text(
+                    if (today.used || today.month != null) "$TOKENS_IN_PLAIN_WORDS $COST_DISCLAIMER" else TOKENS_IN_PLAIN_WORDS,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 if (today.unpriced.isNotEmpty()) {

@@ -7,10 +7,12 @@ import com.aicontrolcenter.app.health.SafeStartControl
 import com.aicontrolcenter.app.ui.activity.UnpricedModelUi
 import com.aicontrolcenter.app.ui.activity.answers
 import com.aicontrolcenter.app.ui.activity.countedAnswers
-import com.aicontrolcenter.app.ui.activity.limitCurrency
 import com.aicontrolcenter.app.ui.activity.listWords
 import com.aicontrolcenter.app.ui.activity.moneyWords
+import com.aicontrolcenter.app.ui.activity.times
 import com.aicontrolcenter.app.ui.activity.tokens
+import com.aicontrolcenter.app.ui.components.LIMIT_PAUSES_OBJECTIVES
+import com.aicontrolcenter.app.ui.components.RESUME_AFTER_LIMIT
 import com.aicontrolcenter.app.ui.components.formatCount
 import com.aicontrolcenter.app.ui.components.formatTimeOfDay
 import com.aicontrolcenter.app.ui.models.isSimulator
@@ -57,17 +59,25 @@ import java.time.ZoneId
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 
-/** The Today tile: today's use as the limits count it, against the limits, and this month. */
+/**
+ * The Today tile: today's use as the limits count it, against the limits, and this month. Its money is what the limiter
+ * counts toward the money limit (the models with a price), so the tile, Activity › Usage and cost and Settings › Daily
+ * limits show the same figure on the same day (D3A-1); models without a price are named under it.
+ */
 @Immutable
 data class TodayTileUi(
-    /** False before any model was used today. */
+    /** False before any model off this phone was used today. */
     val used: Boolean,
     val answers: Long,
     val tokens: Long,
     val limits: DailyLimits,
-    /** Today's estimated cost ("US$0.12"), shown only when every model used today off this phone has a price. */
-    val cost: String?,
-    /** Why no cost is shown, when a model used today has no price; null otherwise. */
+    /** The cost tile's value: today's estimated cost as the money limit counts it ("US$0.38"), or [COST_NOT_KNOWN]. */
+    val cost: String,
+    /** Under the cost: "of US$1.00", "no price entered", or null when there is no money limit. */
+    val costCaption: String?,
+    /** True when the money limit is reached now. */
+    val costReached: Boolean = false,
+    /** What the cost leaves out ("Llama 3.3 70B has no price yet, so its tokens are not in the cost."); null when nothing. */
     val costNote: String?,
     val unpriced: List<UnpricedModelUi>,
     /** "This month: 1,234 answers · 2,345,678 tokens · US$4.56", or null when nothing was used this month or it is not known. */
@@ -76,6 +86,8 @@ data class TodayTileUi(
     val reached: String?,
     /** The currency the money limit is shown in. */
     val currency: String,
+    /** "Models on this phone also answered 6 times today: free, and not counted."; null when none did or it is not known. */
+    val phoneNote: String? = null,
 )
 
 /** One step of Getting started (D47). */
@@ -179,7 +191,7 @@ class DashboardExtrasViewModel(
             DashboardExtrasUiState(
                 isLoading = false,
                 today = todayTile(built.use, built.usage),
-                gettingStarted = if (built.onboarded) null else gettingStarted(built.snapshot, built.use.limits),
+                gettingStarted = if (built.onboarded) null else gettingStarted(built.snapshot, built.use.limits, built.use.currency),
                 phone = phoneItems(built.phone),
                 safeStart = if (safe.on) SafeStartUi(safe.reason?.ownerText ?: "The app did not start normally.", isLeaving) else null,
             )
@@ -219,53 +231,76 @@ class DashboardExtrasViewModel(
 
     private fun todayTile(use: TodayUse, usage: UsageDetail?): TodayTileUi {
         val counted = use.use
-        val currency = usage?.prices?.let(::limitCurrency) ?: ModelPrice.DEFAULT_CURRENCY
+        val currency = use.currency
+        val used = counted.calls > 0 || counted.tokens > 0
         val unpriced = usage?.day.orEmpty()
             .filter { it.locality.leavesDevice && countedAnswers(it.totals) + it.totals.totalTokens > 0 && it.modelId !in usage!!.prices }
-        val cost = when {
-            counted.calls == 0L && counted.tokens == 0L -> null
-            usage != null -> if (unpriced.isEmpty() && counted.priced) moneyWords(counted.spendMicros, currency) else null
-            counted.priced -> moneyWords(counted.spendMicros, currency)
+        val maxSpend = use.limits.maxSpendMicros
+        val limitWords = maxSpend?.let { moneyWords(it, currency) }
+        // The money the limiter counts toward the money limit: the models with a price (D3A-1). Never "No cost": with no
+        // price at all the cost is not known, which is not the same as free.
+        val known = !used || counted.priced
+        val cost = if (known) moneyWords(counted.spendMicros, currency) else COST_NOT_KNOWN
+        val costReached = maxSpend != null && counted.spendMicros >= maxSpend && known && used
+        val costCaption = when {
+            !known -> "no price entered"
+            limitWords != null -> "of $limitWords" + if (costReached) ", reached" else ""
             else -> null
         }
+        val names = listWords(unpriced.map { it.modelLabel })
+        val have = if (unpriced.size == 1) "has" else "have"
         val costNote = when {
-            unpriced.isNotEmpty() -> "No cost shown: ${listWords(unpriced.map { it.modelLabel })} ${if (unpriced.size == 1) "has" else "have"} no price yet."
-            cost == null && counted.calls > 0 && !counted.priced -> "No cost shown: no model used today has a price yet."
+            !used -> null
+            !counted.priced && unpriced.isNotEmpty() ->
+                "$names $have no price yet, so " + (limitWords?.let { "nothing counts toward your $it limit." } ?: "no cost can be shown.")
+            !counted.priced ->
+                "No model used today has a price yet, so " + (limitWords?.let { "nothing counts toward your $it limit." } ?: "no cost can be shown.")
+            unpriced.isNotEmpty() -> "$names $have no price yet, so ${if (unpriced.size == 1) "its" else "their"} tokens are not in the cost."
             // Without the reports it cannot be told whether every model used today has a price: say what the cost covers.
-            usage == null && cost != null -> PRICED_ONLY
+            usage == null -> PRICED_ONLY
             else -> null
         }
+        val phoneAnswers = usage?.day.orEmpty().filter { !it.locality.leavesDevice }.sumOf { countedAnswers(it.totals) }
         return TodayTileUi(
-            used = counted.calls > 0 || counted.tokens > 0,
+            used = used,
             answers = counted.calls,
             tokens = counted.tokens,
             limits = use.limits,
             cost = cost,
+            costCaption = costCaption,
+            costReached = costReached,
             costNote = costNote,
             unpriced = unpriced.map { UnpricedModelUi(it.modelId, it.modelLabel) },
             month = usage?.let { monthLine(it, currency) },
             reached = use.limits.reachedBy(counted.calls, counted.tokens, counted.spendMicros)?.let { use.limits.sentence(it, currency) },
             currency = currency,
+            phoneNote = phoneAnswers.takeIf { it > 0 }?.let { phoneWords(it, alsoOthers = used) },
         )
     }
 
-    /** This month as the limits count it; its cost only when every model used this month off the phone has a price. */
+    /**
+     * This month as the limits count it (models off this phone), with the estimated cost of the models with a price, as
+     * Activity › Usage and cost shows this month.
+     */
     private fun monthLine(usage: UsageDetail, currency: String): String? {
         val month = DailyUse.of(usage.month, usage.prices)
         if (month.calls == 0L && month.tokens == 0L) return null
-        val everyPriced = usage.month.filter { it.locality.leavesDevice && it.totals.calls > 0 }.all { it.modelId in usage.prices }
+        val everyPriced = usage.month.filter { it.locality.leavesDevice && it.totals.totalTokens > 0 }.all { it.modelId in usage.prices }
         return buildString {
             append("This month: ").append(answers(month.calls)).append(" · ").append(tokens(month.tokens))
-            if (everyPriced && month.priced) append(" · ").append(moneyWords(month.spendMicros, currency))
+            if (month.priced) {
+                append(" · ").append(moneyWords(month.spendMicros, currency))
+                if (!everyPriced) append(" for the models with a price")
+            }
         }
     }
 
-    private fun gettingStarted(snapshot: RegistrySnapshot, limits: DailyLimits): GettingStartedUi {
+    private fun gettingStarted(snapshot: RegistrySnapshot, limits: DailyLimits, currency: String): GettingStartedUi {
         val hasProvider = snapshot.providers.any { !it.isSimulator }
         val limitWords = buildList {
             limits.maxCalls?.let { add("${formatCount(it.toLong())} answers") }
             limits.maxTokens?.let { add("${formatCount(it)} tokens") }
-            limits.maxSpendMicros?.let { add(moneyWords(it, ModelPrice.DEFAULT_CURRENCY)) }
+            limits.maxSpendMicros?.let { add(moneyWords(it, currency)) }
         }
         return GettingStartedUi(
             listOf(
@@ -291,10 +326,9 @@ class DashboardExtrasViewModel(
                 GettingStartedStepUi(
                     title = "Set a daily limit",
                     text = if (limitWords.isEmpty()) {
-                        "Choose how much the agents may use each day. When a limit is reached, work pauses until midnight."
+                        "Choose how much the agents may use each day. $LIMIT_PAUSES_OBJECTIVES"
                     } else {
-                        "On from the start: ${listWords(limitWords)} a day, whichever comes first. When one is reached, " +
-                            "work pauses until midnight or until you raise it."
+                        "On from the start: ${listWords(limitWords)} a day, whichever comes first. $LIMIT_PAUSES_OBJECTIVES"
                     },
                     action = "Daily limits",
                     done = false,
@@ -359,7 +393,7 @@ class DashboardExtrasViewModel(
             add(
                 PhoneItemUi(
                     "phone-paused:${row.rootId.value}", StatusTone.ATTENTION, "Paused by today's limit: ${row.title}",
-                    "Raise the limit in Settings › Daily limits, then open the objective and tap Resume. Or wait until midnight.",
+                    RESUME_AFTER_LIMIT,
                     PhoneTarget.Objective(row.rootId),
                 ),
             )
@@ -370,7 +404,7 @@ class DashboardExtrasViewModel(
                 PhoneItemUi(
                     "phone-paused-more", StatusTone.ATTENTION,
                     if (more == 1) "1 more objective paused by today's limit" else "$more more objectives paused by today's limit",
-                    "Raise the limit, then resume each one in Tasks.", PhoneTarget.DailyLimits,
+                    "Raise the limit, or wait until midnight; then open each one in Tasks and tap Resume.", PhoneTarget.DailyLimits,
                 ),
             )
         }
@@ -388,6 +422,14 @@ class DashboardExtrasViewModel(
     companion object {
         /** Said under a cost that may leave out models without a price. */
         const val PRICED_ONLY: String = "The cost counts only the models you entered a price for."
+
+        /** The cost tile when no model used today has a price: not known, which is not the same as free (D3A-1). */
+        const val COST_NOT_KNOWN: String = "Not known"
+
+        /** "Models on this phone also answered 6 times today: free, and not counted." */
+        internal fun phoneWords(answers: Long, alsoOthers: Boolean): String =
+            if (alsoOthers) "Models on this phone also answered ${times(answers)} today: free, and not counted."
+            else "Only models on this phone answered today (${times(answers)}): free, and not counted."
 
         /** The newest objectives looked at for "paused by today's limit". */
         const val OBJECTIVES_READ: Int = 50

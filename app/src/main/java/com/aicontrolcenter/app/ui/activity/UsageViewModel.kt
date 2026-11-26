@@ -54,18 +54,27 @@ enum class UsagePeriod(val title: String, val phrase: String) {
     }
 }
 
-/** The headline numbers of a period. */
+/**
+ * The headline numbers of a period. [answers], [tokens] and [cost] are the models off this phone, counted as the daily
+ * limits count them ([DailyUse.of]), so the Dashboard's Today tile and this tab show the same figures (D3A-2); what models
+ * on this phone did (free, never counted) is said beside them in [phoneAnswers] and [phoneTokens].
+ */
 @Immutable
 data class UsageSummaryUi(
-    /** Answers as the daily limits count them, every model ([DailyUse.counted]). */
+    /** Answers of models off this phone, as the daily limits count them ([DailyUse.counted]). */
     val answers: Long,
+    /** Tokens of models off this phone. */
     val tokens: Long,
-    /** "US$0.12" (models with a price only), or null when no model used has a price. */
+    /** "US$0.12" (models off this phone with a price), "US$0.00" when only models on this phone were used, or null when no used model has a price. */
     val cost: String?,
     /** Plain sentences under the numbers: today's limits, models on this phone, slow-down answers, models without a price. */
     val lines: List<String>,
     /** Models used off this phone that have no price, for "Add a price". */
     val unpriced: List<UnpricedModelUi>,
+    /** Answers of models on this phone: free, and not counted by the limits. */
+    val phoneAnswers: Long = 0,
+    /** Tokens of models on this phone. */
+    val phoneTokens: Long = 0,
 )
 
 /** A model without a price, which the owner can open to add one. */
@@ -220,20 +229,25 @@ class UsageViewModel(
             lines += "${listWords(unpriced.map { it.modelLabel })} ${if (unpriced.size == 1) "has" else "have"} no price, so " +
                 "${if (unpriced.size == 1) "its" else "their"} tokens are not in the cost. Add a price in Models (0 if it is free)."
         }
+        val offPhone = used.filter { it.locality.leavesDevice }
         return UsageSummaryUi(
-            answers = used.sumOf { countedAnswers(it.totals) },
-            tokens = all.totalTokens,
-            cost = costWords(used, prices),
+            answers = offPhone.sumOf { countedAnswers(it.totals) },
+            tokens = offPhone.sumOf { it.totals.totalTokens },
+            // Models on this phone cost nothing, even with a price entered (D3A-10): only models off the phone are priced.
+            cost = if (offPhone.isEmpty()) moneyWords(0, limitCurrency(prices)) else costWords(offPhone, prices),
             lines = lines,
             unpriced = unpriced.map { UnpricedModelUi(it.modelId, it.modelLabel) },
+            phoneAnswers = onPhone.sumOf { countedAnswers(it.totals) },
+            phoneTokens = onPhone.sumOf { it.totals.totalTokens },
         )
     }
 
     private fun modelRow(row: ModelUsage, prices: Map<ModelId, ModelPrice>): ModelUsageUi {
         val price = prices[row.modelId]
         val cost = when {
-            price != null -> costWords(listOf(row), prices)?.let(::aboutMoney) ?: "No cost"
+            // On this phone a model costs nothing, whatever price was entered for it (D3A-10).
             !row.locality.leavesDevice -> "Free: on this phone"
+            price != null -> costWords(listOf(row), prices)?.let(::aboutMoney) ?: "No price entered"
             else -> "No price entered"
         }
         return ModelUsageUi(
