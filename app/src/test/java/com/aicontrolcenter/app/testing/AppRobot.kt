@@ -93,7 +93,10 @@ class AppRobot(private val compose: ComposeContentTestRule) {
     /** Opens a section that lives behind "More" on a phone. */
     fun openSectionViaMore(title: String) = apply {
         openMore()
-        compose.onNode(hasText(title) and hasAnyAncestor(hasClickLabel("Open $title")), useUnmergedTree = true).performClick()
+        // At 360 dp and large fonts the lower sections are below the sheet's fold: scroll to the one asked for first.
+        compose.onNode(hasText(title) and hasAnyAncestor(hasClickLabel("Open $title")), useUnmergedTree = true)
+            .performScrollToIfPossible()
+            .performClick()
         compose.waitForIdle()
     }
 
