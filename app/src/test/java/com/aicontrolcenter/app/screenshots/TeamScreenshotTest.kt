@@ -224,15 +224,26 @@ class TeamScreenshotTest {
             summary("t3", "Check the comparison", TaskStatus.QUEUED, reviewer, kind = TaskKind.REVIEW, parentId = TaskId("t2")),
             summary("t4", "Write the recommendation", TaskStatus.QUEUED, writer, dependsOn = listOf("t1", "t2")),
         ) + helpers.mapIndexed { index, helper -> summary("h$index", "Help with part ${index + 1}", TaskStatus.RUNNING, helper.profile.id) }
-        val headers = listOf(
+        val headers = baseHeaders(helpers.map { it.profile.id }) + extra
+        val graph = TeamGraphBuilder.build(snapshot, summaries, headers, emptyList(), emptyMap(), now, TeamSamples.spaces, root)
+        return stateOf(graph, status, detail, paused)
+    }
+
+    private val cachedHeaders = HashMap<List<AgentId>, List<com.aicontrolcenter.core.tasks.MessageHeader>>()
+
+    /** The same messages (the same ids) every time, so only the extra ones are new to the picture. */
+    private fun baseHeaders(helpers: List<AgentId>) = cachedHeaders.getOrPut(helpers) {
+        listOf(
             header(Participant.Owner, agent(director), MessageType.ASSIGNMENT, now - 500_000),
             header(agent(director), agent(researcher), MessageType.ASSIGNMENT, now - 400_000),
             header(agent(director), agent(analyst), MessageType.ASSIGNMENT, now - 390_000),
             header(agent(analyst), agent(researcher), MessageType.ASSISTANCE_REQUEST, now - 30_000),
             header(agent(researcher), Participant.Space(TeamSamples.commons), MessageType.MEMORY_SHARE, now - 20_000),
             header(Participant.Owner, agent(analyst), MessageType.GUIDANCE, now - 200_000),
-        ) + helpers.map { header(agent(director), agent(it.profile.id), MessageType.ASSIGNMENT, now - 300_000) } + extra
-        val graph = TeamGraphBuilder.build(snapshot, summaries, headers, emptyList(), emptyMap(), now, TeamSamples.spaces, root)
+        ) + helpers.map { header(agent(director), agent(it), MessageType.ASSIGNMENT, now - 300_000) }
+    }
+
+    private fun stateOf(graph: com.aicontrolcenter.app.ui.team.TeamGraph, status: TaskStatus, detail: String?, paused: Boolean): TeamUiState {
         return TeamUiState(
             isLoading = false,
             filter = TeamFilter.One(root),
