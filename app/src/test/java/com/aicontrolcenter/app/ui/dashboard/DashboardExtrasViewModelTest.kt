@@ -126,6 +126,7 @@ class DashboardExtrasViewModelTest {
         today = assertNotNull(viewModel.uiState.value.today)
         assertEquals(1, today.answers)
         assertEquals("US$0.01", today.cost)
+        assertEquals(DashboardExtrasViewModel.PRICED_ONLY, today.costNote, "it cannot tell whether every model has a price, so it says what the cost covers")
     }
 
     @Test

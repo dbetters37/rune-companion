@@ -11,6 +11,10 @@ import com.aicontrolcenter.core.usage.ErrorClass
 import com.aicontrolcenter.core.usage.ModelCallSample
 import com.aicontrolcenter.core.usage.ModelPrice
 import com.aicontrolcenter.core.usage.UsageSource
+import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.test.performTextInput
 
 /*
  * WP10a's test helpers (usage, cost, daily limits): a team on a model in the cloud, so the daily limits count its calls,
@@ -56,3 +60,36 @@ suspend fun TestApp.recordSampleUsage(now: Long = TestApp.START_TIME) {
     repeat(25) { usage.record(call(3 * 24 * 60 + it, "mdl_grok", "Grok 4", "prv_xai", "xAI", Locality.CLOUD, researcher)) }
     prices.set(ModelPrice(ModelId("mdl_grok"), inputPerMTokMicros = 3_000_000, outputPerMTokMicros = 15_000_000))
 }
+
+/**
+ * Types [text] one key at a time with the frame clock paused, letting a frame through only every [keysPerFrame] keys, as
+ * a fast typist on a phone does (rule 27; the helper of `FastTypingTest`).
+ */
+fun androidx.compose.ui.test.SemanticsNodeInteraction.typeFast(
+    compose: androidx.compose.ui.test.junit4.ComposeContentTestRule,
+    text: String,
+    keysPerFrame: Int = 3,
+): androidx.compose.ui.test.SemanticsNodeInteraction {
+    try {
+        performScrollTo()
+    } catch (_: AssertionError) {
+        // Not inside a scrolling column.
+    }
+    performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus)
+    compose.waitForIdle()
+    compose.mainClock.autoAdvance = false
+    try {
+        text.forEachIndexed { index, key ->
+            performTextInput(key.toString())
+            if (index % keysPerFrame == keysPerFrame - 1) compose.mainClock.advanceTimeByFrame()
+        }
+    } finally {
+        compose.mainClock.autoAdvance = true
+    }
+    compose.waitForIdle()
+    return this
+}
+
+/** What a text field holds now, exactly. */
+fun androidx.compose.ui.test.SemanticsNodeInteraction.typed(): String =
+    fetchSemanticsNode().config.getOrNull(androidx.compose.ui.semantics.SemanticsProperties.EditableText)?.text.orEmpty()

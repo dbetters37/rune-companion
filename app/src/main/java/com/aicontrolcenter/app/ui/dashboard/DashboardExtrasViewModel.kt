@@ -231,6 +231,8 @@ class DashboardExtrasViewModel(
         val costNote = when {
             unpriced.isNotEmpty() -> "No cost shown: ${listWords(unpriced.map { it.modelLabel })} ${if (unpriced.size == 1) "has" else "have"} no price yet."
             cost == null && counted.calls > 0 && !counted.priced -> "No cost shown: no model used today has a price yet."
+            // Without the reports it cannot be told whether every model used today has a price: say what the cost covers.
+            usage == null && cost != null -> PRICED_ONLY
             else -> null
         }
         return TodayTileUi(
@@ -384,6 +386,9 @@ class DashboardExtrasViewModel(
     }
 
     companion object {
+        /** Said under a cost that may leave out models without a price. */
+        const val PRICED_ONLY: String = "The cost counts only the models you entered a price for."
+
         /** The newest objectives looked at for "paused by today's limit". */
         const val OBJECTIVES_READ: Int = 50
 
