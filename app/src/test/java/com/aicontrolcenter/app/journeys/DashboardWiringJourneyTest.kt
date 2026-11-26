@@ -40,9 +40,9 @@ class DashboardWiringJourneyTest {
         robot.waitUntilShown("Llama 3.3 70B has no price yet, so its tokens are not in the cost.")
             .assertShown("This month:")
             .assertNotShown("No cost")
-        // The tile reads as one phrase for screen readers.
-        compose.onAllNodes(hasContentDescription("US$0.38 Estimated cost, of US$1.00", substring = true)).onFirst().assertExists()
             .assertShown("Add its price")
             .assertNotShown("The cost counts only the models you entered a price for.")
+        // The tile reads as one phrase for screen readers.
+        compose.onAllNodes(hasContentDescription("US$0.38 Estimated cost, of US$1.00", substring = true)).onFirst().assertExists()
     }
 }

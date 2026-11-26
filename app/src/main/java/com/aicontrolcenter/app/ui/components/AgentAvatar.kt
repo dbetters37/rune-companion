@@ -50,6 +50,8 @@ fun AgentAvatar(
                 fontWeight = FontWeight.SemiBold,
                 // From the circle's size in dp, not scaled again by the font size: at font scale 2.0 the letter must still fit (D3A-13).
                 fontSize = with(LocalDensity.current) { (size * 0.36f).toSp() },
+                // The line as tall as the letter, or the inherited line height (scaled by the font size) pushes it down.
+                lineHeight = with(LocalDensity.current) { (size * 0.36f).toSp() },
                 maxLines = 1,
             )
         }

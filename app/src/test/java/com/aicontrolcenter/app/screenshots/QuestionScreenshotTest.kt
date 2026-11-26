@@ -281,7 +281,9 @@ class QuestionScreenshotTest {
         teamOnSimulator()
         objective(TaskStatus.RUNNING)
         moreSteps()
-    }.launch().also { robot = it }.openSection("Tasks").tapItemContaining("Plan a weekend in Porto").tap("Conversation")
+    }.launch().also { robot = it }.openSection("Tasks").tapItemContaining("Plan a weekend in Porto")
+        // With large fonts the tabs sit below the tall header, in a lazy list: bring them in first.
+        .scrollListTo("Conversation").tap("Conversation")
 
     @Test
     fun notesComposer() {
@@ -294,7 +296,7 @@ class QuestionScreenshotTest {
     @Test
     @Config(qualifiers = SMALL_PHONE, fontScale = 2.0f)
     fun notesComposerLargestFont() {
-        notesOpen().tap(WRITE_TO_THE_TEAM)
+        notesOpen().scrollListTo(WRITE_TO_THE_TEAM).tap(WRITE_TO_THE_TEAM).scrollListTo("To")
         shoot("p6_objective_notes_composer_360dp_font200")
     }
 

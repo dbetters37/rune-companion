@@ -174,7 +174,8 @@ internal fun reliabilityLines(totals: UsageTotals, providerName: String): List<S
         lines += if (totals.ok == 1L) "Reliable: the one request was answered." else "Reliable: all ${formatCount(totals.ok)} requests were answered."
     } else {
         lines += buildString {
-            append(formatCount(totals.ok)).append(" answered")
+            // "Came back" and "failed" are outcomes; "answers" is what the limits count (D3A-9, as the model's Speed card).
+            append(formatCount(totals.ok)).append(" came back")
             if (otherFailures > 0) {
                 append(", ").append(formatCount(otherFailures)).append(" failed")
                 val reasons = ErrorClass.entries.filter { it != ErrorClass.RATE_LIMITED }

@@ -135,7 +135,7 @@ class UsageViewModelTest {
         assertEquals(2, grok.answers, "the answered call and the one that could not connect; not the slowed-down one")
         assertEquals(
             listOf(
-                "1 answered, 1 failed (1 could not connect).",
+                "1 came back, 1 failed (1 could not connect).",
                 "1 call ended because xAI asked the app to slow down. They are not counted as answers.",
             ),
             grok.reliability,

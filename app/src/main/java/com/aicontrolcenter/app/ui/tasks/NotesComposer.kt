@@ -68,6 +68,7 @@ internal fun NotesComposer(notes: NotesUi, note: TextFieldState, onRecipient: (T
                 FlowRow(
                     Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+                    verticalArrangement = Arrangement.spacedBy(Spacing.xs),
                 ) {
                     notes.recipients.forEach { recipient ->
                         FilterChip(
