@@ -111,6 +111,8 @@ fun BackupRestoreScreen(
     // Once restored, leaving the screen any way at all starts the app again: nothing goes on with the old data's state.
     BackHandler(enabled = state.restored != null) { restartNow.value() }
     BackHandler(enabled = state.working && state.cancellable) { viewModel.cancel() }
+    // While the records are written, Back does nothing: leaving would stop the restore half way (it would roll back).
+    BackHandler(enabled = state.working && !state.cancellable) { }
     val restoredNow = state.restored != null
     DisposableEffect(restoredNow) {
         onDispose { if (restoredNow) restartNow.value() }
@@ -292,7 +294,8 @@ private fun SummaryCards(summary: RestoreSummaryUi) {
         AppCard {
             Text(BackupTexts.WHAT_IS_NOT, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
             Text(
-                BackupTexts.KEYS_AGAIN + " " + BackupTexts.OBJECTIVES_NOT_IN,
+                // The keys line once only: the backup's own notes may already say it.
+                (if (BackupTexts.KEYS_AGAIN in summary.notes) "" else BackupTexts.KEYS_AGAIN + " ") + BackupTexts.OBJECTIVES_NOT_IN,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = Spacing.sm),
