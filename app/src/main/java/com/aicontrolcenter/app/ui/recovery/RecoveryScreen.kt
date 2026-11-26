@@ -117,7 +117,7 @@ fun RecoveryScreen(
                 modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
             ) { Text("Close and try later") }
             Text(
-                "Closing changes nothing: your data stays as it is. Open the app again later and tap Try again.",
+                "Closing changes nothing: your data stays as it is. When you open the app again, it looks again by itself.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

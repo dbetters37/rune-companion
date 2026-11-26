@@ -5,6 +5,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import com.aicontrolcenter.app.health.AppGate
 import com.aicontrolcenter.app.health.GateHost
 import com.aicontrolcenter.app.ui.recovery.RecoveryHost
 import com.aicontrolcenter.app.ui.shell.AiControlCenterRoot
@@ -28,6 +29,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val gate = app.gate
         val firstCreation = savedInstanceState == null
+        // The owner opens the app again after "Close and try later" while the process lived on (handoff-WP10b.md 3.3):
+        // the app looks again by itself instead of showing the old answer. Rotation (a saved state) does not.
+        if (firstCreation && gate.state.value is AppGate.State.NeedsRecovery) gate.recheck()
         // Queued work runs only while this activity still exists (wave 3): one destroyed while the data opened never
         // reaches the graph afterwards.
         gate.whenOpen(this) {
