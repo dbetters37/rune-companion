@@ -1,7 +1,6 @@
 package com.aicontrolcenter.app.ui.dashboard
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -13,19 +12,15 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.aicontrolcenter.app.ui.activity.UsageStat
+import com.aicontrolcenter.app.ui.activity.UsageStatTiles
 import com.aicontrolcenter.app.ui.activity.moneyWords
 import com.aicontrolcenter.app.ui.components.AppCard
 import com.aicontrolcenter.app.ui.components.InfoBanner
 import com.aicontrolcenter.app.ui.components.SectionHeader
-import com.aicontrolcenter.app.ui.components.StatTile
 import com.aicontrolcenter.app.ui.components.formatCount
-import com.aicontrolcenter.app.ui.icons.AppIcons
-import com.aicontrolcenter.app.ui.icons.Insights
-import com.aicontrolcenter.app.ui.icons.Schedule
-import com.aicontrolcenter.app.ui.icons.Speed
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.app.ui.theme.appColors
@@ -54,34 +49,26 @@ internal fun TodayTileContent(today: TodayTileUi, navigation: DashboardNavigatio
     Column(modifier = modifier) {
         SectionHeader("Today", actionLabel = "Usage and cost", onAction = navigation.onOpenUsage)
         AppCard {
-            BoxWithConstraints(Modifier.fillMaxWidth()) {
-                val stacked = maxWidth < 330.dp || LocalDensity.current.fontScale >= 1.5f
-                val answers = StatValue(
+            val attention = appColors.status(StatusTone.ATTENTION)
+            val callsReached = maxCalls != null && today.answers >= maxCalls
+            val tokensReached = maxTokens != null && today.tokens >= maxTokens
+            UsageStatTiles(
+                answers = UsageStat(
                     formatCount(today.answers), "Answers",
-                    maxCalls?.let { "of ${formatCount(it.toLong())}" },
-                    maxCalls != null && today.answers >= maxCalls,
-                )
-                val tokens = StatValue(
+                    listOfNotNull(maxCalls?.let { "of ${formatCount(it.toLong())}" }, "reached".takeIf { callsReached }).joinToString(", ").ifEmpty { null },
+                    attention.takeIf { callsReached },
+                ),
+                tokens = UsageStat(
                     formatCount(today.tokens), "Tokens",
-                    maxTokens?.let { "of ${formatCount(it)}" },
-                    maxTokens != null && today.tokens >= maxTokens,
-                )
-                val cost = StatValue(
+                    listOfNotNull(maxTokens?.let { "of ${formatCount(it)}" }, "reached".takeIf { tokensReached }).joinToString(", ").ifEmpty { null },
+                    attention.takeIf { tokensReached },
+                ),
+                cost = UsageStat(
                     today.cost ?: if (today.used) "No cost" else moneyWords(0, today.currency), "Estimated cost",
                     if (today.cost != null || !today.used) limits.maxSpendMicros?.let { "of ${moneyWords(it, today.currency)}" } else "a price is missing",
-                    false,
-                )
-                val tiles = listOf(answers, tokens, cost)
-                if (stacked) {
-                    Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-                        tiles.forEach { TodayStat(it, Modifier.fillMaxWidth(), navigation.onOpenUsage) }
-                    }
-                } else {
-                    Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-                        tiles.forEach { TodayStat(it, Modifier.weight(1f), navigation.onOpenUsage) }
-                    }
-                }
-            }
+                ),
+                onClick = navigation.onOpenUsage,
+            )
             Column(Modifier.padding(top = Spacing.sm), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
                 today.reached?.let { InfoBanner(it, tone = StatusTone.ATTENTION, title = "Today's limit is reached") }
                 if (!today.used) {
@@ -113,21 +100,3 @@ internal fun TodayTileContent(today: TodayTileUi, navigation: DashboardNavigatio
     }
 }
 
-private data class StatValue(val value: String, val label: String, val caption: String?, val reached: Boolean)
-
-@Composable
-private fun TodayStat(stat: StatValue, modifier: Modifier, onClick: () -> Unit) {
-    StatTile(
-        value = stat.value,
-        label = stat.label,
-        icon = when (stat.label) {
-            "Answers" -> AppIcons.Insights
-            "Tokens" -> AppIcons.Speed
-            else -> AppIcons.Schedule
-        },
-        modifier = modifier,
-        onClick = onClick,
-        caption = if (stat.reached) listOfNotNull(stat.caption, "reached").joinToString(", ") else stat.caption,
-        captionColor = if (stat.reached) appColors.status(StatusTone.ATTENTION) else MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-}

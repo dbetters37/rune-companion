@@ -49,6 +49,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -184,7 +185,8 @@ fun ActivityScreen(
                     Tab(
                         selected = tab == selectedTab,
                         onClick = { onSelectTab(tab) },
-                        text = { Text(tab.title, maxLines = 1) },
+                        // Two lines with large fonts rather than a cut-off title.
+                        text = { Text(tab.title, maxLines = 2, textAlign = TextAlign.Center) },
                         selectedContentColor = MaterialTheme.colorScheme.primary,
                         unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

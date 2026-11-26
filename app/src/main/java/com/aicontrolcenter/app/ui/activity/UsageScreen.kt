@@ -20,6 +20,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -147,23 +150,11 @@ internal fun UsageContent(
 @Composable
 private fun SummaryCard(summary: UsageSummaryUi, period: UsagePeriod, navigation: ActivityNavigation) {
     AppCard {
-        BoxWithConstraints(Modifier.fillMaxWidth()) {
-            val stacked = maxWidth < 330.dp || LocalDensity.current.fontScale >= 1.5f
-            val tiles: List<Triple<String, String, androidx.compose.ui.graphics.vector.ImageVector>> = listOf(
-                Triple(formatCount(summary.answers), if (summary.answers == 1L) "Answer" else "Answers", AppIcons.Insights),
-                Triple(formatCount(summary.tokens), if (summary.tokens == 1L) "Token" else "Tokens", AppIcons.Speed),
-                Triple(summary.cost ?: "No price", "Estimated cost", AppIcons.Schedule),
-            )
-            if (stacked) {
-                Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-                    tiles.forEach { (value, label, icon) -> StatTile(value, label, icon, Modifier.fillMaxWidth()) }
-                }
-            } else {
-                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-                    tiles.forEach { (value, label, icon) -> StatTile(value, label, icon, Modifier.weight(1f)) }
-                }
-            }
-        }
+        UsageStatTiles(
+            answers = UsageStat(formatCount(summary.answers), if (summary.answers == 1L) "Answer" else "Answers"),
+            tokens = UsageStat(formatCount(summary.tokens), if (summary.tokens == 1L) "Token" else "Tokens"),
+            cost = UsageStat(summary.cost ?: "No price", "Estimated cost"),
+        )
         Column(Modifier.padding(top = Spacing.md), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
             summary.lines.forEach { line ->
                 Text(line, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
@@ -181,6 +172,48 @@ private fun SummaryCard(summary: UsageSummaryUi, period: UsagePeriod, navigation
         }
         if (period == UsagePeriod.TODAY) {
             TextButton(onClick = navigation.onOpenDailyLimits, modifier = Modifier.heightIn(min = 48.dp)) { Text("Daily limits") }
+        }
+    }
+}
+
+/** One headline number: its value, what it is, and an optional qualifier under it. [onClick] makes the tile a link. */
+@Immutable
+internal data class UsageStat(
+    val value: String,
+    val label: String,
+    val caption: String? = null,
+    val captionColor: Color? = null,
+)
+
+/**
+ * Answers, tokens and the estimated cost as tiles: answers and tokens side by side with the cost under them (money needs
+ * the width), or all three stacked on a narrow window or with large fonts. Each tile reads as one phrase.
+ */
+@Composable
+internal fun UsageStatTiles(answers: UsageStat, tokens: UsageStat, cost: UsageStat, onClick: (() -> Unit)? = null) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val stacked = maxWidth < 260.dp || LocalDensity.current.fontScale >= 1.5f
+        @Composable
+        fun Tile(stat: UsageStat, icon: ImageVector, modifier: Modifier) = StatTile(
+            value = stat.value,
+            label = stat.label,
+            icon = icon,
+            modifier = modifier,
+            onClick = onClick,
+            caption = stat.caption,
+            captionColor = stat.captionColor ?: MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+            if (stacked) {
+                Tile(answers, AppIcons.Insights, Modifier.fillMaxWidth())
+                Tile(tokens, AppIcons.Speed, Modifier.fillMaxWidth())
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                    Tile(answers, AppIcons.Insights, Modifier.weight(1f))
+                    Tile(tokens, AppIcons.Speed, Modifier.weight(1f))
+                }
+            }
+            Tile(cost, AppIcons.Schedule, Modifier.fillMaxWidth())
         }
     }
 }
