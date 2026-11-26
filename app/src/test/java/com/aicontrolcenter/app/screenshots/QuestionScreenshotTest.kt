@@ -296,7 +296,7 @@ class QuestionScreenshotTest {
     @Test
     @Config(qualifiers = SMALL_PHONE, fontScale = 2.0f)
     fun notesComposerLargestFont() {
-        notesOpen().scrollListTo(WRITE_TO_THE_TEAM).tap(WRITE_TO_THE_TEAM).scrollListTo("To")
+        notesOpen().scrollListTo(WRITE_TO_THE_TEAM).tap(WRITE_TO_THE_TEAM).scrollListTo("Writer · Compare the train")
         shoot("p6_objective_notes_composer_360dp_font200")
     }
 
@@ -317,6 +317,9 @@ class QuestionScreenshotTest {
     fun waitingForYouLargestFont() {
         waitingList()
         shoot("p6_waiting_for_you_360dp_font200")
+        // The question card's footer: the line above "Answer", not squeezed beside it (D3A-12d).
+        robot!!.scrollListTo("Not a permission: your answer is only text.")
+        shoot("p6_waiting_for_you_360dp_font200_footer")
     }
 
     private fun newObjective(dark: Boolean = true): AppRobot =
