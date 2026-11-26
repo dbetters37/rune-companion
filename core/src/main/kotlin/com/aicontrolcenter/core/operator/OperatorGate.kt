@@ -41,8 +41,14 @@ object OperatorGate {
         val protectedPackages: ProtectedPackages,
     )
 
-    /** Capabilities that need [FrameworkSettings.operatorEnabled]. */
-    val operatorCapabilities: Set<Capability> = OperatorCapabilities.all.map { it.capability }.toSet()
+    /**
+     * The agents' own workspace, a folder inside this app. Using it never touches anything else on the phone, so it
+     * does not need [FrameworkSettings.operatorEnabled]; changing it still needs the owner's grant like any tool.
+     */
+    val workspaceCapabilities: Set<Capability> = setOf(OperatorCapabilities.WORKSPACE_READ, OperatorCapabilities.WORKSPACE_WRITE)
+
+    /** Capabilities that need [FrameworkSettings.operatorEnabled]: everything outside the agents' own workspace. */
+    val operatorCapabilities: Set<Capability> = OperatorCapabilities.all.map { it.capability }.toSet() - workspaceCapabilities
 
     /** Why the call or ask must be refused before any request is raised, or null to go on to the grant check. */
     fun refusal(f: Facts): String? {

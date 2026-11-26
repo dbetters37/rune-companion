@@ -302,11 +302,11 @@ private fun PhoneOperatorSection(settings: FrameworkSettings, actions: SettingsA
         AppCard {
             SwitchRow(
                 title = "Phone operator",
-                description = "On: agents may use the phone tools switched on for them: files in their workspace and in folders you " +
-                    "share, photos you allow, apps and links, web pages and scripts. Reading their own workspace is always allowed; " +
-                    "every other tool needs your permission first, and deleting, installing or running a command asks you every " +
-                    "time, as does each action on another app's screen unless you set that app to ask less in Tools › Screen " +
-                    "control. Off: no agent can touch the phone.",
+                description = "On: agents may use the phone tools switched on for them: folders you share, photos you allow, " +
+                    "apps and links, web pages and scripts. Each needs your permission first, and deleting, installing or running " +
+                    "a command asks you every time, as does each action on another app's screen unless you set that app to ask " +
+                    "less in Tools › Screen control. Off: agents can still read and save files in their own workspace (a folder " +
+                    "inside this app, saving asks your permission first), but cannot touch anything else on the phone.",
                 checked = settings.operatorEnabled,
                 onCheckedChange = actions.onOperatorEnabledChange,
             )
