@@ -14,7 +14,15 @@ import com.aicontrolcenter.core.agents.AgentRuntimeState
 import com.aicontrolcenter.core.tasks.MessageRepository
 import com.aicontrolcenter.core.tasks.Orchestrator
 import com.aicontrolcenter.core.tasks.Participant
-import com.aicontrolcenter.core.tasks.TaskRecord
+import com.aicontrolcenter.core.tasks.TaskSummary
+import com.aicontrolcenter.app.ui.team.TeamWords
+import com.aicontrolcenter.core.memory.MemoryFilter
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 import com.aicontrolcenter.core.tasks.TaskRepository
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.flatMapLatest
@@ -46,6 +54,10 @@ import java.time.ZoneId
  * Turns the live registry and activity log into the dashboard's state. All figures, the
  * attention list and the network are derived from one [com.aicontrolcenter.core.registry.RegistrySnapshot],
  * so they always describe the same moment.
+ *
+ * Phase 6 (WP9): built off the main thread when [computation] is the app's pool and bursts of changes build once (P2);
+ * running objectives are read as summaries and messages as headers (N6); memories are counted, not read (P4); an agent
+ * whose run waits for the owner or a teammate is shown waiting, not working (N3).
  */
 class DashboardViewModel(
     private val directory: RegistryDirectory,
@@ -60,6 +72,13 @@ class DashboardViewModel(
     orchestrator: Orchestrator? = null,
     tasks: TaskRepository? = null,
     messages: MessageRepository? = null,
+    /**
+     * Counts memories without reading them (P4, D35: the store's COUNT query, `MemoryRepository.observeCount`); without
+     * it the memories are read through [memory] and counted here.
+     */
+    memoryCount: ((MemoryFilter) -> Flow<Int>)? = null,
+    /** Where the state is built (the app's background pool, P2); tests stay on their own dispatcher. */
+    computation: CoroutineContext = EmptyCoroutineContext,
 ) : ViewModel() {
 
     private data class Local(
@@ -73,18 +92,22 @@ class DashboardViewModel(
     private var messageCounter = 0L
 
     private val memorySummary: Flow<MemorySummaryUi?> = memory?.let { service ->
-        combine(service.observe(MemoryActor.Owner), service.observeSpaces()) { memories, spaces -> MemorySummaryUi(memories.size, spaces.size) }
+        val count = memoryCount?.invoke(MemoryFilter()) ?: service.observe(MemoryActor.Owner).map { it.size }
+        combine(count.distinctUntilChanged(), service.observeSpaces().map { it.size }.distinctUntilChanged()) { memories, spaces -> MemorySummaryUi(memories, spaces) }
     } ?: flowOf(null)
 
-    /** The tasks of running objectives, and the newest agent-to-agent messages among them. */
+    /**
+     * The tasks of running objectives as summaries, and the newest agent-to-agent messages among them as headers (N6,
+     * rule 16): never whole task rows or message bodies.
+     */
     @OptIn(ExperimentalCoroutinesApi::class)
     private val orchestration: Flow<Orchestration> = if (orchestrator == null || tasks == null || messages == null) {
         flowOf(Orchestration())
     } else {
-        val trees = orchestrator.running.flatMapLatest { ids ->
-            if (ids.isEmpty()) flowOf(emptyList()) else combine(ids.map { tasks.observeTree(it) }) { all -> all.flatMap { it } }
+        val summaries = orchestrator.running.flatMapLatest { ids ->
+            if (ids.isEmpty()) flowOf(emptyList()) else combine(ids.map { tasks.observeSummaries(it) }) { all -> all.flatMap { it } }
         }
-        combine(orchestrator.running, trees, messages.observeRecent(RECENT_MESSAGE_LIMIT)) { running, tasks, recent ->
+        combine(orchestrator.running, summaries, messages.observeRecentHeaders(RECENT_MESSAGE_LIMIT)) { running, tasks, recent ->
             Orchestration(
                 tasks = tasks.associateBy { it.id },
                 traffic = recent.filter { it.rootId in running }.mapNotNull { message ->
@@ -96,7 +119,7 @@ class DashboardViewModel(
         }
     }
 
-    private data class Orchestration(val tasks: Map<TaskId, TaskRecord> = emptyMap(), val traffic: List<AgentTraffic> = emptyList())
+    private data class Orchestration(val tasks: Map<TaskId, TaskSummary> = emptyMap(), val traffic: List<AgentTraffic> = emptyList())
 
     val uiState: StateFlow<DashboardUiState> = combine(
         directory.observe(),
@@ -129,16 +152,16 @@ class DashboardViewModel(
             message = local.message,
             memory = memorySummary,
         )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), DashboardUiState())
+    }.flowOn(computation).conflate().stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), DashboardUiState())
 
     /**
      * An agent at work. When it works on an objective's task, the row names the task and the
      * step alone (the monitor's detail repeats the title as "Task: <title> · <step>").
      */
-    private fun workingAgent(profile: AgentProfile, state: AgentRuntimeState, tasks: Map<TaskId, TaskRecord>): WorkingAgentUi {
+    private fun workingAgent(profile: AgentProfile, state: AgentRuntimeState, tasks: Map<TaskId, TaskSummary>): WorkingAgentUi {
         val task = state.currentTaskId?.let(tasks::get)
         val detail = state.detail ?: "Working"
-        val step = task?.let { stepOf(detail, it.title) } ?: detail
+        val step = task?.let { TeamWords.stepOf(detail, it.title) } ?: detail
         return WorkingAgentUi(
             agentId = profile.id,
             name = profile.name,
@@ -149,21 +172,6 @@ class DashboardViewModel(
             objectiveTitle = task?.let { tasks[it.rootId]?.title },
             waiting = state.activity == AgentActivity.WAITING_FOR_AGENT || state.activity == AgentActivity.WAITING_FOR_APPROVAL,
         )
-    }
-
-    /**
-     * The step alone from the monitor's "Task: <title> · <step>" (or "Task: <title> (helping Analyst) · <step>"
-     * while answering a teammate), as "Writing a reply" or "Helping Analyst · Writing a reply".
-     */
-    private fun stepOf(detail: String, title: String): String? {
-        var rest = detail.removePrefix("Task: $title").trim()
-        if (rest == detail.trim()) return null
-        if (rest.startsWith("(") && ")" in rest) {
-            val aside = rest.substringBefore(")").removePrefix("(").trim().replaceFirstChar(Char::uppercase)
-            val after = rest.substringAfter(")").trim().removePrefix("·").trim()
-            rest = if (after.isEmpty()) aside else "$aside · $after"
-        }
-        return rest.removePrefix("·").trim().ifBlank { null }
     }
 
     /** Selects a node of the network, or clears the selection with null. Tapping the selected node clears it. */

@@ -46,8 +46,8 @@ class DashboardOrchestrationTest {
         assertNotNull(working.taskId)
         assertEquals("Research offline note apps and recommend one", working.objectiveTitle)
         assertFalse(working.detail.startsWith("Task:"), "the step alone, not the title again: ${working.detail}")
-        val assignment = state.network.pulses.first { it.messageId != null }
-        assertEquals(app.director().profile.id.value, assignment.fromId, "the Director's assignment is on its way")
+        val assignment = state.network.pulses.first()
+        assertEquals(app.director().profile.id.value, assignment.fromId, "the Director's assignment can travel to the agent")
         assertEquals(working.agentId.value, assignment.toId)
         assertTrue(state.network.edges.none { it.kind == EdgeKind.EXCHANGE }, "only the reporting lines were used")
 
@@ -55,6 +55,6 @@ class DashboardOrchestrationTest {
         letTheTeamWork()
         val after = viewModel.uiState.value
         assertEquals(emptyList(), after.working)
-        assertEquals(emptyList(), after.network.pulses, "no objective runs: nothing travels")
+        assertEquals(emptyList(), after.network.pulses, "no objective runs: nothing can travel")
     }
 }

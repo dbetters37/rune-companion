@@ -4,6 +4,7 @@ import com.aicontrolcenter.app.ui.components.StatusLabel
 import com.aicontrolcenter.app.ui.components.toStatusLabel
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.agents.AgentActivity
 import com.aicontrolcenter.core.agents.AgentKind
 import com.aicontrolcenter.core.agents.AgentRuntimeState
 import com.aicontrolcenter.core.registry.RegistrySnapshot
@@ -26,6 +27,11 @@ data class NetworkNode(
     val isHub: Boolean,
     /** Running a turn right now; [status] then says what it is doing. */
     val working: Boolean = false,
+    /**
+     * Waiting for the owner or for a teammate (N3): its run is under way but not working itself, so it is never shown as
+     * working; [status] says for whom it waits.
+     */
+    val waiting: Boolean = false,
 )
 
 enum class EdgeKind {
@@ -46,17 +52,15 @@ data class NetworkEdge(
 )
 
 /**
- * Activity along an edge, [progress] 0 at the sender and 1 at the recipient; the view keeps it
- * moving from [progress] onwards. A pulse with a [messageId] is a message an agent sent in a
- * running objective, travelling from sender to recipient; one without is an agent at work in a
- * chat, travelling towards the Director.
+ * A message an agent sent to another agent in a running objective, which can travel along its edge as a dot from sender
+ * to recipient. The card sends a dot only once per message, when the message is new to it (N2: never the newest ones
+ * looping); with Calm or Android's animations off it sends none.
  */
 data class NetworkPulse(
     val fromId: String,
     val toId: String,
-    val progress: Float,
     val colorIndex: Int,
-    val messageId: String? = null,
+    val messageId: String,
 )
 
 /** One agent-to-agent message of a running objective: what the network animates. */
@@ -77,10 +81,10 @@ data class AgentNetwork(
  * Director. Without a designated Director there is no structure, so there are no reporting edges.
  *
  * [traffic] (agent-to-agent messages of running objectives, newest first) adds what is actually
- * happening: an edge between two agents that exchanged messages outside the reporting lines,
- * and a pulse for each of the newest [MAX_MESSAGE_PULSES] messages, from sender to recipient.
- * Agents in [working] are shown as working; one that is not already sending a message gets a
- * pulse towards the Director.
+ * happening: an edge between two agents that exchanged messages outside the reporting lines, and
+ * the newest [MESSAGE_CANDIDATES] messages as pulses in sending order, of which the card sends a dot
+ * only for those it has not seen. Agents in [working] are shown as working when they work, and as
+ * waiting for you or for a teammate when that is what their run does (N3).
  */
 fun RegistrySnapshot.toAgentNetwork(
     working: Map<AgentId, AgentRuntimeState> = emptyMap(),
@@ -88,18 +92,21 @@ fun RegistrySnapshot.toAgentNetwork(
 ): AgentNetwork {
     val nodes = agents.map { entry ->
         val busy = working[entry.profile.id]
+        val status = when (busy?.activity) {
+            AgentActivity.WORKING -> StatusLabel("Working", StatusTone.WORKING, busy.detail)
+            AgentActivity.WAITING_FOR_APPROVAL -> StatusLabel("Waiting for you", StatusTone.ATTENTION, busy.detail)
+            AgentActivity.WAITING_FOR_AGENT -> StatusLabel("Waiting for a teammate", StatusTone.WAITING, busy.detail)
+            else -> entry.availability.toStatusLabel()
+        }
         NetworkNode(
             id = entry.profile.id.value,
             name = entry.profile.name,
             role = entry.profile.kind,
             colorIndex = entry.profile.colorIndex,
-            status = if (busy != null) {
-                StatusLabel("Working", StatusTone.WORKING, busy.detail)
-            } else {
-                entry.availability.toStatusLabel()
-            },
+            status = status,
             isHub = entry.isDesignatedDirector,
-            working = busy != null,
+            working = busy?.activity == AgentActivity.WORKING,
+            waiting = busy?.activity == AgentActivity.WAITING_FOR_APPROVAL || busy?.activity == AgentActivity.WAITING_FOR_AGENT,
         )
     }
     val known = agentsById.keys
@@ -119,21 +126,16 @@ fun RegistrySnapshot.toAgentNetwork(
             val (a, b) = pair.sortedBy { it.value }
             NetworkEdge(a.value, b.value, live = true, kind = EdgeKind.EXCHANGE)
         }
-    val messagePulses = shown.take(MAX_MESSAGE_PULSES).mapIndexed { index, message ->
+    val pulses = shown.take(MESSAGE_CANDIDATES).asReversed().map { message ->
         NetworkPulse(
             fromId = message.fromId.value,
             toId = message.toId.value,
-            progress = (0.15f + index * 0.22f) % 1f,
             colorIndex = agentsById[message.fromId]?.profile?.colorIndex ?: 0,
             messageId = message.messageId,
         )
     }
-    val sending = messagePulses.map { it.fromId }.toSet()
-    val workPulses = if (director == null) emptyList() else agents.filterNot { it.isDesignatedDirector }
-        .filter { it.profile.id in working && it.profile.id.value !in sending }
-        .map { entry -> NetworkPulse(entry.profile.id.value, director.profile.id.value, progress = 0.55f, colorIndex = entry.profile.colorIndex) }
-    return AgentNetwork(nodes = nodes, edges = reports + exchanges, pulses = messagePulses + workPulses)
+    return AgentNetwork(nodes = nodes, edges = reports + exchanges, pulses = pulses)
 }
 
-/** How many of the newest messages travel through the network at once; more would be noise. */
-const val MAX_MESSAGE_PULSES = 4
+/** How many of the newest messages the card looks at for new dots; only new ones travel, once each. */
+const val MESSAGE_CANDIDATES = 12

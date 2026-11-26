@@ -1,6 +1,5 @@
 package com.aicontrolcenter.app.ui.dashboard
 
-import com.aicontrolcenter.app.Phase6Stub
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -49,6 +48,7 @@ import com.aicontrolcenter.app.ui.icons.CenterFocus
 import com.aicontrolcenter.app.ui.icons.Hub
 import com.aicontrolcenter.app.ui.icons.ZoomIn
 import com.aicontrolcenter.app.ui.icons.ZoomOut
+import com.aicontrolcenter.app.ui.theme.LocalCalmMotion
 import com.aicontrolcenter.app.ui.theme.OverlineTextStyle
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
@@ -63,9 +63,10 @@ private val ViewportSaver = Saver<Viewport, List<Float>>(
 
 /**
  * The agent network with its controls: zoom buttons (the accessible alternative to pinching),
- * a legend that explains every glyph and line style, and a card for the selected agent.
+ * a legend that explains every glyph and line style, a card for the selected agent, and the way
+ * into the Team view ([onOpenTeam]), where the whole team, what each one does and who waits for the
+ * owner are shown in full.
  */
-@Phase6Stub("WP9")
 @Composable
 internal fun NetworkCard(
     network: AgentNetwork,
@@ -74,8 +75,8 @@ internal fun NetworkCard(
     onOpenAgent: (AgentId) -> Unit,
     onNewAgent: () -> Unit,
     modifier: Modifier = Modifier,
-    /** Wave 3 (WP9): the card's way into the Team view. */
-    @Suppress("UNUSED_PARAMETER") onOpenTeam: () -> Unit = {},
+    /** The card's way into the Team view (WP9). */
+    onOpenTeam: () -> Unit = {},
 ) {
     var viewport by rememberSaveable(stateSaver = ViewportSaver) { mutableStateOf(Viewport()) }
     var viewSize by remember { mutableStateOf(IntSize.Zero) }
@@ -120,6 +121,7 @@ internal fun NetworkCard(
                 onViewportChange = { viewport = it },
                 modifier = Modifier.fillMaxWidth().height(320.dp).onSizeChanged { viewSize = it },
             )
+            TeamViewEntry(onOpenTeam)
             NetworkLegend(hasHub = network.hub != null, Modifier.padding(horizontal = Spacing.lg, vertical = Spacing.md))
             RowDivider()
             SelectedNodePanel(selectedNode, onOpenAgent)
@@ -127,15 +129,34 @@ internal fun NetworkCard(
     }
 }
 
+/** The way into the Team view, with what it shows. */
+@Composable
+private fun TeamViewEntry(onOpenTeam: () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = Spacing.lg, vertical = Spacing.sm), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+        FilledTonalButton(onClick = onOpenTeam, modifier = Modifier.heightIn(min = 48.dp)) {
+            Icon(AppIcons.Hub, contentDescription = null, modifier = Modifier.size(18.dp))
+            Text("Open Team view", modifier = Modifier.padding(start = Spacing.sm))
+        }
+        Text(
+            "Who works on what, who waits for whom, and what waits for you, with every message between them.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun NetworkLegend(hasHub: Boolean, modifier: Modifier = Modifier) {
+    val calm = LocalCalmMotion.current
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(Spacing.lg),
             verticalArrangement = Arrangement.spacedBy(Spacing.xs),
         ) {
             LegendItem(StatusTone.WORKING, "Working")
+            LegendItem(StatusTone.ATTENTION, "Waiting for you")
+            LegendItem(StatusTone.WAITING, "Waiting for a teammate")
             LegendItem(StatusTone.READY, "Ready")
             LegendItem(StatusTone.INFO, "No model yet")
             LegendItem(StatusTone.UNAVAILABLE, "Unavailable")
@@ -144,8 +165,9 @@ private fun NetworkLegend(hasHub: Boolean, modifier: Modifier = Modifier) {
         Text(
             text = if (hasHub) {
                 "Lines show who reports to the Director: solid when both can run, dashed when one cannot. A curve joins " +
-                    "two agents that exchanged messages in a running objective, and dots are messages on their way. " +
-                    "A ringed agent is working. Pinch to zoom."
+                    "two agents that exchanged messages in a running objective. " +
+                    (if (calm) "Motion is off (Calm), so messages do not travel as dots. " else "A dot travels once along a line when a message is sent. ") +
+                    "A ringed agent is working; a thicker ring waits for you. Pinch to zoom."
             } else {
                 "No Director is designated, so there is no reporting structure to draw. Curves join agents that exchanged messages."
             },
@@ -196,7 +218,7 @@ private fun SelectedNodePanel(node: NetworkNode?, onOpenAgent: (AgentId) -> Unit
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 StatusChip(node.status.text, node.status.tone)
-                if (node.working) {
+                if (node.working || node.waiting) {
                     node.status.detail?.let {
                         Text(it, style = MaterialTheme.typography.bodySmall, color = appColors.working, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }

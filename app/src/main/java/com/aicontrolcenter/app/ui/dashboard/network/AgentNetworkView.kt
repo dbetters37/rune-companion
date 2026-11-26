@@ -1,12 +1,7 @@
 package com.aicontrolcenter.app.ui.dashboard.network
 
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -53,7 +48,13 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.aicontrolcenter.app.ui.components.AgentAvatar
+import com.aicontrolcenter.app.ui.team.LinkKind
+import com.aicontrolcenter.app.ui.team.TeamPulse
+import com.aicontrolcenter.app.ui.team.dotsInFlight
+import com.aicontrolcenter.app.ui.team.linkKeyOf
+import com.aicontrolcenter.app.ui.team.rememberPulseClock
 import com.aicontrolcenter.app.ui.theme.AppColors
+import com.aicontrolcenter.app.ui.theme.LocalCalmMotion
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.app.ui.theme.appColors
 import com.aicontrolcenter.core.agents.label
@@ -69,12 +70,15 @@ private val EdgeGap = 5.dp
 /**
  * The interactive agent network: the Director in the middle, the other agents around it, a
  * line for each reporting relationship, and a curve between agents that exchanged messages in
- * a running objective. Messages travel along them as dots, from sender to recipient.
+ * a running objective. A message travels once along them as a dot, from sender to recipient,
+ * when it is new to the card (N2); never under Calm or with Android's animations off (rule 17).
  *
- * Lines, the orbit and pulses are drawn on a canvas. The nodes themselves are real composables
- * laid over it, so each one has a proper touch target, a spoken description and a selected
- * state. Pinch (or drag once zoomed) changes [viewport]; an unzoomed one-finger drag is left
- * alone so the page behind keeps scrolling.
+ * Lines, the orbit and dots are drawn on one canvas: its lines and curves are built once per
+ * layout ([drawWithCache], N7) and the frame time, the only thing that changes while a dot
+ * travels, is read only in its draw lambda (N1); the frame loop runs only while a dot is in the
+ * air. The nodes themselves are real composables laid over it, so each one has a proper touch
+ * target, a spoken description and a selected state. Pinch (or drag once zoomed) changes
+ * [viewport]; an unzoomed one-finger drag is left alone so the page behind keeps scrolling.
  */
 @Composable
 fun AgentNetworkView(
@@ -92,24 +96,19 @@ fun AgentNetworkView(
     val currentViewport by rememberUpdatedState(viewport)
     val currentOnViewportChange by rememberUpdatedState(onViewportChange)
     val currentOnSelect by rememberUpdatedState(onSelect)
-    // Pulses keep moving while agents work. (Compose tests stop infinite animations, so pictures show them at rest.)
-    val pulsePhase = if (network.pulses.isEmpty()) {
-        0f
-    } else {
-        val transition = rememberInfiniteTransition(label = "pulses")
-        val phase by transition.animateFloat(
-            initialValue = 0f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(tween(durationMillis = 1600, easing = LinearEasing), RepeatMode.Restart),
-            label = "pulse phase",
-        )
-        phase
+    val calm = LocalCalmMotion.current
+    val pulses = remember(network.pulses) {
+        network.pulses.map { TeamPulse(it.messageId, it.fromId, it.toId, linkKeyOf(it.fromId, it.toId), LinkKind.REPORTS) }
     }
+    val clock = rememberPulseClock(pulses, calm, resetKey = Unit)
+    val inFlight = clock.inFlight
+    val colourOf = remember(network.pulses) { network.pulses.associate { it.messageId to it.colorIndex } }
 
     BoxWithConstraints(
         modifier = modifier
             .clipToBounds()
             .testTag("agent-network")
+            .semantics { dotsInFlight = inFlight }
             .pointerInput(Unit) { detectTapGestures(onTap = { currentOnSelect(null) }) }
             .pointerInput(Unit) {
                 detectNetworkTransform(
@@ -133,43 +132,55 @@ fun AgentNetworkView(
                 translationY = viewport.offsetY
             },
         ) {
-            Canvas(Modifier.fillMaxSize()) {
-                val centre = Offset(size.width / 2, size.height / 2)
-                val rx = radiusX.toPx()
-                val ry = radiusY.toPx()
-                // Node composables are centred on their slot, but the avatar sits above the label.
-                val avatarLift = (LabelGap + LabelHeight).toPx() / 2
-                fun avatarCentre(id: String): Offset? =
-                    positions[id]?.let { Offset(centre.x + it.x * rx, centre.y + it.y * ry - avatarLift) }
-
-                drawBackdrop(centre, rx, ry, avatarLift, glow, colors, hasHub = network.hub != null)
-                val hubId = network.hub?.id
-                val curvedPairs = network.edges.filter { it.kind == EdgeKind.EXCHANGE }.map { setOf(it.fromId, it.toId) }.toSet()
-                network.edges.forEach { edge ->
-                    val from = avatarCentre(edge.fromId) ?: return@forEach
-                    val to = avatarCentre(edge.toId) ?: return@forEach
-                    val accent = colors.agentAccent(network.node(edge.fromId)?.colorIndex ?: 0)
-                    if (edge.kind == EdgeKind.EXCHANGE) {
-                        drawExchange(from, to, Offset(centre.x, centre.y - avatarLift), accent)
-                    } else {
-                        drawEdge(from, to, edge.live, accent, colors.hairlineStrong, toHub = edge.toId == hubId)
+            Spacer(
+                Modifier.fillMaxSize().drawWithCache {
+                    val centre = Offset(size.width / 2, size.height / 2)
+                    val rx = radiusX.toPx()
+                    val ry = radiusY.toPx()
+                    // Node composables are centred on their slot, but the avatar sits above the label.
+                    val avatarLift = (LabelGap + LabelHeight).toPx() / 2
+                    val orbitCentre = Offset(centre.x, centre.y - avatarLift)
+                    fun avatarCentre(id: String): Offset? =
+                        positions[id]?.let { Offset(centre.x + it.x * rx, centre.y + it.y * ry - avatarLift) }
+                    val hubId = network.hub?.id
+                    val curvedPairs = network.edges.filter { it.kind == EdgeKind.EXCHANGE }.map { setOf(it.fromId, it.toId) }.toSet()
+                    // Built once per layout and edge set, not per frame (N7).
+                    val curves = network.edges.filter { it.kind == EdgeKind.EXCHANGE }.mapNotNull { edge ->
+                        val from = avatarCentre(edge.fromId) ?: return@mapNotNull null
+                        val to = avatarCentre(edge.toId) ?: return@mapNotNull null
+                        exchangePath(from, to, orbitCentre, NodeAvatarSize.toPx() / 2 + EdgeGap.toPx())?.let { edge to it }
                     }
-                }
-                network.pulses.forEach { pulse ->
-                    val from = avatarCentre(pulse.fromId) ?: return@forEach
-                    val to = avatarCentre(pulse.toId) ?: return@forEach
-                    val progress = (pulse.progress + pulsePhase) % 1f
-                    // A message between two agents outside the reporting lines follows their curved edge.
-                    val at = if (setOf(pulse.fromId, pulse.toId) in curvedPairs) {
-                        quadPoint(from, curveControl(from, to, Offset(centre.x, centre.y - avatarLift)), to, progress)
-                    } else {
-                        Offset(from.x + (to.x - from.x) * progress, from.y + (to.y - from.y) * progress)
+                    onDrawBehind {
+                        drawBackdrop(centre, rx, ry, avatarLift, glow, colors, hasHub = hubId != null)
+                        network.edges.forEach { edge ->
+                            if (edge.kind == EdgeKind.EXCHANGE) return@forEach
+                            val from = avatarCentre(edge.fromId) ?: return@forEach
+                            val to = avatarCentre(edge.toId) ?: return@forEach
+                            val accent = colors.agentAccent(network.node(edge.fromId)?.colorIndex ?: 0)
+                            drawEdge(from, to, edge.live, accent, colors.hairlineStrong, toHub = edge.toId == hubId)
+                        }
+                        curves.forEach { (edge, path) ->
+                            drawPath(path, colors.agentAccent(network.node(edge.fromId)?.colorIndex ?: 0).copy(alpha = 0.7f), style = Stroke(width = 1.75.dp.toPx(), cap = StrokeCap.Round))
+                        }
+                        if (!calm) {
+                            clock.positions(clock.frameMs.longValue).forEach { (flight, progress) ->
+                                val pulse = flight.pulse
+                                val from = avatarCentre(pulse.fromId) ?: return@forEach
+                                val to = avatarCentre(pulse.toId) ?: return@forEach
+                                // A message between two agents outside the reporting lines follows their curved edge.
+                                val at = if (setOf(pulse.fromId, pulse.toId) in curvedPairs) {
+                                    quadPoint(from, curveControl(from, to, orbitCentre), to, progress)
+                                } else {
+                                    Offset(from.x + (to.x - from.x) * progress, from.y + (to.y - from.y) * progress)
+                                }
+                                val color = colors.agentAccent(colourOf[pulse.key] ?: 0)
+                                drawCircle(color.copy(alpha = 0.25f), radius = 10.dp.toPx(), center = at)
+                                drawCircle(color, radius = 5.dp.toPx(), center = at)
+                            }
+                        }
                     }
-                    val color = colors.agentAccent(pulse.colorIndex)
-                    drawCircle(color.copy(alpha = 0.25f), radius = 10.dp.toPx(), center = at)
-                    drawCircle(color, radius = 5.dp.toPx(), center = at)
-                }
-            }
+                },
+            )
             network.nodes.forEach { node ->
                 val position = positions[node.id] ?: return@forEach
                 NetworkNodeView(
@@ -199,7 +210,7 @@ private fun NetworkNodeView(
         append(node.name).append(", ").append(node.role.label)
         if (node.isHub) append(", designated Director")
         append(", ").append(node.status.text)
-        if (node.working) node.status.detail?.let { append(": ").append(it) }
+        if (node.working || node.waiting) node.status.detail?.let { append(": ").append(it) }
     }
     Column(
         modifier = modifier
@@ -223,6 +234,7 @@ private fun NetworkNodeView(
                 .then(
                     when {
                         selected -> Modifier.border(2.dp, MaterialTheme.colorScheme.onSurface, CircleShape)
+                        node.status.tone == StatusTone.ATTENTION && node.waiting -> Modifier.border(2.5.dp, appColors.attention, CircleShape)
                         node.working -> Modifier.border(2.dp, appColors.working, CircleShape)
                         else -> Modifier
                     },
@@ -301,13 +313,12 @@ private fun DrawScope.drawEdge(from: Offset, to: Offset, live: Boolean, accent: 
 
 /**
  * Two agents that exchanged messages: a curve bowed away from the centre, so it never passes
- * under the Director, trimmed short of both avatars.
+ * under the Director, trimmed [inset] short of both avatars. Null when they sit too close.
  */
-private fun DrawScope.drawExchange(from: Offset, to: Offset, centre: Offset, accent: Color) {
+private fun exchangePath(from: Offset, to: Offset, centre: Offset, inset: Float): Path? {
     val control = curveControl(from, to, centre)
     val approxLength = (control - from).getDistance() + (to - control).getDistance()
-    val inset = NodeAvatarSize.toPx() / 2 + EdgeGap.toPx()
-    if (approxLength <= inset * 2) return
+    if (approxLength <= inset * 2) return null
     val start = inset / approxLength
     val path = Path()
     val steps = 24
@@ -316,7 +327,7 @@ private fun DrawScope.drawExchange(from: Offset, to: Offset, centre: Offset, acc
         val point = quadPoint(from, control, to, t)
         if (i == 0) path.moveTo(point.x, point.y) else path.lineTo(point.x, point.y)
     }
-    drawPath(path, accent.copy(alpha = 0.7f), style = Stroke(width = 1.75.dp.toPx(), cap = StrokeCap.Round))
+    return path
 }
 
 /** The control point of an exchange curve: the midpoint pushed away from the centre (sideways for opposite agents). */
