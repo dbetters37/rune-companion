@@ -161,7 +161,7 @@ internal class ReviewSteps(private val ctx: OrchestrationContext, private val wo
             val step = ReviewPolicy.next(reviewed, verdict, unreadable, maxRounds, maxAttempts)
             val done = current.copy(
                 status = TaskStatus.COMPLETED, result = verdictText(verdict), finishedAt = now, updatedAt = now,
-                statusDetail = "Verdict: ${verdict.decision.name.lowercase()}.",
+                statusDetail = "${TaskStatusLines.VERDICT}${verdict.decision.name.lowercase()}.",
             )
             val judged = reviewed.copy(reviews = reviewed.reviews + verdict, updatedAt = now)
             var arbitration: TaskRecord? = null

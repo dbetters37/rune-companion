@@ -17,6 +17,7 @@ import com.aicontrolcenter.core.tasks.TaskRecord
 import com.aicontrolcenter.core.tasks.TaskRequester
 import com.aicontrolcenter.core.tasks.TaskSummary
 import com.aicontrolcenter.core.tasks.ReviewDecision
+import com.aicontrolcenter.framework.orchestration.TaskStatusLines
 import java.time.ZoneId
 
 /*
@@ -246,5 +247,5 @@ private const val INTERPRETATION_PREFIX = "Interpretation: "
 private const val PLAN_PREFIX = "Plan: "
 private const val LIMIT_PREFIX = "Limit reached: "
 
-/** How a review task's status line names its verdict (framework `ReviewSteps`). */
-private const val VERDICT_PREFIX = "Verdict: "
+/** How a review task's status line names its verdict (framework `ReviewSteps`, through `TaskStatusLines`). */
+private const val VERDICT_PREFIX = TaskStatusLines.VERDICT

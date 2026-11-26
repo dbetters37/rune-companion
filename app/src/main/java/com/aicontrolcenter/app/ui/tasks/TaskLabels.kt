@@ -20,6 +20,7 @@ import com.aicontrolcenter.core.tasks.TaskKind
 import com.aicontrolcenter.core.tasks.TaskStatus
 import com.aicontrolcenter.core.usage.DailyLimits
 import com.aicontrolcenter.app.work.WorkResult
+import com.aicontrolcenter.framework.orchestration.TaskStatusLines
 
 /*
  * The single place where task, review and message values become words, tones and glyphs, so a
@@ -58,15 +59,15 @@ fun taskStatusLabel(status: TaskStatus, kind: TaskKind, retryAt: Long?, detail: 
 }
 
 /**
- * The framework's words for work that waits for its provider (R4, INT-3), as the screens recognise them. The framework
- * keeps them in its own `ProviderWaits` (internal there); the app's tests pin that the two agree.
+ * The framework's words for work that waits for its provider (R4, INT-3), as the screens recognise them: the framework's
+ * own constants (`TaskStatusLines`, public since wave 3), so a change there reaches the screens at compile time.
  */
 object WaitTexts {
     /** Opens the status line of work waiting for its provider: "Waiting: xAI is not answering; trying again at 10:45." */
-    const val WAITING = "Waiting:"
+    const val WAITING = TaskStatusLines.WAITING
 
     /** Opens the status line of such work once its objective stopped: "Was waiting: xAI is not answering. Tries again when …" */
-    const val WAS_WAITING = "Was waiting:"
+    const val WAS_WAITING = TaskStatusLines.WAS_WAITING
 
     /** "xAI is not answering; trying again at 10:45." from "Waiting: xAI is not answering; trying again at 10:45.", else null. */
     fun waitingFor(detail: String?): String? =

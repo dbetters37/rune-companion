@@ -218,7 +218,7 @@ internal object ProviderWaits {
     }
 
     /** Opens the status line of work waiting for its provider. */
-    const val WAITING = "Waiting:"
+    const val WAITING = TaskStatusLines.WAITING
 
     /** What [detail], the status line of work waiting for its provider ([text]), says it waits for; null for any other line. */
     fun waitingFor(detail: String?): String? =
@@ -230,7 +230,7 @@ internal object ProviderWaits {
      * [task] is not such work.
      */
     fun stopped(task: TaskRecord): String? =
-        if (task.status == TaskStatus.QUEUED && task.retryAt != null) waitingFor(task.statusDetail)?.let { "Was waiting: $it. Tries again when the objective resumes." } else null
+        if (task.status == TaskStatus.QUEUED && task.retryAt != null) waitingFor(task.statusDetail)?.let { "${TaskStatusLines.WAS_WAITING} $it. Tries again when the objective resumes." } else null
 
     /** [tree]'s work that waited for its provider, its status line rewritten as [stopped] says, at [now]. */
     fun stoppedIn(tree: List<TaskRecord>, rootId: TaskId, now: Long): List<TaskRecord> =
