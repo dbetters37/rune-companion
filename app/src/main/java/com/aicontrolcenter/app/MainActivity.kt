@@ -8,6 +8,7 @@ import androidx.activity.enableEdgeToEdge
 import com.aicontrolcenter.app.health.GateHost
 import com.aicontrolcenter.app.ui.recovery.RecoveryHost
 import com.aicontrolcenter.app.ui.shell.AiControlCenterRoot
+import com.aicontrolcenter.app.ui.shell.AppScreenWork
 import com.aicontrolcenter.core.RequestId
 import com.aicontrolcenter.core.TaskId
 
@@ -36,7 +37,10 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             // "Try again" on the Recovery screen asks the gate to look again; nothing else of the gate reaches it.
-            GateHost(gate, recovery = { state -> RecoveryHost(state, app.recovery, onTryAgain = gate::recheck) }) { AiControlCenterRoot(graph) }
+            // The screens build what they show on the background pool, never on the main thread (P1, P2, P7, rule 16).
+            GateHost(gate, recovery = { state -> RecoveryHost(state, app.recovery, onTryAgain = gate::recheck) }) {
+                AiControlCenterRoot(graph, screenWork = AppScreenWork)
+            }
         }
     }
 

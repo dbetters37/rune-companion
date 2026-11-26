@@ -34,6 +34,7 @@ import com.aicontrolcenter.app.di.AppGraph
 import com.aicontrolcenter.app.di.LocalAppGraph
 import com.aicontrolcenter.app.ui.approvals.OperatorNotificationsAsk
 import com.aicontrolcenter.app.ui.theme.AppTheme
+import kotlin.coroutines.CoroutineContext
 
 /** Width from which the app uses a navigation rail instead of a bottom bar. */
 internal val WideLayoutMinWidth = 600.dp
@@ -42,11 +43,15 @@ internal val WideLayoutMinWidth = 600.dp
  * The whole app for one [graph]: theme, composition root and navigation shell.
  *
  * @param darkTheme follows the system unless a caller (a preview, a screenshot test) pins it.
+ * @param screenWork where the screens build their state ([AppScreenWork] from `MainActivity`); null keeps what an outer
+ *   caller provided (tests compose the app without a thread in between). See [AppEnvironment].
  */
 @Composable
-fun AiControlCenterRoot(graph: AppGraph, darkTheme: Boolean = isSystemInDarkTheme()) {
+fun AiControlCenterRoot(graph: AppGraph, darkTheme: Boolean = isSystemInDarkTheme(), screenWork: CoroutineContext? = null) {
     AppTheme(darkTheme) {
-        CompositionLocalProvider(LocalAppGraph provides graph) { AppShell() }
+        AppEnvironment(graph.settingsView, screenWork) {
+            CompositionLocalProvider(LocalAppGraph provides graph) { AppShell() }
+        }
     }
 }
 

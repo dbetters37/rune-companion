@@ -1,7 +1,11 @@
 package com.aicontrolcenter.app
 
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aicontrolcenter.app.testing.TestApp
@@ -53,5 +57,14 @@ class MainActivityTest {
         compose.onNodeWithText("0 of 6 agents ready to run").assertExists()
         assertEquals(6, runBlocking { testApp.agents.getAll() }.size)
         assertEquals(AiAppStatus.NOT_INSTALLED, runBlocking { testApp.appNamed("Sample Assistant") }.status)
+    }
+
+    @Test
+    fun `the screens build what they show on the background pool and still show it`() {
+        // Wave 3 hand-off (handoff-wp11a.md item 1, handoff-WP10a.md item 2.2): MainActivity hands AppScreenWork
+        // (Dispatchers.Default) to the root; the Tasks and Activity view models build their state there.
+        compose.waitForIdle()
+        compose.onNode(hasContentDescription("Tasks", substring = true) and hasClickAction()).performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("No objectives yet").fetchSemanticsNodes().isNotEmpty() }
     }
 }
