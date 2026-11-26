@@ -133,7 +133,11 @@ private suspend fun TestApp.notesObjective(now: Long, director: AgentId, researc
     val review = task(
         TaskId("tsk_review"), root, TaskKind.REVIEW, "Review: ${SampleObjectives.COMPARE_TITLE}", reviewer, TaskStatus.COMPLETED, start + 8 * MINUTE,
         parent = compare.id, instructions = "Check the comparison against its completion criteria.", requestedBy = byDirector,
-    ).copy(startedAt = start + 8 * MINUTE, finishedAt = now - 3 * MINUTE, result = "Revise: prices are not comparable.")
+    ).copy(
+        startedAt = start + 8 * MINUTE, finishedAt = now - 3 * MINUTE, result = "Revise: prices are not comparable.",
+        // The status line the framework writes when a review ends (ReviewSteps): the plan's verdict badge reads it (P1).
+        statusDetail = "Verdict: revise.",
+    )
     val plan = task(
         TaskId("tsk_plan"), root, TaskKind.WORK, "Draft a plan to move existing notes", writer, TaskStatus.QUEUED, start + MINUTE,
         instructions = "Write the steps to move notes from Google Keep to the chosen app, with what can go wrong.", order = 2,
@@ -239,7 +243,12 @@ private suspend fun TestApp.lisbonObjective(start: Long, director: AgentId, rese
     fun done(id: String, title: String, who: AgentId, order: Int, at: Long, deps: List<String> = emptyList(), reviewed: Boolean = false) =
         task(TaskId(id), root, TaskKind.WORK, title, who, TaskStatus.COMPLETED, at, order = order, dependsOn = deps.map(::TaskId), requestedBy = byDirector)
             .copy(startedAt = at, finishedAt = at + 5 * MINUTE, needsReview = reviewed, result = "Done.",
-                reviews = if (reviewed) listOf(ReviewVerdict(reviewer, ReviewDecision.APPROVED, "Meets the criteria.", at = at + 6 * MINUTE)) else emptyList())
+                reviews = if (reviewed) listOf(ReviewVerdict(reviewer, ReviewDecision.APPROVED, "Meets the criteria.", at = at + 6 * MINUTE, reviewTaskId = TaskId("${id}_review"))) else emptyList())
+
+    /** The review of [id], as the framework leaves it: its status line names the verdict (ReviewSteps), which the plan shows. */
+    fun review(id: String, title: String, at: Long) =
+        task(TaskId("${id}_review"), root, TaskKind.REVIEW, "Review: $title", reviewer, TaskStatus.COMPLETED, at + 5 * MINUTE, parent = TaskId(id), requestedBy = byDirector)
+            .copy(startedAt = at + 5 * MINUTE, finishedAt = at + 6 * MINUTE, result = "Approved: meets the criteria.", statusDetail = "Verdict: approved.")
     tasks.upsertAll(
         listOf(
             task(root, root, TaskKind.OBJECTIVE, SampleObjectives.LISBON_TITLE, director, TaskStatus.COMPLETED, start, parent = null,
@@ -247,7 +256,9 @@ private suspend fun TestApp.lisbonObjective(start: Long, director: AgentId, rese
                 .copy(startedAt = start, finishedAt = end, updatedAt = end, result = LISBON_DOCUMENT, options = ObjectiveOptions(reviewResults = true)),
             done("tsk_l1", "Find places to stay near the centre", researcher, 0, start + MINUTE),
             done("tsk_l2", "Pick what to see each day", analyst, 1, start + 6 * MINUTE, listOf("tsk_l1"), reviewed = true),
+            review("tsk_l2", "Pick what to see each day", start + 6 * MINUTE),
             done("tsk_l3", "Price the trip", analyst, 2, start + 12 * MINUTE, listOf("tsk_l1", "tsk_l2"), reviewed = true),
+            review("tsk_l3", "Price the trip", start + 12 * MINUTE),
             task(TaskId("tsk_l4"), root, TaskKind.SYNTHESIS, "Final result", director, TaskStatus.COMPLETED, start + MINUTE, order = 3, requestedBy = byDirector,
                 instructions = "Interpretation: A three-day plan for two in Lisbon in March, under €600 without flights.\n\nWrite the plan.")
                 .copy(startedAt = end - 3 * MINUTE, finishedAt = end, result = LISBON_DOCUMENT),
