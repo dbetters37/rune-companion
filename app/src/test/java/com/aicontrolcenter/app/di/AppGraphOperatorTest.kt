@@ -146,9 +146,11 @@ class AppGraphOperatorTest {
         val app = started(FrameworkSettings(operatorEnabled = false))
         app.graph.start().join()
 
-        val refused = app.call("workspace_write", buildJsonObject { put("path", "a.md"); put("content", "x") })
+        // The agents' own workspace no longer needs the switch (OperatorGate.workspaceCapabilities); every other phone tool does.
+        val refused = app.call("web_read_page", buildJsonObject { put("url", "https://example.org/news") })
 
         assertEquals(ToolCallEnd.DENIED, refused.end)
+        assertTrue("Phone operation is switched off" in refused.outcome.content, refused.outcome.content)
         assertTrue(app.ownerRequestStore.observeRecent(10).first().isEmpty(), "nobody was asked")
     }
 
