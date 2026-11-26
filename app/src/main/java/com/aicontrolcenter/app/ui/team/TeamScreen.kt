@@ -61,6 +61,7 @@ import com.aicontrolcenter.app.ui.components.InfoBanner
 import com.aicontrolcenter.app.ui.components.ScreenScaffold
 import com.aicontrolcenter.app.ui.components.StatusChip
 import com.aicontrolcenter.app.ui.components.icon
+import com.aicontrolcenter.app.ui.components.readableWidth
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.Help
 import com.aicontrolcenter.app.ui.tasks.LocalScreenWork
@@ -188,7 +189,7 @@ fun TeamScreen(state: TeamUiState, liveSummary: String, actions: TeamActions, sc
             }
             when {
                 mode == TeamMode.LIST -> LazyColumn(
-                    modifier = Modifier.fillMaxSize().testTag(TEAM_LIST_TAG),
+                    modifier = Modifier.fillMaxSize().readableWidth().testTag(TEAM_LIST_TAG),
                     contentPadding = PaddingValues(start = Spacing.screen, end = Spacing.screen, bottom = Spacing.xl),
                 ) {
                     item(key = "controls") { controls() }

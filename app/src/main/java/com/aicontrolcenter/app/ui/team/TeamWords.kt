@@ -1,8 +1,10 @@
 package com.aicontrolcenter.app.ui.team
 
+import com.aicontrolcenter.app.ui.components.RESUME_AFTER_LIMIT
 import com.aicontrolcenter.app.ui.tasks.WaitTexts
 import com.aicontrolcenter.app.work.WorkResult
 import com.aicontrolcenter.core.usage.DailyLimits
+import com.aicontrolcenter.framework.agents.ToolMenu
 
 /*
  * The Team view's words, in one place: plain, short, the owner's. Agents' own words are always quoted ("…") and never
@@ -75,7 +77,7 @@ object TeamWords {
 
     /** What a paused objective's owner can do, in one sentence. */
     fun pauseAdvice(detail: String?): String = when (detail) {
-        DailyLimits.PAUSED_TEXT -> "The app stops asking models for the rest of today. Raise the limit in Daily limits, or resume after midnight."
+        DailyLimits.PAUSED_TEXT -> RESUME_AFTER_LIMIT
         WorkResult.STORAGE_PAUSED_DETAIL -> "Free some room on the phone, then resume it on the objective's page."
         else -> "Nothing moves until you resume it on the objective's page."
     }
@@ -102,8 +104,11 @@ object TeamWords {
             val after = rest.substringAfter(")").trim().removePrefix("·").trim()
             rest = if (after.isEmpty()) aside else "$aside · $after"
         }
-        return rest.removePrefix("·").trim().ifBlank { null }
+        return rest.removePrefix("·").trim().ifBlank { null }?.let(::toolNames)
     }
+
+    /** A step as the owner reads it: the menu tool's function name is shown by its title (WP15 §3.1). */
+    fun toolNames(step: String): String = step.replace(ToolMenu.FUNCTION_NAME, ToolMenu.TITLE)
 
     /**
      * What one member did along one link, from its own side: "asked Analyst 2 times", "got work from Director", "shared 3

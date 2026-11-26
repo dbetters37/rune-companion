@@ -280,7 +280,7 @@ object TeamGraphBuilder {
         val task = runtime.currentTaskId?.let(tasksById::get)
         if (runtime.currentTaskId != null && task == null) return null
         if (task == null && objective != null) return null
-        val step = runtime.detail?.let { detail -> task?.let { TeamWords.stepOf(detail, it.title) } ?: detail.takeUnless { task != null } }
+        val step = runtime.detail?.let { detail -> task?.let { TeamWords.stepOf(detail, it.title) } ?: detail.takeUnless { task != null }?.let(TeamWords::toolNames) }
         return when (runtime.activity) {
             AgentActivity.WORKING -> Candidate(NodeState.WORKING, step ?: if (task == null) "In a chat" else null, task)
             AgentActivity.WAITING_FOR_APPROVAL -> Candidate(NodeState.WAITING_FOR_YOU, step, task)

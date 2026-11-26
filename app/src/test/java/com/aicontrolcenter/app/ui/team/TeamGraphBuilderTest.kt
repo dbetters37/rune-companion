@@ -295,4 +295,34 @@ class TeamGraphBuilderTest {
         assertEquals(emptyList<RequestId>(), graph.owner!!.requestIds)
         assertEquals(NodeState.IDLE, graph.node(researcher.value)?.state ?: NodeState.IDLE)
     }
+
+    @Test
+    fun `the menu tool is named by its title, never tools_open`() {
+        val monitor = mapOf(researcher to AgentRuntimeState(researcher, AgentActivity.WORKING, "Task: Find · Running tool: tools_open", TaskId("t1")))
+        val graph = build(listOf(objective(), summary("t1", "Find", TaskStatus.RUNNING, researcher)), monitor = monitor)
+        assertEquals("Running tool: Open more tools", graph.node(researcher.value)!!.detail)
+        val chat = mapOf(analyst to AgentRuntimeState(analyst, AgentActivity.WORKING, "Running tool: tools_open"))
+        assertEquals("Running tool: Open more tools", build(listOf(objective()), monitor = chat, objectiveId = null).node(analyst.value)!!.detail)
+    }
+
+    @Test
+    fun `30 agents and 1,000 messages stay within the caps`() {
+        val helpers = (1..25).map { TeamSamples.entry(AgentId("agt_h$it"), "Helper $it") }
+        val crowd = TeamSamples.snapshot(*helpers.toTypedArray())
+        val ids = crowd.agents.map { it.profile.id }
+        val headers = (0 until 1_000).map { i ->
+            val from = ids[i % ids.size]
+            val to = ids[(i * 7 + 3) % ids.size].takeIf { it != from } ?: ids[(i + 1) % ids.size]
+            header(agent(from), agent(to), if (i % 2 == 0) MessageType.ASSISTANCE_REQUEST else MessageType.ASSISTANCE_RESPONSE, now - 1_000_000 + i)
+        }
+        val summaries = listOf(objective()) + ids.drop(1).mapIndexed { i, id -> summary("w$i", "Part $i", TaskStatus.RUNNING, id) }
+        val graph = build(summaries, headers = headers, snapshot = crowd)
+        assertEquals(29, graph.ring.size, "every participant but the Director on the ring")
+        assertTrue(graph.links.size <= TeamGraphBuilder.MAX_LINKS)
+        assertEquals(TeamGraphBuilder.PULSE_CANDIDATES, graph.pulses.size)
+        assertTrue(graph.links.all { it.messageIds.size <= TeamGraphBuilder.LINK_MESSAGES })
+        assertEquals(1_000, graph.links.sumOf { it.count } + headers.count { h ->
+            graph.link(linkKeyOf((h.from as Participant.Agent).agentId.value, (h.to as Participant.Agent).agentId.value)) == null
+        }, "every message is on a kept link or on one left out")
+    }
 }

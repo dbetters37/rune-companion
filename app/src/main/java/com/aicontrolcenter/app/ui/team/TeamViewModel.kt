@@ -58,6 +58,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.produceIn
+import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -260,9 +261,11 @@ class TeamViewModel(
         routines,
     ) { (rows, roots, snapshot), requests, monitor, spaces, routines -> Inputs(rows, roots, snapshot, requests, monitor, spaces, routines) }
 
+    /** One build per change, shared by the screen's state and the spoken summary. */
     private val built: Flow<Built> = combine(inputs, filter) { inputs, filter -> Built(inputs, filter, build(inputs, filter)) }
         .flowOn(computation)
         .conflate()
+        .shareIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), replay = 1)
 
     val uiState: StateFlow<TeamUiState> = combine(built, local) { built, local -> withSheet(built, local) }
         .flowOn(computation)
