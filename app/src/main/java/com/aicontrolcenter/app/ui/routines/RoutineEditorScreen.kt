@@ -146,7 +146,7 @@ fun RoutineEditorRoute(
 @Composable
 fun RoutineEditorScreen(state: RoutineEditorUiState, title: TextFieldState, objective: TextFieldState, actions: RoutineEditorActions) {
     ScreenScaffold(
-        title = if (state.isNew) "New routine" else "Change routine",
+        title = if (state.isNew) "New routine" else "Routine",
         onBack = actions.onClose,
         message = state.message,
         onMessageShown = actions.onMessageShown,

@@ -1,7 +1,6 @@
 package com.aicontrolcenter.app.ui.routines
 
 import android.content.ActivityNotFoundException
-import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -92,7 +91,8 @@ fun RoutinesRoute(navigation: RoutinesNavigation) {
         return
     }
     val context = LocalContext.current
-    val access = remember(context) { AndroidExactAlarmAccess(context) }
+    // The application's context: the view model outlives this activity (rotation), and must not keep it.
+    val access = remember(context) { AndroidExactAlarmAccess(context.applicationContext) }
     val work = LocalScreenWork.current
     val viewModel = viewModel { RoutinesViewModel(routines, graph.waitingRoutines, graph.settingsView, graph.clock, graph.zone, access, work) }
     // Coming back from Android's "Alarms and reminders" page: read it again.
@@ -108,7 +108,7 @@ fun RoutinesRoute(navigation: RoutinesNavigation) {
             onAllowExactAlarms = {
                 val intent = access.settingsIntent()
                 try {
-                    if (intent != null) context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) else viewModel.couldNotOpenAlarmSettings()
+                    if (intent != null) context.startActivity(intent) else viewModel.couldNotOpenAlarmSettings()
                 } catch (_: ActivityNotFoundException) {
                     viewModel.couldNotOpenAlarmSettings()
                 } catch (_: SecurityException) {
