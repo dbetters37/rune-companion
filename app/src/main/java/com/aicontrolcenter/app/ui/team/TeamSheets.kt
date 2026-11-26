@@ -89,7 +89,7 @@ private fun MemberSheet(sheet: TeamSheetUi.Member, actions: SheetActions) {
         if (node.isAgent) AgentAvatar(node.name, node.colorIndex, size = 48.dp, status = node.tone, dimmed = node.dimmed)
         Column(Modifier.weight(1f)) {
             Text(node.name, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.semantics { heading() })
-            node.roleLabel?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            node.roleLabel?.takeIf { it != node.name }?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
     }
     StateLine(node.tone, node.stateText)

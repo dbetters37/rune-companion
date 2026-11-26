@@ -46,7 +46,8 @@ object TeamDescriptions {
      * Connections: asked Analyst 2 times."
      */
     fun node(node: TeamNode, graph: TeamGraph): String = buildList {
-        add(listOfNotNull(node.name, node.roleLabel?.takeIf { node.kind != TeamNodeKind.SPACE } ?: node.roleLabel).joinToString(", "))
+        // "Researcher, Specialist"; the Director is not "Director, Director".
+        add(listOfNotNull(node.name, node.roleLabel?.takeIf { it != node.name }).joinToString(", "))
         if (node.kind == TeamNodeKind.DIRECTOR) add("In the centre: it plans and hands out the work")
         add(node.stateText)
         node.detail?.let(::add)

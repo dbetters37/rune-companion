@@ -81,7 +81,7 @@ private fun MemberRow(node: TeamNode, graph: TeamGraph, actions: PictureActions)
             ListFace(node)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    listOfNotNull(node.name, node.roleLabel?.takeIf { node.kind != TeamNodeKind.SPACE }).joinToString(" · "),
+                    listOfNotNull(node.name, node.roleLabel?.takeIf { node.kind != TeamNodeKind.SPACE && it != node.name }).joinToString(" · "),
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
