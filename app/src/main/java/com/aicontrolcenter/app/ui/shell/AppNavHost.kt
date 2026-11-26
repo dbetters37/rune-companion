@@ -184,6 +184,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                     onOpenConcepts = { navController.open(ConceptsRoute) },
                     onOpenObjective = openObjective,
                     onOpenTeam = openTeam,
+                    onOpenModel = openModel,
                 ),
             )
         }

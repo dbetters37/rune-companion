@@ -46,7 +46,7 @@ class KeyJourneysTest {
             .assertShown("Connect a model provider")
             .assertShown("Try with the simulator")
             .assertShown("0 of 6 agents ready to run")
-            .assertShown("Nothing needs your attention.")
+            .assertShown("Your agents, models and apps need nothing from you.")
             .assertShown("Designated Director")
     }
 

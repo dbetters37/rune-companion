@@ -72,6 +72,7 @@ class DashboardExtrasScreenTest {
     @Test
     fun `a model used today without a price is named, with no partial cost and a way to add the price`() {
         var opened = 0
+        var openedModel: ModelId? = null
         compose.setContent {
             AppTheme(darkTheme = true) {
                 TodayTileContent(
@@ -81,7 +82,7 @@ class DashboardExtrasScreenTest {
                         unpriced = listOf(UnpricedModelUi(ModelId("mdl_llama"), "Llama 3.3 70B")),
                         month = "This month: 43 answers · 128,800 tokens", reached = null, currency = "US$",
                     ),
-                    navigation = navigation(onOpenModels = { opened++ }),
+                    navigation = navigation(onOpenModel = { opened++; openedModel = it }),
                 )
             }
         }
@@ -89,7 +90,9 @@ class DashboardExtrasScreenTest {
         described("No cost Estimated cost, a price is missing").assertExists()
         described("18 Answers, of 200").assertExists()
         compose.onAllNodes(hasText("Add its price") and hasClickAction()).onFirst().assertHeightIsAtLeast(48.dp).performClick()
+        // One model without a price: straight to its page (handoff-WP10a.md item 2.3).
         assertEquals(1, opened)
+        assertEquals(ModelId("mdl_llama"), openedModel)
     }
 
     @Test
@@ -156,9 +159,9 @@ class DashboardExtrasScreenTest {
         assertTrue(tokens.top >= answers.bottom, "one under the other at font scale 2.0")
     }
 
-    private fun navigation(onOpenModels: () -> Unit = {}) = DashboardNavigation(
+    private fun navigation(onOpenModels: () -> Unit = {}, onOpenModel: (ModelId) -> Unit = {}) = DashboardNavigation(
         onOpenAgent = {}, onOpenAttention = {}, onNewAgent = {}, onOpenAgents = {}, onOpenModels = onOpenModels, onOpenProviders = {},
-        onOpenApps = {}, onSeeAllActivity = {}, onAddProvider = {}, onOpenProvider = {},
+        onOpenApps = {}, onSeeAllActivity = {}, onAddProvider = {}, onOpenProvider = {}, onOpenModel = onOpenModel,
     )
 
     private fun hasClickLabel(label: String) = SemanticsMatcher("has click label \"$label\"") { node ->

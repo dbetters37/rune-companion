@@ -63,8 +63,10 @@ internal fun AttentionSection(
                         tint = appColors.ready,
                         modifier = Modifier.size(22.dp),
                     )
+                    // The phone's own items are listed right under this card ("On this phone"), so this line speaks only
+                    // for the agents, models and apps (handoff-WP10a.md item 2.5).
                     Text(
-                        "Nothing needs your attention.",
+                        "Your agents, models and apps need nothing from you.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                     )

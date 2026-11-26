@@ -1,6 +1,11 @@
 package com.aicontrolcenter.app.journeys
 
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onFirst
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aicontrolcenter.app.testing.AppRobot
 import kotlinx.coroutines.runBlocking
@@ -56,14 +61,24 @@ class GettingStartedJourneyTest {
             .assertShown("Save limits")
             .back()
 
-        // The simulator: the agents, each of which can be given it as its model.
+        // The simulator: while the agents have no model, the step asks as the first-run notice does (handoff-WP10a.md
+        // item 2.4), and the agents then answer with the simulator.
+        robot.scrollTo("Try it now").tap("Try it now")
+            .assertShown("Try with the simulator?")
+            .tapInDialog("Use the simulator")
+        robot.waitUntil { runBlocking { robot.app.agents.getAll() }.all { it.modelId != null } }
+        robot.assertNotShown("Try with the simulator?")
+        // Once every agent has a model, the step opens the agents, each of which can be given it as its model.
         robot.scrollTo("Open agents").tap("Open agents")
             .assertShown("Researcher")
 
         robot.openSection("Dashboard")
             .scrollTo("Done, hide this")
-            .tap("Done, hide this")
-            .assertNotShown("Getting started")
+        // Through the button's click action, as TalkBack does: the simulator's "now use the simulator" snackbar may still
+        // cover the bottom of the screen.
+        compose.onAllNodes(hasText("Done, hide this") and hasClickAction()).onFirst().performSemanticsAction(SemanticsActions.OnClick)
+        compose.waitForIdle()
+        robot.assertNotShown("Getting started")
         assertTrue(runBlocking { robot.app.settings.get().onboardingCompleted }, "remembered: it does not come back")
     }
 

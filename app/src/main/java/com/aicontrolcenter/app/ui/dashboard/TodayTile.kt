@@ -90,7 +90,12 @@ internal fun TodayTileContent(today: TodayTileUi, navigation: DashboardNavigatio
             }
             Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 if (today.unpriced.isNotEmpty()) {
-                    TextButton(onClick = navigation.onOpenModels, modifier = Modifier.heightIn(min = 48.dp)) {
+                    // One model: straight to its page, where its price is entered; several: the Models list.
+                    val single = today.unpriced.singleOrNull()
+                    TextButton(
+                        onClick = { if (single != null) navigation.onOpenModel(single.modelId) else navigation.onOpenModels() },
+                        modifier = Modifier.heightIn(min = 48.dp),
+                    ) {
                         Text(if (today.unpriced.size == 1) "Add its price" else "Add their prices")
                     }
                 }

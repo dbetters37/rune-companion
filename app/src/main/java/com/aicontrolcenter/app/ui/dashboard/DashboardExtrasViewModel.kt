@@ -303,7 +303,7 @@ class DashboardExtrasViewModel(
                 GettingStartedStepUi(
                     title = "Try the simulator",
                     text = "Try chats and objectives offline, for free: the built-in simulator is not a real model, and " +
-                        "every reply says so. Choose it as an agent's model on the agent's page.",
+                        "every reply says so. Use it for the agents that have no model yet, or choose it on an agent's page.",
                     action = "Open agents",
                     done = false,
                     target = GettingStartedTarget.AGENTS,

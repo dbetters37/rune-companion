@@ -21,8 +21,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.aicontrolcenter.app.di.LocalAppGraph
+import com.aicontrolcenter.app.ui.activity.LocalUsageWork
 import com.aicontrolcenter.app.routines.WaitingRoutinesBanner
 import com.aicontrolcenter.app.routines.WaitingRoutinesViewModel
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -34,6 +36,7 @@ import com.aicontrolcenter.app.ui.components.ScreenScaffold
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.core.AgentId
+import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.TaskId
 
 /** Where the dashboard can send the owner. Supplied by the navigation shell. */
@@ -64,6 +67,13 @@ data class DashboardNavigation(
     val onOpenObjective: (TaskId) -> Unit = {},
     /** The Team view, on one objective or on all. */
     val onOpenTeam: (TaskId?) -> Unit = {},
+    /** One model's page (the Today tile's "Add its price" for the one model without a price). */
+    val onOpenModel: (ModelId) -> Unit = {},
+    /**
+     * Asks "Try with the simulator?" for the agents that have no model yet (Getting started's simulator step). Null when
+     * every agent has a model: the step then opens the agents.
+     */
+    val onTrySimulator: (() -> Unit)? = null,
 )
 
 /**
@@ -101,7 +111,9 @@ fun DashboardRoute(navigation: DashboardNavigation) {
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    // Phase 6 (wave 3): one view model for the Today tile, Getting started, the phone's attention items and safe start.
+    // Phase 6 (wave 3): one view model for the Today tile, Getting started, the phone's attention items and safe start,
+    // built on the background pool the app hands the screens (LocalUsageWork).
+    val work = LocalUsageWork.current
     val extras = viewModel {
         DashboardExtrasViewModel(
             today = graph.todayUsage,
@@ -112,8 +124,16 @@ fun DashboardRoute(navigation: DashboardNavigation) {
             storage = graph.storageWatch,
             safeStart = graph.safeStart,
             clock = graph.clock,
+            reports = graph.usageReports,
+            prices = graph.modelPrices,
+            zone = graph.zone,
+            waits = graph.orchestrator.timedWaits,
+            computation = work,
         )
     }
+    // Getting started's simulator step asks the same question as the first-run notice, while some agent has no model.
+    val confirmSimulator = rememberSaveable { mutableStateOf(false) }
+    val extrasNavigation = if (state.quickStart != null) navigation.copy(onTrySimulator = { confirmSimulator.value = true }) else navigation
     // "Tap to start" (WP17, F12): the banner names each waiting run; Start asks once more, then starts exactly that run.
     val waiting = viewModel { WaitingRoutinesViewModel(graph.waitingRoutines, graph.clock, graph.zone) }
     DashboardScreen(
@@ -126,10 +146,11 @@ fun DashboardRoute(navigation: DashboardNavigation) {
         slots = DashboardSlots(
             safeStart = { SafeStartBanner(extras, navigation) },
             waitingRoutines = { WaitingRoutinesBanner(waiting) },
-            gettingStarted = { GettingStartedCard(extras, navigation) },
+            gettingStarted = { GettingStartedCard(extras, extrasNavigation) },
             today = { TodayTile(extras, navigation) },
             phoneAttention = { PhoneAttention(extras, navigation) },
         ),
+        confirmSimulator = confirmSimulator,
     )
 }
 
@@ -145,8 +166,10 @@ fun DashboardScreen(
     onTrySimulator: () -> Unit,
     onMessageShown: () -> Unit,
     slots: DashboardSlots = DashboardSlots(),
+    /** Whether "Try with the simulator?" is open; the route shares it with Getting started. */
+    confirmSimulator: MutableState<Boolean> = rememberSaveable { mutableStateOf(false) },
 ) {
-    var confirmSimulator by rememberSaveable { mutableStateOf(false) }
+    var askSimulator by confirmSimulator
     ScreenScaffold(title = "Dashboard", message = state.message, onMessageShown = onMessageShown) { padding ->
         if (state.isLoading) {
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
@@ -179,7 +202,7 @@ fun DashboardScreen(
                         isAssigning = state.isAssigning,
                         onConnectProvider = navigation.onAddProvider,
                         onAssignModel = { navigation.onOpenAttention(AttentionTarget.Agents) },
-                        onTrySimulator = { confirmSimulator = true },
+                        onTrySimulator = { askSimulator = true },
                     )
                 }
             }
@@ -248,7 +271,7 @@ fun DashboardScreen(
         }
     }
     val quickStart = state.quickStart
-    if (confirmSimulator && quickStart != null) {
+    if (askSimulator && quickStart != null) {
         ConfirmDialog(
             title = "Try with the simulator?",
             message = "${summariseNames(quickStart.agentsWithoutModel)} will use the built-in simulator. It is not a real " +
@@ -258,10 +281,10 @@ fun DashboardScreen(
             icon = AppIcons.Sparkle,
             cautionary = true,
             onConfirm = {
-                confirmSimulator = false
+                askSimulator = false
                 onTrySimulator()
             },
-            onDismiss = { confirmSimulator = false },
+            onDismiss = { askSimulator = false },
         )
     }
 }

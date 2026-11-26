@@ -35,7 +35,8 @@ import com.aicontrolcenter.app.ui.theme.appColors
 /**
  * Getting started (Tier B, D47): what a model, a provider and an agent are (navigation.onOpenConcepts), adding a key
  * with plain notes on cheaper providers (navigation.onAddProvider), the daily limits (navigation.onOpenDailyLimits) and
- * the simulator (navigation.onOpenAgents). Hidden for good once the owner says done (`onboardingCompleted`). A slot of
+ * the simulator (navigation.onTrySimulator: "Try with the simulator?" for the agents without a model; once every agent
+ * has one, navigation.onOpenAgents). Hidden for good once the owner says done (`onboardingCompleted`). A slot of
  * `DashboardScreen`.
  */
 @Composable
@@ -71,14 +72,17 @@ internal fun GettingStartedContent(card: GettingStartedUi, navigation: Dashboard
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = Spacing.xs),
         )
+        val trySimulator = navigation.onTrySimulator
         card.steps.forEachIndexed { index, step ->
             RowDivider(Modifier.padding(vertical = Spacing.sm))
-            Step(index + 1, step) {
+            // While some agent has no model, the simulator step asks right here, as the first-run notice does.
+            val simulatorHere = step.target == GettingStartedTarget.AGENTS && trySimulator != null
+            Step(index + 1, step, action = if (simulatorHere) SIMULATOR_ACTION else step.action) {
                 when (step.target) {
                     GettingStartedTarget.CONCEPTS -> navigation.onOpenConcepts()
                     GettingStartedTarget.ADD_PROVIDER -> navigation.onAddProvider()
                     GettingStartedTarget.DAILY_LIMITS -> navigation.onOpenDailyLimits()
-                    GettingStartedTarget.AGENTS -> navigation.onOpenAgents()
+                    GettingStartedTarget.AGENTS -> if (trySimulator != null) trySimulator() else navigation.onOpenAgents()
                 }
             }
         }
@@ -89,7 +93,7 @@ internal fun GettingStartedContent(card: GettingStartedUi, navigation: Dashboard
 }
 
 @Composable
-private fun Step(number: Int, step: GettingStartedStepUi, onAction: () -> Unit) {
+private fun Step(number: Int, step: GettingStartedStepUi, action: String, onAction: () -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
         // Done is said by the icon and in words, never by colour alone.
         Box(
@@ -112,7 +116,10 @@ private fun Step(number: Int, step: GettingStartedStepUi, onAction: () -> Unit) 
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Text(step.text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            OutlinedButton(onClick = onAction, modifier = Modifier.heightIn(min = 48.dp)) { Text(step.action) }
+            OutlinedButton(onClick = onAction, modifier = Modifier.heightIn(min = 48.dp)) { Text(action) }
         }
     }
 }
+
+/** The simulator step's button while some agent has no model: it opens "Try with the simulator?". */
+internal const val SIMULATOR_ACTION = "Try it now"
