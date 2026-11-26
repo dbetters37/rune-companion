@@ -11,11 +11,11 @@ import kotlin.test.assertTrue
  *
  * Which packages may still have stubs is [STILL_BUILDING], changed by the integrator at each merge point:
  *  - wave 3, part 1 being built: every wave-3 package;
- *  - after part 1 is merged (now): part 2's packages and WP8 only (WP9, WP10b, WP10c, WP16, WP8);
- *  - the final gate, after part 2 is merged: none, so not one stub is left (the plan's `NoPhase6StubsTest`).
+ *  - after part 1 was merged: part 2's packages and WP8 only (WP9, WP10b, WP10c, WP16, WP8);
+ *  - the final gate (now, after part 2 was merged): none, so not one stub is left (the plan's `NoPhase6StubsTest`), and
+ *    the stand-in screen is gone: no route, slot or control leads to a screen that is not built.
  *
- * The final gate can also be asked for at any time with `-Paicc.stubGate=final` (app/build.gradle.kts passes it on as a
- * system property): then no stub may be left whatever [STILL_BUILDING] says.
+ * `-Paicc.stubGate=final` (app/build.gradle.kts passes it on as a system property) asks for the same at any time.
  */
 class Phase6StubGateTest {
     /** One stub: where, and the package that fills it. */
@@ -57,9 +57,11 @@ class Phase6StubGateTest {
     }
 
     @Test
-    fun `part 1's packages are done and part 2's are still building`() {
-        assertTrue(STILL_BUILDING.none { it in setOf("WP11a", "WP11b", "WP10a") }, "WP11a, WP11b and WP10a are merged")
-        assertEquals(PACKAGES - setOf("WP11a", "WP11b", "WP10a"), STILL_BUILDING)
+    fun `the final gate - every wave-3 package is done, not one stub is left, and the stand-in screen is gone`() {
+        assertEquals(emptySet(), STILL_BUILDING, "wave 3 is merged: the final gate allows no stub")
+        assertEquals(emptyList(), stubs, "not one @Phase6Stub is left in the app's code")
+        val standIn = sources.filter { file -> file.name == "StubScreen.kt" || file.readText().contains("StubScreen(") }
+        assertEquals(emptyList(), standIn.map { it.path }, "nothing shows the stand-in screen")
     }
 
     @Test
@@ -81,10 +83,7 @@ class Phase6StubGateTest {
         /** Wave 3's packages (scratchpad/phase6/wave3-ownership.md). */
         val PACKAGES = setOf("WP8", "WP9", "WP10a", "WP10b", "WP10c", "WP11a", "WP11b", "WP16")
 
-        /**
-         * The packages that may still have stubs now: part 1 (WP11a, WP11b, WP10a) is merged, so part 2's packages and
-         * WP8's stand-in screen only.
-         */
-        val STILL_BUILDING: Set<String> = setOf("WP8", "WP9", "WP10b", "WP10c", "WP16")
+        /** The packages that may still have stubs now: none (wave 3 is merged; the final gate). */
+        val STILL_BUILDING: Set<String> = emptySet()
     }
 }
