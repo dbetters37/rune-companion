@@ -36,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -79,7 +80,7 @@ import kotlin.math.roundToInt
 /** The tag of the picture, for tests. */
 const val TEAM_PICTURE_TAG = "team-picture"
 
-/** Links whose sign (a 48 dp button with the kind's glyph) is shown at their middle: the newest ones. */
+/** Links whose sign (a 48 dp button with the kind's glyph) is shown along them: the newest ones with room for it. */
 private const val SIGNED_LINKS = 12
 
 /** What the picture can open. */
@@ -150,6 +151,9 @@ internal fun TeamPicture(
             graph.links.mapNotNull { link -> LinkLine.of(placement, link) { kinds[it] }?.let { link to it } }
         }
         val linesByKey = remember(lines) { lines.associate { (link, line) -> link.key to (link to line) } }
+        val signs = remember(placement, lines) {
+            LinkSigns.place(placement, lines.sortedByDescending { it.first.lastAt }.map { (link, line) -> link.key to line }, SIGNED_LINKS)
+        }
         val order = remember(graph) { traversalOrder(graph) }
 
         Box(
@@ -174,18 +178,22 @@ internal fun TeamPicture(
                         translationY = shown.y
                     },
             ) {
-                LinesAndDots(lines, linesByKey, clock, calm)
+                Lines(lines)
+                // A space has its own slot along the bottom: its name may use the slot's width.
+                val spaceLabel = (placement.width / maxOf(1, ids.spaces.size) - 8f).coerceIn(TeamLayout.LABEL_WIDTH, 160f)
                 graph.nodes.forEach { node ->
                     val at = placement.positions[node.id] ?: return@forEach
+                    val labelWidth = if (node.kind == TeamNodeKind.SPACE) spaceLabel else TeamLayout.LABEL_WIDTH
                     NodeView(
                         node = node,
                         graph = graph,
                         size = placement.sizeOf(node.kind).dp,
                         showLabel = placement.showLabels,
+                        labelWidth = labelWidth.dp,
                         traversal = order[node.id] ?: 0f,
                         actions = actions,
                         modifier = Modifier.offset {
-                            val half = (if (placement.showLabels) TeamLayout.LABEL_WIDTH else TeamLayout.TOUCH) / 2
+                            val half = (if (placement.showLabels) labelWidth else TeamLayout.TOUCH) / 2
                             IntOffset(
                                 ((at.x - half).dp.toPx()).roundToInt(),
                                 ((at.y - maxOf(TeamLayout.TOUCH, placement.sizeOf(node.kind)) / 2).dp.toPx()).roundToInt(),
@@ -193,17 +201,20 @@ internal fun TeamPicture(
                         },
                     )
                 }
-                lines.sortedByDescending { it.first.lastAt }.take(SIGNED_LINKS).forEachIndexed { index, (link, line) ->
+                signs.entries.forEachIndexed { index, (key, spot) ->
+                    val link = linesByKey[key]?.first ?: return@forEachIndexed
                     LinkSign(
                         link = link,
                         description = TeamDescriptions.linkTitle(link, graph),
                         traversal = 1_000f + index,
                         onOpen = { actions.onOpenLink(link.key) },
                         modifier = Modifier.offset {
-                            IntOffset(((line.mid.x - TeamLayout.TOUCH / 2).dp.toPx()).roundToInt(), ((line.mid.y - TeamLayout.TOUCH / 2).dp.toPx()).roundToInt())
+                            IntOffset(((spot.x - TeamLayout.TOUCH / 2).dp.toPx()).roundToInt(), ((spot.y - TeamLayout.TOUCH / 2).dp.toPx()).roundToInt())
                         },
                     )
                 }
+                // The dots fly above everything, so a member or a sign never hides one.
+                Dots(linesByKey, clock, calm)
             }
         }
         ZoomButtons(
@@ -236,18 +247,12 @@ private fun ZoomButtons(viewport: TeamViewport, onChange: (TeamViewport) -> Unit
     }
 }
 
-/** Every line, built once per layout, and the dots in the air, drawn at the frame time (read only here). */
+/** Every line, with its arrowheads, built once per layout ([drawWithCache], no new path per frame). */
 @Composable
-private fun LinesAndDots(
-    lines: List<Pair<TeamLink, LinkLine>>,
-    linesByKey: Map<String, Pair<TeamLink, LinkLine>>,
-    clock: PulseClock,
-    calm: Boolean,
-) {
+private fun Lines(lines: List<Pair<TeamLink, LinkLine>>) {
     val ink = MaterialTheme.colorScheme.onSurfaceVariant
     val attention = appColors.attention
     val backdrop = MaterialTheme.colorScheme.background
-    val dot = MaterialTheme.colorScheme.primary
     Spacer(
         Modifier
             .fillMaxSize()
@@ -270,16 +275,30 @@ private fun LinesAndDots(
                         if (link.aToB) drawArrow(px(line.end), line.direction(1f), arrow)
                         if (link.bToA) drawArrow(px(line.start), line.direction(0f).let { DpPoint(-it.x, -it.y) }, arrow)
                     }
-                    if (!calm) {
-                        val at = clock.frameMs.longValue
-                        clock.positions(at).forEach { (flight, t) ->
-                            val (link, line) = linesByKey[flight.pulse.linkKey] ?: return@forEach
-                            val along = if (flight.pulse.fromId == link.aId) t else 1f - t
-                            val point = px(line.at(along))
-                            drawCircle(dot.copy(alpha = 0.25f), radius = 10.dp.toPx(), center = point)
-                            drawCircle(dot, radius = 5.dp.toPx(), center = point)
-                        }
-                    }
+                }
+            },
+    )
+}
+
+/** The dots in the air, drawn at the frame time, which is read only here (so nothing is composed again per frame). */
+@Composable
+private fun Dots(linesByKey: Map<String, Pair<TeamLink, LinkLine>>, clock: PulseClock, calm: Boolean) {
+    val dot = MaterialTheme.colorScheme.primary
+    val rim = MaterialTheme.colorScheme.background
+    Spacer(
+        Modifier
+            .fillMaxSize()
+            .drawBehind {
+                if (calm) return@drawBehind
+                val dp = density
+                clock.positions(clock.frameMs.longValue).forEach { (flight, t) ->
+                    val (link, line) = linesByKey[flight.pulse.linkKey] ?: return@forEach
+                    val along = if (flight.pulse.fromId == link.aId) t else 1f - t
+                    val p = line.at(along)
+                    val point = Offset(p.x * dp, p.y * dp)
+                    drawCircle(dot.copy(alpha = 0.3f), radius = 11.dp.toPx(), center = point)
+                    drawCircle(rim, radius = 7.dp.toPx(), center = point)
+                    drawCircle(dot, radius = 5.5.dp.toPx(), center = point)
                 }
             },
     )
@@ -330,6 +349,7 @@ private fun NodeView(
     graph: TeamGraph,
     size: Dp,
     showLabel: Boolean,
+    labelWidth: Dp,
     traversal: Float,
     actions: PictureActions,
     modifier: Modifier = Modifier,
@@ -339,7 +359,7 @@ private fun NodeView(
     val target = maxOf(TeamLayout.TOUCH.dp, size)
     Column(
         modifier = modifier
-            .width(if (showLabel) TeamLayout.LABEL_WIDTH.dp else target)
+            .width(if (showLabel) labelWidth else target)
             .clickable(onClickLabel = "Show details", role = Role.Button) { actions.onOpenNode(node.id) }
             .semantics(mergeDescendants = true) {
                 contentDescription = description

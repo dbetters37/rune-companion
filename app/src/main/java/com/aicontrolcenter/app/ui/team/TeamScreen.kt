@@ -30,7 +30,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -281,7 +280,7 @@ private fun Controls(
             TextButton(onClick = { onMode(TeamMode.LIST) }, modifier = Modifier.heightIn(min = 48.dp)) { Text(TeamWords.SHOW_LIST) }
         }
         if (mode == TeamMode.PICTURE) {
-            Text(TeamWords.PAN_NOTE, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(TeamWords.TAP_NOTE, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -312,18 +311,25 @@ private fun ObjectiveChoices(state: TeamUiState, onShow: (TeamFilter) -> Unit) {
 private fun Modifier.widthCap(): Modifier = this.then(Modifier.widthIn(max = 180.dp))
 
 /** The one objective shown: what it is, how it stands, the routine that started it, why it does not move. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ObjectiveCard(card: ObjectiveCardUi, onOpen: (TaskId) -> Unit) {
-    AppCard(contentPadding = PaddingValues(Spacing.md)) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(card.title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
-            StatusChip(card.status.text, card.status.tone)
+    AppCard(contentPadding = PaddingValues(horizontal = Spacing.md, vertical = Spacing.sm)) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(card.title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+                itemVerticalAlignment = Alignment.CenterVertically,
+            ) {
+                StatusChip(card.status.text, card.status.tone)
+                TextButton(onClick = { onOpen(card.id) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Open objective") }
+            }
             card.routine?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             card.notice?.let { notice ->
                 Text(notice.title, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
                 Text(notice.text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            OutlinedButton(onClick = { onOpen(card.id) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Open objective") }
         }
     }
 }
@@ -359,5 +365,6 @@ private fun Legend() {
             style = MaterialTheme.typography.bodyMedium,
         )
         Text(if (calm) TeamWords.CALM_NOTE else TeamWords.DOTS_NOTE, style = MaterialTheme.typography.bodyMedium)
+        Text(TeamWords.PAN_NOTE, style = MaterialTheme.typography.bodyMedium)
     }
 }

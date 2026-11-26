@@ -279,3 +279,30 @@ data class LinkLine(val start: DpPoint, val control: DpPoint?, val end: DpPoint)
         }
     }
 }
+
+/** Where the signs at the middle of lines go, so that none sits on a member or on another sign. */
+object LinkSigns {
+    /** Places tried along a line, from its middle outwards. */
+    private val SPOTS = floatArrayOf(0.5f, 0.4f, 0.6f, 0.3f, 0.7f, 0.22f, 0.78f)
+
+    /** Centre to centre: a sign's 48 dp target clear of a member's and of another sign's. */
+    private const val CLEAR = TeamLayout.TOUCH + 4f
+
+    /**
+     * A spot for each of [lines] (most important first), at most [max]: the first place along the line whose 48 dp target
+     * touches no member and no sign already placed. A line with no free place gets no sign (its messages are still one tap
+     * away in either member's sheet, and in TalkBack's actions).
+     */
+    fun place(placement: TeamPlacement, lines: List<Pair<String, LinkLine>>, max: Int): Map<String, DpPoint> {
+        val members = placement.positions.values.toList()
+        val placed = LinkedHashMap<String, DpPoint>()
+        for ((key, line) in lines) {
+            if (placed.size >= max) break
+            val spot = SPOTS.asSequence().map { line.at(it) }.firstOrNull { p ->
+                members.none { hypot(it.x - p.x, it.y - p.y) < CLEAR } && placed.values.none { hypot(it.x - p.x, it.y - p.y) < CLEAR }
+            } ?: continue
+            placed[key] = spot
+        }
+        return placed
+    }
+}

@@ -25,7 +25,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.aicontrolcenter.app.ui.components.AgentAvatar
 import com.aicontrolcenter.app.ui.components.AppCard
-import com.aicontrolcenter.app.ui.components.StatusChip
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.MemoryBrain
 import com.aicontrolcenter.app.ui.theme.Spacing
@@ -86,7 +85,7 @@ private fun MemberRow(node: TeamNode, graph: TeamGraph, actions: PictureActions)
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
-                StatusChip(node.stateText, node.tone)
+                StateLine(node.tone, node.stateText)
                 node.detail?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface) }
                 node.taskTitle?.let { Text("Task: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 if (node.kind == TeamNodeKind.SPACE) {
@@ -110,5 +109,14 @@ private fun ListFace(node: TeamNode) {
             contentAlignment = Alignment.Center,
         ) { Icon(AppIcons.MemoryBrain, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) }
         else -> AgentAvatar(node.name, node.colorIndex, size = 40.dp, status = node.tone, dimmed = node.dimmed)
+    }
+}
+
+/** A state in words with its glyph (never a colour alone), wrapping at large text instead of being cut. */
+@Composable
+internal fun StateLine(tone: com.aicontrolcenter.app.ui.theme.StatusTone, text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        StateGlyph(tone)
+        Text(text, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface)
     }
 }

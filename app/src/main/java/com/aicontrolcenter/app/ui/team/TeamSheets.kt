@@ -32,7 +32,6 @@ import androidx.compose.ui.unit.dp
 import com.aicontrolcenter.app.ui.approvals.RequestCard
 import com.aicontrolcenter.app.ui.components.AgentAvatar
 import com.aicontrolcenter.app.ui.components.RowDivider
-import com.aicontrolcenter.app.ui.components.StatusChip
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.ChevronRight
 import com.aicontrolcenter.app.ui.tasks.MessageRow
@@ -93,7 +92,7 @@ private fun MemberSheet(sheet: TeamSheetUi.Member, actions: SheetActions) {
             node.roleLabel?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
     }
-    StatusChip(node.stateText, node.tone)
+    StateLine(node.tone, node.stateText)
     node.detail?.let { Text(it, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface) }
     node.taskTitle?.let { Text("Task: $it", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface) }
     node.modelLine?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }

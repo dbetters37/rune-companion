@@ -25,6 +25,7 @@ object TeamWords {
     const val TOO_MANY = "The team is too big for the picture, so the list shows everyone."
     const val CALM_NOTE = "Motion is off (Calm), so messages do not travel as dots. A line drawn thicker carried a message in the last minute."
     const val DOTS_NOTE = "A dot travels once along a line when a message is sent. A line drawn thicker carried a message in the last minute."
+    const val TAP_NOTE = "Tap anyone, or a line's sign, for details. Drag to move, pinch to zoom."
     const val PAN_NOTE = "Drag to move the picture, pinch or use the buttons to zoom. Tap anyone for details, or a line's sign for its messages."
     const val WAITING_FOR_TEAM = "Waiting for the team"
     const val WAITING_FOR_CHECK = "Waiting for its work to be checked"

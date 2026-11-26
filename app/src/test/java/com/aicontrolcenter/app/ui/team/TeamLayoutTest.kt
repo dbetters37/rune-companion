@@ -62,4 +62,24 @@ class TeamLayoutTest {
         assertEquals(180f, first.x, 0.01f)
         assertTrue(first.y < ringOnly.centre.y)
     }
+
+    @Test
+    fun `the signs of lines sit on no member and on no other sign`() {
+        for (n in listOf(3, 8, 20, 30)) {
+            val ring = ring(n)
+            val placed = TeamLayout.arrange(true, "d", ring, listOf("space:1"), 360f, 640f)
+            val lines = ring.map { id ->
+                val link = TeamLink(linkKeyOf("d", id), "d", id, LinkKind.ASSIGNS, emptyList(), true, false, 1, 0, false, emptyList())
+                link.key to LinkLine.of(placed, link) { if (it == "d") TeamNodeKind.DIRECTOR else TeamNodeKind.AGENT }!!
+            }
+            val signs = LinkSigns.place(placed, lines, 12)
+            assertTrue(signs.isNotEmpty(), "$n agents: some line has room for its sign")
+            val spots = signs.values.toList()
+            for (s in spots) for (p in placed.positions.values) assertTrue(hypot(s.x - p.x, s.y - p.y) >= TeamLayout.TOUCH, "$n agents: a sign on a member")
+            for (i in spots.indices) for (j in i + 1 until spots.size) {
+                assertTrue(hypot(spots[i].x - spots[j].x, spots[i].y - spots[j].y) >= TeamLayout.TOUCH, "$n agents: two signs touch")
+            }
+            assertTrue(signs.size <= 12)
+        }
+    }
 }
