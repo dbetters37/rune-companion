@@ -212,7 +212,8 @@ fun WaitingRoutinesBanner(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     val started = state.started
                     if (started != null && onOpenObjective != null) {
-                        Button(onClick = { onOpenObjective(started) }) { Text("Open the objective") }
+                        // The message is read once it leads on: back on this screen it does not show again.
+                        Button(onClick = { onMessageShown(); onOpenObjective(started) }) { Text("Open the objective") }
                     }
                     TextButton(onClick = onMessageShown) { Text("OK") }
                 }

@@ -152,7 +152,8 @@ fun DashboardRoute(navigation: DashboardNavigation) {
         onMessageShown = viewModel::messageShown,
         slots = DashboardSlots(
             safeStart = { SafeStartBanner(extras, navigation) },
-            waitingRoutines = { WaitingRoutinesBanner(waiting) },
+            // After a confirmed start the message offers the objective, as the "Tap to start" step does (handoff-WP10c.md).
+            waitingRoutines = { WaitingRoutinesBanner(waiting, onOpenObjective = navigation.onOpenObjective) },
             gettingStarted = { GettingStartedCard(extras, extrasNavigation) },
             today = { TodayTile(extras, navigation) },
             phoneAttention = { PhoneAttention(extras, navigation) },

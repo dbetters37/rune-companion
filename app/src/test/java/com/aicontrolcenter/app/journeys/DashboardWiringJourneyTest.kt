@@ -5,8 +5,10 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onFirst
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aicontrolcenter.app.testing.AppRobot
+import com.aicontrolcenter.app.testing.makeRoutine
 import com.aicontrolcenter.app.testing.populateWithMemories
 import com.aicontrolcenter.app.testing.recordSampleUsage
+import com.aicontrolcenter.app.testing.teamOnSimulator
 import com.aicontrolcenter.app.ui.shell.AiControlCenterRoot
 import com.aicontrolcenter.core.memory.MemoryFilter
 import kotlinx.coroutines.flow.first
@@ -78,5 +80,29 @@ class DashboardWiringJourneyTest {
             compose.waitForIdle()
         }
         compose.onAllNodes(tile).onFirst().assertExists()
+    }
+
+    /**
+     * Wave 3 hand-off (WP8; handoff-WP10c.md §2 row 1): after Start and the confirmation on the Dashboard's "Tap to
+     * start" banner, the message offers the objective that started, as the Routines step does; once followed, the
+     * message is gone when the owner comes back.
+     */
+    @Test
+    fun `after Start on the Dashboard's banner the message leads to the objective that started`() {
+        val robot = AppRobot(compose).given {
+            teamOnSimulator()
+            settings.update { it.copy(routinesEnabled = true) }
+            val routine = makeRoutine("Evening digest")
+            clock.current = routine.nextRunAt!! + 60_000L
+            graph.waitingRoutines.catchUp()
+        }.launch().also { robot = it }
+
+        robot.waitUntilShown("Routine \"Evening digest\" is waiting to start")
+            .tap("Start")
+            .tapInDialog("Start now")
+            .waitUntilShown("Started: the team is working on \"Evening digest\".")
+            .tap("Open the objective")
+            .waitUntilShown("Started by routine \u201CEvening digest\u201D")
+        robot.back().assertNotShown("Started: the team is working on")
     }
 }
