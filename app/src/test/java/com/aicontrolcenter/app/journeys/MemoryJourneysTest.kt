@@ -9,6 +9,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aicontrolcenter.app.testing.AppRobot
 import com.aicontrolcenter.app.testing.SampleMemories
 import com.aicontrolcenter.app.testing.populateWithMemories
+import com.aicontrolcenter.app.ui.memory.graph.MemoryGraphViewModel
 import com.aicontrolcenter.core.activity.ActivityFilter
 import com.aicontrolcenter.core.memory.MemoryActor
 import com.aicontrolcenter.core.memory.MemoryScope
@@ -109,6 +110,8 @@ class MemoryJourneysTest {
         val app = robot.app
 
         robot.openSectionViaMore("Memory").tap("Graph").waitForGraph()
+        // Where the file may go, said before the owner taps (rule 21, D37; handoff-WP11b.md section 2).
+        robot.assertShown(MemoryGraphViewModel.EXPORT_NOTE)
         robot.tap("Export graph")
 
         val application = ApplicationProvider.getApplicationContext<Application>()

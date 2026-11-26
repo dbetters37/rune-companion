@@ -288,7 +288,11 @@ private fun ShapeKey(shape: ScopeKind, label: String) {
     }
 }
 
-/** The bridge to external graph viewers, with a note on what the file is. */
+/**
+ * The bridge to external graph viewers, with a note on what the file is and where it may go: the export is the owner's
+ * own act through the share sheet, so the app chosen there may send it off the phone (rule 21, D37: also in local-only
+ * mode, where the snackbar says the same once more).
+ */
 @Composable
 private fun ExportRow(state: GraphUiState, onExport: () -> Unit) {
     Row(
@@ -296,12 +300,14 @@ private fun ExportRow(state: GraphUiState, onExport: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Spacing.md),
     ) {
-        Text(
-            "Shares this view as aicc.memory-graph JSON, a neutral format for external graph viewers. Includes full text.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(1f),
-        )
+        Column(Modifier.weight(1f)) {
+            Text(
+                "Shares this view as aicc.memory-graph JSON, a neutral format for external graph viewers. Includes full text.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(state.exportNote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         OutlinedButton(
             onClick = onExport,
             enabled = !state.isExporting && state.render.nodes.isNotEmpty(),
