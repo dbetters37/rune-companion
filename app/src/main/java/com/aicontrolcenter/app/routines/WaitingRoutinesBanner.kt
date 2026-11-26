@@ -23,6 +23,7 @@ import com.aicontrolcenter.app.ui.components.formatCompactTimestamp
 import com.aicontrolcenter.app.ui.theme.appColors
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.RoutineRunId
+import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.operator.OwnerResult
 import com.aicontrolcenter.framework.routines.WaitingRoutine
 import com.aicontrolcenter.framework.routines.WaitingRoutines
@@ -53,6 +54,8 @@ data class WaitingRoutinesUiState(
     /** A start is under way: the buttons wait. */
     val busy: Boolean = false,
     val message: UserMessage? = null,
+    /** The objective the last confirmed start began (wave 3, WP10c: the confirmation step links to it). */
+    val started: TaskId? = null,
 )
 
 /**
@@ -69,7 +72,12 @@ class WaitingRoutinesViewModel(
     private val clock: Clock,
     private val zone: () -> ZoneId = { ZoneId.systemDefault() },
 ) : ViewModel() {
-    private data class Local(val confirming: RoutineRunId? = null, val busy: Boolean = false, val message: UserMessage? = null)
+    private data class Local(
+        val confirming: RoutineRunId? = null,
+        val busy: Boolean = false,
+        val message: UserMessage? = null,
+        val started: TaskId? = null,
+    )
 
     private val local = MutableStateFlow(Local())
     private var messages = 0L
@@ -79,7 +87,7 @@ class WaitingRoutinesViewModel(
         val items = runs.map { run ->
             WaitingRoutineUi(run, headline(run.title), "It was due at ${formatCompactTimestamp(run.dueAt, now, zone())}. Nothing starts until you tap Start.")
         }
-        WaitingRoutinesUiState(items, items.firstOrNull { it.run.runId == local.confirming }, local.busy, local.message)
+        WaitingRoutinesUiState(items, items.firstOrNull { it.run.runId == local.confirming }, local.busy, local.message, local.started)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), WaitingRoutinesUiState())
 
     init {
@@ -109,9 +117,13 @@ class WaitingRoutinesViewModel(
             return
         }
         viewModelScope.launch {
+            var started: TaskId? = null
             val text = try {
                 when (val result = waiting.startWaiting(item.routineId, item.runId)) {
-                    is OwnerResult.Done -> "Started: the team is working on \"${item.title}\"."
+                    is OwnerResult.Done -> {
+                        started = result.value.objectiveId
+                        "Started: the team is working on \"${item.title}\"."
+                    }
                     is OwnerResult.Refused -> result.reason
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -119,7 +131,7 @@ class WaitingRoutinesViewModel(
             } catch (_: Exception) {
                 "The routine could not be started. Try again."
             }
-            local.update { it.copy(busy = false, message = UserMessage(text, ++messages)) }
+            local.update { it.copy(busy = false, message = UserMessage(text, ++messages), started = started) }
         }
     }
 
@@ -130,7 +142,7 @@ class WaitingRoutinesViewModel(
         }
     }
 
-    fun messageShown() = local.update { it.copy(message = null) }
+    fun messageShown() = local.update { it.copy(message = null, started = null) }
 
     /** Texts. */
     companion object {
@@ -156,7 +168,7 @@ class WaitingRoutinesViewModel(
  * never operates this app.
  */
 @Composable
-fun WaitingRoutinesBanner(viewModel: WaitingRoutinesViewModel, modifier: Modifier = Modifier) {
+fun WaitingRoutinesBanner(viewModel: WaitingRoutinesViewModel, modifier: Modifier = Modifier, onOpenObjective: ((TaskId) -> Unit)? = null) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     WaitingRoutinesBanner(
         state = state,
@@ -166,6 +178,7 @@ fun WaitingRoutinesBanner(viewModel: WaitingRoutinesViewModel, modifier: Modifie
         onCancel = viewModel::cancelStart,
         onMessageShown = viewModel::messageShown,
         modifier = modifier,
+        onOpenObjective = onOpenObjective?.let { open -> { id: TaskId -> viewModel.messageShown(); open(id) } },
     )
 }
 
@@ -178,6 +191,8 @@ fun WaitingRoutinesBanner(
     onCancel: () -> Unit,
     onMessageShown: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Opens the objective a confirmed start began; null: no link (the Dashboard's banner). */
+    onOpenObjective: ((TaskId) -> Unit)? = null,
 ) {
     if (state.items.isEmpty() && state.message == null) return
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -194,7 +209,13 @@ fun WaitingRoutinesBanner(
         state.message?.let { message ->
             AppCard {
                 Text(message.text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
-                TextButton(onClick = onMessageShown) { Text("OK") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val started = state.started
+                    if (started != null && onOpenObjective != null) {
+                        Button(onClick = { onOpenObjective(started) }) { Text("Open the objective") }
+                    }
+                    TextButton(onClick = onMessageShown) { Text("OK") }
+                }
             }
         }
     }
