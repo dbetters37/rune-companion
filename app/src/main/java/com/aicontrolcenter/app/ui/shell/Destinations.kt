@@ -15,6 +15,7 @@ import com.aicontrolcenter.app.ui.icons.Tasks
 import com.aicontrolcenter.app.ui.icons.Tools
 import com.aicontrolcenter.app.ui.memory.MemoryTab
 import com.aicontrolcenter.app.ui.models.ModelsTab
+import com.aicontrolcenter.app.ui.settings.SettingsAnchor
 import com.aicontrolcenter.app.ui.tools.ToolsTab
 import kotlinx.serialization.Serializable
 
@@ -44,7 +45,8 @@ import kotlinx.serialization.Serializable
  */
 @Serializable data class ActivityRoute(val tab: ActivityTab = ActivityTab.LOG, val agentId: String? = null, val text: String? = null)
 
-@Serializable data object SettingsRoute
+/** The Settings section; [anchor] opens it scrolled to one of its parts (wave 3: the background check, the routines' switches). */
+@Serializable data class SettingsRoute(val anchor: SettingsAnchor? = null)
 
 @Serializable data object AgentTemplatesRoute
 
@@ -178,7 +180,7 @@ enum class Section(val title: String, val description: String) {
             MEMORY -> MemoryRoute()
             TOOLS -> ToolsRoute()
             ACTIVITY -> ActivityRoute()
-            SETTINGS -> SettingsRoute
+            SETTINGS -> SettingsRoute()
         }
 
     companion object {

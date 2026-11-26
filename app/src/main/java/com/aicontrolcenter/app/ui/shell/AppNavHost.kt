@@ -26,6 +26,7 @@ import com.aicontrolcenter.app.ui.routines.RoutinesNavigation
 import com.aicontrolcenter.app.ui.routines.RoutinesRoute as RoutinesScreenRoute
 import com.aicontrolcenter.app.ui.routines.WaitingRoutinesRoute as WaitingRoutinesScreenRoute
 import com.aicontrolcenter.app.ui.settings.DailyLimitsRoute as DailyLimitsScreenRoute
+import com.aicontrolcenter.app.ui.settings.SettingsAnchor
 import com.aicontrolcenter.app.ui.settings.SettingsNavigation
 import com.aicontrolcenter.app.ui.team.TeamNavigation
 import com.aicontrolcenter.app.ui.team.TeamRoute as TeamScreenRoute
@@ -132,7 +133,10 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
     val openTeam: (TaskId?) -> Unit = { navController.open(TeamRoute(it?.value)) }
     val openUsage: () -> Unit = { navController.navigateToSection(ActivityRoute(ActivityTab.USAGE), restore = false) }
     val openDailyLimits: () -> Unit = { navController.open(DailyLimitsRoute) }
-    val openSettings: () -> Unit = { navController.navigateToSection(SettingsRoute) }
+    val openSettings: () -> Unit = { navController.navigateToSection(SettingsRoute()) }
+    // One tap from what needs fixing to the fix (handoff-WP10b.md 3.1): the part must win over where Settings was left.
+    val openBackgroundSettings: () -> Unit = { navController.navigateToSection(SettingsRoute(SettingsAnchor.BACKGROUND), restore = false) }
+    val openRoutineSettings: () -> Unit = { navController.navigateToSection(SettingsRoute(SettingsAnchor.ROUTINES), restore = false) }
     val openRoutines: () -> Unit = { navController.open(RoutinesRoute) }
     val openRoutine: (RoutineId) -> Unit = { navController.open(RoutineEditorRoute(it.value)) }
     val openPickUpRules: () -> Unit = { navController.open(PickUpRulesRoute) }
@@ -180,7 +184,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                     onOpenTask = openTask,
                     onOpenUsage = openUsage,
                     onOpenDailyLimits = openDailyLimits,
-                    onOpenSettings = openSettings,
+                    onOpenSettings = openBackgroundSettings,
                     onOpenConcepts = { navController.open(ConceptsRoute) },
                     onOpenObjective = openObjective,
                     onOpenTeam = openTeam,
@@ -331,7 +335,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                     }
                 },
                 onOpenDailyLimits = openDailyLimits,
-                onOpenSettings = openSettings,
+                onOpenSettings = openBackgroundSettings,
             )
         }
         composable<ObjectiveRoute> { entry ->
@@ -444,7 +448,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                     onOpenAgent = openAgent,
                     onOpenWorkspace = openWorkspace,
                     onOpenRequest = openRequest,
-                    onOpenSettings = { navController.navigateToSection(SettingsRoute) },
+                    onOpenSettings = openSettings,
                     // Opened from an agent, on top of its screen: Back returns there.
                     onBack = if (route.agentId != null) back else null,
                     onOpenRoutines = openRoutines,
@@ -488,7 +492,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                 ),
             )
         }
-        composable<SettingsRoute> {
+        composable<SettingsRoute> { entry ->
             SettingsScreenRoute(
                 SettingsNavigation(
                     onOpenDailyLimits = openDailyLimits,
@@ -497,6 +501,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                     onOpenRoutines = openRoutines,
                     onOpenPickUpRules = openPickUpRules,
                 ),
+                scrollTo = entry.toRoute<SettingsRoute>().anchor,
             )
         }
 
@@ -534,7 +539,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                     onOpenRoutine = openRoutine,
                     onOpenWaiting = { navController.open(WaitingRoutinesRoute) },
                     onOpenObjective = openObjective,
-                    onOpenSettings = openSettings,
+                    onOpenSettings = openRoutineSettings,
                 ),
             )
         }
@@ -555,7 +560,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                     onOpenRule = { navController.open(PickUpRuleEditorRoute(ruleId = it.value)) },
                     onOpenFolders = openFolders,
                     onOpenSpace = openSpace,
-                    onOpenSettings = openSettings,
+                    onOpenSettings = openRoutineSettings,
                 ),
             )
         }

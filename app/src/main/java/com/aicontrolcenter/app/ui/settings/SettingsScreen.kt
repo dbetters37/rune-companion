@@ -1,5 +1,6 @@
 package com.aicontrolcenter.app.ui.settings
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,6 +11,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ButtonDefaults
@@ -20,12 +23,17 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -47,6 +55,9 @@ import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.OnDevice
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.core.settings.FrameworkSettings
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
 
 /** What the settings screen can ask for. */
 class SettingsActions(
@@ -91,8 +102,17 @@ class SettingsSlots(
     val motion: (@Composable () -> Unit)? = null,
 )
 
+/**
+ * A part of Settings the section can open scrolled to (wave 3, handoff-WP10b.md 3.1): one tap from the Dashboard's
+ * phone item, or from the New objective form's background warning, to the fix in Settings › Working in the
+ * background; from a Routines or Folder pick-up screen whose master switch is off, to that switch.
+ */
+@Serializable
+enum class SettingsAnchor { BACKGROUND, ROUTINES }
+
+/** [scrollTo] opens the section scrolled to that part, once (not again when the owner comes back to it). */
 @Composable
-fun SettingsRoute(navigation: SettingsNavigation = SettingsNavigation()) {
+fun SettingsRoute(navigation: SettingsNavigation = SettingsNavigation(), scrollTo: SettingsAnchor? = null) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel {
         SettingsViewModel(
@@ -117,12 +137,13 @@ fun SettingsRoute(navigation: SettingsNavigation = SettingsNavigation()) {
     val pickUpPort = graph.ownerPickUpRules
     val routines = if (routinesPort != null || pickUpPort != null) viewModel { RoutinesSettingsViewModel(graph.settings, routinesPort, pickUpPort) } else null
     val hasBackup = graph.ownerBackup != null
+    val anchor = rememberAnchorScroll(scrollTo)
     val slots = SettingsSlots(
         dailyLimits = { DailyLimitsSection(dailyLimits, navigation.onOpenDailyLimits) },
         usageHistory = { UsageHistorySection(usageHistory) },
         questions = { QuestionTimeoutSection(questions) },
-        background = { BackgroundSection(background) },
-        routines = routines?.let { { RoutinesSection(it, navigation.onOpenRoutines, navigation.onOpenPickUpRules) } },
+        background = { BackgroundSection(background, anchor.modifier(SettingsAnchor.BACKGROUND)) },
+        routines = routines?.let { { RoutinesSection(it, navigation.onOpenRoutines, navigation.onOpenPickUpRules, anchor.modifier(SettingsAnchor.ROUTINES)) } },
         backup = if (hasBackup) ({ BackupSection(navigation.onSaveBackup, navigation.onRestoreBackup) }) else null,
         motion = { MotionSection(motion) },
     )
@@ -141,6 +162,32 @@ fun SettingsRoute(navigation: SettingsNavigation = SettingsNavigation()) {
         ),
         slots = slots,
     )
+}
+
+/**
+ * Brings [target]'s section into view the first time it has a size (a section draws nothing while it loads), once:
+ * [pending] is saved with the screen, so coming back to Settings later does not scroll again.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Stable
+private class AnchorScroll(private val target: SettingsAnchor?, private val scope: CoroutineScope, private val pending: MutableState<Boolean>) {
+    private val requester = BringIntoViewRequester()
+
+    fun modifier(anchor: SettingsAnchor): Modifier =
+        if (anchor != target) Modifier
+        else Modifier.bringIntoViewRequester(requester).onSizeChanged { size ->
+            if (pending.value && size.height > 0) {
+                pending.value = false
+                scope.launch { requester.bringIntoView() }
+            }
+        }
+}
+
+@Composable
+private fun rememberAnchorScroll(target: SettingsAnchor?): AnchorScroll {
+    val pending = rememberSaveable(target) { mutableStateOf(target != null) }
+    val scope = rememberCoroutineScope()
+    return remember(target, scope) { AnchorScroll(target, scope, pending) }
 }
 
 @Composable
