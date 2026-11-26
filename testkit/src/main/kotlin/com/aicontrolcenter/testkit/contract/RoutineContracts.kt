@@ -397,7 +397,7 @@ abstract class OwnerPickUpRulesContract {
         val (repo, owner, _) = world()
         assertEquals(OwnerResult.Refused(PickUpSafety.FOLDER_NOT_READ_ONLY), owner.create(FolderId("fld_open"), SpaceId("spc_inbox")))
         assertEquals(emptyList(), repo.getAll(), "nothing is stored")
-        assertTrue("read-only" in PickUpSafety.FOLDER_NOT_READ_ONLY && "Tools > Folders" in PickUpSafety.FOLDER_NOT_READ_ONLY)
+        assertTrue("read-only" in PickUpSafety.FOLDER_NOT_READ_ONLY && "Tools › Folders" in PickUpSafety.FOLDER_NOT_READ_ONLY)
         assertEquals(OwnerResult.Refused(PickUpSafety.FOLDER_GONE), owner.create(FolderId("fld_missing"), SpaceId("spc_inbox")))
     }
 

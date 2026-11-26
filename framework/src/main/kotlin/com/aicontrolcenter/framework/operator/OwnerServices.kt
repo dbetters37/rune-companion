@@ -278,7 +278,7 @@ class DefaultOwnerRequests(
         /** Rule 32: an answer that looks like a code is sent only after the owner taps "Send it anyway" a second time. */
         const val CODE_ASK_AGAIN =
             "This looks like a code, such as one from a text message, an app or your bank. A code can let someone act as you. " +
-                "If you are sure the agent should have it, tap \"Send it anyway\"."
+                "If you are sure the agent should have it, tap “Send it anyway”."
 
         const val QUESTION_GONE = "This question no longer exists."
     }

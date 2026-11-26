@@ -114,7 +114,7 @@ class WaitingRoutinesBannerTest {
 
             override suspend fun startWaiting(routineId: RoutineId, runId: RoutineRunId): OwnerResult<RoutineRun> {
                 flow.value = emptyList()
-                return OwnerResult.Refused("Today's limit of 200 model answers is reached. It starts again at midnight, or you can raise it in Settings > Daily limits.")
+                return OwnerResult.Refused("Today's limit of 200 model answers is reached. It starts again at midnight, or you can raise it in Settings › Daily limits.")
             }
         }
         val viewModel = WaitingRoutinesViewModel(fake, FakeClock(dueAt)) { ZoneOffset.UTC }

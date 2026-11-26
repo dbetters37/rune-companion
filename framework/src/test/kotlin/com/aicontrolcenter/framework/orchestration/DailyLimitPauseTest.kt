@@ -104,6 +104,6 @@ class DailyLimitPauseTest {
     }
 
     private companion object {
-        const val SENTENCE = "Today's limit of 200 model answers is reached. It starts again at midnight, or you can raise it in Settings > Daily limits."
+        const val SENTENCE = "Today's limit of 200 model answers is reached. It starts again at midnight, or you can raise it in Settings › Daily limits."
     }
 }

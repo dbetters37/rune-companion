@@ -40,7 +40,7 @@ class DailyLimitTest {
     private val ask = ChatRequest(messages = listOf(ChatMessage.user("Hello")))
 
     private val callsSentence =
-        "Today's limit of 200 model answers is reached. It starts again at midnight, or you can raise it in Settings > Daily limits."
+        "Today's limit of 200 model answers is reached. It starts again at midnight, or you can raise it in Settings › Daily limits."
 
     @Test
     fun `the 200th answer goes, the 201st is refused before anything is sent, streamed or not, and asking again is refused too`() = runTest {
@@ -79,7 +79,7 @@ class DailyLimitTest {
 
         assertTrue(refused is LlmException.DailyLimitReached, "got $refused")
         assertEquals(
-            "Today's limit of 500,000 tokens is reached. It starts again at midnight, or you can raise it in Settings > Daily limits.",
+            "Today's limit of 500,000 tokens is reached. It starts again at midnight, or you can raise it in Settings › Daily limits.",
             refused.message,
         )
         assertEquals(1, flaky.requests.size, "the retry was not sent")
@@ -355,7 +355,7 @@ class DailyLimitTest {
         assertEquals(1_100_000, metered.limiter.today().spendMicros)
         val refused = assertFailsWith<LlmException.DailyLimitReached> { metered.gateway.chat(unpriced.id, ask) }
         assertEquals(
-            "Today's spending limit of US$1.00 is reached. It starts again at midnight, or you can raise it in Settings > Daily limits.",
+            "Today's spending limit of US$1.00 is reached. It starts again at midnight, or you can raise it in Settings › Daily limits.",
             refused.message,
         )
     }

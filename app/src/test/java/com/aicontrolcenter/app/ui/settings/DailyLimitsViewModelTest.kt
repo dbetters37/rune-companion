@@ -121,7 +121,7 @@ class DailyLimitsViewModelTest {
         val state = viewModel.uiState.value
         assertEquals(LimitLineUi("Answers", "2 of 2 today", reached = true), state.lines[0])
         assertEquals(
-            "Today's limit of 2 model answers is reached. It starts again at midnight, or you can raise it in Settings > Daily limits.",
+            "Today's limit of 2 model answers is reached. It starts again at midnight, or you can raise it in Settings › Daily limits.",
             state.reached,
         )
 
@@ -151,7 +151,7 @@ class DailyLimitsViewModelTest {
         assertEquals(LimitLineUi("Tokens", "1,200 of 1,000 today", reached = true), lines[1])
         assertEquals(LimitLineUi("Money", "US$1.00 of US$1.00 today (estimated)", reached = true), lines[2])
         assertEquals(
-            "Today's limit of 1,000 tokens is reached. It starts again at midnight, or you can raise it in Settings > Daily limits.",
+            "Today's limit of 1,000 tokens is reached. It starts again at midnight, or you can raise it in Settings › Daily limits.",
             DailyLimitsViewModel.reachedSentence(TodayUse(DailyUse(5, 1_200, 0, priced = false), DailyLimits(10, 1_000, 1_000_000))),
         )
     }

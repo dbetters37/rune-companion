@@ -164,7 +164,7 @@ class ChatRecoveryTest {
     @Test
     fun `a turn stopped by today's limit says the limit's sentence, nothing else`() = runTest {
         val world = TestWorld(scope = this)
-        val sentence = "Today's limit of 200 model answers is reached. It starts again at midnight, or you can raise it in Settings > Daily limits."
+        val sentence = "Today's limit of 200 model answers is reached. It starts again at midnight, or you can raise it in Settings › Daily limits."
         val client = ScriptedLlmClient.script(ScriptStep.Fail(LlmException.DailyLimitReached(sentence)))
         val chat = world.chatOn(this)
         val conversation = chat.startConversation(world.agent(world.serve(client)).id)

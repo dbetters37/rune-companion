@@ -337,6 +337,8 @@ class OwnerQuestionsTest {
         for (code in listOf("4.8.2.9.1.3", "four eight two nine one three", "482913")) {
             assertEquals(OwnerResult.Refused(DefaultOwnerRequests.CODE_ASK_AGAIN), w.owner.answer(id, code), code)
         }
+        // The owner reads this sentence as it is: the button's name in curly quotes, as on the rest of the screen (D3A-12e).
+        assertTrue(DefaultOwnerRequests.CODE_ASK_AGAIN.endsWith("tap “Send it anyway”."))
         assertEquals(OwnerRequestStatus.PENDING, w.b.requests.get(id)!!.status, "nothing was sent so far")
         assertFalse(call.isCompleted)
         assertEquals(OwnerResult.Done(Unit), w.owner.answer(id, "4.8.2.9.1.3", sendAnyway = true))

@@ -94,19 +94,19 @@ class UsageModelTest {
         assertEquals(DailyLimits(100, 500_000, 2_000), DailyLimits(100, null, 5_000).stricter(DailyLimits(300, 500_000, 2_000)))
         assertEquals(DailyLimits.NONE, DailyLimits.NONE.stricter(DailyLimits.NONE))
         assertEquals(
-            "Today's limit of 200 model answers is reached. It starts again at midnight, or you can raise it in Settings > Daily limits.",
+            "Today's limit of 200 model answers is reached. It starts again at midnight, or you can raise it in Settings › Daily limits.",
             limits.sentence(DailyLimitKind.CALLS),
         )
         assertEquals(
-            "Today's limit of 500,000 tokens is reached. It starts again at midnight, or you can raise it in Settings > Daily limits.",
+            "Today's limit of 500,000 tokens is reached. It starts again at midnight, or you can raise it in Settings › Daily limits.",
             limits.sentence(DailyLimitKind.TOKENS),
         )
         assertEquals(
-            "Today's spending limit of US$1.00 is reached. It starts again at midnight, or you can raise it in Settings > Daily limits.",
+            "Today's spending limit of US$1.00 is reached. It starts again at midnight, or you can raise it in Settings › Daily limits.",
             limits.sentence(DailyLimitKind.SPEND),
         )
         assertEquals(
-            "Today's limit of 1 model answer is reached. It starts again at midnight, or you can raise it in Settings > Daily limits.",
+            "Today's limit of 1 model answer is reached. It starts again at midnight, or you can raise it in Settings › Daily limits.",
             DailyLimits(1, null, null).sentence(DailyLimitKind.CALLS),
             "one answer is said in the singular",
         )

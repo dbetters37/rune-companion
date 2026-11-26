@@ -575,7 +575,7 @@ data class DailyLimits(val maxCalls: Int?, val maxTokens: Long?, val maxSpendMic
             DailyLimitKind.TOKENS -> "today's limit of ${grouped(maxTokens ?: 0)} ${if (maxTokens == 1L) "token" else "tokens"}"
             DailyLimitKind.SPEND -> "today's spending limit of ${money(maxSpendMicros ?: 0, currencyLabel)}"
         }
-        return what.replaceFirstChar { it.uppercase() } + " is reached. It starts again at midnight, or you can raise it in Settings > Daily limits."
+        return what.replaceFirstChar { it.uppercase() } + " is reached. It starts again at midnight, or you can raise it in Settings › Daily limits."
     }
 
     /** Defaults and bounds. */

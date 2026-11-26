@@ -234,15 +234,15 @@ interface PickUpFolders {
 object PickUpSafety {
     /** Why a rule is not made or switched on for a folder agents may change: what the owner should do. */
     const val FOLDER_NOT_READ_ONLY: String =
-        "Make this folder read-only for agents first: in Tools > Folders, switch on \"Read-only\" for it. Then try again."
+        "Make this folder read-only for agents first: in Tools › Folders, switch on \"Read-only\" for it. Then try again."
 
     /** The folder of a rule was removed. */
-    const val FOLDER_GONE: String = "That shared folder is no longer there. Add it again in Tools > Folders."
+    const val FOLDER_GONE: String = "That shared folder is no longer there. Add it again in Tools › Folders."
 
     /** What a run that found the folder writable again stores as the rule's last result. */
     const val RUN_FOLDER_NOT_READ_ONLY: String =
         "Nothing was picked up: agents may change this folder again, so the rule was switched off. " +
-            "Make the folder read-only in Tools > Folders, then switch the rule on."
+            "Make the folder read-only in Tools › Folders, then switch the rule on."
 
     /** What a run stores when the master switch is off. */
     const val RUN_SWITCHED_OFF: String = "Nothing was picked up: folder pick-up is switched off in Settings."
@@ -252,13 +252,13 @@ object PickUpSafety {
 
     /** Why a rule is not made or switched on for a folder inside, or holding, a shared folder agents may change. */
     const val FOLDER_OVERLAPS_WRITABLE: String =
-        "This folder is inside another shared folder agents may change, or holds one. In Tools > Folders, make that folder " +
+        "This folder is inside another shared folder agents may change, or holds one. In Tools › Folders, make that folder " +
             "read-only too, or remove it. Then try again."
 
     /** What a run stores when the rule's folder now overlaps a folder agents may change. */
     const val RUN_FOLDER_OVERLAPS_WRITABLE: String =
         "Nothing was picked up: this folder is inside another shared folder agents may change, or holds one, so the rule was " +
-            "switched off. Make that folder read-only in Tools > Folders, then switch the rule on."
+            "switched off. Make that folder read-only in Tools › Folders, then switch the rule on."
 
     /**
      * Why a rule is not made or switched on when its folder, or a shared folder agents may change, came through the folder
@@ -267,7 +267,7 @@ object PickUpSafety {
      */
     const val FOLDER_DOWNLOADS_ENTRY_NEAR_WRITABLE: String =
         "This folder may be inside another shared folder agents may change, or hold one: Android does not tell this app " +
-            "where a folder shared through the folder picker's Downloads entry is. In Tools > Folders, make that other folder " +
+            "where a folder shared through the folder picker's Downloads entry is. In Tools › Folders, make that other folder " +
             "read-only too, or remove the folder from the Downloads entry and share it again through the phone's storage " +
             "entry. Then try again."
 
@@ -275,7 +275,7 @@ object PickUpSafety {
     const val RUN_FOLDER_DOWNLOADS_ENTRY_NEAR_WRITABLE: String =
         "Nothing was picked up: this folder may be inside another shared folder agents may change, or hold one, because " +
             "Android does not tell this app where a folder shared through the folder picker's Downloads entry is. So the rule " +
-            "was switched off. Make that other folder read-only in Tools > Folders, or remove the folder from the Downloads " +
+            "was switched off. Make that other folder read-only in Tools › Folders, or remove the folder from the Downloads " +
             "entry and share it again through the phone's storage entry, then switch the rule on."
 
     /**
@@ -284,14 +284,14 @@ object PickUpSafety {
      */
     const val FOLDER_PLACE_UNKNOWN_NEAR_WRITABLE: String =
         "This folder may be inside another shared folder agents may change, or hold one: one of them comes from another " +
-            "profile on this phone or the media list, and this app cannot tell where it is. In Tools > Folders, make that " +
+            "profile on this phone or the media list, and this app cannot tell where it is. In Tools › Folders, make that " +
             "other folder read-only too, or remove it. Then try again."
 
     /** What a run stores when this app cannot tell where the rule's folder, or a folder agents may change, is. */
     const val RUN_FOLDER_PLACE_UNKNOWN_NEAR_WRITABLE: String =
         "Nothing was picked up: this folder may be inside another shared folder agents may change, or hold one, because " +
             "one of them comes from another profile on this phone or the media list and this app cannot tell where it is. So " +
-            "the rule was switched off. Make that other folder read-only in Tools > Folders, or remove it, then switch the " +
+            "the rule was switched off. Make that other folder read-only in Tools › Folders, or remove it, then switch the " +
             "rule on."
 
     /**
@@ -300,14 +300,14 @@ object PickUpSafety {
      */
     const val FOLDER_OTHER_APP_NEAR_WRITABLE: String =
         "This folder, or another shared folder agents may change, comes from another app, and this app cannot tell whether " +
-            "that app shows the same files as the other folder. In Tools > Folders, make that other folder read-only too, or " +
+            "that app shows the same files as the other folder. In Tools › Folders, make that other folder read-only too, or " +
             "remove it. Then try again."
 
     /** What a run stores when the rule's folder and a folder agents may change may hold the same files through another app. */
     const val RUN_FOLDER_OTHER_APP_NEAR_WRITABLE: String =
         "Nothing was picked up: this folder, or another shared folder agents may change, comes from another app, and this app " +
             "cannot tell whether that app shows the same files as the other folder, so the rule was switched off. Make that " +
-            "other folder read-only in Tools > Folders, then switch the rule on."
+            "other folder read-only in Tools › Folders, then switch the rule on."
 
     /** Why a rule is not made or switched on when the folder's files cannot be listed and read now. */
     const val FOLDER_UNREADABLE: String = "The folder could not be read just now, so nothing was changed. Try again."

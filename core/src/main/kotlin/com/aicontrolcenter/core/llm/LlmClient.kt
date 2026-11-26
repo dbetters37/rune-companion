@@ -120,7 +120,7 @@ sealed class LlmException(message: String, cause: Throwable? = null) : Exception
      * The framework refused the call because today's limit of model answers, tokens or money is
      * reached (Phase 6, K11, rule 6). [message] is the sentence for the owner, e.g. "Today's limit
      * of 200 model answers is reached. It starts again at midnight, or you can raise it in
-     * Settings > Daily limits." Not retryable today: a running objective pauses instead of failing.
+     * Settings › Daily limits." Not retryable today: a running objective pauses instead of failing.
      */
     class DailyLimitReached(message: String) : LlmException(message) {
         override val retryable = false

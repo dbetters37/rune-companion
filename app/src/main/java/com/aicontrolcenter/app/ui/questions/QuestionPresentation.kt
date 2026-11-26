@@ -110,8 +110,8 @@ object QuestionTexts {
     /** The button that sends no words: "Let Researcher decide" (D3A-12f: "Decide yourself" read as an order to the owner). */
     fun letDecide(agentName: String): String = "Let $agentName decide"
 
-    /** The code warning (rule 32), with the screen's curly quotes around the button's name (D3A-12e). */
-    val CODE_WARNING: String = DefaultOwnerRequests.CODE_ASK_AGAIN.replace("\"$SEND_ANYWAY\"", "“$SEND_ANYWAY”")
+    /** The code warning (rule 32): the framework's own sentence, with curly quotes around the button's name (D3A-12e). */
+    const val CODE_WARNING: String = DefaultOwnerRequests.CODE_ASK_AGAIN
     const val USE_THIS_ANSWER = "Use this answer"
 
     /** Rule 32: after any answer, the objective's next tool call that sends something off the phone asks first. */
