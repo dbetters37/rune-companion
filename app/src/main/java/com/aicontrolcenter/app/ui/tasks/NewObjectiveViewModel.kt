@@ -5,6 +5,7 @@ import androidx.compose.foundation.text.input.clearText
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aicontrolcenter.app.ui.components.LIMIT_PAUSES_OBJECTIVES
 import com.aicontrolcenter.app.ui.components.UserMessage
 import com.aicontrolcenter.app.ui.components.formatCount
 import com.aicontrolcenter.app.ui.components.putText
@@ -26,7 +27,7 @@ import com.aicontrolcenter.core.health.StorageLevel
 import com.aicontrolcenter.core.health.StorageWatch
 import com.aicontrolcenter.core.registry.CapabilityTier
 import com.aicontrolcenter.core.usage.DailyLimits
-import com.aicontrolcenter.core.usage.ModelPrice
+import com.aicontrolcenter.app.ui.activity.moneyWords
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -141,7 +142,8 @@ class NewObjectiveViewModel(
             reasoningWarning = reasoningWarningOf(snapshot),
             backgroundWarning = backgroundWarningOf(phone.background),
             storageWarning = when (phone.storage) {
-                StorageLevel.CRITICAL -> STORAGE_FULL
+                // Under the banner's title "The phone is almost full": the body does not say it again (D3A-12a).
+                StorageLevel.CRITICAL -> STORAGE_FULL_BANNER
                 StorageLevel.LOW -> "The phone has little free room left. Objectives pause by themselves if it gets almost full."
                 else -> null
             },
@@ -289,6 +291,9 @@ class NewObjectiveViewModel(
         /** R8: what Start says, and the form shows, when the phone is almost full. */
         const val STORAGE_FULL = "The phone is almost full. Free some room before starting an objective."
 
+        /** The form's banner under its title "The phone is almost full" (R8). */
+        const val STORAGE_FULL_BANNER = "Free some room on the phone before starting an objective."
+
         /** What Start says while a backup is being restored. */
         const val RESTORING = "The app is restoring a backup. Start the objective once the restore has finished."
 
@@ -299,8 +304,10 @@ class NewObjectiveViewModel(
             val parts = listOfNotNull(
                 limits.maxCalls?.let { "${formatCount(use.calls)} of ${formatCount(it.toLong())} answers" },
                 limits.maxTokens?.let { "${formatCount(use.tokens)} of ${formatCount(it)} tokens" },
-                limits.maxSpendMicros?.takeIf { use.priced }?.let {
-                    "${DailyLimits.money(use.spendMicros, ModelPrice.DEFAULT_CURRENCY)} of ${DailyLimits.money(it, ModelPrice.DEFAULT_CURRENCY)}"
+                // The money limit is said even before any price exists (D3A-8), in the currency the limiter names.
+                limits.maxSpendMicros?.let {
+                    if (use.priced) "${moneyWords(use.spendMicros, today.currency)} of ${DailyLimits.money(it, today.currency)}"
+                    else "${DailyLimits.money(it, today.currency)} (counted once you enter prices)"
                 },
             )
             if (parts.isEmpty()) return null
@@ -308,10 +315,11 @@ class NewObjectiveViewModel(
                 text = "Today: " + parts.joinToString(" · "),
                 reached = today.reached,
                 note = if (today.reached) {
-                    "Today's limit is reached: a new objective pauses at its first step until midnight, or until you raise the limit."
+                    "Today's limit is reached: a new objective pauses at its first step. After midnight, or once you raise the " +
+                        "limit, open it and tap Resume."
                 } else {
-                    "Answers and tokens (the pieces of text a model reads and writes) are counted for models off this phone. When a " +
-                        "limit is reached, objectives pause until midnight."
+                    "Answers and tokens (the pieces of text a model reads and writes) are counted for models off this phone. " +
+                        LIMIT_PAUSES_OBJECTIVES
                 },
             )
         }

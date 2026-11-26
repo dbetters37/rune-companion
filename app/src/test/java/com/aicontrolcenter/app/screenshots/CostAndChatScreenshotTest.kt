@@ -3,6 +3,8 @@ package com.aicontrolcenter.app.screenshots
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onRoot
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.aicontrolcenter.core.registry.ModelCapabilities
+import com.aicontrolcenter.core.registry.CapabilityTier
 import com.aicontrolcenter.app.testing.AppRobot
 import com.aicontrolcenter.app.testing.TestApp
 import com.aicontrolcenter.app.testing.populateWithProviders
@@ -165,17 +167,26 @@ class CostAndChatScreenshotTest {
 
     // --- The model editor: price, speed and reliability, the cheaper model for helpers ---
 
+    /**
+     * Everyone on Claude Sonnet 4.5 (rated Strong); a cheap model in the cloud (Llama 3.3 70B through Groq, rated Good) with
+     * a price, so the editor suggests it for helpers and says what that trades away (D3A-10). Models on this phone are free
+     * and take no price.
+     */
     private suspend fun TestApp.pricedModels() {
         populateWithProviders()
         graph.agentManager.ensureDefaults()
         val claude = models.getAll().single { it.modelName == "claude-sonnet-4-5" }
-        val llama = models.getAll().single { it.modelName == "llama3.2:3b" }
+        val cheap = serveModel(
+            ScriptedLlmClient.replies("Done."), name = "Groq", baseUrl = "https://api.groq.example/openai/v1", apiKey = "test-key-not-real",
+            modelName = "llama-3.3-70b-versatile", displayName = "Llama 3.3 70B",
+            capabilities = ModelCapabilities(toolCalling = true, contextWindow = 131_072, reasoning = CapabilityTier.GOOD, coding = CapabilityTier.GOOD),
+        )
         for (agent in agents.getAll()) graph.agentManager.assignModel(agent.id, claude.id)
         graph.ownerModelPrices.set(ModelPrice(claude.id, 3_000_000, 15_000_000, 300_000))
-        graph.ownerModelPrices.set(ModelPrice(llama.id, 100_000, 300_000))
+        graph.ownerModelPrices.set(ModelPrice(cheap.id, 590_000, 790_000))
         fun sample(outcome: CallOutcome, error: ErrorClass? = null, answerMs: Long? = null, ttftMs: Long? = null, waits: Int = 0) = ModelCallSample(
-            at = clock.current, modelId = llama.id, modelLabel = llama.displayName, providerId = llama.providerId, providerLabel = "Ollama on this phone",
-            locality = Locality.ON_DEVICE, source = UsageSource.CHAT, outcome = outcome, errorClass = error,
+            at = clock.current, modelId = cheap.id, modelLabel = cheap.displayName, providerId = cheap.providerId, providerLabel = "Groq",
+            locality = Locality.CLOUD, source = UsageSource.CHAT, outcome = outcome, errorClass = error,
             inputTokens = if (outcome == CallOutcome.OK) 1_200 else null, outputTokens = if (outcome == CallOutcome.OK) 180 else null,
             answerMs = answerMs, ttftMs = ttftMs, rateLimitedWaits = waits,
         )
@@ -185,7 +196,14 @@ class CostAndChatScreenshotTest {
     }
 
     private fun AppRobot.openLlama(wide: Boolean = false) = (if (wide) openSection("Models") else openSectionViaMore("Models"))
-        .tap("Models · 5").scrollListTo("Llama 3.2 3B").tapItemContaining("Llama 3.2 3B").waitUntilShown("Cheaper model for helpers")
+        .tap("Models · 6").scrollListTo("Llama 3.3 70B").tapItemContaining("Llama 3.3 70B").waitUntilShown("Cheaper model for helpers")
+
+    @Test
+    fun modelEditorOnThisPhone() {
+        app { pricedModels() }.openSectionViaMore("Models").tap("Models · 6").scrollListTo("Llama 3.2 3B").tapItemContaining("Llama 3.2 3B")
+            .waitUntilShown("Free on this phone")
+        shoot("model_editor_on_phone_free")
+    }
 
     @Test
     fun modelEditorCost() {
@@ -229,7 +247,7 @@ class CostAndChatScreenshotTest {
 
     @Test
     fun useForHelpers() {
-        app { pricedModels() }.openLlama().tap("Use for helpers…").waitUntilShown("Use Llama 3.2 3B for…")
+        app { pricedModels() }.openLlama().tap("Use for helpers…").waitUntilShown("Use Llama 3.3 70B for…")
         shoot("model_editor_use_for_helpers")
     }
 
@@ -277,6 +295,8 @@ class CostAndChatScreenshotTest {
 
     private suspend fun TestApp.toolsWorld() {
         graph.start().join()
+        // As on a phone: Android switched the service off, so it is not on now (D3A-18c; device SwitchedOff clears the flag on READY).
+        screen.setState(com.aicontrolcenter.core.operator.ScreenServiceState.NOT_ENABLED)
         screen.switchedOffByAndroid.value = true
         val cloud = "content://com.example.cloud.documents/tree/root%3AWork"
         val inbox = "content://com.android.externalstorage.documents/tree/primary%3AInbox"

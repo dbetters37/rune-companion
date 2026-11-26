@@ -70,15 +70,15 @@ class DashboardExtrasScreenTest {
     }
 
     @Test
-    fun `a model used today without a price is named, with no partial cost and a way to add the price`() {
+    fun `a model used today without a price is named under the money the limit counts, with a way to add the price`() {
         var opened = 0
         var openedModel: ModelId? = null
         compose.setContent {
             AppTheme(darkTheme = true) {
                 TodayTileContent(
                     TodayTileUi(
-                        used = true, answers = 18, tokens = 51_300, limits = DailyLimits.DEFAULT, cost = null,
-                        costNote = "No cost shown: Llama 3.3 70B has no price yet.",
+                        used = true, answers = 18, tokens = 51_300, limits = DailyLimits.DEFAULT, cost = "US$0.38", costCaption = "of US$1.00",
+                        costNote = "Llama 3.3 70B has no price yet, so its tokens are not in the cost.",
                         unpriced = listOf(UnpricedModelUi(ModelId("mdl_llama"), "Llama 3.3 70B")),
                         month = "This month: 43 answers · 128,800 tokens", reached = null, currency = "US$",
                     ),
@@ -86,8 +86,12 @@ class DashboardExtrasScreenTest {
                 )
             }
         }
-        compose.onAllNodes(hasText("No cost shown: Llama 3.3 70B has no price yet.")).onFirst().assertExists()
-        described("No cost Estimated cost, a price is missing").assertExists()
+        compose.onAllNodes(hasText("Llama 3.3 70B has no price yet, so its tokens are not in the cost.")).onFirst().assertExists()
+        // What the money limit counts, never "No cost" (D3A-1).
+        described("US$0.38 Estimated cost, of US$1.00").assertExists()
+        assertTrue(compose.onAllNodes(hasContentDescription("No cost", substring = true)).fetchSemanticsNodes().isEmpty())
+        // The owner's rule: no "token" without plain words near it (D3A-7).
+        compose.onAllNodes(hasText("Tokens are the pieces of words", substring = true)).onFirst().assertExists()
         described("18 Answers, of 200").assertExists()
         compose.onAllNodes(hasText("Add its price") and hasClickAction()).onFirst().assertHeightIsAtLeast(48.dp).performClick()
         // One model without a price: straight to its page (handoff-WP10a.md item 2.3).
@@ -101,7 +105,7 @@ class DashboardExtrasScreenTest {
             AppTheme(darkTheme = false) {
                 TodayTileContent(
                     TodayTileUi(
-                        used = true, answers = 200, tokens = 90_000, limits = DailyLimits.DEFAULT, cost = "US$0.40", costNote = null,
+                        used = true, answers = 200, tokens = 90_000, limits = DailyLimits.DEFAULT, cost = "US$0.40", costCaption = "of US$1.00", costNote = null,
                         unpriced = emptyList(), month = null, reached = DailyLimits.DEFAULT.sentence(DailyLimitKind.CALLS), currency = "US$",
                     ),
                     navigation = navigation(),

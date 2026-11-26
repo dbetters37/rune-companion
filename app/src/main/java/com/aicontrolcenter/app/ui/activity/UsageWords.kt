@@ -1,6 +1,8 @@
 package com.aicontrolcenter.app.ui.activity
 
+import com.aicontrolcenter.app.ui.components.LIMIT_PAUSES_OBJECTIVES
 import com.aicontrolcenter.app.ui.components.formatCount
+import com.aicontrolcenter.app.usage.limitCurrencyOf
 import com.aicontrolcenter.core.ModelId
 import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.usage.AgentModelUsage
@@ -32,10 +34,10 @@ const val ANSWERS_IN_PLAIN_WORDS: String =
 /** What a limit does, in one sentence (wave-2a minors: "Limits stop work, not cost already spent"). */
 const val LIMITS_STOP_WORK: String = "Limits stop work, not cost already spent: the last answer let through can take the day a little past a limit."
 
-/** What happens when a limit is reached, for the Daily limits screens. */
+/** What happens when a limit is reached, for the Daily limits screens; its last sentence is [LIMIT_PAUSES_OBJECTIVES] (D3A-3). */
 const val WHEN_A_LIMIT_IS_REACHED: String =
-    "When one is reached, agents stop asking models that are not on this phone until midnight. A running objective pauses " +
-        "instead of failing, and a chat says so. Raise the limit, then open the paused objective and tap Resume."
+    "When one is reached, agents stop asking models that are not on this phone until midnight, and a chat says so. " +
+        "Objectives pause instead of failing. $LIMIT_PAUSES_OBJECTIVES"
 
 /** "1 answer", "37 answers". */
 internal fun answers(count: Long): String = counted(count, "answer")
@@ -56,8 +58,9 @@ internal fun times(count: Long): String = if (count == 1L) "once" else "${format
 fun moneyWords(micros: Long, currency: String): String =
     if (micros in 1 until HALF_CENT_MICROS) "less than ${DailyLimits.money(CENT_MICROS, currency)}" else DailyLimits.money(micros, currency)
 
-/** "0.8 seconds", "3.2 seconds", "1 minute 5 seconds". */
+/** "under a second", "0.8 seconds", "3.2 seconds", "1 minute 5 seconds" (never "0 seconds", D3A-16). */
 internal fun secondsWords(ms: Long): String = when {
+    ms < 500 -> "under a second"
     ms < 60_000 -> BigDecimal.valueOf(ms, 3).setScale(1, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString().let {
         "$it ${if (it == "1") "second" else "seconds"}"
     }
@@ -68,6 +71,9 @@ internal fun secondsWords(ms: Long): String = when {
         "$minutes ${if (minutes == 1L) "minute" else "minutes"}" + if (rest > 0) " $rest ${if (rest == 1L) "second" else "seconds"}" else ""
     }
 }
+
+/** "after 3.2 seconds", or "in under a second" (not "after under a second"). */
+internal fun afterWords(ms: Long): String = secondsWords(ms).let { if (it == "under a second") "in $it" else "after $it" }
 
 /** "under a minute", "3 minutes", "1 hour 5 minutes": how long something waited for the owner. */
 internal fun waitWords(ms: Long): String {
@@ -143,8 +149,7 @@ internal fun agentMoney(rows: List<AgentModelUsage>, prices: Map<ModelId, ModelP
  * The currency the money limit is read in: the one the owner's prices are in when they all share one, else US$ (the
  * limiter adds the estimated cost of every priced model, whatever its currency).
  */
-internal fun limitCurrency(prices: Map<ModelId, ModelPrice>): String =
-    prices.values.map { it.currencyLabel }.distinct().singleOrNull() ?: ModelPrice.DEFAULT_CURRENCY
+internal fun limitCurrency(prices: Map<ModelId, ModelPrice>): String = limitCurrencyOf(prices.values)
 
 /** "about US$0.12" or "less than US$0.01" (never "about less than …"). */
 internal fun aboutMoney(money: String): String = if (money.startsWith("less than")) money else "about $money"
@@ -169,7 +174,8 @@ internal fun reliabilityLines(totals: UsageTotals, providerName: String): List<S
         lines += if (totals.ok == 1L) "Reliable: the one request was answered." else "Reliable: all ${formatCount(totals.ok)} requests were answered."
     } else {
         lines += buildString {
-            append(formatCount(totals.ok)).append(" answered")
+            // "Came back" and "failed" are outcomes; "answers" is what the limits count (D3A-9, as the model's Speed card).
+            append(formatCount(totals.ok)).append(" came back")
             if (otherFailures > 0) {
                 append(", ").append(formatCount(otherFailures)).append(" failed")
                 val reasons = ErrorClass.entries.filter { it != ErrorClass.RATE_LIMITED }
@@ -204,7 +210,7 @@ internal fun speedLine(totals: UsageTotals): String? {
     val whole = totals.averageAnswerMs ?: return null
     val first = totals.averageTtftMs
     return if (first != null) {
-        "On average the first words came after ${secondsWords(first)}, the whole answer after ${secondsWords(whole)}."
+        "On average the first words came ${afterWords(first)}, the whole answer ${afterWords(whole)}."
     } else {
         "On average a whole answer took ${secondsWords(whole)}."
     }

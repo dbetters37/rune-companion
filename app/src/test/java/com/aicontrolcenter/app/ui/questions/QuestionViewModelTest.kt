@@ -131,7 +131,8 @@ class QuestionViewModelTest {
         vm.type("482913")
         assertEquals(AnswerHint.CODE, vm.uiState.value.hint)
         vm.send()
-        assertEquals(DefaultOwnerRequests.CODE_ASK_AGAIN, vm.uiState.value.refusal)
+        assertEquals(QuestionTexts.CODE_WARNING, vm.uiState.value.refusal)
+        assertTrue(QuestionTexts.CODE_WARNING.endsWith("tap “Send it anyway”."), "curly quotes, as the rest of the screen (D3A-12e)")
         assertTrue(vm.uiState.value.sendAnywayOffered)
         assertEquals(OwnerRequestStatus.PENDING, app.ownerRequestStore.get(RequestId("req_question"))!!.status)
 
@@ -186,7 +187,7 @@ class QuestionViewModelTest {
         val vm = screen(app)
         vm.type("   ")
         vm.send()
-        assertEquals(QuestionViewModel.EMPTY_ANSWER, vm.uiState.value.refusal)
+        assertEquals("Write an answer, or choose “Let Researcher decide”.", vm.uiState.value.refusal)
         assertEquals(OwnerRequestStatus.PENDING, app.ownerRequestStore.get(RequestId("req_question"))!!.status)
     }
 

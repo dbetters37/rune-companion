@@ -1,5 +1,8 @@
 package com.aicontrolcenter.app.ui.models
 
+import com.aicontrolcenter.testkit.ScriptedLlmClient
+import com.aicontrolcenter.core.registry.ModelCapabilities
+import com.aicontrolcenter.app.testing.serveModel
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.runtime.snapshots.Snapshot
@@ -327,7 +330,8 @@ class ModelEditorViewModelTest {
         app.usage.record(sample(CallOutcome.FAILED, ErrorClass.TIMEOUT))
         assertEquals(
             listOf(
-                "Last 30 days: 5 answers from 7 calls (2 failed).",
+                // "Answers" as the limits and Usage count them (D3A-9): every request the model received.
+                "Last 30 days: 7 answers counted (5 came back, 2 failed).",
                 "A whole answer took 3.2 seconds on average.",
                 "The first words came after 0.8 seconds on average.",
                 "Why calls failed: 1 took too long, 1 could not connect.",
@@ -337,6 +341,12 @@ class ModelEditorViewModelTest {
         )
     }
 
+    /** A cheap model off the phone (a cloud service) that can use tools, rated [reasoning]. */
+    private suspend fun TestApp.cheapCloudModel(reasoning: CapabilityTier) = serveModel(
+        ScriptedLlmClient.replies("Done."), name = "Budget Cloud", baseUrl = "https://api.budget.example/v1", apiKey = "test-key-not-real",
+        modelName = "budget-1", displayName = "Budget 1", capabilities = ModelCapabilities(toolCalling = true, reasoning = reasoning),
+    )
+
     @Test
     fun `the cheapest priced model that can use tools is offered to the helpers through Use for agents, the Director keeps its model`() =
         runTest(mainRule.dispatcher) {
@@ -344,15 +354,15 @@ class ModelEditorViewModelTest {
             app.populateWithProviders()
             app.graph.agentManager.ensureDefaults()
             val claude = app.models.getAll().single { it.modelName == "claude-sonnet-4-5" }
-            val llama = app.models.getAll().single { it.modelName == "llama3.2:3b" }
             val qwen = app.models.getAll().single { it.modelName == "qwen3:1.7b" }
+            val budget = app.cheapCloudModel(CapabilityTier.STRONG)
             // Everyone on the dear model; the Analyst on a free model without a price stays where it is.
             for (agent in app.agents.getAll()) app.graph.agentManager.assignModel(agent.id, claude.id)
             app.graph.agentManager.assignModel(app.agentNamed("Analyst").profile.id, qwen.id)
             app.graph.ownerModelPrices.set(ModelPrice(claude.id, 3_000_000, 15_000_000))
-            app.graph.ownerModelPrices.set(ModelPrice(llama.id, 100_000, 300_000))
+            app.graph.ownerModelPrices.set(ModelPrice(budget.id, 100_000, 300_000))
 
-            val cheap = pricedEditor(app, llama.id)
+            val cheap = pricedEditor(app, budget.id)
             val offer = assertNotNull(cheap.uiState.value.cheaper)
             assertTrue(offer.isThisModel)
             assertEquals("Cheaper model for helpers", offer.title)
@@ -360,21 +370,65 @@ class ModelEditorViewModelTest {
             assertEquals(helpers, offer.helpers, "every helper on the dear model, not the Director")
             assertTrue("Operator, Researcher, Reviewer and Writer" in offer.text, offer.text)
             assertTrue("The Director keeps its own model." in offer.text)
+            assertNull(offer.tradeOff, "rated as well as the helpers' model: nothing traded away")
 
             cheap.openUseForHelpers()
             val open = assertNotNull(cheap.uiState.value.useForAgents)
             assertEquals(helpers, open.selected, "the helpers are ticked, the Director is not")
             cheap.useForChosenAgents()
             assertEquals(claude.id, app.director().profile.modelId)
-            assertTrue(helpers.all { id -> app.snapshot().agents.single { it.profile.id == id }.profile.modelId == llama.id })
+            assertTrue(helpers.all { id -> app.snapshot().agents.single { it.profile.id == id }.profile.modelId == budget.id })
             assertNull(cheap.uiState.value.cheaper, "nothing left to suggest")
 
             val dear = pricedEditor(app, claude.id)
             val hint = assertNotNull(dear.uiState.value.cheaper)
             assertFalse(hint.isThisModel)
             assertEquals("A cheaper model can use tools", hint.title)
-            assertTrue(hint.text.startsWith("Llama 3.2 3B costs about 40 times less"), hint.text)
+            assertTrue(hint.text.startsWith("Budget 1 costs about 40 times less"), hint.text)
         }
+
+    @Test
+    fun `a cheaper model rated lower at reasoning says what is traded away and ticks nobody (D3A-10)`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.populateWithProviders()
+        app.graph.agentManager.ensureDefaults()
+        val claude = app.models.getAll().single { it.modelName == "claude-sonnet-4-5" }
+        val budget = app.cheapCloudModel(CapabilityTier.BASIC)
+        for (agent in app.agents.getAll()) app.graph.agentManager.assignModel(agent.id, claude.id)
+        app.graph.ownerModelPrices.set(ModelPrice(claude.id, 3_000_000, 15_000_000))
+        app.graph.ownerModelPrices.set(ModelPrice(budget.id, 100_000, 300_000))
+
+        val cheap = pricedEditor(app, budget.id)
+        val offer = assertNotNull(cheap.uiState.value.cheaper)
+        val tradeOff = "Budget 1 is rated Basic at reasoning; the helpers now use Claude Sonnet 4.5, rated Strong. " +
+            "Cheaper models can give weaker results; try it on one helper first."
+        assertEquals(tradeOff, offer.tradeOff)
+        assertTrue(offer.text.endsWith(tradeOff), offer.text)
+        assertEquals(emptySet(), offer.preselected)
+
+        cheap.openUseForHelpers()
+        val open = assertNotNull(cheap.uiState.value.useForAgents, "the chooser opens with nobody ticked")
+        assertEquals(emptySet(), open.selected)
+        assertEquals(tradeOff, open.tradeOff, "the chooser says it too")
+    }
+
+    @Test
+    fun `a model on this phone is free, never priced and never offered as the cheapest (D3A-10)`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.populateWithProviders()
+        app.graph.agentManager.ensureDefaults()
+        val claude = app.models.getAll().single { it.modelName == "claude-sonnet-4-5" }
+        val llama = app.models.getAll().single { it.modelName == "llama3.2:3b" }
+        for (agent in app.agents.getAll()) app.graph.agentManager.assignModel(agent.id, claude.id)
+        app.graph.ownerModelPrices.set(ModelPrice(claude.id, 3_000_000, 15_000_000))
+        // A price entered before this release, for a model on the phone: ignored everywhere.
+        app.graph.ownerModelPrices.set(ModelPrice(llama.id, 100_000, 300_000))
+
+        val onPhone = pricedEditor(app, llama.id)
+        assertEquals(Locality.ON_DEVICE, onPhone.uiState.value.locality, "the editor shows \"Free on this phone\" instead of price fields")
+        assertNull(onPhone.uiState.value.cheaper)
+        assertNull(pricedEditor(app, claude.id).uiState.value.cheaper, "nothing off the phone is cheaper than Claude here")
+    }
 
     @Test
     fun `agent names are all listed`() {

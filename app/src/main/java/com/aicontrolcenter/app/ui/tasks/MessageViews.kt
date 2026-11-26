@@ -1,6 +1,5 @@
 package com.aicontrolcenter.app.ui.tasks
 
-import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -35,6 +34,7 @@ import com.aicontrolcenter.app.ui.icons.ExpandLess
 import com.aicontrolcenter.app.ui.icons.ExpandMore
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.appColors
+import com.aicontrolcenter.app.ui.components.calmAnimateContentSize
 
 /** The face of a participant: an agent's avatar, or a neutral disc with a glyph for the owner and the system. */
 @Composable
@@ -76,7 +76,7 @@ internal fun MessageRow(message: MessageUi, modifier: Modifier = Modifier, showT
             )
             .semantics(mergeDescendants = true) { contentDescription = spoken }
             .padding(vertical = Spacing.md)
-            .animateContentSize(),
+            .calmAnimateContentSize(),
         horizontalArrangement = Arrangement.spacedBy(Spacing.md),
     ) {
         ParticipantAvatar(message.from)

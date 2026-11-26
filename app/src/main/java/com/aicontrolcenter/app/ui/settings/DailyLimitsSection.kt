@@ -1,6 +1,7 @@
 package com.aicontrolcenter.app.ui.settings
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,12 +17,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aicontrolcenter.app.ui.activity.LIMITS_STOP_WORK
 import com.aicontrolcenter.app.ui.components.AppCard
+import com.aicontrolcenter.app.ui.components.LIMIT_PAUSES_OBJECTIVES
 import com.aicontrolcenter.app.ui.components.InfoBanner
 import com.aicontrolcenter.app.ui.components.RowDivider
 import com.aicontrolcenter.app.ui.components.SectionHeader
@@ -47,12 +50,13 @@ fun DailyLimitsSection(
         SectionHeader("Daily limits")
         AppCard {
             Text(
-                "Agents stop asking models for the rest of the day when one of these is reached. A running objective pauses " +
-                    "instead of failing; raise a limit, then tap Resume on it.",
+                "Agents stop asking models off this phone for the rest of the day when one of these is reached. " +
+                    LIMIT_PAUSES_OBJECTIVES,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            state.reached?.let {
+            // Not the limiter's "raise it in Settings › Daily limits": the owner is there already (D3A-16).
+            state.reachedHere?.let {
                 InfoBanner(it, modifier = Modifier.padding(top = Spacing.md), tone = StatusTone.ATTENTION, title = "Today's limit is reached")
             }
             Column(Modifier.padding(top = Spacing.sm)) {
@@ -78,29 +82,41 @@ fun DailyLimitsSection(
     }
 }
 
-/** "Answers · 37 of 200 today", with a warning icon (not colour alone) when it is reached. Read as one phrase. */
+/**
+ * "Answers · 37 of 200 today", with a warning icon (not colour alone) when it is reached. Read as one phrase. With large
+ * fonts or a narrow window the title sits above its value, so "Answers" never breaks inside the word (D3A-6), as the
+ * Usage tiles stack.
+ */
 @Composable
 internal fun LimitLine(line: LimitLineUi, modifier: Modifier = Modifier) {
     val spoken = line.title + ": " + line.text + if (line.reached) ". Reached." else ""
-    Row(
-        modifier = modifier.fillMaxWidth().heightIn(min = 48.dp).padding(vertical = Spacing.sm).clearAndSetSemantics { contentDescription = spoken },
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Spacing.md),
-    ) {
-        Text(
-            line.title,
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.weight(0.35f),
-        )
-        Text(
-            line.text,
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (line.reached) appColors.status(StatusTone.ATTENTION) else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(0.65f),
-        )
-        if (line.reached) {
-            Icon(StatusTone.ATTENTION.icon, contentDescription = null, tint = appColors.status(StatusTone.ATTENTION), modifier = Modifier.size(20.dp))
+    BoxWithConstraints(modifier.fillMaxWidth().clearAndSetSemantics { contentDescription = spoken }) {
+        val stacked = maxWidth < 320.dp || LocalDensity.current.fontScale >= 1.5f
+        val color = if (line.reached) appColors.status(StatusTone.ATTENTION) else MaterialTheme.colorScheme.onSurfaceVariant
+        @Composable
+        fun ReachedIcon() {
+            if (line.reached) {
+                Icon(StatusTone.ATTENTION.icon, contentDescription = null, tint = appColors.status(StatusTone.ATTENTION), modifier = Modifier.size(20.dp))
+            }
+        }
+        if (stacked) {
+            Column(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(vertical = Spacing.sm), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                    Text(line.title, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+                    ReachedIcon()
+                }
+                Text(line.text, style = MaterialTheme.typography.bodyMedium, color = color)
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(vertical = Spacing.sm),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+            ) {
+                Text(line.title, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(0.35f))
+                Text(line.text, style = MaterialTheme.typography.bodyMedium, color = color, modifier = Modifier.weight(0.65f))
+                ReachedIcon()
+            }
         }
     }
 }

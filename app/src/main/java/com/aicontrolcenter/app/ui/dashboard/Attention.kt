@@ -66,6 +66,18 @@ fun RegistrySnapshot.attentionItems(): List<AttentionItem> = buildList {
     addAll(appItems())
 }
 
+/**
+ * [message] when it reads as a sentence for the owner, else null (D3A-14): a provider check's raw status ("ok", "503",
+ * "ECONNREFUSED") never reaches the Dashboard. A sentence starts with a letter, has a space, ends with a full stop and is
+ * not only a code.
+ */
+internal fun ownerSentence(message: String?): String? {
+    val text = message?.trim() ?: return null
+    if (text.length < 8 || !text.first().isLetter() || ' ' !in text || !(text.endsWith('.') || text.endsWith('!') || text.endsWith('?'))) return null
+    if (text.trimEnd('.').equals("ok", ignoreCase = true)) return null
+    return text
+}
+
 private fun RegistrySnapshot.providerItems(): List<AttentionItem> = buildList {
     for (provider in providers) {
         if (!provider.enabled || provider.isSimulator) continue
@@ -77,7 +89,7 @@ private fun RegistrySnapshot.providerItems(): List<AttentionItem> = buildList {
             ConnectionStatus.OFFLINE -> add(
                 AttentionItem(
                     "provider-offline:${provider.id}", StatusTone.UNAVAILABLE, "$name is offline",
-                    (provider.statusMessage ?: "It could not be reached at the last check.") + " Agents that use it cannot run until it is checked again.",
+                    (ownerSentence(provider.statusMessage) ?: "It could not be reached at the last check.") + " Agents that use it cannot run until it is checked again.",
                     target,
                 ),
             )
@@ -90,7 +102,7 @@ private fun RegistrySnapshot.providerItems(): List<AttentionItem> = buildList {
             ConnectionStatus.ERROR -> add(
                 AttentionItem(
                     "provider-error:${provider.id}", StatusTone.ATTENTION, "$name reported an error",
-                    provider.statusMessage ?: "Its last check failed. Check it again on its page.", target,
+                    ownerSentence(provider.statusMessage) ?: "Its last check failed. Check it again on its page.", target,
                 ),
             )
             ConnectionStatus.UNKNOWN, ConnectionStatus.ONLINE -> Unit

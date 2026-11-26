@@ -58,6 +58,7 @@ import com.aicontrolcenter.app.ui.components.label
 import com.aicontrolcenter.app.ui.theme.appColors
 import com.aicontrolcenter.core.agents.AgentKind
 import com.aicontrolcenter.core.agents.label
+import com.aicontrolcenter.app.ui.theme.LocalCalmMotion
 
 @Composable
 fun AgentsRoute(
@@ -110,7 +111,8 @@ fun AgentsScreen(
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = onNewAgent,
-                expanded = atTop,
+                // Under Calm it keeps its label instead of shrinking and growing as the list scrolls (D40, D3A-19).
+                expanded = atTop || LocalCalmMotion.current,
                 // Material clears the semantics of an extended FAB's text, so the icon carries the label.
                 icon = { Icon(AppIcons.Add, contentDescription = "New agent") },
                 text = { Text("New agent") },

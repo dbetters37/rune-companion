@@ -312,7 +312,7 @@ private fun Answer(question: QuestionUi, state: QuestionUiState, answer: TextFie
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        OutlinedButton(onClick = actions.onDecideYourself, enabled = !state.isBusy, modifier = sensitive) { Text(QuestionTexts.DECIDE_YOURSELF) }
+        OutlinedButton(onClick = actions.onDecideYourself, enabled = !state.isBusy, modifier = sensitive) { Text(QuestionTexts.letDecide(question.agent.name)) }
         Text(
             "${question.agent.name} makes the most reasonable choice and says which one in its result.",
             style = MaterialTheme.typography.bodySmall,

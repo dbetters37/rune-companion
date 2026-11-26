@@ -39,6 +39,7 @@ import com.aicontrolcenter.app.ui.components.ScreenScaffold
 import com.aicontrolcenter.app.ui.components.SectionHeader
 import com.aicontrolcenter.app.ui.components.SwitchRow
 import com.aicontrolcenter.app.ui.components.digitsOnly
+import com.aicontrolcenter.app.ui.components.formatCount
 import com.aicontrolcenter.app.ui.components.readableWidth
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
@@ -68,7 +69,7 @@ fun DailyLimitsScreen(viewModel: DailyLimitsViewModel, onBack: () -> Unit) {
                 .padding(start = Spacing.screen, end = Spacing.screen, top = Spacing.xs, bottom = Spacing.xl),
             verticalArrangement = Arrangement.spacedBy(Spacing.md),
         ) {
-            state.reached?.let { InfoBanner(it, tone = StatusTone.ATTENTION, title = "Today's limit is reached") }
+            state.reachedHere?.let { InfoBanner(it, tone = StatusTone.ATTENTION, title = "Today's limit is reached") }
             Column {
                 SectionHeader("Today")
                 AppCard {
@@ -99,7 +100,8 @@ fun DailyLimitsScreen(viewModel: DailyLimitsViewModel, onBack: () -> Unit) {
                         AppTextField(
                             state = viewModel.tokens,
                             label = "Tokens a day",
-                            supportingText = TOKENS_IN_PLAIN_WORDS,
+                            // The field shows the digits as typed; the line under it reads them grouped (D3A-16).
+                            supportingText = tokensEcho(viewModel.tokens.text.toString()) + TOKENS_IN_PLAIN_WORDS,
                             errorText = state.errors.tokens,
                             inputTransformation = digitsOnly(10),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
@@ -159,3 +161,7 @@ fun DailyLimitsScreen(viewModel: DailyLimitsViewModel, onBack: () -> Unit) {
         }
     }
 }
+
+/** "500,000 tokens a day. ", read back under the tokens field; empty while the field holds no whole number. */
+internal fun tokensEcho(typed: String): String =
+    typed.trim().toLongOrNull()?.let { "${formatCount(it)} ${if (it == 1L) "token" else "tokens"} a day. " }.orEmpty()

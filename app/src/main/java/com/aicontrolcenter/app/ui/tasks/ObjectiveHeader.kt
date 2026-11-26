@@ -1,6 +1,5 @@
 package com.aicontrolcenter.app.ui.tasks
 
-import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -57,6 +56,7 @@ import androidx.compose.ui.semantics.semantics
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.app.ui.theme.appColors
+import com.aicontrolcenter.app.ui.components.calmAnimateContentSize
 
 /** The owner's controls over an objective. */
 class ObjectiveControls(
@@ -221,7 +221,7 @@ private fun CollapsibleText(text: String, style: TextStyle, collapsedLines: Int,
     } else {
         Modifier
     }
-    Column(Modifier.animateContentSize().then(toggle)) {
+    Column(Modifier.calmAnimateContentSize().then(toggle)) {
         Text(
             text,
             style = style,
@@ -239,19 +239,25 @@ private fun CollapsibleText(text: String, style: TextStyle, collapsedLines: Int,
 /** Always said, either way: whether anything of this objective left the phone, and to where. */
 @Composable
 private fun EgressLine(egress: EgressUi) {
-    val away = egress.transfers > 0
+    val away = egress.away
     val color = if (away) appColors.attention else appColors.onDevice
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
         Icon(if (away) AppIcons.Egress else AppIcons.OnDevice, contentDescription = null, tint = color, modifier = Modifier.size(18.dp))
-        Text(
-            if (away) {
-                "${egress.transfers} model call${if (egress.transfers == 1) "" else "s"} left this phone, to ${egress.destinations.joinToString(", ")}. See the Log."
-            } else {
-                "Nothing has left this phone for this objective."
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = color,
-        )
+        Text(egressWords(egress), style = MaterialTheme.typography.bodySmall, color = color)
+    }
+}
+
+/** The privacy line in words: from the log when it still holds the calls, from the usage rows when it no longer does (D3A-5). */
+internal fun egressWords(egress: EgressUi): String {
+    val answers = egress.offPhoneAnswers
+    val answerWords = "$answers model answer${if (answers == 1L) "" else "s"}"
+    return when {
+        egress.transfers > 0 -> buildString {
+            append("${egress.transfers} model call${if (egress.transfers == 1) "" else "s"} left this phone, to ${egress.destinations.joinToString(", ")}. See the Log.")
+            if (answers > egress.transfers) append(" In all, $answerWords came from models off this phone; the log no longer holds the rest.")
+        }
+        answers > 0 -> "$answerWords went to models off this phone; the details are no longer in the log."
+        else -> "Nothing has left this phone for this objective."
     }
 }
 

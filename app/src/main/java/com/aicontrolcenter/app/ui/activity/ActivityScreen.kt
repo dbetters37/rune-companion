@@ -259,8 +259,11 @@ private fun LogTab(state: ActivityUiState, search: TextFieldState, actions: Acti
                         }
                     }
                 }
+                val lastGroup = state.groups.lastOrNull()
                 state.groups.forEach { group ->
-                    stickyHeader(key = "day:${group.heading}") { DayHeading(group.heading, group.rows.size) }
+                    // The last day loaded may go on in the older events: its count is only what is shown (D3A-15).
+                    val partial = group === lastGroup && state.canShowOlder
+                    stickyHeader(key = "day:${group.heading}") { DayHeading(group.heading, group.rows.size, partial) }
                     items(group.rows, key = { it.id }) { row ->
                         ActivityEventRow(row, onClick = { actions.onSelect(row.event) })
                         RowDivider(Modifier.padding(start = 64.dp))
@@ -313,7 +316,7 @@ private fun NewerEvents(count: Int, capped: Boolean, onShowNewest: () -> Unit) {
 }
 
 @Composable
-private fun DayHeading(heading: String, count: Int) {
+private fun DayHeading(heading: String, count: Int, partial: Boolean = false) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -331,7 +334,11 @@ private fun DayHeading(heading: String, count: Int) {
             },
         )
         Text(
-            if (count == 1) "1 event" else "$count events",
+            when {
+                partial -> "$count shown"
+                count == 1 -> "1 event"
+                else -> "$count events"
+            },
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

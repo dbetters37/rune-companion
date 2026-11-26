@@ -28,25 +28,30 @@ const val TOKENS_EXPLAINED: String = "Tokens are the pieces of words a model rea
 /**
  * The cost line of a chat from its usage rows ([WorkUsage] of kind CHAT, one per model) and the
  * owner's [prices]; null while the chat has used nothing. Money is added per currency, never
- * across currencies; models without a price add tokens only, and the line says so.
+ * across currencies; models without a price add tokens only, and the line says so. Models in
+ * [onPhone] cost nothing, even with a price entered (D3A-10, as the daily limits and Usage count).
  */
-fun chatCostOf(rows: List<WorkUsage>, prices: Map<ModelId, ModelPrice>): ChatCostUi? {
+fun chatCostOf(rows: List<WorkUsage>, prices: Map<ModelId, ModelPrice>, onPhone: Set<ModelId> = emptySet()): ChatCostUi? {
     val tokens = rows.sumOf { it.inputTokens + it.outputTokens }
     if (rows.isEmpty() || tokens == 0L) return null
-    val money = moneyByCurrency(rows, prices)
-    val unpriced = rows.any { it.modelId !in prices && it.inputTokens + it.outputTokens > 0 }
+    val charged = rows.filter { it.modelId !in onPhone }
+    val money = moneyByCurrency(charged, prices)
+    val unpriced = charged.any { it.modelId !in prices && it.inputTokens + it.outputTokens > 0 }
+    val free = charged.none { it.inputTokens + it.outputTokens > 0 }
     val line = buildString {
         append("This chat so far: ").append(formatCount(tokens)).append(if (tokens == 1L) " token" else " tokens")
         if (money != null) {
             append(if (money.startsWith("less than")) ", " else ", about ").append(money)
             if (unpriced) append(" for the models with a price")
+        } else if (free) {
+            append(", free on this phone")
         }
         append('.')
     }
-    val explanation = if (money != null) {
-        "$TOKENS_EXPLAINED ${CostEstimate.DISCLAIMER}"
-    } else {
-        "$TOKENS_EXPLAINED Enter the model's prices in Models to see what this chat costs."
+    val explanation = when {
+        money != null -> "$TOKENS_EXPLAINED ${CostEstimate.DISCLAIMER}"
+        free -> "$TOKENS_EXPLAINED Models on this phone cost nothing."
+        else -> "$TOKENS_EXPLAINED Enter the model's prices in Models to see what this chat costs."
     }
     return ChatCostUi(line, explanation, priced = money != null)
 }

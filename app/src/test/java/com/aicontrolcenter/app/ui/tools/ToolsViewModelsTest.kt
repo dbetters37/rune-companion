@@ -378,8 +378,13 @@ class ToolsViewModelsTest {
         val app = started()
         val vm = screen(app)
         assertNull(vm.uiState.value.switchedOffNotice)
+        // As on a phone: switched off by Android, the service is not on (device SwitchedOff clears the flag on READY).
+        app.screen.setState(com.aicontrolcenter.core.operator.ScreenServiceState.NOT_ENABLED)
         app.screen.switchedOffByAndroid.value = true
         assertEquals(SWITCHED_OFF, vm.uiState.value.switchedOffNotice, "the generic sentence when the device layer gave none")
+        app.screen.setState(com.aicontrolcenter.core.operator.ScreenServiceState.READY)
+        assertNull(vm.uiState.value.switchedOffNotice, "never above \"Ready · The service is on\" (D3A-18c)")
+        app.screen.setState(com.aicontrolcenter.core.operator.ScreenServiceState.NOT_ENABLED)
 
         val sentence = kotlinx.coroutines.flow.MutableStateFlow<String?>("Android switched screen control off after the app was force-stopped. Turn it on again in Android's accessibility settings.")
         val withSentence = ScreenControlViewModel(

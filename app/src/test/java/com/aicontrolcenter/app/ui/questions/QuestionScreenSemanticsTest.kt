@@ -24,6 +24,7 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.time.ZoneOffset
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -70,7 +71,7 @@ class QuestionScreenSemanticsTest {
     @Test
     fun `the answers are marked sensitive and big enough to tap`() {
         show(waiting())
-        for (label in listOf(QuestionTexts.SEND, QuestionTexts.DECIDE_YOURSELF)) {
+        for (label in listOf(QuestionTexts.SEND, QuestionTexts.letDecide(assertNotNull(waiting().question).agent.name))) {
             val button = compose.onNode(hasText(label) and hasClickAction() and sensitive, useUnmergedTree = false)
             button.performScrollTo().assertHeightIsAtLeast(48.dp)
         }

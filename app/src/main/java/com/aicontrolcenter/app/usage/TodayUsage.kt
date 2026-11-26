@@ -3,6 +3,7 @@ package com.aicontrolcenter.app.usage
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.usage.DailyLimits
+import com.aicontrolcenter.core.usage.ModelPrice
 import com.aicontrolcenter.core.usage.ModelPrices
 import com.aicontrolcenter.core.usage.UsageRange
 import com.aicontrolcenter.core.usage.UsageReports
@@ -31,6 +32,11 @@ import java.time.ZoneId
 data class TodayUse(
     val use: DailyUse,
     val limits: DailyLimits,
+    /**
+     * The currency the money limit is read in ([limitCurrencyOf] the owner's prices): every screen that says "US$0.12 of
+     * US$1.00" uses it, as the limiter's own sentence does (D3A-8).
+     */
+    val currency: String = ModelPrice.DEFAULT_CURRENCY,
 ) {
     /** Which limit is reached now, if any (the limiter refuses the next call off the phone then). */
     val reached: Boolean get() = limits.reachedBy(use.calls, use.tokens, use.spendMicros) != null
@@ -64,7 +70,7 @@ class TodayUsage(
             .distinctUntilChanged()
             .flatMapLatest { range ->
                 combine(reports.observeByModel(range), prices.observeAll(), settings.settings) { rows, priced, current ->
-                    TodayUse(DailyUse.of(rows, priced.associateBy { it.modelId }), current.dailyLimits)
+                    TodayUse(DailyUse.of(rows, priced.associateBy { it.modelId }), current.dailyLimits, limitCurrencyOf(priced))
                 }
             }
             .distinctUntilChanged()
@@ -72,9 +78,17 @@ class TodayUsage(
     /** Today's use and limits once. */
     suspend fun now(): TodayUse {
         val range = UsageRange.day(clock.now(), zone())
-        return TodayUse(DailyUse.of(reports.byModel(range), prices.getAll().associateBy { it.modelId }), settings.get().dailyLimits)
+        val priced = prices.getAll()
+        return TodayUse(DailyUse.of(reports.byModel(range), priced.associateBy { it.modelId }), settings.get().dailyLimits, limitCurrencyOf(priced))
     }
 }
+
+/**
+ * The currency the money limit is read in: the one the owner's prices are in when they all share one, else US$ (the
+ * limiter adds the estimated cost of every priced model, whatever its currency, and names its sentence the same way).
+ */
+fun limitCurrencyOf(prices: Collection<ModelPrice>): String =
+    prices.map { it.currencyLabel }.distinct().singleOrNull() ?: ModelPrice.DEFAULT_CURRENCY
 
 /** When the owner's day changes, for [TodayUsage] in the app. */
 object DayChanges {

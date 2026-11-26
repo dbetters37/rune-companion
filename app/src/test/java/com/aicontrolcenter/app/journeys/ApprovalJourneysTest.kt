@@ -140,7 +140,7 @@ class ApprovalJourneysTest {
             .waitUntilShown("1 request waits for your answer")
             .tap("1 request waits for your answer")
             .assertShown("Waiting for you")
-            .assertShown("Waiting for you · 1 request".uppercase())
+            .assertShown("1 request, oldest first".uppercase())
             .tap("Review")
             .type("Note for the agent (optional)", "Not now, thanks.")
             .scrollTo("Deny")

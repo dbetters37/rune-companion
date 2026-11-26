@@ -135,7 +135,7 @@ class QuestionViewModel(
         submit(text, sendAnyway = true)
     }
 
-    /** "Decide yourself": no words; the agent makes the most reasonable choice. */
+    /** "Let Researcher decide": no words; the agent makes the most reasonable choice. */
     fun decideYourself() = submit(null, sendAnyway = false)
 
     fun messageShown() = local.update { it.copy(message = null) }
@@ -143,7 +143,7 @@ class QuestionViewModel(
     private fun submit(text: String?, sendAnyway: Boolean) {
         if (local.value.isBusy) return
         if (text != null && text.isEmpty()) {
-            local.update { it.copy(refusal = EMPTY_ANSWER, refusedText = text, codeText = null) }
+            local.update { it.copy(refusal = emptyAnswer(uiState.value.question?.agent?.name ?: "the agent"), refusedText = text, codeText = null) }
             return
         }
         local.update { it.copy(isBusy = true) }
@@ -164,7 +164,8 @@ class QuestionViewModel(
                 }
                 is OwnerResult.Refused -> {
                     val code = result.reason == DefaultOwnerRequests.CODE_ASK_AGAIN
-                    local.update { it.copy(isBusy = false, refusal = result.reason, refusedText = text, codeText = if (code) text else null) }
+                    val shown = if (code) QuestionTexts.CODE_WARNING else result.reason
+                    local.update { it.copy(isBusy = false, refusal = shown, refusedText = text, codeText = if (code) text else null) }
                 }
             }
             // A refusal that closed the question (gone, answered, run out, nothing waiting) shows it closed; the form goes.
@@ -175,6 +176,7 @@ class QuestionViewModel(
     private fun currentRequestOptions(): List<String> = uiState.value.question?.options.orEmpty()
 
     companion object {
-        const val EMPTY_ANSWER = "Write an answer, or choose \"${QuestionTexts.DECIDE_YOURSELF}\"."
+        /** Send with an empty field: "Write an answer, or choose “Let Researcher decide”." */
+        fun emptyAnswer(agentName: String): String = "Write an answer, or choose “${QuestionTexts.letDecide(agentName)}”."
     }
 }

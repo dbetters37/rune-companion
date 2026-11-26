@@ -4,6 +4,11 @@ import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aicontrolcenter.app.ui.activity.TOKENS_IN_PLAIN_WORDS
+import com.aicontrolcenter.app.ui.activity.aboutMoney
+import com.aicontrolcenter.app.ui.chat.moneyByCurrency
+import com.aicontrolcenter.app.ui.components.localityOf
+import com.aicontrolcenter.app.ui.components.onPhoneModels
 import com.aicontrolcenter.app.ui.approvals.RequestUi
 import com.aicontrolcenter.app.ui.approvals.isOpenAt
 import com.aicontrolcenter.app.ui.approvals.requestUi
@@ -145,9 +150,17 @@ data class LimitsUi(
     val reached: List<String>,
 )
 
-/** What left the phone for this objective, from the activity log. */
+/**
+ * What left the phone for this objective: the model calls the activity log shows leaving ([transfers], to
+ * [destinations]), and the answers its usage rows record from models off this phone ([offPhoneAnswers]). The usage rows
+ * are kept longer than the log and are not cut to the newest events, so "Nothing has left this phone" is said only when
+ * neither shows anything (D3A-5).
+ */
 @Immutable
-data class EgressUi(val transfers: Int = 0, val destinations: List<String> = emptyList())
+data class EgressUi(val transfers: Int = 0, val destinations: List<String> = emptyList(), val offPhoneAnswers: Long = 0) {
+    /** Something of this objective left the phone, by either record. */
+    val away: Boolean get() = transfers > 0 || offPhoneAnswers > 0
+}
 
 /** Who a note can go to: the Director (no task), or the agent working on one unfinished task. */
 @Immutable
@@ -421,7 +434,7 @@ class ObjectiveViewModel(
             log = log.map { event ->
                 ActivityRowUi(event, formatCompactTimestamp(event.at, now, zone), event.agentId?.let { names[it]?.profile?.name })
             },
-            egress = egressOf(log),
+            egress = egressOf(log, extras.cost, stored.snapshot),
             document = objective.result?.takeIf { it.isNotBlank() },
             documentBlocks = blocksOf(objective.result?.takeIf { it.isNotBlank() }),
             documentNote = documentNote(objective, progress),
@@ -479,7 +492,7 @@ class ObjectiveViewModel(
             canDelete = status.isFinished,
             canRunAgain = status in RUN_AGAIN && stored.tree.summaries.none { it.kind == TaskKind.WORK },
             pause = pauseOf(objective),
-            cost = costLineOf(extras.cost, prices),
+            cost = costLineOf(extras.cost, prices, stored.snapshot.onPhoneModels()),
             routine = routine?.let { (_, title) -> title?.let { "Started by routine “$it”" } ?: "Started by a routine" },
             routineId = routine?.first,
             screensNotAllowed = options != null && !options.screenActionsAllowed,
@@ -527,9 +540,12 @@ class ObjectiveViewModel(
         else -> "The Director writes the final document once every task has finished (${progress.completed} of ${progress.planned} done)."
     }
 
-    private fun egressOf(log: List<ActivityEvent>): EgressUi {
+    private fun egressOf(log: List<ActivityEvent>, usage: List<WorkUsage>, snapshot: RegistrySnapshot): EgressUi {
         val away = log.mapNotNull { it.egress }.filter { it.locality != Locality.ON_DEVICE }
-        return EgressUi(away.size, away.map { it.destinationHost }.distinct())
+        // A model no longer registered counts as off the phone: a privacy line must never say less than happened.
+        // Tokens are the proof a request was sent (a request refused before sending is counted as a call too).
+        val offPhone = usage.filter { snapshot.localityOf(it.modelId) != Locality.ON_DEVICE && it.inputTokens + it.outputTokens > 0 }
+        return EgressUi(away.size, away.map { it.destinationHost }.distinct(), offPhone.sumOf { it.calls })
     }
 
     private fun elapsedText(times: Times, live: Boolean, now: Long): String {
@@ -623,28 +639,29 @@ fun pauseOf(objective: TaskRecord): PauseNoticeUi? {
 }
 
 /**
- * The objective's cost so far: "About US$0.03 so far · 12,400 tokens" once a used model has a price, else the tokens
- * alone, with what a token is and that money is an estimate (rule 29). Null before any model call.
+ * The cost so far of an objective or a task from its usage rows: "So far: about US$0.03 · 12,400 tokens · 3 model
+ * answers" once a used model has a price, else the tokens alone, with what a token is and that money is an estimate
+ * (rule 29). Money is added per currency, never across currencies ("about US$0.03 and €0.01", as the chat's line,
+ * D3A-8); models in [onPhone] cost nothing, even with a price entered (D3A-10). Null before any model call.
  */
-fun costLineOf(rows: List<WorkUsage>, prices: Map<com.aicontrolcenter.core.ModelId, ModelPrice>): CostLineUi? {
+fun costLineOf(
+    rows: List<WorkUsage>,
+    prices: Map<com.aicontrolcenter.core.ModelId, ModelPrice>,
+    onPhone: Set<com.aicontrolcenter.core.ModelId> = emptySet(),
+): CostLineUi? {
     if (rows.isEmpty()) return null
     val tokens = rows.sumOf { it.inputTokens + it.outputTokens }
     val calls = rows.sumOf { it.calls }
-    val money = com.aicontrolcenter.core.usage.CostEstimate.of(rows, prices)
-    val currency = rows.firstNotNullOfOrNull { prices[it.modelId]?.currencyLabel } ?: ModelPrice.DEFAULT_CURRENCY
+    val charged = rows.filter { it.modelId !in onPhone }
+    val money = moneyByCurrency(charged, prices)
     val words = "%,d".format(java.util.Locale.ENGLISH, tokens) + " tokens · " + "%,d".format(java.util.Locale.ENGLISH, calls) + if (calls == 1L) " model answer" else " model answers"
-    return if (money == null) {
-        CostLineUi(
-            "So far: $words",
-            "Tokens are the pieces of text a model reads and writes; providers charge by them. Enter your model's price in " +
-                "Models to see an estimated cost.",
+    return when {
+        money != null -> CostLineUi(
+            "So far: ${aboutMoney(money)} · $words" + if (charged.any { it.modelId !in prices }) " (some models have no price)" else "",
+            com.aicontrolcenter.core.usage.CostEstimate.DISCLAIMER + " $TOKENS_IN_PLAIN_WORDS",
         )
-    } else {
-        CostLineUi(
-            "So far: about ${com.aicontrolcenter.core.usage.DailyLimits.money(money, currency)} · $words" +
-                if (rows.any { it.modelId !in prices }) " (some models have no price)" else "",
-            com.aicontrolcenter.core.usage.CostEstimate.DISCLAIMER + " Tokens are the pieces of text a model reads and writes.",
-        )
+        charged.isEmpty() -> CostLineUi("So far: $words · free on this phone", "$TOKENS_IN_PLAIN_WORDS Models on this phone cost nothing.")
+        else -> CostLineUi("So far: $words", "$TOKENS_IN_PLAIN_WORDS Enter your model's price in Models to see an estimated cost.")
     }
 }
 

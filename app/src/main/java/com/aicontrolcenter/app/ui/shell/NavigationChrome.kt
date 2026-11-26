@@ -1,5 +1,7 @@
 package com.aicontrolcenter.app.ui.shell
 
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -35,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -142,6 +145,9 @@ internal fun AppBottomBar(
 ) {
     Column {
         HorizontalDivider(color = appColors.hairline)
+        // At large font sizes only the chosen section shows its name: five names do not fit a phone's width (D3A-13).
+        // Every item keeps its name for screen readers (contentDescription below).
+        val allLabels = LocalDensity.current.fontScale < 1.5f
         NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
             val itemColors = NavigationBarItemDefaults.colors(
                 selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -156,7 +162,8 @@ internal fun AppBottomBar(
                     selected = current == section,
                     onClick = { onOpenSection(section) },
                     icon = { BadgedIcon(section.icon, badge) },
-                    label = { Text(section.title, maxLines = 1) },
+                    label = { BarLabel(section.title, allLabels) },
+                    alwaysShowLabel = allLabels,
                     colors = itemColors,
                     modifier = Modifier.semantics { contentDescription = section.title + attentionSuffix(badge) },
                 )
@@ -166,7 +173,8 @@ internal fun AppBottomBar(
                 selected = current !in Section.bottomBar,
                 onClick = onOpenMore,
                 icon = { BadgedIcon(AppIcons.MoreHoriz, moreBadge) },
-                label = { Text("More", maxLines = 1) },
+                label = { BarLabel("More", allLabels) },
+                alwaysShowLabel = allLabels,
                 colors = itemColors,
                 modifier = Modifier.semantics { contentDescription = "More sections" + attentionSuffix(moreBadge) },
             )
@@ -303,5 +311,22 @@ internal fun MoreSheetContent(current: Section, state: ShellUiState, onOpenSecti
                 }
             }
         }
+    }
+}
+
+/**
+ * A bottom-bar label. At large font sizes only the chosen item shows one, and it shrinks to the item's width instead of
+ * being cut ("Dash" for "Dashboard", D3A-13); the full name is always in the item's content description.
+ */
+@Composable
+private fun BarLabel(text: String, allLabels: Boolean) {
+    if (allLabels) {
+        Text(text, maxLines = 1)
+    } else {
+        Text(
+            text,
+            maxLines = 1,
+            autoSize = TextAutoSize.StepBased(minFontSize = 9.sp, maxFontSize = MaterialTheme.typography.labelMedium.fontSize * 1.5f),
+        )
     }
 }

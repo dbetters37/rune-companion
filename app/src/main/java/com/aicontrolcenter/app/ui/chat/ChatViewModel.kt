@@ -5,6 +5,7 @@ import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aicontrolcenter.app.ui.approvals.requestUi
+import com.aicontrolcenter.app.ui.components.onPhoneModels
 import com.aicontrolcenter.app.ui.components.UserMessage
 import com.aicontrolcenter.app.ui.components.putText
 import com.aicontrolcenter.app.ui.components.textChanges
@@ -176,7 +177,9 @@ class ChatViewModel(
         build(snapshot, conversation, window, live, requests)
     }
 
-    private val cost: Flow<ChatCostUi?> = combine(usage, prices) { rows, priced -> chatCostOf(rows, priced.associateBy { it.modelId }) }.distinctUntilChanged()
+    private val cost: Flow<ChatCostUi?> = combine(usage, prices, directory.observe()) { rows, priced, snapshot ->
+        chatCostOf(rows, priced.associateBy { it.modelId }, snapshot.onPhoneModels())
+    }.distinctUntilChanged()
 
     val uiState: StateFlow<ChatUiState> = combine(transcript, local, cost, today) { built, local, cost, today ->
         built.withLocal(local, cost, today)

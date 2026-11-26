@@ -83,7 +83,9 @@ class DashboardExtrasViewModelTest {
         assertEquals(2, today.answers, "the simulator on this phone is not counted")
         assertEquals(3_000, today.tokens)
         assertEquals("US$0.02", today.cost)
+        assertEquals("of US$1.00", today.costCaption)
         assertNull(today.costNote)
+        assertEquals("Models on this phone also answered once today: free, and not counted.", today.phoneNote)
         assertEquals(DailyLimits.DEFAULT, today.limits)
         assertEquals("This month: 3 answers · 4,500 tokens · US$0.03", today.month)
         assertNull(today.reached)
@@ -91,17 +93,41 @@ class DashboardExtrasViewModelTest {
     }
 
     @Test
-    fun `no cost is shown while a model used today has no price, and the tile names it`() = runTest(mainRule.dispatcher) {
+    fun `the cost is what the money limit counts, and a model used today without a price is named under it (D3A-1)`() = runTest(mainRule.dispatcher) {
         val app = TestApp(backgroundScope)
         app.usage.record(call())
         app.usage.record(call(model = "mdl_llama", label = "Llama 3"))
         app.prices.set(grokPrice)
         val today = assertNotNull(extras(app).uiState.value.today)
 
-        assertNull(today.cost, "a cost that leaves out a model would read as the whole day's")
-        assertEquals("No cost shown: Llama 3 has no price yet.", today.costNote)
+        assertEquals("US$0.01", today.cost, "as Usage and cost and Daily limits say it: what counts toward the limit")
+        assertEquals(app.graph.todayUsage.now().use.spendMicros, 10_500)
+        assertEquals("of US$1.00", today.costCaption)
+        assertEquals("Llama 3 has no price yet, so its tokens are not in the cost.", today.costNote)
         assertEquals(listOf(UnpricedModelUi(ModelId("mdl_llama"), "Llama 3")), today.unpriced)
-        assertEquals("This month: 2 answers · 3,000 tokens", today.month)
+        assertEquals("This month: 2 answers · 3,000 tokens · US$0.01 for the models with a price", today.month)
+    }
+
+    @Test
+    fun `nothing used yet is US$0, but used without any price is not known, never free`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        val viewModel = extras(app)
+        var today = assertNotNull(viewModel.uiState.value.today)
+        assertEquals("US$0.00", today.cost)
+        assertEquals("of US$1.00", today.costCaption)
+
+        app.usage.record(call(model = "mdl_llama", label = "Llama 3"))
+        today = assertNotNull(viewModel.uiState.value.today)
+        assertEquals(DashboardExtrasViewModel.COST_NOT_KNOWN, today.cost)
+        assertEquals("no price entered", today.costCaption)
+        assertEquals("Llama 3 has no price yet, so nothing counts toward your US$1.00 limit.", today.costNote)
+
+        app.settings.update { it.copy(maxModelCallsPerDay = 1, maxSpendPerDayMicros = 10_000) }
+        app.prices.set(ModelPrice(ModelId("mdl_llama"), inputPerMTokMicros = 30_000_000, outputPerMTokMicros = 0))
+        today = assertNotNull(viewModel.uiState.value.today)
+        assertEquals("US$0.03", today.cost)
+        assertEquals("of US$0.01, reached", today.costCaption, "a reached money limit is said in words, not by colour alone")
+        assertTrue(today.costReached)
     }
 
     @Test
@@ -138,6 +164,8 @@ class DashboardExtrasViewModelTest {
         assertFalse(card.steps[1].done, "no provider yet")
         assertTrue(card.steps[1].text.contains("Groq, OpenRouter, Gemini's OpenAI-compatible address"), card.steps[1].text)
         assertTrue(card.steps[2].text.contains("200 answers, 500,000 tokens and US$1.00 a day"), card.steps[2].text)
+        // Nothing resumes a paused objective by itself: the one sentence every screen says (D3A-3).
+        assertTrue(card.steps[2].text.endsWith(com.aicontrolcenter.app.ui.components.LIMIT_PAUSES_OBJECTIVES), card.steps[2].text)
 
         app.registerSampleModel()
         assertTrue(assertNotNull(viewModel.uiState.value.gettingStarted).steps[1].done, "a real provider was added")
@@ -184,6 +212,7 @@ class DashboardExtrasViewModelTest {
         val items = extras(app).uiState.value.phone
         val paused = items.single()
         assertEquals("Paused by today's limit: Compare note apps", paused.title)
+        assertEquals(com.aicontrolcenter.app.ui.components.RESUME_AFTER_LIMIT, paused.detail)
         assertEquals(PhoneTarget.Objective(TaskId("obj_limit")), paused.target)
     }
 
