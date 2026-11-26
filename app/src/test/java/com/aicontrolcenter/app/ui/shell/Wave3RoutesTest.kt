@@ -62,8 +62,8 @@ class Wave3RoutesTest {
     @Test
     fun `every new screen opens in its section`() {
         show()
-        assertEquals(Section.TASKS, open(TeamRoute(), "Team"))
-        assertEquals(Section.TASKS, open(TeamRoute(objectiveId = "tsk_1"), "Team"))
+        assertEquals(Section.TASKS, open(TeamRoute(), "Team view"))
+        assertEquals(Section.TASKS, open(TeamRoute(objectiveId = "tsk_1"), "Team view"))
         assertEquals(Section.TOOLS, open(QuestionRoute("req_1"), "A question from an agent"))
         assertEquals(Section.SETTINGS, open(DailyLimitsRoute, "Daily limits"))
         assertEquals(Section.SETTINGS, open(BackupSaveRoute, "Save a backup"))
