@@ -115,7 +115,7 @@ class ObjectiveStatesTest {
         app.objective(TaskStatus.RUNNING, "Waiting: xAI is not answering; trying again at 10:45.", retryAt = app.clock.current + 60_000)
         val header = assertNotNull(screen(app).uiState.value.header)
         assertEquals(PauseKind.PROVIDER_WAIT, header.pause?.kind)
-        assertEquals("XAI is not answering; trying again at 10:45. The objective goes on by itself.", header.pause?.text)
+        assertEquals("xAI is not answering; trying again at 10:45. The objective goes on by itself.", header.pause?.text)
         assertEquals("Waiting to try again", header.status.text)
     }
 
@@ -401,7 +401,10 @@ class ObjectiveStatesTest {
     @Test
     fun `the framework's waiting words are the ones the screens recognise`() {
         assertEquals("Waiting:", WaitTexts.WAITING)
-        assertEquals("XAI is not answering; trying again at 10:45.", WaitTexts.waitingFor("Waiting: xAI is not answering; trying again at 10:45."))
+        assertEquals("xAI is not answering; trying again at 10:45.", WaitTexts.waitingFor("Waiting: xAI is not answering; trying again at 10:45."))
+        // A provider's name keeps its own spelling; any other line starts with a capital (handoff-WP9.md item 3).
+        assertEquals("The provider is not answering.", WaitTexts.waitingFor("Waiting: the provider is not answering."))
+        assertEquals("OpenAI is busy.", WaitTexts.waitingFor("Waiting: OpenAI is busy."))
         assertNull(WaitTexts.waitingFor("Working on 2 task(s)."))
         assertEquals(com.aicontrolcenter.core.tasks.ReviewDecision.REVISE, verdictOf("Verdict: revise."))
         assertNull(verdictOf("Revising after the review (round 1)."))

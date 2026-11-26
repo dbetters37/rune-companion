@@ -69,9 +69,16 @@ object WaitTexts {
     /** Opens the status line of such work once its objective stopped: "Was waiting: xAI is not answering. Tries again when …" */
     const val WAS_WAITING = TaskStatusLines.WAS_WAITING
 
-    /** "xAI is not answering; trying again at 10:45." from "Waiting: xAI is not answering; trying again at 10:45.", else null. */
+    /**
+     * "xAI is not answering; trying again at 10:45." from "Waiting: xAI is not answering; trying again at 10:45.", else
+     * null. The first letter is made a capital unless the first word already has one later in it: a provider's name
+     * keeps its own spelling ("xAI", never "XAI").
+     */
     fun waitingFor(detail: String?): String? =
-        detail?.takeIf { it.startsWith(WAITING) }?.removePrefix(WAITING)?.trim()?.replaceFirstChar(Char::uppercase)?.takeIf { it.isNotEmpty() }
+        detail?.takeIf { it.startsWith(WAITING) }?.removePrefix(WAITING)?.trim()?.let(::sentenceStart)?.takeIf { it.isNotEmpty() }
+
+    private fun sentenceStart(text: String): String =
+        if (text.substringBefore(' ').drop(1).any(Char::isUpperCase)) text else text.replaceFirstChar(Char::uppercase)
 }
 
 /**

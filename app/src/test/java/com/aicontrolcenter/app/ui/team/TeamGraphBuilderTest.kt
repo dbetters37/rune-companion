@@ -201,7 +201,7 @@ class TeamGraphBuilderTest {
         )
         with(waiting.node(analyst.value)!!) {
             assertEquals(NodeState.WAITING_TO_TRY_AGAIN, state)
-            assertEquals("XAI is not answering; trying again at 10:45.", detail, "the framework's words, as the objective's page shows them")
+            assertEquals("xAI is not answering; trying again at 10:45.", detail, "the framework's words, as the objective's page shows them")
         }
     }
 
