@@ -2,8 +2,10 @@ package com.aicontrolcenter.app.ui.backup
 
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import com.aicontrolcenter.app.testing.MainDispatcherRule
+import com.aicontrolcenter.app.testing.MemoryChosenFile
 import com.aicontrolcenter.app.testing.ScriptedBackup
 import com.aicontrolcenter.app.testing.TestApp
+import com.aicontrolcenter.app.testing.stagingFile
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.backup.BackupProblem
 import com.aicontrolcenter.core.backup.BackupProgress
@@ -20,10 +22,10 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Rule
 import org.junit.Test
 import java.io.ByteArrayInputStream
-import java.io.ByteArrayOutputStream
 import java.time.ZoneOffset
 import java.util.Random
 import kotlin.coroutines.EmptyCoroutineContext
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
@@ -57,14 +59,14 @@ class BackupViewModelsTest {
 
         viewModel.setWroteItDown(true)
         assertTrue(viewModel.canSave())
-        val file = ByteArrayOutputStream()
-        viewModel.save(open = { file })
+        val file = MemoryChosenFile()
+        viewModel.save(file, stagingFile())
         val call = backup.saves.single()
         assertEquals(generated, call.passphrase)
         assertEquals(generated, call.generatedShown, "the save is told exactly what was generated and shown (NEW-1)")
         val saved = assertNotNull(viewModel.uiState.value.saved)
         assertEquals("6 agents, 2 memories.", saved.what)
-        assertEquals(3, file.size())
+        assertContentEquals(ScriptedBackup.SAVED_BYTES, file.bytes)
         assertNull(viewModel.uiState.value.generated, "shown once: gone after the save")
     }
 
@@ -102,7 +104,7 @@ class BackupViewModelsTest {
         assertNull(viewModel.againProblem(), "case, spaces and dashes do not matter, as when it is typed in to restore")
         assertTrue(viewModel.canSave())
 
-        viewModel.save(open = { ByteArrayOutputStream() })
+        viewModel.save(MemoryChosenFile(), stagingFile())
         val call = backup.saves.single()
         assertEquals(strong, call.passphrase)
         assertNull(call.generatedShown, "an own passphrase is never handed over as a generated one")
@@ -115,10 +117,10 @@ class BackupViewModelsTest {
         val backup = ScriptedBackup().apply { onSave = { BackupResult.Failed(BackupProblem.CannotOpenFile) } }
         val viewModel = saver(backup)
         viewModel.setWroteItDown(true)
-        var discarded = 0
-        viewModel.save(open = { ByteArrayOutputStream() }, discard = { discarded++ })
+        val file = MemoryChosenFile()
+        viewModel.save(file, stagingFile())
         assertEquals(BackupProblem.CannotOpenFile.text, viewModel.uiState.value.failure)
-        assertEquals(1, discarded)
+        assertEquals(1, file.removed)
         assertFalse(viewModel.uiState.value.working)
         assertNotNull(viewModel.uiState.value.generated, "the same passphrase can be used again")
     }
@@ -131,8 +133,8 @@ class BackupViewModelsTest {
         }
         val viewModel = saver(backup)
         viewModel.setWroteItDown(true)
-        var discarded = 0
-        viewModel.save(open = { ByteArrayOutputStream() }, discard = { discarded++ })
+        val file = MemoryChosenFile()
+        viewModel.save(file, stagingFile())
         val working = viewModel.uiState.value
         assertTrue(working.working)
         assertEquals(BackupStepUi(BackupTexts.STEP_LOCKING, null), working.step)
@@ -141,7 +143,51 @@ class BackupViewModelsTest {
         viewModel.cancel()
         assertEquals(BackupSaveViewModel.CANCELLED, viewModel.uiState.value.failure)
         assertFalse(viewModel.uiState.value.working)
-        assertEquals(1, discarded)
+        assertEquals(1, file.removed)
+    }
+
+    @Test
+    fun `a file that held something is never removed, and the owner is told it is as it was`() = runTest(mainRule.dispatcher) {
+        val earlier = "EARLIER BACKUP".encodeToByteArray()
+        val refused = ScriptedBackup().apply { onSave = { out -> out.write(ByteArray(64)); BackupResult.Failed(BackupProblem.CannotOpenFile) } }
+        val viewModel = saver(refused)
+        viewModel.setWroteItDown(true)
+        val file = MemoryChosenFile(earlier.copyOf())
+        val staging = stagingFile()
+        viewModel.save(file, staging)
+        assertContentEquals(earlier, file.bytes, "the partial backup went only into the private file")
+        assertEquals(0, file.removed)
+        assertEquals("${BackupProblem.CannotOpenFile.text} ${BackupSaveViewModel.UNTOUCHED}", viewModel.uiState.value.failure)
+        assertFalse(staging.exists(), "the private file is removed after the save")
+    }
+
+    @Test
+    fun `a backup that reports more than it wrote is not put into the chosen file`() = runTest(mainRule.dispatcher) {
+        val short = ScriptedBackup().apply {
+            onSave = { out ->
+                out.write(ScriptedBackup.SAVED_BYTES, 0, 100)
+                BackupResult.Done(com.aicontrolcenter.data.backup.SaveOutcome(com.aicontrolcenter.core.backup.SaveReport(com.aicontrolcenter.core.backup.BackupCounts(agents = 6), 2_048), emptyList()))
+            }
+        }
+        val viewModel = saver(short)
+        viewModel.setWroteItDown(true)
+        val earlier = "EARLIER".encodeToByteArray()
+        val file = MemoryChosenFile(earlier.copyOf())
+        viewModel.save(file, stagingFile())
+        assertContentEquals(earlier, file.bytes)
+        assertNull(viewModel.uiState.value.saved)
+        assertNotNull(viewModel.uiState.value.failure)
+    }
+
+    @Test
+    fun `when the ready backup cannot be put into a file that held something, the owner is told plainly`() = runTest(mainRule.dispatcher) {
+        val viewModel = saver()
+        viewModel.setWroteItDown(true)
+        val file = MemoryChosenFile("EARLIER".encodeToByteArray()).apply { failReplace = ReplaceFailed(chosenUntouched = false) }
+        viewModel.save(file, stagingFile())
+        assertEquals("${BackupSaveViewModel.NOT_WRITTEN} ${BackupSaveViewModel.MAY_BE_DAMAGED}", viewModel.uiState.value.failure)
+        assertEquals(0, file.removed)
+        assertNull(viewModel.uiState.value.saved)
     }
 
     @Test

@@ -199,7 +199,7 @@ class WP10bScreenshotTest {
         }
         val viewModel = saver(backup).apply { setWroteItDown(true) }
         show(calm = true) { BackupSaveScreen(viewModel, suggestedName = "b.aiccbackup", onBack = {}) }
-        viewModel.save(open = { java.io.ByteArrayOutputStream() })
+        viewModel.save(com.aicontrolcenter.app.testing.MemoryChosenFile(), com.aicontrolcenter.app.testing.stagingFile())
         compose.waitForIdle()
         shoot("save_3_key_step_calm")
         backup.hold?.complete(Unit)

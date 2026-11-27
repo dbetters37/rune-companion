@@ -4,6 +4,7 @@ import android.content.ActivityNotFoundException
 import android.content.ContentResolver
 import android.net.Uri
 import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -60,7 +61,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
-import java.io.OutputStream
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 /**
  * Save a backup (Tier B; WP10b). FLAG_SECURE while shown (rule 27); the file through Android's document picker
@@ -86,14 +89,15 @@ fun BackupSaveRoute(onBack: () -> Unit) {
 fun BackupSaveScreen(viewModel: BackupSaveViewModel, suggestedName: String, onBack: () -> Unit) {
     SecureWindow()
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    val resolver = LocalContext.current.contentResolver
+    val context = LocalContext.current
     var askStop by rememberSaveable { mutableStateOf(false) }
     var noPicker by rememberSaveable { mutableStateOf(false) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(BackupFormat.MIME_TYPE)) { uri ->
-        if (uri != null) viewModel.save(open = { openForWriting(resolver, uri) }, discard = { discardDocument(resolver, uri) })
+        if (uri != null) viewModel.save(chosen = chosenFileOf(context.contentResolver, uri), staging = File(context.cacheDir, STAGING_NAME))
     }
-    BackHandler(enabled = state.working) { askStop = true }
-    ScreenScaffold(title = "Save a backup", onBack = { if (state.working) askStop = true else onBack() }) { padding ->
+    // While the ready backup goes into the chosen file (moments) there is nothing to stop: Back waits.
+    BackHandler(enabled = state.working) { if (state.cancellable) askStop = true }
+    ScreenScaffold(title = "Save a backup", onBack = { if (state.working) { if (state.cancellable) askStop = true } else onBack() }) { padding ->
         Column(
             modifier = Modifier
                 .padding(padding)
@@ -121,7 +125,7 @@ fun BackupSaveScreen(viewModel: BackupSaveViewModel, suggestedName: String, onBa
             }
             val step = state.step
             if (state.working && step != null) {
-                BackupStepCard(step, keepOpen = BackupTexts.KEEP_OPEN, cancellable = true, onCancel = { askStop = true })
+                BackupStepCard(step, keepOpen = BackupTexts.KEEP_OPEN, cancellable = state.cancellable, onCancel = { askStop = true })
             } else {
                 state.failure?.let { InfoBanner(it, tone = StatusTone.ATTENTION, title = "Not saved") }
                 if (noPicker) InfoBanner(NO_PICKER, tone = StatusTone.ATTENTION)
@@ -151,7 +155,7 @@ fun BackupSaveScreen(viewModel: BackupSaveViewModel, suggestedName: String, onBa
     if (askStop) {
         ConfirmDialog(
             title = "Stop saving?",
-            message = "The backup is not finished. If you stop now, the file is removed again and nothing is saved.",
+            message = STOP_MESSAGE,
             confirmLabel = "Stop",
             dismissLabel = "Keep saving",
             onConfirm = {
@@ -306,21 +310,85 @@ private fun typedCount(length: Int): String = when (length) {
 internal fun spokenPassphrase(groups: List<String>): String =
     "Passphrase, ${groups.size} groups: " + groups.joinToString(". ") { group -> group.toCharArray().joinToString(" ") }
 
-private suspend fun openForWriting(resolver: ContentResolver, uri: Uri): OutputStream = withContext(Dispatchers.IO) {
-    resolver.openOutputStream(uri, "wt") ?: throw IOException("No stream")
+/** The file the picker handed back: a plain file (a file address, as in tests) or a document of another app. */
+internal fun chosenFileOf(resolver: ContentResolver, uri: Uri): ChosenBackupFile {
+    val path = uri.path
+    return if (uri.scheme == ContentResolver.SCHEME_FILE && path != null) ChosenPlainFile(File(path)) else ChosenDocument(resolver, uri)
 }
 
-/** Removes the document the picker made when the save did not finish (a file URI in tests). */
-private suspend fun discardDocument(resolver: ContentResolver, uri: Uri) {
-    withContext(Dispatchers.IO) {
-        if (uri.scheme == ContentResolver.SCHEME_FILE) {
-            uri.path?.let { File(it).delete() }
-        } else {
-            DocumentsContract.deleteDocument(resolver, uri)
+/**
+ * A document of another app (Files, Drive, …). It cannot be renamed over, so it is written only once the whole backup is
+ * ready, and checked afterwards by the size its app reports.
+ */
+internal class ChosenDocument(private val resolver: ContentResolver, private val uri: Uri) : ChosenBackupFile {
+    override suspend fun size(): Long? = withContext(Dispatchers.IO) {
+        resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { row ->
+            if (row.moveToFirst() && !row.isNull(0)) row.getLong(0) else null
         }
+    }
+
+    override suspend fun replaceWith(ready: File) {
+        withContext(Dispatchers.IO) {
+            val out = try {
+                resolver.openOutputStream(uri, "wt")
+            } catch (_: Exception) {
+                null
+            } ?: throw ReplaceFailed(chosenUntouched = true)
+            try {
+                out.use { stream ->
+                    ready.inputStream().use { it.copyTo(stream) }
+                    stream.flush()
+                }
+            } catch (_: IOException) {
+                throw ReplaceFailed(chosenUntouched = false)
+            }
+            val written = try {
+                size()
+            } catch (_: Exception) {
+                null
+            }
+            if (written != null && written != ready.length()) throw ReplaceFailed(chosenUntouched = false)
+        }
+    }
+
+    override suspend fun remove() {
+        withContext(Dispatchers.IO) { DocumentsContract.deleteDocument(resolver, uri) }
     }
 }
 
+/**
+ * A plain file: the ready backup is copied next to it under a hidden name and then renamed over it in one step, so the
+ * file is either the earlier one or the whole new backup, never half of one.
+ */
+internal class ChosenPlainFile(private val file: File) : ChosenBackupFile {
+    override suspend fun size(): Long? = withContext(Dispatchers.IO) { if (file.isFile) file.length() else null }
+
+    override suspend fun replaceWith(ready: File) {
+        withContext(Dispatchers.IO) {
+            val part = File(file.absoluteFile.parentFile, ".${file.name}.part")
+            try {
+                ready.copyTo(part, overwrite = true)
+                try {
+                    Files.move(part.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+                } catch (_: AtomicMoveNotSupportedException) {
+                    Files.move(part.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                }
+            } catch (_: IOException) {
+                part.delete()
+                throw ReplaceFailed(chosenUntouched = true)
+            }
+        }
+    }
+
+    override suspend fun remove() {
+        withContext(Dispatchers.IO) { file.delete() }
+    }
+}
+
+/** The app's private file a backup is written into before it goes into the chosen file (removed after every save). */
+internal const val STAGING_NAME: String = "backup-being-saved.part"
+
+const val STOP_MESSAGE: String = "The backup is not finished. If you stop now, nothing is saved. A file you chose to replace stays as it was."
 const val SAVE_NEEDS_TICK: String = "Tick that you wrote the passphrase down first."
 const val SAVE_NEEDS_OWN: String = "Type a passphrase that meets the rule above, twice the same."
 const val OWN_WARNING: String = "Nobody can open the file without it, including you."
