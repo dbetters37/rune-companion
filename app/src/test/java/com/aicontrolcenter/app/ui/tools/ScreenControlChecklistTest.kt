@@ -121,7 +121,7 @@ class ScreenControlChecklistTest {
             ),
             Triple(
                 "Step 3, Allow restricted settings (Android blocks this for apps installed from a file), Not done. " +
-                    "Tap ⋮ at the top right, then Allow restricted settings.",
+                    "Tap the three dots (⋮) at the top right, then Allow restricted settings.",
                 "Open App info", "app info",
             ),
             Triple(

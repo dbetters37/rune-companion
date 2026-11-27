@@ -479,12 +479,12 @@ class ToolsViewModelsTest {
         assertEquals("In Settings, switch on Phone operator.", vm.step(SetupStep.PHONE_OPERATOR).hint)
         assertEquals("Do step 1 first, then switch on Screen control.", vm.step(SetupStep.SCREEN_CONTROL).hint)
         assertEquals(RESTRICTED_SETTINGS_HINT, vm.step(SetupStep.RESTRICTED_SETTINGS).hint)
-        assertEquals("Tap ⋮ at the top right, then Allow restricted settings.", RESTRICTED_SETTINGS_HINT)
+        assertEquals("Tap the three dots (⋮) at the top right, then Allow restricted settings.", RESTRICTED_SETTINGS_HINT)
         assertTrue("Probably blocked by restricted settings" in vm.step(SetupStep.ACCESSIBILITY).hint.orEmpty(), "the guess, on step 4")
         assertEquals("Pick at least one app agents may see and use.", vm.step(SetupStep.APPS).hint)
         assertEquals(
             "Step 3, Allow restricted settings (Android blocks this for apps installed from a file), Not done. " +
-                "Tap ⋮ at the top right, then Allow restricted settings.",
+                "Tap the three dots (⋮) at the top right, then Allow restricted settings.",
             vm.step(SetupStep.RESTRICTED_SETTINGS).spoken,
         )
     }

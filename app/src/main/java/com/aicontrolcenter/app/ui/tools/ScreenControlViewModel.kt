@@ -101,7 +101,7 @@ const val SETUP_ALL_SET: String = "All set. Ask the Operator agent to use an app
 const val SETUP_ALL_SET_STOPPED: String = "All set, but screen control is stopped. Resume it below to use it."
 
 /** The hint of step 3, "Allow restricted settings", on this app's App info page. */
-const val RESTRICTED_SETTINGS_HINT: String = "Tap ⋮ at the top right, then Allow restricted settings."
+const val RESTRICTED_SETTINGS_HINT: String = "Tap the three dots (⋮) at the top right, then Allow restricted settings."
 
 /**
  * The setup checklist from what the screen already knows: the two switches in Settings, Android's accessibility
