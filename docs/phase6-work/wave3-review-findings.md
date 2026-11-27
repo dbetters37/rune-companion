@@ -1,6 +1,32 @@
-# Wave 3 design and review findings (NOT YET FIXED)
+# Wave 3 design and review findings
 
-Found at 88060fa by the wave-3 design reviewer and the security and integration reviewers. The fix run was stopped before it committed anything; all of these are open.
+Found at 88060fa by the wave-3 design reviewer and the security and integration reviewers.
+
+## Fixed in preview 3
+
+Fixed on p6/p3fix, merged in 09883f8. Each fix has a test that failed before it. The original reports below are kept
+as they were. Every item not listed here is still open.
+
+- **SEC-W3-1** (critical): fixed in 57028d7 and 6ada17f. A backup is written into a private file first. The file the
+  owner chose is touched only once the whole backup is ready and checked. Stop, a refusal or a failure leaves it as it
+  was. Stop at any point frees the screen at once. A backup that gets ready while "Stop saving?" is open waits for the
+  answer.
+- **SEC-W3-2** (major): fixed in 8d3955d. One share brings in at most 10 texts or files, 200,000 characters of text and
+  2,000,000 characters in all. The rest is named and left out. The screen shows at most 10 cards.
+- **INT3-1** (major): fixed in 92bd89a. Work rows count model answers as today's limits do. Refused and slow-down calls
+  are not answers.
+- **INT3-2** (major): fixed in e302324 and 1a544ce. "Nothing has left this phone" is said only while the log still
+  reaches back to the objective's start. Otherwise the line says "Older records were cleared, so this can no longer be
+  shown." This holds after a shorter log setting was later made longer again.
+- **D3B-1** (major): fixed in 84e5730. At 360 dp the Picture/List switch and its hint always show in full.
+- **D3B-2** (major): fixed in 5caecf2. Names stay in the picture up to 2.5 times its height. Circle texts are unique.
+  A team too big for names opens on the list.
+- **D3B-3** (major): fixed in cec860f and 30313f8. The line right above Save says who can read the item in the chosen
+  place and whether their model is off this phone. Workspace readers are found by what each tool can do, scripts
+  included.
+- **OPERATOR-OFF** (the owner's complaint, not in the list below): fixed in e033215, 3e7dc44 and 1a36f82. New objective
+  and the chat say Phone operator is off before work starts, with "Turn on". The line under a refused tool shows only for
+  the app's own refusal code, never for words an agent chose.
 
 ## design:wave3b
 
