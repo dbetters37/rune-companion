@@ -88,3 +88,12 @@ Core: Contacts (find/add/edit, S); Messages (read texts, send after one tap; SMS
 24 Media control (play/pause/skip through notification access, S). 25 Device status (battery, storage, memory, network, S).
 Reference for the shape of these: termux/termux-api on GitHub.
 First batch suggested: the core 3, notification reader, calendar, alarms and timers, all-files access, web search.
+
+## Local brain (owner: "this is costing way too much; I need the smartest you can put on there")
+Add an on-phone model runtime to AI Control Center (not only Entity): Google's LiteRT-LM or llama.cpp, a "This phone"
+provider the owner can assign per agent. Candidates as of mid-2026: Gemma 3n E4B (made for phones, sees images) and
+Qwen3 4B (reasoning, tool use); check for newer ones first. Regular razr 2025: about 8 GB memory, so 3-4B models at
+4-bit; razr ultra (16 GB) can run larger. Honest limit: phone models handle simple objectives, struggle with long
+multi-step ones. Offer a mix: phone model for simple agents, a computer model (Ollama/LM Studio, free) or a cheap
+cloud model for the Director and hard steps. Open questions to the owner: which razr model; is there a computer with a
+graphics card that can stay on.
