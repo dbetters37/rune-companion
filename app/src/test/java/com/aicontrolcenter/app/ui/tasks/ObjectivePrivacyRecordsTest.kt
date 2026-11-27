@@ -8,6 +8,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aicontrolcenter.app.testing.AppRobot
 import com.aicontrolcenter.app.testing.DAY_MS
 import com.aicontrolcenter.app.testing.TeamModel
+import com.aicontrolcenter.app.testing.teamOn
 import com.aicontrolcenter.app.testing.teamOnCloud
 import com.aicontrolcenter.app.ui.settings.SettingsViewModel
 import com.aicontrolcenter.core.activity.ActivityEvent
@@ -91,6 +92,47 @@ class ObjectivePrivacyRecordsTest {
         val lines = privacyLines()
         assertTrue(lines.none { it.startsWith("Nothing has left this phone") }, "never a false privacy claim: $lines")
         assertTrue(EgressTexts.RECORDS_CLEARED in lines, "$lines")
+    }
+
+    /** The owner sets the log to 7 days (the app prunes at once), then to [laterDays], then clears the usage history. */
+    private fun shortenedThenLengthened(laterDays: Int) {
+        val (robot, objective) = cloudObjective()
+        val app = robot.app
+        app.clock.current += 10 * DAY_MS
+        runBlocking {
+            app.settings.update { it.copy(activityRetentionDays = 7) }
+            app.activityLog.prune(app.clock.current - 7 * DAY_MS)
+            app.settings.update { it.copy(activityRetentionDays = laterDays) }
+            app.graph.ownerUsage.clearHistory()
+        }
+        app.graph.requestObjective(objective)
+        robot.waitUntilShown("Team view")
+        val lines = privacyLines()
+        assertTrue(lines.none { it.startsWith("Nothing has left this phone") }, "never a false privacy claim: $lines")
+        assertTrue(EgressTexts.RECORDS_CLEARED in lines, "$lines")
+    }
+
+    @Test
+    fun `after the log was set to 7 days and back to 30, and the usage history was cleared, the line says the records were cleared`() =
+        shortenedThenLengthened(laterDays = 30)
+
+    @Test
+    fun `after the log was set to 7 days and then to keep everything, and the usage history was cleared, the line says so too`() =
+        shortenedThenLengthened(laterDays = 0)
+
+    @Test
+    fun `an objective whose records are whole still says plainly that nothing left the phone`() {
+        val model = TeamModel()
+        val robot = AppRobot(compose).given { teamOn(model) }.launch().also { this.robot = it }
+        val app = robot.app
+        val objective = runBlocking { app.graph.orchestrator.startObjective("Research offline note apps, compare the best three, and write a recommendation") }
+        robot.waitUntil(30_000) { runBlocking { app.tasks.get(objective.id)?.status } == TaskStatus.COMPLETED }
+        app.clock.current += 40 * DAY_MS
+        runBlocking { app.settings.update { it.copy(activityRetentionDays = 0) } }
+        app.graph.requestObjective(objective.id)
+        robot.waitUntilShown("Team view")
+        val lines = privacyLines()
+        assertTrue("Nothing has left this phone for this objective." in lines, "$lines")
     }
 
     @Test

@@ -27,8 +27,10 @@ import com.aicontrolcenter.app.work.ObjectiveProgress
 import com.aicontrolcenter.app.ui.tasks.markdown.Markdown
 import com.aicontrolcenter.app.ui.tasks.markdown.MarkdownBlock
 import com.aicontrolcenter.core.Clock
+import com.aicontrolcenter.core.EventId
 import com.aicontrolcenter.core.RoutineId
 import com.aicontrolcenter.core.TaskId
+import com.aicontrolcenter.core.activity.ActivityCursor
 import com.aicontrolcenter.core.activity.ActivityEvent
 import com.aicontrolcenter.core.activity.ActivityType
 import com.aicontrolcenter.core.activity.ActivityFilter
@@ -58,6 +60,7 @@ import com.aicontrolcenter.core.usage.ModelPrices
 import com.aicontrolcenter.core.usage.UsageReports
 import com.aicontrolcenter.core.usage.WorkKind
 import com.aicontrolcenter.core.usage.WorkUsage
+import com.aicontrolcenter.framework.orchestration.OBJECTIVE_STARTED
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
@@ -350,13 +353,33 @@ class ObjectiveViewModel(
      * What the privacy line reads beyond the shown log: the objective's calls that left the phone (not cut by the other
      * events of a long objective), and when the owner last cleared the log.
      */
-    private data class Privacy(val egress: List<ActivityEvent>, val logClearedAt: Long?)
+    private data class Privacy(val egress: List<ActivityEvent>, val logClearedAt: Long?, val logReachesStart: Boolean)
+
+    /**
+     * True while the log still reaches back to the objective's start (INT3-2), so that its events are all there: its own
+     * "Objective started" event is kept, or any event from before it started. The log is only ever cut by age or cleared
+     * whole, so either one means nothing of the objective was cut, whatever the log's setting is now.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val logReachesStart: Flow<Boolean> = tree.map { it.objective?.createdAt }.distinctUntilChanged().flatMapLatest { started ->
+        if (started == null) {
+            flowOf(true)
+        } else {
+            combine(
+                activityLog.observe(ActivityFilter(taskId = rootId, types = setOf(ActivityType.TASK), text = OBJECTIVE_STARTED), limit = LOG_LIMIT)
+                    .map { events -> events.any { it.title.startsWith("$OBJECTIVE_STARTED:") } },
+                activityLog.observePage(ActivityFilter(), before = ActivityCursor(started + 1, EventId(NO_EVENT)), limit = 1)
+                    .map { it.isNotEmpty() },
+            ) { ownStart, older -> ownStart || older }
+        }
+    }.distinctUntilChanged()
 
     private val privacy = combine(
         activityLog.observe(ActivityFilter(rootTaskId = rootId, egressOnly = true), limit = LOG_LIMIT),
         activityLog.observe(ActivityFilter(types = setOf(ActivityType.USER_ACTION), text = SettingsViewModel.LOG_CLEARED), limit = LOG_LIMIT)
             .map { events -> events.filter { it.title == SettingsViewModel.LOG_CLEARED }.maxOfOrNull { it.at } }
             .distinctUntilChanged(),
+        logReachesStart,
         ::Privacy,
     )
 
@@ -612,7 +635,8 @@ class ObjectiveViewModel(
     }
 
     /**
-     * True when the records of [objective] may no longer be whole (INT3-2): it started before the oldest day the log keeps,
+     * True when the records of [objective] may no longer be whole (INT3-2): the log no longer reaches back to its start
+     * (cut by an earlier, shorter setting, whatever the setting is now), it started before the oldest day the log keeps,
      * or before the owner last cleared the log. Its usage rows cannot prove the rest: "Clear usage history" removes them.
      */
     private fun recordsCleared(objective: TaskRecord, privacy: Privacy, settings: FrameworkSettings, now: Long): Boolean {
@@ -620,7 +644,7 @@ class ObjectiveViewModel(
         val days = settings.activityRetentionDays
         val pruned = days > 0 && started < now - days * DAY_MS
         val cleared = privacy.logClearedAt?.let { it >= started } == true
-        return pruned || cleared
+        return !privacy.logReachesStart || pruned || cleared
     }
 
     private fun elapsedText(times: Times, live: Boolean, now: Long): String {
@@ -666,6 +690,9 @@ class ObjectiveViewModel(
 
     companion object {
         const val LOG_LIMIT = 200
+
+        /** An event id no event has: a page "before" it starts with the events older than its time. */
+        private const val NO_EVENT = "evt_none"
         private const val DAY_MS = 24L * 60 * 60 * 1000
         private val RUN_AGAIN = setOf(TaskStatus.FAILED, TaskStatus.TIMED_OUT, TaskStatus.CANCELLED)
 
