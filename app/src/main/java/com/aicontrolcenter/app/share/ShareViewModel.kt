@@ -393,7 +393,8 @@ class ShareViewModel(
 
     /**
      * What leaves the phone once it is saved in [target] (D3B-3), from the registry as read: who can recall it (a space's
-     * readers) or read it (agents with the workspace tools), and whether their models are off this phone and where.
+     * readers) or read it (agents with a tool that reads the workspace, scripts included), and whether their models are
+     * off this phone and where.
      * Nothing without a directory to read it from.
      */
     private fun whatLeaves(target: ShareTarget, snapshot: RegistrySnapshot, localOnly: Boolean): String {
@@ -401,7 +402,7 @@ class ShareViewModel(
         val agents = snapshot.agents.map { it.profile }
         val readers = when (target) {
             is ShareTarget.Space -> agents.filter { target.id in it.memory.readableSpaces }
-            ShareTarget.Workspace -> agents.filter { WORKSPACE_READ in it.toolIds }
+            ShareTarget.Workspace -> agents.filter { agent -> agent.toolIds.any(::readsWorkspace) }
         }
         // Each reader's models as registered: those off this phone, by provider; a reader with none registered has no model yet.
         val providers = readers.associateWith { agent ->
@@ -468,8 +469,19 @@ class ShareViewModel(
         /** How much of each item the screen shows. */
         const val PREVIEW_CHARS = 400
 
-        /** The tool an agent reads the workspace with. */
-        val WORKSPACE_READ = com.aicontrolcenter.core.ToolId("workspace.read")
+        /**
+         * What lets an agent see what a workspace file holds: the workspace tools that read (list, read, search) and the
+         * scripts, which reach the workspace too. Judged by each tool's capability, never by one tool's name.
+         */
+        val WORKSPACE_READERS = setOf(
+            com.aicontrolcenter.core.operator.OperatorCapabilities.WORKSPACE_READ,
+            com.aicontrolcenter.core.operator.OperatorCapabilities.SCRIPTS_JS,
+            com.aicontrolcenter.core.operator.OperatorCapabilities.SCRIPTS_SHELL,
+        )
+
+        /** True when [tool] lets an agent read the workspace. */
+        fun readsWorkspace(tool: com.aicontrolcenter.core.ToolId): Boolean =
+            com.aicontrolcenter.core.operator.OperatorTools.info(tool)?.capability in WORKSPACE_READERS
 
         fun utf8Length(text: String): Long {
             var count = 0L

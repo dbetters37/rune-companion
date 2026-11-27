@@ -21,6 +21,7 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * D3B-3: the line right above Save says what leaves the phone, for the place chosen: who can recall it, and whether
@@ -88,6 +89,56 @@ class ShareWhatLeavesTest {
             "Saves 1 memory in “Screen notes”. Researcher can recall it. Local-only mode is on, so what Researcher recalls stays on this phone.",
             viewModel.uiState.value.saveLine,
         )
+    }
+
+    /** Every agent loses every tool that reads the workspace; then [agent] gets [tools] only. */
+    private suspend fun TestApp.onlyReaderTools(agent: String, tools: Set<String>) {
+        val readers = com.aicontrolcenter.core.operator.OperatorTools.all
+            .filter { it.capability == com.aicontrolcenter.core.operator.OperatorCapabilities.WORKSPACE_READ }.map { it.id } +
+            listOf(com.aicontrolcenter.core.ToolId("scripts.run_js"), com.aicontrolcenter.core.ToolId("scripts.run_shell"))
+        for (each in agents.getAll()) {
+            val keep = each.toolIds - readers.toSet()
+            val toolIds = if (each.name == agent) keep + tools.map { com.aicontrolcenter.core.ToolId(it) } else keep
+            graph.agentManager.update(each.id, each.toDraft().copy(toolIds = toolIds))
+        }
+    }
+
+    @Test
+    fun `an agent that can only search the workspace is a reader too, with its model off the phone`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.teamOnCloud(TeamModel(), name = "Example Cloud")
+        app.onlyReaderTools("Researcher", setOf("workspace.search"))
+        val viewModel = share(app)
+        viewModel.select(ShareTarget.Workspace)
+        val line = viewModel.uiState.value.saveLine.orEmpty()
+        assertTrue("No agent can use the workspace yet" !in line, line)
+        assertTrue("Researcher can read it." in line, line)
+        assertTrue("(Example Cloud)" in line, line)
+    }
+
+    @Test
+    fun `an agent that runs scripts can read the workspace through them, so it is a reader`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.teamOnCloud(TeamModel(), name = "Example Cloud")
+        app.settings.update { it.copy(operatorEnabled = true) }
+        app.onlyReaderTools("Writer", setOf("scripts.run_js"))
+        val viewModel = share(app)
+        viewModel.select(ShareTarget.Workspace)
+        val line = viewModel.uiState.value.saveLine.orEmpty()
+        assertTrue("No agent can use the workspace yet" !in line, line)
+        assertTrue("Writer can read it." in line, line)
+        assertTrue("(Example Cloud)" in line, line)
+    }
+
+    @Test
+    fun `with no tool that reads the workspace, a file there stays on the phone`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.teamOnCloud(TeamModel(), name = "Example Cloud")
+        app.onlyReaderTools("Writer", setOf("workspace.write"))
+        val viewModel = share(app)
+        viewModel.select(ShareTarget.Workspace)
+        val line = viewModel.uiState.value.saveLine.orEmpty()
+        assertTrue("No agent can use the workspace yet" in line, line)
     }
 
     @Test
