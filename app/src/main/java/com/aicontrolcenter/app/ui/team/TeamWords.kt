@@ -24,6 +24,9 @@ object TeamWords {
     const val LIST_IS_EASIER =
         "A list of the same information is easier to read with large text or with TalkBack."
     const val SHOW_LIST = "Show the list"
+
+    /** Said over the picture when the names do not fit under the circles (D3B-2). */
+    const val NAMES_DONT_FIT = "The names do not fit in the picture for a team this size. The list shows everyone by name."
     const val TOO_MANY = "The team is too big for the picture, so the list shows everyone."
     const val CALM_NOTE = "Motion is off (Calm), so messages do not travel as dots. A line drawn thicker carried a message in the last minute."
     const val DOTS_NOTE = "A dot travels once along a line when a message is sent. A line drawn thicker carried a message in the last minute."

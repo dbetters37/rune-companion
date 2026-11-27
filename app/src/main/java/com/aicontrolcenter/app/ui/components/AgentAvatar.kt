@@ -34,6 +34,8 @@ fun AgentAvatar(
     status: StatusTone? = null,
     dimmed: Boolean = false,
     backdrop: Color = MaterialTheme.colorScheme.surface,
+    /** The text in the circle: the name's initials, or one set apart from its neighbours' (the Team view, D3B-2). */
+    text: String = monogramOf(name),
 ) {
     val accent = appColors.agentAccent(colorIndex).let { if (dimmed) it.copy(alpha = 0.45f) else it }
     Box(modifier = modifier.size(size)) {
@@ -45,7 +47,7 @@ fun AgentAvatar(
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                text = monogramOf(name),
+                text = text,
                 color = accent,
                 fontWeight = FontWeight.SemiBold,
                 // From the circle's size in dp, not scaled again by the font size: at font scale 2.0 the letter must still fit (D3A-13).

@@ -155,6 +155,11 @@ internal fun TeamPicture(
             LinkSigns.place(placement, lines.sortedByDescending { it.first.lastAt }.map { (link, line) -> link.key to line }, SIGNED_LINKS)
         }
         val order = remember(graph) { traversalOrder(graph) }
+        // No two circles of one picture read the same (D3B-2): "Re" and "Rv", never two "R" told apart by colour.
+        val circleTexts = remember(graph) {
+            val members = graph.nodes.filter { it.isAgent }
+            members.map { it.id }.zip(TeamMonograms.forNames(members.map { it.name })).toMap()
+        }
 
         Box(
             Modifier
@@ -187,6 +192,7 @@ internal fun TeamPicture(
                     NodeView(
                         node = node,
                         graph = graph,
+                        circleText = circleTexts[node.id],
                         size = placement.sizeOf(node.kind).dp,
                         showLabel = placement.showLabels,
                         labelWidth = labelWidth.dp,
@@ -347,6 +353,7 @@ private fun DrawScope.drawArrow(tip: Offset, direction: DpPoint, color: Color) {
 private fun NodeView(
     node: TeamNode,
     graph: TeamGraph,
+    circleText: String?,
     size: Dp,
     showLabel: Boolean,
     labelWidth: Dp,
@@ -369,7 +376,7 @@ private fun NodeView(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Box(Modifier.size(target), contentAlignment = Alignment.Center) {
-            NodeFace(node, size)
+            NodeFace(node, size, circleText)
         }
         if (showLabel) {
             Text(
@@ -391,7 +398,7 @@ private fun NodeView(
 
 /** The face of a member: the agent's avatar with its state's glyph, a ring when it works or waits for you. */
 @Composable
-private fun NodeFace(node: TeamNode, size: Dp) {
+private fun NodeFace(node: TeamNode, size: Dp, circleText: String?) {
     val colors = appColors
     val ring = when (node.state) {
         NodeState.WAITING_FOR_YOU -> Modifier.border(2.5.dp, colors.attention, CircleShape)
@@ -442,6 +449,7 @@ private fun NodeFace(node: TeamNode, size: Dp) {
                 status = node.tone,
                 dimmed = node.dimmed,
                 backdrop = MaterialTheme.colorScheme.background,
+                text = circleText ?: com.aicontrolcenter.app.ui.components.monogramOf(node.name),
             )
         }
     }

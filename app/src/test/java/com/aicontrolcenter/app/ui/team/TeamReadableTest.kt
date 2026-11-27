@@ -38,8 +38,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * D3B-1: on a 360 dp phone the Picture/List switch and the hint under it show in full, also with a paused objective's
- * card.
+ * D3B-1 and D3B-2: on a 360 dp phone the Picture/List switch and the hint under it show in full, also with a paused
+ * objective's card; names stay under the avatars for a modest team, no two members share the text in their circle, and
+ * a team whose names cannot fit opens on the list.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35], qualifiers = "w360dp-h740dp-xhdpi")
@@ -92,5 +93,29 @@ class TeamReadableTest {
         assertTrue(fullyShown(hasText(TeamWords.LIST) and hasClickAction()), "the List button is whole")
         assertTrue(fullyShown(hasText(TeamWords.PICTURE) and hasClickAction()), "the Picture button is whole")
         assertTrue(fullyShown(hasText(TeamWords.TAP_NOTE)), "the hint is whole")
+    }
+
+    @Test
+    fun `twelve agents at 411 by 700 dp keep their names`() {
+        val ring = (1..12).map { "agt_$it" }
+        val placed = TeamLayout.arrange(true, "agt_director", ring, listOf("space:1"), 411f, 700f)
+        assertTrue(placed.showLabels, "names under the avatars")
+    }
+
+    @Test
+    fun `no two members of one picture share the text in their circle`() {
+        val names = listOf("Director", "Researcher", "Reviewer", "Analyst", "Writer") + (1..12).map { "Helper $it" } + listOf("Rita", "R")
+        val texts = TeamMonograms.of(names)
+        assertEquals(names.size, texts.values.toSet().size, "$texts")
+        assertTrue(texts.getValue("Researcher") != texts.getValue("Reviewer"))
+        assertEquals("D", texts.getValue("Director"), "a name alone in its letter keeps its one letter")
+    }
+
+    @Test
+    fun `a team whose names cannot fit opens on the list`() {
+        show(state(crowd = 25))
+        val list = compose.onAllNodes(hasText(TeamWords.LIST) and hasClickAction()).onFirst().fetchSemanticsNode()
+        val selected = list.config.getOrNull(SemanticsProperties.Selected) ?: false
+        assertTrue(selected, "the list is chosen first")
     }
 }

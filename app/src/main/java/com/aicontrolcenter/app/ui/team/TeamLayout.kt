@@ -57,6 +57,13 @@ object TeamLayout {
 
     /** Most agents on one ring before a second, inner ring is used. */
     const val MAX_SINGLE_RING = 10
+
+    /** How much taller than the screen the picture may grow to keep everyone's name under their avatar. */
+    const val LABELLED_GROWTH = 2.5f
+
+    /** True when [arrange] keeps the names under the avatars for these members in a picture of this size. */
+    fun namesFit(hasOwner: Boolean, directorId: String?, ring: List<String>, spaces: List<String>, width: Float, height: Float): Boolean =
+        tryHeights(hasOwner, directorId, ring, spaces, width, height, labels = true, maxGrowth = LABELLED_GROWTH) != null
     private const val INNER = 0.56f
 
     fun arrange(
@@ -67,7 +74,8 @@ object TeamLayout {
         width: Float,
         height: Float,
     ): TeamPlacement {
-        val labelled = tryHeights(hasOwner, directorId, ring, spaces, width, height, labels = true, maxGrowth = 1f)
+        // Names first, even in a taller picture that pans (D3B-2): only when they cannot fit at 2.5 times the height do they go.
+        val labelled = tryHeights(hasOwner, directorId, ring, spaces, width, height, labels = true, maxGrowth = LABELLED_GROWTH)
         if (labelled != null) return labelled
         return tryHeights(hasOwner, directorId, ring, spaces, width, height, labels = false, maxGrowth = 4f)
             ?: place(hasOwner, directorId, ring, spaces, width, height * 4f, labels = false)

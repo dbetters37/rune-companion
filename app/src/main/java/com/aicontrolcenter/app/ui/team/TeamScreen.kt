@@ -155,13 +155,15 @@ private fun rememberScreenReaderOn(): Boolean {
 /** Width from which the controls sit beside the picture instead of above it. */
 private val WideLayout = 700.dp
 
+/** The most the Picture/List switch and its note take under the header. */
+private val SWITCH_ROOM = 120.dp
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TeamScreen(state: TeamUiState, liveSummary: String, actions: TeamActions, screenReaderOn: Boolean = false) {
     val largeText = LocalDensity.current.fontScale >= 1.5f
     val tooBig = state.graph.agentsLeftOut > 0
     var chosen by rememberSaveable { mutableStateOf<TeamMode?>(null) }
-    val mode = chosen ?: if (screenReaderOn || largeText || tooBig) TeamMode.LIST else TeamMode.PICTURE
     var legendOpen by rememberSaveable { mutableStateOf(false) }
     val navigation = actions.navigation
     val picture = PictureActions(
@@ -187,9 +189,25 @@ fun TeamScreen(state: TeamUiState, liveSummary: String, actions: TeamActions, sc
             // Only the objective's card and its notices scroll, in at most this part of the height; the Picture and List
             // switch and its hint sit below them, always whole, right above the picture (D3B-1).
             val headerMax = maxHeight * 0.35f
-            val showHint = mode == TeamMode.PICTURE && (screenReaderOn || largeText)
+            // The picture's least room: a team whose names cannot fit there, even in a taller picture, opens on the list (D3B-2).
+            val pictureWidth = if (wide) maxWidth - 340.dp else maxWidth
+            val pictureHeight = if (wide) maxHeight else maxHeight - headerMax - SWITCH_ROOM
+            val graph = state.graph
+            val namesFit = remember(graph.owner != null, graph.director?.id, graph.ring.size, graph.spaces.size, pictureWidth, pictureHeight) {
+                TeamLayout.namesFit(
+                    graph.owner != null, graph.director?.id, graph.ring.map { it.id }, graph.spaces.map { it.id },
+                    pictureWidth.value, pictureHeight.value.coerceAtLeast(TeamLayout.TOUCH * 4),
+                )
+            }
+            val mode = chosen ?: if (screenReaderOn || largeText || tooBig || !namesFit) TeamMode.LIST else TeamMode.PICTURE
+            val hint = when {
+                mode != TeamMode.PICTURE -> null
+                screenReaderOn || largeText -> TeamWords.LIST_IS_EASIER
+                !namesFit -> TeamWords.NAMES_DONT_FIT
+                else -> null
+            }
             val header: @Composable () -> Unit = { Header(state, liveSummary, actions, tooBig = tooBig) }
-            val switch: @Composable () -> Unit = { ModeSwitch(mode, { chosen = it }, showHint) }
+            val switch: @Composable () -> Unit = { ModeSwitch(mode, { chosen = it }, hint) }
             when {
                 mode == TeamMode.LIST -> LazyColumn(
                     modifier = Modifier.fillMaxSize().readableWidth().testTag(TEAM_LIST_TAG),
@@ -281,7 +299,7 @@ private fun Header(
 
 /** Picture or List, and under it how to use the picture: never cut off by the part above it (D3B-1). */
 @Composable
-private fun ModeSwitch(mode: TeamMode, onMode: (TeamMode) -> Unit, showHint: Boolean) {
+private fun ModeSwitch(mode: TeamMode, onMode: (TeamMode) -> Unit, hint: String?) {
     Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm), modifier = Modifier.padding(top = Spacing.sm, bottom = Spacing.sm)) {
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
             TeamMode.entries.forEachIndexed { index, option ->
@@ -293,8 +311,8 @@ private fun ModeSwitch(mode: TeamMode, onMode: (TeamMode) -> Unit, showHint: Boo
                 ) { Text(if (option == TeamMode.PICTURE) TeamWords.PICTURE else TeamWords.LIST) }
             }
         }
-        if (showHint) {
-            InfoBanner(TeamWords.LIST_IS_EASIER)
+        if (hint != null) {
+            InfoBanner(hint)
             TextButton(onClick = { onMode(TeamMode.LIST) }, modifier = Modifier.heightIn(min = 48.dp)) { Text(TeamWords.SHOW_LIST) }
         }
         if (mode == TeamMode.PICTURE) {
