@@ -23,3 +23,18 @@ These replace the earlier approval rules where they differ. The owner chose them
   do not try shell commands to find out.
 - "Find a contact": contacts read access, granted by the owner in Android's permission prompt.
 - Then test one real task on the owner's phone, step by step, before building anything else.
+
+## The owner's real objectives (the yardstick for Saturday)
+"I need it to be an app where I put something in the objectives and the agents do it without me having to baby them."
+Each is done only when it runs on the owner's phone with no help except the send/pay taps.
+
+| Objective | State on 27 Nov | Needed |
+|---|---|---|
+| Make a task list | Works: a workspace file | Optional: Google Tasks or Keep |
+| Organize my files on my phone | Partly: shared folders only (Tools > Folders) | A move tool; the new no-ask rules; guide the owner to share Download, Documents, etc. |
+| Find space on my phone | Partly: large files in shared folders and media | Settings access (Storage page, clearing app caches through Settings) |
+| Look for jobs near me | Partly: no location, no web search; some pages readable | A web search tool; the owner's city in memory |
+| Organize my email | Not built (only slow screen control in Gmail) | A Gmail connection through Google's official sign-in |
+| Check my email/phone for any tasks that need done | Not built | Gmail connection, notification access (owner switches it on), calendar access |
+
+Order: task list and files; find space; jobs; email and tasks (biggest).
