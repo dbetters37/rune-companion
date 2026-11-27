@@ -120,7 +120,7 @@ class ShareIntakeTest {
         val intake = read(sendMultiple(uris), files)
         assertEquals(10, intake.items.size)
         assertEquals(uris.take(10), files.opened)
-        assertEquals(listOf("2 more files were left out: at most 10 files can be saved at once."), intake.leftOut)
+        assertEquals(listOf("2 more files were left out: at most 10 texts or files can be saved at once."), intake.leftOut)
     }
 
     @Test

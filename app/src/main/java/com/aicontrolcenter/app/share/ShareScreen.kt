@@ -232,7 +232,12 @@ private fun WhatWasShared(state: ShareUiState) {
         SectionHeader("What was shared")
         // With one item its own size says it all; with several, the whole share's size comes first and each shows less.
         if (state.items.size > 1) Text(state.summary, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        state.items.forEach { item -> SharedItemCard(item, maxLines = if (state.items.size > 1) 4 else 8) }
+        // Only the cards the screen shows are composed: never more than one share may bring in (SEC-W3-2).
+        state.items.take(ShareIntake.MAX_ITEMS).forEach { item -> SharedItemCard(item, maxLines = if (state.items.size > 1) 4 else 8) }
+        val more = state.items.size - ShareIntake.MAX_ITEMS
+        if (more > 0) {
+            Text("And ${"%,d".format(java.util.Locale.ENGLISH, more)} more.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 

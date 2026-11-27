@@ -69,18 +69,26 @@ internal interface ShareSource {
  *
  * - Only `ACTION_SEND` and `ACTION_SEND_MULTIPLE` whose type is `text/…` are taken; anything else (an app may start the
  *   activity by name with any action) is refused before anything is read.
- * - Shared text: at most [MAX_TEXT_CHARS] characters each.
+ * - One share brings in at most [MAX_ITEMS] texts and files together, and at most [MAX_TOTAL_CHARS] characters in all
+ *   (SEC-W3-2): the caps hold for the share as a whole, however many texts another app puts in one intent.
+ * - Shared text: at most [MAX_TEXT_CHARS] characters, all the shared texts of a share together.
  * - Files: at most [MAX_FILES], each of at most [MAX_FILE_BYTES], of a `text/…` type, readable as UTF-8 text; only
  *   `content:` addresses (what Android's share screen hands over with its one-time read grant), never a `file:` path and
  *   never one of this app's own providers, so a share can never make the app read its own private files.
  * - Nothing here stores anything; every part left out gets a sentence the owner sees.
  */
 object ShareIntake {
-    /** The most one shared text may hold. */
+    /** The most the shared texts of one share may hold, together. */
     const val MAX_TEXT_CHARS: Int = 200_000
 
     /** The most files one share may hand over. */
     const val MAX_FILES: Int = 10
+
+    /** The most texts and files one share may bring in, together. */
+    const val MAX_ITEMS: Int = 10
+
+    /** The most characters one share may bring in, its texts and files together (about 2 MB of plain text). */
+    const val MAX_TOTAL_CHARS: Int = 2_000_000
 
     /** The largest file a share may hand over (the same 1 MB as folder pick-up). */
     const val MAX_FILE_BYTES: Long = PickUpLimits.MAX_FILE_BYTES
@@ -137,22 +145,43 @@ object ShareIntake {
         if (request.unreadable) return SharedIntake(emptyList(), listOf(UNREADABLE))
         val items = ArrayList<SharedItem>()
         val leftOut = ArrayList<String>()
+        var textChars = 0
+        var textsOverCount = 0
+        var textsOverChars = 0
         for (text in request.texts) {
             if (text.isBlank()) continue
-            if (text.length > MAX_TEXT_CHARS) {
-                leftOut += "The shared text was left out: it has ${count(text.length)} characters, and at most " +
-                    "${count(MAX_TEXT_CHARS)} can be saved at once. Share a shorter part, or share it as a file."
-                continue
+            when {
+                text.length > MAX_TEXT_CHARS -> leftOut += "The shared text was left out: it has ${count(text.length)} characters, and at " +
+                    "most ${count(MAX_TEXT_CHARS)} can be saved at once. Share a shorter part, or share it as a file."
+                items.size >= MAX_ITEMS -> textsOverCount++
+                textChars + text.length > MAX_TEXT_CHARS -> textsOverChars++
+                else -> {
+                    items += SharedItem(request.subject, text)
+                    textChars += text.length
+                }
             }
-            items += SharedItem(request.subject, text)
         }
-        request.streams.forEachIndexed { index, uri -> readFile(uri, index, request, source, items, leftOut) }
-        if (request.streamsLeftOut > 0) {
-            leftOut += "${files(request.streamsLeftOut)} left out: at most $MAX_FILES files can be saved at once."
+        if (textsOverChars > 0) {
+            leftOut += (if (textsOverChars == 1) "A shared text was" else "${count(textsOverChars)} shared texts were") +
+                " left out: together the shared texts would have more than ${count(MAX_TEXT_CHARS)} characters, the most one share " +
+                "can save. Share ${if (textsOverChars == 1) "it" else "them"} on ${if (textsOverChars == 1) "its" else "their"} own."
         }
+        if (textsOverCount > 0) {
+            leftOut += (if (textsOverCount == 1) "1 more shared text was" else "${count(textsOverCount)} more shared texts were") +
+                " left out: $TOO_MANY"
+        }
+        // Files fill the places the texts left; one past the cap is never opened.
+        var filesOverCount = request.streamsLeftOut
+        request.streams.forEachIndexed { index, uri ->
+            if (items.size >= MAX_ITEMS) filesOverCount++ else readFile(uri, index, request, source, items, leftOut)
+        }
+        if (filesOverCount > 0) leftOut += "${files(filesOverCount)} left out: $TOO_MANY"
         if (items.isEmpty() && leftOut.isEmpty()) leftOut += NOTHING
         return SharedIntake(items, leftOut)
     }
+
+    /** Why texts or files past [MAX_ITEMS] are left out. */
+    private val TOO_MANY = "at most $MAX_ITEMS texts or files can be saved at once."
 
     private fun readFile(uri: Uri, index: Int, request: ShareRequest, source: ShareSource, items: MutableList<SharedItem>, leftOut: MutableList<String>) {
         if (uri.scheme?.lowercase() != ContentResolver.SCHEME_CONTENT) {
@@ -187,9 +216,12 @@ object ShareIntake {
             return
         }
         val text = utf8(bytes)
+        val before = items.sumOf { it.text.length }
         when {
             text == null -> leftOut += "“$name” was left out: it could not be read as plain text."
             text.isBlank() -> leftOut += "“$name” was left out: it is empty."
+            before + text.length > MAX_TOTAL_CHARS -> leftOut += "“$name” was left out: with it, this share would hold more than " +
+                "${count(MAX_TOTAL_CHARS)} characters, the most one share can save. Share it on its own."
             else -> items += SharedItem(name, text, fromFile = true, markdown = isMarkdown(type, name))
         }
     }
