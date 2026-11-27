@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aicontrolcenter.app.ui.activity.TOKENS_IN_PLAIN_WORDS
 import com.aicontrolcenter.app.ui.activity.aboutMoney
+import com.aicontrolcenter.app.ui.settings.SettingsViewModel
 import com.aicontrolcenter.app.ui.chat.moneyOf
 import com.aicontrolcenter.app.ui.components.localityOf
 import com.aicontrolcenter.app.ui.components.onPhoneModels
@@ -27,6 +28,7 @@ import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.RoutineId
 import com.aicontrolcenter.core.TaskId
 import com.aicontrolcenter.core.activity.ActivityEvent
+import com.aicontrolcenter.core.activity.ActivityType
 import com.aicontrolcenter.core.activity.ActivityFilter
 import com.aicontrolcenter.core.activity.ActivityLog
 import com.aicontrolcenter.core.memory.KnowledgeSpace
@@ -154,10 +156,17 @@ data class LimitsUi(
  * What left the phone for this objective: the model calls the activity log shows leaving ([transfers], to
  * [destinations]), and the answers its usage rows record from models off this phone ([offPhoneAnswers]). The usage rows
  * are kept longer than the log and are not cut to the newest events, so "Nothing has left this phone" is said only when
- * neither shows anything (D3A-5).
+ * neither shows anything (D3A-5) and both are whole: [recordsCleared] when the objective started before the oldest day
+ * the log keeps, or before the owner cleared the log, so that its records (and, after "Clear usage history", its usage
+ * rows) may be gone (INT3-2).
  */
 @Immutable
-data class EgressUi(val transfers: Int = 0, val destinations: List<String> = emptyList(), val offPhoneAnswers: Long = 0) {
+data class EgressUi(
+    val transfers: Int = 0,
+    val destinations: List<String> = emptyList(),
+    val offPhoneAnswers: Long = 0,
+    val recordsCleared: Boolean = false,
+) {
     /** Something of this objective left the phone, by either record. */
     val away: Boolean get() = transfers > 0 || offPhoneAnswers > 0
 }
@@ -326,10 +335,28 @@ class ObjectiveViewModel(
 
     private val extras = combine(usage.observeWorkUsage(WorkKind.OBJECTIVE, rootId.value), prices.observeAll(), routines, spaces, ::Extras)
 
-    private val inputs = combine(stored, activityLog.observe(ActivityFilter(rootTaskId = rootId), limit = LOG_LIMIT), extras, ::Triple)
+    /**
+     * What the privacy line reads beyond the shown log: the objective's calls that left the phone (not cut by the other
+     * events of a long objective), and when the owner last cleared the log.
+     */
+    private data class Privacy(val egress: List<ActivityEvent>, val logClearedAt: Long?)
 
-    val uiState: StateFlow<ObjectiveUiState> = combine(inputs, local, requests) { (stored, log, extras), local, requests ->
-        build(stored, log, extras, local, requests)
+    private val privacy = combine(
+        activityLog.observe(ActivityFilter(rootTaskId = rootId, egressOnly = true), limit = LOG_LIMIT),
+        activityLog.observe(ActivityFilter(types = setOf(ActivityType.USER_ACTION), text = SettingsViewModel.LOG_CLEARED), limit = LOG_LIMIT)
+            .map { events -> events.filter { it.title == SettingsViewModel.LOG_CLEARED }.maxOfOrNull { it.at } }
+            .distinctUntilChanged(),
+        ::Privacy,
+    )
+
+    private val inputs = combine(stored, activityLog.observe(ActivityFilter(rootTaskId = rootId), limit = LOG_LIMIT), extras, privacy) { stored, log, extras, privacy ->
+        Inputs(stored, log, extras, privacy)
+    }
+
+    private data class Inputs(val stored: Stored, val log: List<ActivityEvent>, val extras: Extras, val privacy: Privacy)
+
+    val uiState: StateFlow<ObjectiveUiState> = combine(inputs, local, requests) { (stored, log, extras, privacy), local, requests ->
+        build(stored, log, extras, privacy, local, requests)
     }.flowOn(computation).conflate().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ObjectiveUiState())
 
     /** The times the elapsed line is made of; they change only when the objective's record does. */
@@ -414,7 +441,7 @@ class ObjectiveViewModel(
 
     fun documentCopied() = local.update { it.copy(message = UserMessage("Document copied.", ++messageCounter)) }
 
-    private fun build(stored: Stored, log: List<ActivityEvent>, extras: Extras, local: Local, requests: List<OwnerRequest>): ObjectiveUiState {
+    private fun build(stored: Stored, log: List<ActivityEvent>, extras: Extras, privacy: Privacy, local: Local, requests: List<OwnerRequest>): ObjectiveUiState {
         builds.incrementAndGet()
         val summaries = stored.tree.summaries
         val objective = stored.tree.objective?.takeIf { record -> summaries.any { it.id == record.id } }
@@ -434,7 +461,7 @@ class ObjectiveViewModel(
             log = log.map { event ->
                 ActivityRowUi(event, formatCompactTimestamp(event.at, now, zone), event.agentId?.let { names[it]?.profile?.name })
             },
-            egress = egressOf(log, extras.cost, stored.snapshot),
+            egress = egressOf(privacy, extras.cost, stored.snapshot, recordsCleared(objective, privacy, stored.settings, now)),
             document = objective.result?.takeIf { it.isNotBlank() },
             documentBlocks = blocksOf(objective.result?.takeIf { it.isNotBlank() }),
             documentNote = documentNote(objective, progress),
@@ -540,12 +567,24 @@ class ObjectiveViewModel(
         else -> "The Director writes the final document once every task has finished (${progress.completed} of ${progress.planned} done)."
     }
 
-    private fun egressOf(log: List<ActivityEvent>, usage: List<WorkUsage>, snapshot: RegistrySnapshot): EgressUi {
-        val away = log.mapNotNull { it.egress }.filter { it.locality != Locality.ON_DEVICE }
+    private fun egressOf(privacy: Privacy, usage: List<WorkUsage>, snapshot: RegistrySnapshot, recordsCleared: Boolean): EgressUi {
+        val away = privacy.egress.mapNotNull { it.egress }.filter { it.locality != Locality.ON_DEVICE }
         // A model no longer registered counts as off the phone: a privacy line must never say less than happened.
         // Tokens are the proof a request was sent (a request refused before sending is counted as a call too).
         val offPhone = usage.filter { snapshot.localityOf(it.modelId) != Locality.ON_DEVICE && it.inputTokens + it.outputTokens > 0 }
-        return EgressUi(away.size, away.map { it.destinationHost }.distinct(), offPhone.sumOf { it.calls })
+        return EgressUi(away.size, away.map { it.destinationHost }.distinct(), offPhone.sumOf { it.calls }, recordsCleared)
+    }
+
+    /**
+     * True when the records of [objective] may no longer be whole (INT3-2): it started before the oldest day the log keeps,
+     * or before the owner last cleared the log. Its usage rows cannot prove the rest: "Clear usage history" removes them.
+     */
+    private fun recordsCleared(objective: TaskRecord, privacy: Privacy, settings: FrameworkSettings, now: Long): Boolean {
+        val started = objective.createdAt
+        val days = settings.activityRetentionDays
+        val pruned = days > 0 && started < now - days * DAY_MS
+        val cleared = privacy.logClearedAt?.let { it >= started } == true
+        return pruned || cleared
     }
 
     private fun elapsedText(times: Times, live: Boolean, now: Long): String {
@@ -591,6 +630,7 @@ class ObjectiveViewModel(
 
     companion object {
         const val LOG_LIMIT = 200
+        private const val DAY_MS = 24L * 60 * 60 * 1000
         private val RUN_AGAIN = setOf(TaskStatus.FAILED, TaskStatus.TIMED_OUT, TaskStatus.CANCELLED)
 
         /** What the composer says once a note is stored. */

@@ -184,7 +184,7 @@ class SettingsViewModel(
     /** Deletes every recorded event, then records that this happened so the log never silently restarts. */
     fun clearActivityLog() = change {
         activityLog.clear()
-        activity.record(ActivityType.USER_ACTION, "Activity log cleared", "All earlier events were deleted at your request.")
+        activity.record(ActivityType.USER_ACTION, LOG_CLEARED, "All earlier events were deleted at your request.")
         show("The activity log was cleared.")
     }
 
@@ -216,5 +216,10 @@ class SettingsViewModel(
                 show("The change could not be saved: ${failure.message ?: "storage error"}")
             }
         }
+    }
+
+    companion object {
+        /** The log's first event after the owner cleared it; screens read it to know older records are gone (INT3-2). */
+        const val LOG_CLEARED: String = "Activity log cleared"
     }
 }
