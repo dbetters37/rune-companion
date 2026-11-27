@@ -1,5 +1,6 @@
 package com.aicontrolcenter.app.ui.tasks
 
+import com.aicontrolcenter.app.ui.settings.PhoneOperatorSwitch
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -48,6 +49,8 @@ class TaskDetailActions(
     val onOpenRequest: (RequestId) -> Unit = {},
     /** Opens the question screen of a question the task waits on (rule 13). */
     val onOpenQuestion: (RequestId) -> Unit = onOpenRequest,
+    /** "Turn on" Phone operator, under a phone tool refused because it is off. */
+    val onTurnOnOperator: () -> Unit = {},
 )
 
 /** One task; [onOpenQuestion] opens a question the task waits on (rule 13), [onOpenRequest] any other request. */
@@ -68,12 +71,17 @@ fun TaskDetailRoute(
             graph.activityMonitor, graph.clock, graph.zone(), requests = graph.ownerRequests.pending, capabilityInfo = graph.capabilities::info,
             awaitStartup = graph::awaitStartup, spaces = graph.memoryService.observeSpaces(), computation = work,
             workUsage = graph.usageReports.observeWorkUsage(WorkKind.TASK, taskId.value), prices = graph.modelPrices.observeAll(),
+            // Owner UI: the owner's own switch, never anything an agent reaches.
+            operatorSwitch = PhoneOperatorSwitch(graph.settings, graph.activityRecorder),
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     TaskDetailScreen(
         state,
-        TaskDetailActions(onBack, onOpenTask, onOpenObjective, viewModel::retry, viewModel::cancel, viewModel::messageShown, onOpenRequest, onOpenQuestion),
+        TaskDetailActions(
+            onBack, onOpenTask, onOpenObjective, viewModel::retry, viewModel::cancel, viewModel::messageShown, onOpenRequest, onOpenQuestion,
+            onTurnOnOperator = viewModel::turnOnOperator,
+        ),
     )
 }
 
@@ -122,7 +130,7 @@ fun TaskDetailScreen(state: TaskDetailUiState, actions: TaskDetailActions) {
                         }
                     }
                 }
-                transcriptSection(state, task)
+                transcriptSection(state, task, actions.onTurnOnOperator.takeIf { state.operatorSwitchedOff && state.canTurnOnOperator })
             }
         }
     }
@@ -144,7 +152,7 @@ fun TaskDetailScreen(state: TaskDetailUiState, actions: TaskDetailActions) {
     }
 }
 
-private fun LazyListScope.transcriptSection(state: TaskDetailUiState, task: TaskDetailUi) {
+private fun LazyListScope.transcriptSection(state: TaskDetailUiState, task: TaskDetailUi, onTurnOnOperator: (() -> Unit)? = null) {
     item(key = "transcript-header") {
         Pad {
             Column {
@@ -161,7 +169,7 @@ private fun LazyListScope.transcriptSection(state: TaskDetailUiState, task: Task
             }
         }
     }
-    taskTranscript(state.transcript, task.assignee)
+    taskTranscript(state.transcript, task.assignee, onTurnOnOperator)
 }
 
 @Composable

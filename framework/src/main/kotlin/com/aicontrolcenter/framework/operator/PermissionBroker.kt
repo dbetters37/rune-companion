@@ -119,7 +119,7 @@ class PermissionBroker(
         if (!call.options.screenActionsAllowed && tool.capability in SCREEN_CAPABILITIES) {
             return Authorization.Denied(ObjectiveOptions.SCREEN_ACTIONS_NOT_ALLOWED)
         }
-        gate(call)?.let { return Authorization.Denied(it) }
+        gate(call)?.let { return Authorization.Denied(it.text, it.code) }
         // The gate refuses a capability it does not know, so there is one.
         val info = facts.capabilityInfo(tool.capability) ?: return Authorization.Denied("\"${tool.capability.id}\" is not a permission this app knows.")
         val answered = ArrayList<RequestId>()
@@ -136,7 +136,7 @@ class PermissionBroker(
                         reliesOnGrant = asked.lasting
                     }
                 }
-                gate(call)?.let { return Authorization.Denied(it) }
+                gate(call)?.let { return Authorization.Denied(it.text, it.code) }
             }
         }
         // Phase 6 (D11, rule 15): what the call must hold from the owner's question to its end (the one shell-command
@@ -153,7 +153,7 @@ class PermissionBroker(
                 is Asked.Refused -> return Authorization.Denied(asked.reason)
                 is Asked.Allowed -> answered += asked.requestId
             }
-            gate(call)?.let { return Authorization.Denied(it) }
+            gate(call)?.let { return Authorization.Denied(it.text, it.code) }
             if (reliesOnGrant && !covered(call)) {
                 return Authorization.Denied("The permission \"${info.title}\" was withdrawn while the owner was being asked to approve, so \"${tool.title}\" was not run.")
             }
@@ -204,8 +204,8 @@ class PermissionBroker(
     }
 
     /** Steps 1–3 on facts read now. */
-    private suspend fun gate(call: Call): String? =
-        OperatorGate.refusal(facts.forCall(call.context.agent.id, call.tool, call.assessment, call.extraToolIds))
+    private suspend fun gate(call: Call): OperatorGate.Refusal? =
+        OperatorGate.refusalOf(facts.forCall(call.context.agent.id, call.tool, call.assessment, call.extraToolIds))
 
     private suspend fun covered(call: Call): Boolean =
         grants.findMatching(GrantQuery(call.context.agent.id, call.tool.capability, call.assessment.constraint, call.context.taskId, clock.now())).isNotEmpty()

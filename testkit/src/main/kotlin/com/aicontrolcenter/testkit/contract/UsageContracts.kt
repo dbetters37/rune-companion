@@ -188,6 +188,10 @@ abstract class UsageLedgerContract {
         stores.ledger.record(u.call(u.at("2026-11-25T10:00"), task = "tsk_1", root = "tsk_root"))
         stores.ledger.record(u.call(u.at("2026-11-25T10:05"), task = "tsk_2", root = "tsk_root", model = "mdl_other", input = 50, output = 5, cached = null))
         stores.ledger.record(u.call(u.at("2026-11-25T09:00"), task = "tsk_1", root = "tsk_root", outcome = CallOutcome.FAILED, input = null, output = null, cached = null))
+        // Counted as today's limits count (INT3-1): the "slow down" failure above and a call the daily limit refused
+        // before sending are no model answers; a failure after the request was sent is one.
+        stores.ledger.record(u.call(u.at("2026-11-25T09:30"), task = "tsk_1", root = "tsk_root", outcome = CallOutcome.FAILED, error = ErrorClass.SERVER, input = null, output = null, cached = null))
+        stores.ledger.record(u.call(u.at("2026-11-25T09:45"), task = "tsk_1", root = "tsk_root", outcome = CallOutcome.BLOCKED, input = null, output = null, cached = null))
         stores.ledger.record(u.call(u.at("2026-11-25T10:10"), task = null, root = null, conversation = "cnv_1", source = UsageSource.CHAT))
         stores.ledger.record(u.call(u.at("2026-11-25T10:20"), task = null, root = null, conversation = null, source = UsageSource.OTHER))
         val r = stores.reports

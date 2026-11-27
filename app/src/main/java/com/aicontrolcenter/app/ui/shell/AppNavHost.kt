@@ -137,6 +137,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
     // One tap from what needs fixing to the fix (handoff-WP10b.md 3.1): the part must win over where Settings was left.
     val openBackgroundSettings: () -> Unit = { navController.navigateToSection(SettingsRoute(SettingsAnchor.BACKGROUND), restore = false) }
     val openRoutineSettings: () -> Unit = { navController.navigateToSection(SettingsRoute(SettingsAnchor.ROUTINES), restore = false) }
+    val openOperatorSettings: () -> Unit = { navController.navigateToSection(SettingsRoute(SettingsAnchor.PHONE_OPERATOR), restore = false) }
     val openRoutines: () -> Unit = { navController.open(RoutinesRoute) }
     val openRoutine: (RoutineId) -> Unit = { navController.open(RoutineEditorRoute(it.value)) }
     val openPickUpRules: () -> Unit = { navController.open(PickUpRulesRoute) }
@@ -255,6 +256,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                 onOpenProvider = openProvider,
                 onOpenRequest = openRequest,
                 onOpenDailyLimits = openDailyLimits,
+                onOpenOperatorSettings = openOperatorSettings,
             )
         }
         composable<ModelsRoute> { entry ->
@@ -336,6 +338,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                 },
                 onOpenDailyLimits = openDailyLimits,
                 onOpenSettings = openBackgroundSettings,
+                onOpenOperatorSettings = openOperatorSettings,
             )
         }
         composable<ObjectiveRoute> { entry ->

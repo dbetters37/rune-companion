@@ -28,6 +28,13 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 /**
+ * The title an objective's first log event starts with ("Objective started: <title>"), written before any of its work.
+ * While that event is in the log, every later event of the objective is too: the log is only ever cut by age or cleared
+ * whole. The objective's privacy line relies on it (INT3-2).
+ */
+const val OBJECTIVE_STARTED: String = "Objective started"
+
+/**
  * The record of what happens under an objective: every agent message is stored, and every
  * message and task state change is written to the activity log.
  *

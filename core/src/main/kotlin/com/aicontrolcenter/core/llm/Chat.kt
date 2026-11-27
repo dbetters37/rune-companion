@@ -46,8 +46,8 @@ data class ChatMessage(
         fun assistant(text: String, toolCalls: List<ToolCallRequest> = emptyList()) =
             ChatMessage(ChatRole.ASSISTANT, text, toolCalls = toolCalls)
 
-        fun toolResult(callId: String, toolName: String, content: String, isError: Boolean = false) =
-            ChatMessage(ChatRole.TOOL, toolResult = ToolResultContent(callId, toolName, content, isError))
+        fun toolResult(callId: String, toolName: String, content: String, isError: Boolean = false, refusal: String? = null) =
+            ChatMessage(ChatRole.TOOL, toolResult = ToolResultContent(callId, toolName, content, isError, refusal))
     }
 }
 
@@ -82,6 +82,11 @@ data class ToolResultContent(
     /** What the model reads. */
     val content: String,
     val isError: Boolean = false,
+    /**
+     * Why the app refused the call without running it, as a code for the owner's screens (`ToolOutcome.refusal`); never
+     * sent to a model. Null for every other result, and in results stored before it existed.
+     */
+    val refusal: String? = null,
 )
 
 @Serializable

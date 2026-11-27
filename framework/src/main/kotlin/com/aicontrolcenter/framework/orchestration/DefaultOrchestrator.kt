@@ -185,7 +185,7 @@ class DefaultOrchestrator(
             deadlineAt = now + current.objectiveTimeoutMinutes.coerceAtLeast(1) * OrchestrationContext.MINUTE_MS,
         )
         ctx.tasks.upsert(objective)
-        journal.taskChanged(objective, "Objective started")
+        journal.taskChanged(objective, OBJECTIVE_STARTED)
         journal.send(id, objective, Participant.Owner, Participant.Agent(directorId), MessageType.ASSIGNMENT, objectiveText)
         launch(id)
         return objective

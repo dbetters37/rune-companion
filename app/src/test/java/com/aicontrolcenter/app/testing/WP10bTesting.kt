@@ -92,9 +92,9 @@ class ScriptedBackup : DetailedOwnerBackup {
     @Volatile var heldProgress: BackupProgress? = null
 
     @Volatile var onSave: suspend (OutputStream) -> BackupResult<SaveOutcome> = { out ->
-        out.write(byteArrayOf(1, 2, 3))
+        out.write(SAVED_BYTES)
         out.close()
-        BackupResult.Done(SaveOutcome(SaveReport(com.aicontrolcenter.core.backup.BackupCounts(agents = 6, memories = 2), 2_048), emptyList()))
+        BackupResult.Done(SaveOutcome(SaveReport(com.aicontrolcenter.core.backup.BackupCounts(agents = 6, memories = 2), SAVED_BYTES.size.toLong()), emptyList()))
     }
     @Volatile var onPreview: suspend (String) -> BackupResult<RestorePreview> = { BackupResult.Done(samplePreview()) }
     @Volatile var onRestore: suspend (String) -> BackupResult<RestoreOutcome> = {
@@ -131,6 +131,9 @@ class ScriptedBackup : DetailedOwnerBackup {
     }
 
     companion object {
+        /** What a scripted save writes: 2,048 bytes that start as a backup file does. */
+        val SAVED_BYTES: ByteArray = com.aicontrolcenter.core.backup.BackupFormat.MAGIC.encodeToByteArray() + ByteArray(2_040) { (it % 251).toByte() }
+
         /** A preview of a file made on 14 November 2026 holding six agents and two memories, with a few setting changes. */
         fun samplePreview(refusal: BackupProblem? = null, directorFrom: com.aicontrolcenter.core.AgentId? = null): RestorePreview = RestorePreview(
             summary = BackupSummary(
@@ -175,3 +178,29 @@ fun androidx.compose.ui.test.junit4.ComposeContentTestRule.showApp(
     }
     waitForIdle()
 }
+
+/**
+ * A chosen backup file held in memory, for view model tests: [bytes] is what it holds (null once removed), [removed]
+ * counts removals. Starts empty, as the new file Android's picker makes; pass bytes for a file that already existed.
+ */
+class MemoryChosenFile(@Volatile var bytes: ByteArray? = ByteArray(0)) : com.aicontrolcenter.app.ui.backup.ChosenBackupFile {
+    @Volatile var removed: Int = 0
+
+    /** Set to make putting the ready backup in place fail (as a full or gone storage does). */
+    @Volatile var failReplace: com.aicontrolcenter.app.ui.backup.ReplaceFailed? = null
+
+    override suspend fun size(): Long? = bytes?.size?.toLong()
+
+    override suspend fun replaceWith(ready: java.io.File) {
+        failReplace?.let { throw it }
+        bytes = ready.readBytes()
+    }
+
+    override suspend fun remove() {
+        removed++
+        bytes = null
+    }
+}
+
+/** A private file a save is written into first (the screen uses the app's cache). */
+fun stagingFile(): java.io.File = java.io.File.createTempFile("backup-being-saved", ".part")

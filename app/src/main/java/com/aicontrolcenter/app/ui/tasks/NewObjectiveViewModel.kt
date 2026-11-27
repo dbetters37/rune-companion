@@ -11,6 +11,10 @@ import com.aicontrolcenter.app.ui.components.formatCount
 import com.aicontrolcenter.app.ui.components.putText
 import com.aicontrolcenter.app.work.NotificationAccess
 import com.aicontrolcenter.core.TaskId
+import com.aicontrolcenter.core.ToolId
+import com.aicontrolcenter.app.ui.components.OperatorOffTexts
+import com.aicontrolcenter.app.ui.components.PhoneTools
+import com.aicontrolcenter.app.ui.settings.PhoneOperatorSwitch
 import com.aicontrolcenter.core.agents.AgentAvailability
 import com.aicontrolcenter.core.memory.KnowledgeSpace
 import com.aicontrolcenter.core.memory.MemoryActor
@@ -76,6 +80,13 @@ data class NewObjectiveUiState(
     val storageWarning: String? = null,
     /** The phone is almost full: Start refuses. */
     val storageFull: Boolean = false,
+    /**
+     * Phone operator is off and an agent of the team has phone tools: said before work starts, with "Turn on" (the owner's
+     * own complaint: a task ran for minutes and only at its end said so).
+     */
+    val operatorOff: Boolean = false,
+    /** "Turn on" can switch it on here (the owner's switch is at hand). */
+    val canTurnOnOperator: Boolean = false,
 ) {
     val canStart: Boolean get() = !isLoading && !isStarting && director?.canRun == true
 
@@ -106,6 +117,10 @@ class NewObjectiveViewModel(
     private val storage: StorageWatch = StorageWatch.None,
     /** Whether Android lets the work go on in the background (A3). */
     background: Flow<BackgroundState> = flowOf(BackgroundState.UNKNOWN),
+    /** The owner's Phone operator switch, for "Turn on"; owner UI only. Null: only the way to Settings is offered. */
+    private val operatorSwitch: PhoneOperatorSwitch? = null,
+    /** Which tools need Phone operator on (the registered tools' specs in the app). */
+    private val isPhoneTool: (ToolId) -> Boolean = PhoneTools.CATALOGUE,
 ) : ViewModel() {
 
     private data class Local(
@@ -149,6 +164,9 @@ class NewObjectiveViewModel(
                 else -> null
             },
             storageFull = phone.storage == StorageLevel.CRITICAL,
+            operatorOff = !snapshot.settings.operatorEnabled &&
+                snapshot.agents.any { it.profile.enabled && it.profile.toolIds.any(isPhoneTool) },
+            canTurnOnOperator = operatorSwitch != null,
             isLoading = false,
             showErrors = local.showErrors,
             reviewResults = local.reviewResults,
@@ -213,6 +231,21 @@ class NewObjectiveViewModel(
         notifications.markAsked()
         local.update { it.copy(explainNotifications = false) }
         launchStart()
+    }
+
+    /** "Turn on" on the Phone operator card: the owner's switch, as in Settings (its line in the activity log). */
+    fun turnOnOperator() {
+        val switch = operatorSwitch ?: return
+        viewModelScope.launch {
+            try {
+                switch.set(true)
+                say(OperatorOffTexts.TURNED_ON)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                say(OPERATOR_NOT_TURNED_ON)
+            }
+        }
     }
 
     fun startHandled() = local.update { it.copy(startedId = null) }
@@ -288,6 +321,9 @@ class NewObjectiveViewModel(
 
     companion object {
         const val MAX_LENGTH = 4_000
+
+        /** Said when "Turn on" could not save the switch. */
+        const val OPERATOR_NOT_TURNED_ON = "Phone operator could not be turned on. Try again, or turn it on in Settings."
 
         /** R8: what Start says, and the form shows, when the phone is almost full. */
         const val STORAGE_FULL = "The phone is almost full. Free some room before starting an objective."

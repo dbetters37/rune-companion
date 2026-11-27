@@ -6,7 +6,6 @@ import com.aicontrolcenter.core.llm.LlmException
 import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.settings.SettingsView
 import com.aicontrolcenter.core.usage.CostEstimate
-import com.aicontrolcenter.core.usage.ErrorClass
 import com.aicontrolcenter.core.usage.ModelPrice
 import com.aicontrolcenter.core.usage.ModelPrices
 import com.aicontrolcenter.core.usage.ModelUsage
@@ -50,8 +49,7 @@ data class DailyUse(val calls: Long, val tokens: Long, val spendMicros: Long, va
         }
 
         /** The calls of [totals] the limits count: those that sent a request, but not those a "slow down" answer ended. */
-        fun counted(totals: UsageTotals): Long =
-            (totals.ok + totals.failed + totals.cancelled - (totals.errors[ErrorClass.RATE_LIMITED] ?: 0)).coerceAtLeast(0)
+        fun counted(totals: UsageTotals): Long = totals.countedCalls
 
         internal fun spend(tokens: Map<ModelId, TokenCounts>, prices: Map<ModelId, ModelPrice>): Long =
             tokens.entries.fold(0L) { sum, (model, counts) ->

@@ -141,7 +141,7 @@ class BackupScreensTest {
         compose.waitUntil(5_000) { compose.onAllNodesWithText("Backup saved").fetchSemanticsNodes().isNotEmpty() }
         assertEquals(listOf<Any?>("AI Control Center backup.aiccbackup"), pickers.launched)
         assertEquals(generated, backup.saves.single().passphrase)
-        assertEquals(3L, file.length(), "written through the picked document")
+        assertEquals(ScriptedBackup.SAVED_BYTES.size.toLong(), file.length(), "written into the picked file once ready")
         compose.onAllNodesWithText("6 agents, 2 memories", substring = true).onFirst().assertExists()
     }
 
@@ -154,7 +154,7 @@ class BackupScreensTest {
         val viewModel = saver(backup)
         viewModel.setWroteItDown(true)
         show(calm = true) { BackupSaveScreen(viewModel, suggestedName = "b.aiccbackup", onBack = {}) }
-        viewModel.save(open = { java.io.ByteArrayOutputStream() })
+        viewModel.save(com.aicontrolcenter.app.testing.MemoryChosenFile(), com.aicontrolcenter.app.testing.stagingFile())
         compose.waitForIdle()
         compose.onAllNodesWithText(BackupTexts.STEP_LOCKING).onFirst().assertExists()
         compose.onAllNodesWithText(STILL_WORKING).onFirst().assertExists()
@@ -177,7 +177,7 @@ class BackupScreensTest {
         val viewModel = saver(backup)
         viewModel.setWroteItDown(true)
         show(calm = false) { BackupSaveScreen(viewModel, suggestedName = "b.aiccbackup", onBack = {}) }
-        viewModel.save(open = { java.io.ByteArrayOutputStream() })
+        viewModel.save(com.aicontrolcenter.app.testing.MemoryChosenFile(), com.aicontrolcenter.app.testing.stagingFile())
         compose.mainClock.autoAdvance = false
         compose.mainClock.advanceTimeByFrame()
         assertTrue(compose.onAllNodesWithText(STILL_WORKING).fetchSemanticsNodes().isEmpty())

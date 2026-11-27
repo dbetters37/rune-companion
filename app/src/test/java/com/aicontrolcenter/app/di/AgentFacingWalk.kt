@@ -187,6 +187,8 @@ internal class AgentFacingWalk(
             com.aicontrolcenter.core.pickup.PickUpRuleRepository::class.java,
             // Phase 6 (rule 3, WP1d): only the owner writes the settings. Agent-facing code holds the read-only view.
             SettingsRepository::class.java,
+            // The owner's Phone operator switch ("Turn on" on owner screens): held by owner screens only.
+            com.aicontrolcenter.app.ui.settings.PhoneOperatorSwitch::class.java,
             // Security review of wave 1, F3: the owner's provider manager (adds, repoints and removes providers and replaces
             // their keys), the key vault, and the owner's check of an answer against the stored keys. F4: deleting usage.
             com.aicontrolcenter.core.llm.ProviderManager::class.java, SecretVault::class.java,

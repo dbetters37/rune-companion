@@ -240,11 +240,28 @@ private fun CollapsibleText(text: String, style: TextStyle, collapsedLines: Int,
 @Composable
 private fun EgressLine(egress: EgressUi) {
     val away = egress.away
-    val color = if (away) appColors.attention else appColors.onDevice
+    // Records cleared and nothing in them: neither "left" nor "stayed on the phone" can be said (INT3-2).
+    val unknown = !away && egress.recordsCleared
+    val color = when {
+        away -> appColors.attention
+        unknown -> MaterialTheme.colorScheme.onSurfaceVariant
+        else -> appColors.onDevice
+    }
+    val icon = when {
+        away -> AppIcons.Egress
+        unknown -> AppIcons.Info
+        else -> AppIcons.OnDevice
+    }
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-        Icon(if (away) AppIcons.Egress else AppIcons.OnDevice, contentDescription = null, tint = color, modifier = Modifier.size(18.dp))
+        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(18.dp))
         Text(egressWords(egress), style = MaterialTheme.typography.bodySmall, color = color)
     }
+}
+
+/** The privacy line's fixed sentences. */
+object EgressTexts {
+    /** Said when the records that would show it are gone (INT3-2): never "Nothing has left this phone" then. */
+    const val RECORDS_CLEARED: String = "Older records were cleared, so this can no longer be shown."
 }
 
 /** The privacy line in words: from the log when it still holds the calls, from the usage rows when it no longer does (D3A-5). */
@@ -254,9 +271,14 @@ internal fun egressWords(egress: EgressUi): String {
     return when {
         egress.transfers > 0 -> buildString {
             append("${egress.transfers} model call${if (egress.transfers == 1) "" else "s"} left this phone, to ${egress.destinations.joinToString(", ")}. See the Log.")
-            if (answers > egress.transfers) append(" In all, $answerWords came from models off this phone; the log no longer holds the rest.")
+            // The counted answers are the requests that left (INT3-1); the log is said to lack some only once records were cleared.
+            if (answers > egress.transfers) {
+                append(" In all, $answerWords came from models off this phone")
+                append(if (egress.recordsCleared) "; older records were cleared." else ".")
+            }
         }
         answers > 0 -> "$answerWords went to models off this phone; the details are no longer in the log."
+        egress.recordsCleared -> EgressTexts.RECORDS_CLEARED
         else -> "Nothing has left this phone for this objective."
     }
 }

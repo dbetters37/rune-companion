@@ -82,6 +82,9 @@ class ShareScreenshotTest {
             val notes = app.graph.memoryService.createSpace(MemoryActor.Owner, "Screen notes", "What my screen recorder exports.").id
             app.graph.memoryService.createSpace(MemoryActor.Owner, "Recipes")
             app.graph.memoryService.createSpace(MemoryActor.Owner, "Team knowledge")
+            // Their model is in the cloud, so the line above Save says where what they recall goes (D3B-3).
+            app.providers.upsert(Samples.provider("prv_sample", name = "xAI", baseUrl = "https://api.x.ai/v1", locality = com.aicontrolcenter.core.registry.Locality.CLOUD))
+            app.models.upsert(Samples.model("mdl_sample", providerId = "prv_sample"))
             app.agents.upsert(Samples.agent("agt_researcher", name = "Researcher").let { it.copy(memory = it.memory.copy(readableSpaces = setOf(notes))) })
             app.agents.upsert(Samples.agent("agt_writer", name = "Writer").let { it.copy(memory = it.memory.copy(readableSpaces = setOf(notes))) })
         }

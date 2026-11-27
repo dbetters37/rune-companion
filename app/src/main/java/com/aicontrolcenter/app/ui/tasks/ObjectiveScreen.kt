@@ -1,5 +1,7 @@
 package com.aicontrolcenter.app.ui.tasks
 
+import com.aicontrolcenter.app.ui.components.OperatorRefusedLine
+import com.aicontrolcenter.app.ui.settings.PhoneOperatorSwitch
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -72,6 +74,8 @@ class ObjectiveActions(
     val onSendNote: () -> Unit = {},
     /** Opens (true) or folds away (false) the composer. */
     val onOpenNotes: (Boolean) -> Unit = {},
+    /** "Turn on" Phone operator, after one of its phone tools was refused because it is off. */
+    val onTurnOnOperator: () -> Unit = {},
 )
 
 /**
@@ -100,6 +104,8 @@ fun ObjectiveRoute(
             notes = graph.ownerConversation, usage = graph.usageReports, prices = graph.modelPrices,
             routines = graph.ownerRoutines?.observeAll() ?: flowOf(emptyList()), spaces = graph.memoryService.observeSpaces(),
             computation = work,
+            // Owner UI: the owner's own switch, never anything an agent reaches.
+            operatorSwitch = PhoneOperatorSwitch(graph.settings, graph.activityRecorder),
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -123,6 +129,7 @@ fun ObjectiveRoute(
             onNoteRecipient = viewModel::setNoteRecipient,
             onSendNote = viewModel::sendNote,
             onOpenNotes = viewModel::openNotes,
+            onTurnOnOperator = viewModel::turnOnOperator,
         ),
         elapsed = elapsed,
         note = viewModel.note,
@@ -172,6 +179,11 @@ fun ObjectiveScreen(state: ObjectiveUiState, actions: ObjectiveActions, elapsed:
                                 onOpenRoutine = actions.onOpenRoutine,
                             ),
                         )
+                    }
+                }
+                if (state.operatorRefused && state.canTurnOnOperator) {
+                    item(key = "operator-off") {
+                        Box(Modifier.padding(horizontal = Spacing.screen, vertical = Spacing.xs)) { OperatorRefusedLine(actions.onTurnOnOperator) }
                     }
                 }
                 if (state.waitingFor.isNotEmpty()) {

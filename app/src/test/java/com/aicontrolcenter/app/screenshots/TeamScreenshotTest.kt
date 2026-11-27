@@ -298,7 +298,26 @@ class TeamScreenshotTest {
     fun thirtyAgents() {
         render(sampleState(crowd = 25))
         compose.waitForIdle()
+        // Their names cannot fit: the view opens on the list (D3B-2); the picture is one tap away.
         shoot("team_30_agents")
+        compose.onAllNodes(hasText(TeamWords.PICTURE) and hasClickAction()).onFirst().performClick()
+        compose.waitForIdle()
+        shoot("team_30_agents_picture")
+    }
+
+    @Test
+    fun twelveAgents() {
+        render(sampleState(crowd = 7))
+        compose.waitForIdle()
+        shoot("team_12_agents")
+    }
+
+    @Test
+    @Config(qualifiers = SMALL_PHONE)
+    fun twelveAgentsSmallPhone() {
+        render(sampleState(crowd = 7), dark = false)
+        compose.waitForIdle()
+        shoot("team_12_agents_360")
     }
 
     @Test

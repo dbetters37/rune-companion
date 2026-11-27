@@ -90,12 +90,16 @@ internal fun ModelCallSample.addedTo(stored: UsageHourEntity?): UsageHourEntity 
     )
 }
 
-/** [stored] (the row of [item] and this sample's model, or null for a new one) with this sample's tokens added. */
+/**
+ * [stored] (the row of [item] and this sample's model, or null for a new one) with this sample's tokens added. Its calls
+ * grow only by a call that counts as a model answer ([UsageTotals.countedCalls], as today's limits count): never by a
+ * call the daily limit refused before sending, nor by one a "slow down" answer ended (INT3-1).
+ */
 internal fun ModelCallSample.addedTo(item: WorkItem, stored: WorkUsageEntity?): WorkUsageEntity = WorkUsageEntity(
     workKind = item.kind.name,
     workId = item.id,
     modelId = modelId.value,
-    calls = (stored?.calls ?: 0) + 1,
+    calls = (stored?.calls ?: 0) + UsageTotals.of(this).countedCalls,
     inputTokens = (stored?.inputTokens ?: 0) + (inputTokens ?: 0),
     outputTokens = (stored?.outputTokens ?: 0) + (outputTokens ?: 0),
     cachedInputTokens = (stored?.cachedInputTokens ?: 0) + (cachedInputTokens ?: 0),

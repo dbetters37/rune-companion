@@ -138,16 +138,33 @@ data class ToolOutcome(
     val content: String,
     /** Structured result for the UI and logs. Never contains secrets. */
     val data: JsonElement? = null,
+    /**
+     * Why the app refused the call without running it, as a code the owner's screens act on
+     * ([com.aicontrolcenter.core.operator.OperatorGate.OPERATOR_OFF_CODE]). Set only by the app's own checks, never from a
+     * tool's or an agent's words; null for every other result.
+     */
+    val refusal: String? = null,
 ) {
     companion object {
         fun success(content: String, data: JsonElement? = null) = ToolOutcome(true, content, data)
 
         fun failure(content: String) = ToolOutcome(false, content)
 
+        /** A call the app refused without running it, for the reason [refusal] names (null: no code). */
+        fun refused(content: String, refusal: String?) = ToolOutcome(false, content, refusal = refusal)
+
         /** The refusal for a call whose [PreparedAction.changedSince] found a change: nothing was done. */
         fun changedSinceApproved(what: String) =
             failure("Nothing was done: $what since this action was checked and approved. Look again and ask anew if it is still needed.")
     }
+}
+
+/**
+ * Implemented by an exception a tool throws, while it is checked or run, when the app refuses the call for a reason the
+ * owner's screens act on: [refusal] is its code ([com.aicontrolcenter.core.operator.OperatorGate.OPERATOR_OFF_CODE]).
+ */
+interface CodedRefusal {
+    val refusal: String
 }
 
 /**
@@ -194,8 +211,11 @@ sealed interface Authorization {
     /** Allowed because the owner answered [requestIds] (permission, then approval), so the call's log can name them. */
     data class AllowedByOwner(val requestIds: List<RequestId>) : Authorization
 
-    /** [reason] is returned to the model so it can explain or choose another way. */
-    data class Denied(val reason: String) : Authorization
+    /**
+     * [reason] is returned to the model so it can explain or choose another way. [refusal] names why for the owner's
+     * screens ([com.aicontrolcenter.core.operator.OperatorGate.OPERATOR_OFF_CODE]), set only by the gate, never from words.
+     */
+    data class Denied(val reason: String, val refusal: String? = null) : Authorization
 }
 
 /**

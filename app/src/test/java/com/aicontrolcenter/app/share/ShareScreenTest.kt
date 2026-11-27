@@ -127,11 +127,20 @@ class ShareScreenTest {
     }
 
     @Test
-    fun `the cost and privacy line is the plan's, and local-only mode adds what stays on the phone`() {
-        show(form(localOnly = true))
-        compose.onNodeWithText(ShareTexts.STORING).performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText(ShareTexts.LOCAL_ONLY_ON).performScrollTo().assertIsDisplayed()
+    fun `the cost and privacy line is the plan's, and local-only mode replaces its cloud sentence`() {
+        val current = show(form(localOnly = true))
+        // One line, not two: with local-only on, the cloud sentence is replaced by what stays on the phone (D3B-3).
+        compose.onNodeWithText(ShareTexts.STORING_LOCAL_ONLY).performScrollTo().assertIsDisplayed()
+        assertEquals(0, compose.onAllNodesWithText(ShareTexts.STORING).fetchSemanticsNodes().size)
         compose.onNodeWithText(ShareTexts.AS_DATA).performScrollTo().assertIsDisplayed()
+        assertEquals(
+            "Storing is free. Only what agents recall is sent to a model. Local-only mode is on: agents use only models on " +
+                "this phone, so what they recall stays on it.",
+            ShareTexts.STORING_LOCAL_ONLY,
+        )
+        current.value = form(localOnly = false)
+        compose.waitForIdle()
+        compose.onNodeWithText(ShareTexts.STORING).performScrollTo().assertIsDisplayed()
         assertEquals(
             "Storing is free. Only what agents recall is sent to a model. A cloud model would receive this text; " +
                 "local-only mode and space access keep it on the phone.",

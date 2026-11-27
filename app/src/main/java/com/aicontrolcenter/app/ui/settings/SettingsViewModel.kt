@@ -139,15 +139,10 @@ class SettingsViewModel(
     }
 
     /** The phone operator's master switch: off, every phone tool is refused before anyone is asked. */
-    fun setOperatorEnabled(enabled: Boolean) = change {
-        if (settings.get().operatorEnabled == enabled) return@change
-        settings.update { it.copy(operatorEnabled = enabled) }
-        activity.record(
-            ActivityType.USER_ACTION,
-            if (enabled) "Phone operator turned on" else "Phone operator turned off",
-            if (enabled) "Agents may use their phone tools, each with your permission." else "No agent can use the phone's files, apps, web pages or scripts.",
-        )
-    }
+    fun setOperatorEnabled(enabled: Boolean) = change { operatorSwitch.set(enabled) }
+
+    /** The same switch "Turn on" flips elsewhere: one path, one line in the activity log. */
+    private val operatorSwitch = PhoneOperatorSwitch(settings, activity)
 
     /**
      * The second switch, for screen control (Android's accessibility service): off, no agent reads
@@ -184,7 +179,7 @@ class SettingsViewModel(
     /** Deletes every recorded event, then records that this happened so the log never silently restarts. */
     fun clearActivityLog() = change {
         activityLog.clear()
-        activity.record(ActivityType.USER_ACTION, "Activity log cleared", "All earlier events were deleted at your request.")
+        activity.record(ActivityType.USER_ACTION, LOG_CLEARED, "All earlier events were deleted at your request.")
         show("The activity log was cleared.")
     }
 
@@ -216,5 +211,10 @@ class SettingsViewModel(
                 show("The change could not be saved: ${failure.message ?: "storage error"}")
             }
         }
+    }
+
+    companion object {
+        /** The log's first event after the owner cleared it; screens read it to know older records are gone (INT3-2). */
+        const val LOG_CLEARED: String = "Activity log cleared"
     }
 }

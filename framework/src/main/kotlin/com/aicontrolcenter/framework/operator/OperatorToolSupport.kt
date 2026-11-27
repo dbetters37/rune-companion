@@ -39,6 +39,11 @@ import java.util.Locale
  */
 open class ToolCallRejected(message: String) : RuntimeException(message)
 
+/** The refusal because Phone operator is off, found by a tool itself: it carries the gate's code, not only its words. */
+class OperatorOffRejected(message: String) : ToolCallRejected(message), com.aicontrolcenter.core.tools.CodedRefusal {
+    override val refusal: String = com.aicontrolcenter.core.operator.OperatorGate.OPERATOR_OFF_CODE
+}
+
 /**
  * A problem with what a call would act on (a missing file, a folder whose access was withdrawn),
  * found while assessing it. Unlike [ToolCallRejected] it depends on content, so it is never told
@@ -123,7 +128,7 @@ abstract class OperatorTool(
             prepared.action(context)
         } catch (e: ToolCallRejected) {
             // Includes StateProblem: what was found when acting, said after the call was authorised.
-            ToolOutcome.failure(e.message ?: "The call was refused.")
+            ToolOutcome.refused(e.message ?: "The call was refused.", (e as? com.aicontrolcenter.core.tools.CodedRefusal)?.refusal)
         } catch (e: Exception) {
             rethrowIfCancelled(e)
             ToolOutcome.failure("${spec.title} failed (${e::class.simpleName}).")

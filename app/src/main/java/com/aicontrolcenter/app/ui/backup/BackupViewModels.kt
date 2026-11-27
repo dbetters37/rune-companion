@@ -21,16 +21,20 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
+import java.io.IOException
 import java.io.InputStream
-import java.io.OutputStream
 import java.time.ZoneId
 import kotlin.coroutines.CoroutineContext
 
@@ -60,6 +64,24 @@ data class BackupStepUi(val step: String, val fraction: Float?) {
 @Immutable
 data class SavedUi(val what: String, val size: String, val notes: List<String>)
 
+/**
+ * The file the owner chose to save a backup in. It may be a new, empty file the picker just made, or a file that already
+ * exists (Android's picker asks "Overwrite …?"). A save writes it only once the whole backup is ready (SEC-W3-1).
+ */
+interface ChosenBackupFile {
+    /** Its size now, in bytes, or null when its app does not say. */
+    suspend fun size(): Long?
+
+    /** Puts the ready backup [ready] in its place, replacing what it held; [ReplaceFailed] when that did not work. */
+    suspend fun replaceWith(ready: File)
+
+    /** Removes it. Called only for a file that was empty when the save started and still is. */
+    suspend fun remove()
+}
+
+/** The ready backup could not be put into the chosen file; [chosenUntouched] when that file is still as it was. */
+class ReplaceFailed(val chosenUntouched: Boolean) : IOException("The backup could not be written into the chosen file.")
+
 /** What the Save a backup screen shows. */
 @Immutable
 data class BackupSaveUiState(
@@ -72,6 +94,13 @@ data class BackupSaveUiState(
     val wroteItDown: Boolean = false,
     /** True while the file is being saved. */
     val working: Boolean = false,
+    /** True while Stop is offered: not once the ready backup is being put into the chosen file (that takes moments). */
+    val cancellable: Boolean = false,
+    /**
+     * True while the owner is asked "Stop saving?". A backup that gets ready meanwhile waits for the answer and does not
+     * go into the chosen file, so Stop always does what the question says (SEC-W3-1).
+     */
+    val stopAsked: Boolean = false,
     val step: BackupStepUi? = null,
     val saved: SavedUi? = null,
     /** Why the last save did nothing, in the owner's words. */
@@ -153,48 +182,120 @@ class BackupSaveViewModel(
     }
 
     /**
-     * Saves the backup into the file [open] gives (the document the owner just chose). A save that does not finish
-     * (refused, failed, cancelled) calls [discard] so no empty or partial file is left behind (the picker made it).
+     * Saves the backup into [chosen], the file the owner picked (SEC-W3-1). That may be a new, empty file the picker just
+     * made, or a file that already exists: Android's picker lets the owner tap one and asks "Overwrite …?". So the whole
+     * backup is first written into [staging], a private file of the app. Only once it is complete and checked (its size
+     * as the backup reports it, and the start of a backup file) is it put into [chosen]. A save that is stopped, refused
+     * or fails before that leaves [chosen] exactly as it was; only a file that was empty when the save started (the one
+     * the picker made) is removed again.
      */
-    fun save(open: suspend () -> OutputStream, discard: suspend () -> Unit = {}) {
+    fun save(chosen: ChosenBackupFile, staging: File) {
         if (!canSave()) return
         val choice = passphrase.forSave(if (passphrase.useOwn) ownPassphrase.text else "") ?: return
-        state.update { it.copy(working = true, step = BackupStepUi(BackupTexts.STEP_GATHERING, null), failure = null, saved = null) }
+        state.update {
+            it.copy(
+                working = true, cancellable = true, stopAsked = false, step = BackupStepUi(BackupTexts.STEP_GATHERING, null),
+                failure = null, saved = null,
+            )
+        }
         job = viewModelScope.launch {
-            val result = try {
-                withContext(work) {
-                    backup.saveWithNotes(choice.first, choice.second, open) { progress -> state.update { it.copy(step = BackupStepUi.of(progress)) } }
+            var madeByPicker = false
+            var replacing = false
+            try {
+                madeByPicker = sizeOf(chosen) == 0L
+                val result = try {
+                    withContext(work) {
+                        backup.saveWithNotes(choice.first, choice.second, { staging.outputStream() }) { progress ->
+                            state.update { it.copy(step = BackupStepUi.of(progress)) }
+                        }
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    BackupResult.Failed(BackupProblem.CannotOpenFile)
                 }
-            } catch (cancelled: CancellationException) {
-                withContext(NonCancellable) { discardQuietly(discard) }
-                state.update { it.copy(working = false, step = null, failure = CANCELLED) }
-                throw cancelled
-            } catch (_: Exception) {
-                BackupResult.Failed(BackupProblem.CannotOpenFile)
-            }
-            when (result) {
-                is BackupResult.Done -> {
-                    val outcome = result.value
-                    // Shown once: after a save the generated passphrase and the typed one are gone from this screen.
-                    forget()
-                    state.update {
-                        it.copy(
-                            working = false, step = null, generated = null,
-                            saved = SavedUi(BackupTexts.counts(outcome.report.counts) + ".", formatBytes(outcome.report.sizeBytes), outcome.notes),
-                        )
+                val done = (result as? BackupResult.Done)?.value
+                val ready = done?.takeIf { withContext(work) { isCompleteBackup(staging, it.report.sizeBytes) } }
+                if (ready == null) {
+                    if (madeByPicker) withContext(NonCancellable) { removeIfStillEmpty(chosen) }
+                    val problem = (result as? BackupResult.Failed)?.problem ?: BackupProblem.CannotOpenFile
+                    state.update { it.ended(failure = untouched(problem.text, madeByPicker)) }
+                    return@launch
+                }
+                // The whole backup is ready: only now is the chosen file written, and not while the owner is asked
+                // whether to stop (Stop then leaves the file as it was). No Stop from here, it takes moments.
+                stopOfferEnds()
+                replacing = true
+                val replaced = withContext(NonCancellable) {
+                    try {
+                        chosen.replaceWith(staging)
+                        null
+                    } catch (failed: ReplaceFailed) {
+                        failed
+                    } catch (_: Exception) {
+                        ReplaceFailed(chosenUntouched = false)
                     }
                 }
-                is BackupResult.Failed -> {
-                    discardQuietly(discard)
-                    state.update { it.copy(working = false, step = null, failure = result.problem.text) }
+                if (replaced != null) {
+                    if (madeByPicker) withContext(NonCancellable) { removeQuietly(chosen) }
+                    val text = when {
+                        madeByPicker -> NOT_WRITTEN
+                        replaced.chosenUntouched -> untouched(NOT_WRITTEN, madeByPicker = false)
+                        else -> "$NOT_WRITTEN $MAY_BE_DAMAGED"
+                    }
+                    state.update { it.ended(failure = text) }
+                    return@launch
                 }
+                // Shown once: after a save the generated passphrase and the typed one are gone from this screen.
+                forget()
+                state.update {
+                    it.ended(failure = null).copy(
+                        generated = null,
+                        saved = SavedUi(BackupTexts.counts(ready.report.counts) + ".", formatBytes(ready.report.sizeBytes), ready.notes),
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                // Stopped at any point before the ready backup went into the file: while the file's app was asked its
+                // size, while the key was made, while the backup was checked, or while the owner was asked. The screen
+                // is free again at once; the chosen file was never touched.
+                withContext(NonCancellable) {
+                    withContext(work) { deleteQuietly(staging) }
+                    if (!replacing) {
+                        state.update { it.ended(failure = untouched(CANCELLED, madeByPicker)) }
+                        if (madeByPicker) removeIfStillEmpty(chosen)
+                    }
+                }
+                throw cancelled
+            } finally {
+                withContext(NonCancellable + work) { deleteQuietly(staging) }
             }
         }
     }
 
-    /** Stops the save (the key step stops within moments); the chosen file is removed again. */
+    /** The owner tapped Cancel or Back while saving: "Stop saving?" is asked; the ready backup waits for the answer. */
+    fun askToStop() {
+        state.update { if (it.cancellable) it.copy(stopAsked = true) else it }
+    }
+
+    /** "Keep saving": the question goes and the save goes on. */
+    fun keepSaving() {
+        state.update { it.copy(stopAsked = false) }
+    }
+
+    /** Stops the save (the key step stops within moments); the chosen file stays as it was. */
     fun cancel() {
+        if (!state.value.cancellable) return
+        // The job first: clearing the question first would let a ready backup that waits for it go into the file.
         job?.cancel()
+        state.update { it.copy(stopAsked = false) }
+    }
+
+    /** Waits while the owner is asked whether to stop; then Stop is no longer offered (one step, so no tap slips in). */
+    private suspend fun stopOfferEnds() {
+        while (true) {
+            val now = state.first { !it.stopAsked }
+            if (state.compareAndSet(now, now.copy(cancellable = false, step = BackupStepUi(STEP_REPLACING, null)))) return
+        }
     }
 
     /** The owner left the screen: the passphrases go (rule 27). */
@@ -211,19 +312,92 @@ class BackupSaveViewModel(
         forget()
     }
 
-    private suspend fun discardQuietly(discard: suspend () -> Unit) {
+    /**
+     * The chosen file's size, or null when its app does not say, cannot be asked, or takes longer than [SIZE_WAIT_MS]
+     * (a hung cloud drive). Asked on [work], never on the main thread. Unknown counts as "held something": never removed.
+     */
+    private suspend fun sizeOf(chosen: ChosenBackupFile): Long? = try {
+        withTimeoutOrNull(SIZE_WAIT_MS) { withContext(work) { chosen.size() } }
+    } catch (e: TimeoutCancellationException) {
+        null
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
+
+    /** Removes the picker's new file again, but only while it is still empty: nothing the owner had is ever removed. */
+    private suspend fun removeIfStillEmpty(chosen: ChosenBackupFile) {
+        if (sizeOf(chosen) == 0L) removeQuietly(chosen)
+    }
+
+    private suspend fun removeQuietly(chosen: ChosenBackupFile) {
         try {
-            discard()
+            chosen.remove()
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
-            // The picker's empty document stays; nothing of the backup is in it.
+            // The picker's empty file stays; nothing of the backup is in it.
         }
     }
+
+    private fun deleteQuietly(file: File) {
+        runCatching { file.delete() }
+    }
+
+    /** The state once a save has ended, saved or not: nothing is working, nothing to stop, nothing asked. */
+    private fun BackupSaveUiState.ended(failure: String?): BackupSaveUiState =
+        copy(working = false, cancellable = false, stopAsked = false, step = null, failure = failure)
+
+    /** The sentence for a save that did not touch the chosen file: an earlier file is said to be as it was. */
+    private fun untouched(text: String, madeByPicker: Boolean): String = if (madeByPicker) text else "$text $UNTOUCHED"
 
     companion object {
         const val NOT_THE_SAME: String = "The two passphrases are not the same."
         const val CANCELLED: String = "Stopped. Nothing was saved."
+
+        /** How long the chosen file's app may take to say the file's size (a cloud drive can hang): then it is not known. */
+        const val SIZE_WAIT_MS: Long = 15_000
+
+        /** Said after a save that did not touch a file the owner chose to replace. */
+        const val UNTOUCHED: String = "The file you chose is as it was."
+
+        /** The step once the whole backup is ready and goes into the chosen file. */
+        const val STEP_REPLACING: String = "Putting the backup into the file you chose"
+
+        /** The ready backup could not be put into the chosen file. */
+        const val NOT_WRITTEN: String = "The backup could not be written into the file you chose."
+
+        /** Said when that went wrong part way into a file that held something before. */
+        const val MAY_BE_DAMAGED: String = "If it held an earlier backup, that one may be damaged now. Save again under a new name."
+
+        /**
+         * True when [staged] holds a whole backup: exactly the [reportedSize] bytes the backup says it wrote, starting as
+         * every backup file does.
+         */
+        fun isCompleteBackup(staged: File, reportedSize: Long): Boolean = try {
+            hasWholeBackup(staged, reportedSize)
+        } catch (_: IOException) {
+            false
+        } catch (_: SecurityException) {
+            false
+        }
+
+        private fun hasWholeBackup(staged: File, reportedSize: Long): Boolean {
+            val magic = com.aicontrolcenter.core.backup.BackupFormat.MAGIC.encodeToByteArray()
+            if (!staged.isFile || staged.length() != reportedSize || reportedSize < magic.size) return false
+            val start = ByteArray(magic.size)
+            val read = staged.inputStream().use { input ->
+                var got = 0
+                while (got < start.size) {
+                    val n = input.read(start, got, start.size - got)
+                    if (n < 0) break
+                    got += n
+                }
+                got
+            }
+            return read == magic.size && start.contentEquals(magic)
+        }
 
         /** The name the picker suggests: "AI Control Center backup 2026-11-26.aiccbackup". */
         fun suggestedName(nowMs: Long, zone: ZoneId): String =

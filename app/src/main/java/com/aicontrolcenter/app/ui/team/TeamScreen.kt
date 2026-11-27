@@ -58,6 +58,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.aicontrolcenter.app.di.LocalAppGraph
 import com.aicontrolcenter.app.ui.components.AppCard
 import com.aicontrolcenter.app.ui.components.InfoBanner
+import com.aicontrolcenter.app.ui.components.RowDivider
 import com.aicontrolcenter.app.ui.components.ScreenScaffold
 import com.aicontrolcenter.app.ui.components.StatusChip
 import com.aicontrolcenter.app.ui.components.icon
@@ -154,13 +155,15 @@ private fun rememberScreenReaderOn(): Boolean {
 /** Width from which the controls sit beside the picture instead of above it. */
 private val WideLayout = 700.dp
 
+/** The most the Picture/List switch and its note take under the header. */
+private val SWITCH_ROOM = 120.dp
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TeamScreen(state: TeamUiState, liveSummary: String, actions: TeamActions, screenReaderOn: Boolean = false) {
     val largeText = LocalDensity.current.fontScale >= 1.5f
     val tooBig = state.graph.agentsLeftOut > 0
     var chosen by rememberSaveable { mutableStateOf<TeamMode?>(null) }
-    val mode = chosen ?: if (screenReaderOn || largeText || tooBig) TeamMode.LIST else TeamMode.PICTURE
     var legendOpen by rememberSaveable { mutableStateOf(false) }
     val navigation = actions.navigation
     val picture = PictureActions(
@@ -183,28 +186,56 @@ fun TeamScreen(state: TeamUiState, liveSummary: String, actions: TeamActions, sc
         }
         BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
             val wide = maxWidth >= WideLayout
-            val headerMax = maxHeight * 0.45f
-            val controls: @Composable () -> Unit = {
-                Controls(state, liveSummary, mode, { chosen = it }, actions, showHint = mode == TeamMode.PICTURE && (screenReaderOn || largeText), tooBig = tooBig)
+            // Only the objective's card and its notices scroll, in at most this part of the height; the Picture and List
+            // switch and its hint sit below them, always whole, right above the picture (D3B-1).
+            val headerMax = maxHeight * 0.35f
+            // The picture's least room: a team whose names cannot fit there, even in a taller picture, opens on the list (D3B-2).
+            val pictureWidth = if (wide) maxWidth - 340.dp else maxWidth
+            val pictureHeight = if (wide) maxHeight else maxHeight - headerMax - SWITCH_ROOM
+            val graph = state.graph
+            val namesFit = remember(graph.owner != null, graph.director?.id, graph.ring.size, graph.spaces.size, pictureWidth, pictureHeight) {
+                TeamLayout.namesFit(
+                    graph.owner != null, graph.director?.id, graph.ring.map { it.id }, graph.spaces.map { it.id },
+                    pictureWidth.value, pictureHeight.value.coerceAtLeast(TeamLayout.TOUCH * 4),
+                )
             }
+            val mode = chosen ?: if (screenReaderOn || largeText || tooBig || !namesFit) TeamMode.LIST else TeamMode.PICTURE
+            val hint = when {
+                mode != TeamMode.PICTURE -> null
+                screenReaderOn || largeText -> TeamWords.LIST_IS_EASIER
+                !namesFit -> TeamWords.NAMES_DONT_FIT
+                else -> null
+            }
+            val header: @Composable () -> Unit = { Header(state, liveSummary, actions, tooBig = tooBig) }
+            val switch: @Composable () -> Unit = { ModeSwitch(mode, { chosen = it }, hint) }
             when {
                 mode == TeamMode.LIST -> LazyColumn(
                     modifier = Modifier.fillMaxSize().readableWidth().testTag(TEAM_LIST_TAG),
                     contentPadding = PaddingValues(start = Spacing.screen, end = Spacing.screen, bottom = Spacing.xl),
                 ) {
-                    item(key = "controls") { controls() }
+                    item(key = "controls") {
+                        Column {
+                            header()
+                            switch()
+                        }
+                    }
                     teamListItems(state.graph, picture)
                 }
                 wide -> Row(Modifier.fillMaxSize()) {
                     Column(
                         Modifier.width(340.dp).fillMaxHeight().verticalScroll(rememberScrollState()).padding(start = Spacing.screen, end = Spacing.sm, bottom = Spacing.lg),
-                    ) { controls() }
+                    ) {
+                        header()
+                        switch()
+                    }
                     TeamPicture(state.graph, state.filter, picture, Modifier.weight(1f).fillMaxHeight())
                 }
                 else -> Column(Modifier.fillMaxSize()) {
                     Column(
                         Modifier.fillMaxWidth().heightIn(max = headerMax).verticalScroll(rememberScrollState()).padding(horizontal = Spacing.screen),
-                    ) { controls() }
+                    ) { header() }
+                    RowDivider()
+                    Box(Modifier.fillMaxWidth().padding(horizontal = Spacing.screen)) { switch() }
                     TeamPicture(state.graph, state.filter, picture, Modifier.fillMaxWidth().weight(1f))
                 }
             }
@@ -233,15 +264,12 @@ fun TeamScreen(state: TeamUiState, liveSummary: String, actions: TeamActions, sc
     }
 }
 
-/** Above (or beside) the picture: which objectives, the spoken summary, why something stopped, Picture or List. */
+/** Above (or beside) the picture: which objectives, the spoken summary, why something stopped. */
 @Composable
-private fun Controls(
+private fun Header(
     state: TeamUiState,
     liveSummary: String,
-    mode: TeamMode,
-    onMode: (TeamMode) -> Unit,
     actions: TeamActions,
-    showHint: Boolean,
     tooBig: Boolean,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm), modifier = Modifier.padding(top = Spacing.xs, bottom = Spacing.sm)) {
@@ -266,6 +294,13 @@ private fun Controls(
         }
         if (tooBig) InfoBanner(TeamWords.TOO_MANY)
         TeamWords.leftOut(0, state.graph.spacesLeftOut)?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+    }
+}
+
+/** Picture or List, and under it how to use the picture: never cut off by the part above it (D3B-1). */
+@Composable
+private fun ModeSwitch(mode: TeamMode, onMode: (TeamMode) -> Unit, hint: String?) {
+    Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm), modifier = Modifier.padding(top = Spacing.sm, bottom = Spacing.sm)) {
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
             TeamMode.entries.forEachIndexed { index, option ->
                 SegmentedButton(
@@ -276,8 +311,8 @@ private fun Controls(
                 ) { Text(if (option == TeamMode.PICTURE) TeamWords.PICTURE else TeamWords.LIST) }
             }
         }
-        if (showHint) {
-            InfoBanner(TeamWords.LIST_IS_EASIER)
+        if (hint != null) {
+            InfoBanner(hint)
             TextButton(onClick = { onMode(TeamMode.LIST) }, modifier = Modifier.heightIn(min = 48.dp)) { Text(TeamWords.SHOW_LIST) }
         }
         if (mode == TeamMode.PICTURE) {

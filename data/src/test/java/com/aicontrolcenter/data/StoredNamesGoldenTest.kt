@@ -503,7 +503,7 @@ class StoredNamesGoldenTest {
         )
         assertStoredKeys(ImageContent.serializer(), "mimeType", "base64")
         assertStoredKeys(ToolCallRequest.serializer(), "id", "name", "arguments", "argumentsError")
-        assertStoredKeys(ToolResultContent.serializer(), "callId", "toolName", "content", "isError")
+        assertStoredKeys(ToolResultContent.serializer(), "callId", "toolName", "content", "isError", "refusal")
         assertStoredKeys(ProviderData.serializer(), "kind", "payload")
         assertStoredKeys(TokenUsage.serializer(), "inputTokens", "outputTokens", "cachedInputTokens")
     }
@@ -516,6 +516,16 @@ class StoredNamesGoldenTest {
             """"toolResult":null,"reasoning":null,"providerData":null}"""
         val message = DataJson.decodeFromString(ChatMessage.serializer(), stored)
         assertEquals(ToolCallRequest("call_1", "clock_now", buildJsonObject { put("zone", "UTC") }), message.toolCalls.single())
+    }
+
+    @Test
+    fun `a tool result stored before refusal existed still reads back, with no refusal`() {
+        // Results saved before preview 3 have no such key.
+        val stored = """{"role":"TOOL","text":"","images":[],"toolCalls":[],""" +
+            """"toolResult":{"callId":"call_1","toolName":"clock_now","content":"10:00","isError":false},""" +
+            """"reasoning":null,"providerData":null}"""
+        val message = DataJson.decodeFromString(ChatMessage.serializer(), stored)
+        assertEquals(ToolResultContent("call_1", "clock_now", "10:00", isError = false, refusal = null), message.toolResult)
     }
 
     @Test
@@ -545,7 +555,7 @@ class StoredNamesGoldenTest {
         )
         assertEquals(
             """{"role":"TOOL","text":"","images":[],"toolCalls":[],""" +
-                """"toolResult":{"callId":"call_1","toolName":"clock_now","content":"10:00","isError":false},""" +
+                """"toolResult":{"callId":"call_1","toolName":"clock_now","content":"10:00","isError":false,"refusal":null},""" +
                 """"reasoning":null,"providerData":null}""",
             encodeColumn(ChatMessage.serializer(), ChatMessage.toolResult("call_1", "clock_now", "10:00")),
         )

@@ -13,6 +13,7 @@ import com.aicontrolcenter.core.tasks.measuringPauses
 import com.aicontrolcenter.core.tasks.withPausableTimeout
 import com.aicontrolcenter.core.tools.ActionAssessment
 import com.aicontrolcenter.core.tools.Authorization
+import com.aicontrolcenter.core.tools.CodedRefusal
 import com.aicontrolcenter.core.tools.Tool
 import com.aicontrolcenter.core.tools.ToolAuthorizer
 import com.aicontrolcenter.core.tools.ToolContext
@@ -231,6 +232,8 @@ class ToolExecutor(
             tool.assess(call.arguments, context)
         } catch (e: Exception) {
             rethrowIfCancelled(e)
+            // The app's own refusal found while checking (Phone operator off, seen by a screen tool): refused, with its code.
+            if (e is CodedRefusal) return ToolCallEnd.DENIED to ToolOutcome.refused(e.message ?: "The call was refused.", e.refusal)
             return ToolCallEnd.FAILED to ToolOutcome.failure("The call to ${spec.functionName} could not be checked before running (${describe(e)}), so it was not run.")
         }
         onAssessed(assessment)
@@ -243,7 +246,7 @@ class ToolExecutor(
         }
         // The broker wrote its own wait for the owner; anything it could not is written here.
         storeOwnerTime()
-        if (decision is Authorization.Denied) return ToolCallEnd.DENIED to ToolOutcome.failure(decision.reason)
+        if (decision is Authorization.Denied) return ToolCallEnd.DENIED to ToolOutcome.refused(decision.reason, decision.refusal)
         if (decision is Authorization.AllowedByOwner) {
             onAnswered(decision.requestIds)
             // The owner took time to answer, inside this app: what the call was checked against may have changed meanwhile,
@@ -338,6 +341,8 @@ class ToolExecutor(
                     put("ownerWaitMs", ownerWaitMs.coerceAtLeast(0))
                     put("argumentNames", call.arguments.keys.joinToString(","))
                     outcome?.let { put("outputChars", it.content.length) }
+                    // The app's own code for why it refused the call; owner screens act on it, never on the words.
+                    outcome?.refusal?.let { put("refusal", it) }
                     if (answeredBy.isNotEmpty()) putJsonArray("requestIds") { answeredBy.forEach { add(it.value) } }
                 },
             )
