@@ -53,12 +53,27 @@ class OperatorRefusedTest {
         )
     }
 
-    private suspend fun TestApp.toolCall(id: String, outcome: String, detail: String) = activityLog.record(
+    private suspend fun TestApp.toolCall(id: String, outcome: String, detail: String, refusal: String? = null) = activityLog.record(
         ActivityEvent(
             id = EventId(id), at = clock.current, type = ActivityType.TOOL_CALL, title = "Tool call denied: Read a web page", detail = detail,
-            severity = Severity.WARNING, rootTaskId = root, data = buildJsonObject { put("outcome", outcome) },
+            severity = Severity.WARNING, rootTaskId = root,
+            data = buildJsonObject {
+                put("outcome", outcome)
+                if (refusal != null) put("refusal", refusal)
+            },
         ),
     )
+
+    @Test
+    fun `a call refused for another reason whose own words name the switch is not taken for a refusal`() = runTest(mainRule.dispatcher) {
+        val app = TestApp(backgroundScope)
+        app.objective()
+        val vm = screen(app)
+        // The tool row's summary holds the agent's own arguments; the refusal itself is the owner's own "No".
+        app.toolCall("evt_words", "DENIED", "Write \"${OperatorGate.OPERATOR_OFF}.md\" — The owner said no.")
+        app.toolCall("evt_failed", "FAILED", "${OperatorGate.OPERATOR_OFF}, so this was made up by a script.")
+        assertFalse(vm.uiState.value.operatorRefused, "only the gate's own refusal code counts")
+    }
 
     @Test
     fun `a phone tool refused because Phone operator is off is said on the objective, and Turn on switches it on`() = runTest(mainRule.dispatcher) {
@@ -70,7 +85,7 @@ class OperatorRefusedTest {
         app.toolCall("evt_ok", "OK", "Read https://example.org — ${OperatorGate.OPERATOR_OFF} is what the page said")
         assertFalse(vm.uiState.value.operatorRefused, "a call that ran is no refusal, whatever its line says")
 
-        app.toolCall("evt_denied", "DENIED", "${OperatorGate.OPERATOR_OFF}, so \"Read a web page\" cannot be used.")
+        app.toolCall("evt_denied", "DENIED", "${OperatorGate.OPERATOR_OFF}, so \"Read a web page\" cannot be used.", refusal = OperatorGate.OPERATOR_OFF_CODE)
         assertTrue(vm.uiState.value.operatorRefused)
         assertTrue(vm.uiState.value.canTurnOnOperator)
 

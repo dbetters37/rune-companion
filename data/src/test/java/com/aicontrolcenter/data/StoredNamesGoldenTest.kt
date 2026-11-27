@@ -503,7 +503,7 @@ class StoredNamesGoldenTest {
         )
         assertStoredKeys(ImageContent.serializer(), "mimeType", "base64")
         assertStoredKeys(ToolCallRequest.serializer(), "id", "name", "arguments", "argumentsError")
-        assertStoredKeys(ToolResultContent.serializer(), "callId", "toolName", "content", "isError")
+        assertStoredKeys(ToolResultContent.serializer(), "callId", "toolName", "content", "isError", "refusal")
         assertStoredKeys(ProviderData.serializer(), "kind", "payload")
         assertStoredKeys(TokenUsage.serializer(), "inputTokens", "outputTokens", "cachedInputTokens")
     }

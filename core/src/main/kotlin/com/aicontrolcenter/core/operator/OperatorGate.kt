@@ -53,11 +53,34 @@ object OperatorGate {
      */
     const val OPERATOR_OFF: String = "Phone operation is switched off in Settings"
 
+    /**
+     * The code a refusal because [FrameworkSettings.operatorEnabled] is off carries, apart from its words: on the stored
+     * tool result and in the call's log line ("refusal"). Owner screens offer "Turn on" only for it, never for words
+     * that an agent's own arguments or a tool's output can hold.
+     */
+    const val OPERATOR_OFF_CODE: String = "operator_off"
+
     /** Capabilities that need [FrameworkSettings.operatorEnabled]: everything outside the agents' own workspace. */
     val operatorCapabilities: Set<Capability> = OperatorCapabilities.all.map { it.capability }.toSet() - workspaceCapabilities
 
+    /** A refusal: [text] for the model and the owner; [code] names why for the owner's screens ([OPERATOR_OFF_CODE]), or null. */
+    data class Refusal(val text: String, val code: String? = null)
+
     /** Why the call or ask must be refused before any request is raised, or null to go on to the grant check. */
-    fun refusal(f: Facts): String? {
+    fun refusal(f: Facts): String? = refusalOf(f)?.text
+
+    /** [refusal] with its code: [OPERATOR_OFF_CODE] only when it is refused because Phone operator is off. */
+    fun refusalOf(f: Facts): Refusal? {
+        whoAndWhat(f)?.let { return Refusal(it) }
+        val what = f.toolTitle?.let { "\"$it\"" } ?: "\"${checkNotNull(f.capabilityInfo).title}\""
+        if (f.capability in operatorCapabilities && !f.settings.operatorEnabled) {
+            return Refusal("$OPERATOR_OFF, so $what cannot be used.", OPERATOR_OFF_CODE)
+        }
+        return target(f, what)?.let { Refusal(it) }
+    }
+
+    /** The agent, its tool and the kind of target. */
+    private fun whoAndWhat(f: Facts): String? {
         val agent = f.agent ?: return "This agent no longer exists."
         if (!agent.enabled) return "${agent.name} is switched off, so it cannot use tools."
         if (f.toolId != null && f.toolId !in agent.toolIds) {
@@ -68,9 +91,11 @@ object OperatorGate {
         if (info.constrainedBy != f.constraint.kind) {
             return "$what named the wrong kind of target for \"${info.title}\", so it was not run."
         }
-        if (f.capability in operatorCapabilities && !f.settings.operatorEnabled) {
-            return "$OPERATOR_OFF, so $what cannot be used."
-        }
+        return null
+    }
+
+    /** The target itself, the app a call leads to, and local-only mode. */
+    private fun target(f: Facts, what: String): String? {
         when (val c = f.constraint) {
             is CapabilityConstraint.Folder -> if (f.folder?.id != c.folderId) return "That shared folder was removed or is not available."
             is CapabilityConstraint.App -> {

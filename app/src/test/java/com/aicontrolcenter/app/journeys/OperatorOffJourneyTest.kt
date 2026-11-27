@@ -111,4 +111,35 @@ class OperatorOffJourneyTest {
         robot.waitUntil { compose.onAllNodesWithText(card).fetchSemanticsNodes().isEmpty() }
         robot.waitUntil { compose.onAllNodesWithText("Refused because Phone operator is off. Turn it on, then ask again.").fetchSemanticsNodes().isEmpty() }
     }
+
+    @Test
+    fun `a failed workspace tool whose words only name the switch shows no Turn on`() {
+        val name = "Phone operation is switched off in Settings.md"
+        val client = ScriptedLlmClient.script(
+            ScriptStep.Calls(listOf(ScriptedLlmClient.call("c1", "workspace_read", buildJsonObject { put("path", name) }))),
+            ScriptStep.Reply("There is no such file."),
+        )
+        val robot = AppRobot(compose).given {
+            val model = serveModel(client)
+            graph.agentManager.create(
+                AgentDraft(name = "Filer", kind = AgentKind.SPECIALIST, modelId = model.id, description = "Keeps files.", toolIds = setOf(ToolId("workspace.read"))),
+            )
+            graph.start().join()
+        }.launch().also { this.robot = it }
+
+        robot.openSection("Agents").tapItemContaining("Keeps files.").tap("Chat").tap("New conversation")
+            .type("Message Filer", "Read the file")
+            .tapIcon("Send")
+            .waitUntilShown("There is no such file.")
+        val result = runBlocking {
+            val conversation = robot.app.conversations.observeConversations(null).first().single()
+            robot.app.conversations.getEntries(conversation.id).mapNotNull { it.message.toolResult }.single()
+        }
+        assertTrue(result.isError && name in result.content, "the read failed, naming the file: ${result.content}")
+        assertFalse(operatorOn(robot))
+        assertTrue(
+            compose.onAllNodesWithText("Refused because Phone operator is off. Turn it on, then ask again.").fetchSemanticsNodes().isEmpty(),
+            "an agent's own words never put the master switch in front of the owner",
+        )
+    }
 }

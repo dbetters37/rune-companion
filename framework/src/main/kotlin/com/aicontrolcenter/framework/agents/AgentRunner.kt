@@ -429,7 +429,7 @@ class AgentRunner(
                 if (!execution.outcome.ok) toolErrors++
                 unanswered.remove(call)
                 // The tool's own text; the model reads it with the owner notes' words defused ([forModel], rule 24).
-                val result = ChatMessage.toolResult(call.id, call.name, execution.outcome.content, isError = !execution.outcome.ok)
+                val result = ChatMessage.toolResult(call.id, call.name, execution.outcome.content, isError = !execution.outcome.ok, refusal = execution.outcome.refusal)
                 // The model reads the result itself for the rest of the turn; a memory search result is stored as a reference.
                 val stored = references.storedForm(execution)?.let { ChatMessage.toolResult(call.id, call.name, it, isError = false) } ?: result
                 append(result, null, null, stored)

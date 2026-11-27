@@ -10,6 +10,7 @@ import com.aicontrolcenter.core.llm.ChatMessage
 import com.aicontrolcenter.core.llm.ChatRole
 import com.aicontrolcenter.core.llm.TokenUsage
 import com.aicontrolcenter.core.llm.ToolCallRequest
+import com.aicontrolcenter.core.llm.ToolResultContent
 import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.tools.RiskLevel
 import com.aicontrolcenter.core.usage.DailyLimitKind
@@ -39,7 +40,8 @@ sealed interface ToolOutcomeUi {
 
     data class Succeeded(val content: String) : ToolOutcomeUi
 
-    data class Failed(val content: String) : ToolOutcomeUi
+    /** [refusal]: the app's code for why it refused the call without running it (stored with the result), or null. */
+    data class Failed(val content: String, val refusal: String? = null) : ToolOutcomeUi
 
     /** The call has no stored result: the turn ended before it ran. */
     data object NoResult : ToolOutcomeUi
@@ -193,7 +195,7 @@ fun transcriptOf(
                     text = message.text,
                     reasoning = message.reasoning?.takeIf { it.isNotBlank() },
                     toolCalls = message.toolCalls.map { call ->
-                        toolCallUi(call, toolInfoOf(call.name, tools), results[call.id]?.let { it.content to it.isError }, call.id == activeToolCallId)
+                        toolCallUi(call, toolInfoOf(call.name, tools), results[call.id], call.id == activeToolCallId)
                     },
                     footer = if (isTurnEnd) footerFor(entries, turnStart, index, assignedModelName) else null,
                 )
@@ -208,7 +210,7 @@ fun transcriptOf(
                         toolCalls = listOf(
                             ToolCallUi(
                                 result.callId, toolInfoOf(result.toolName, tools)?.title ?: result.toolName, "Arguments not recorded", "",
-                                if (result.isError) ToolOutcomeUi.Failed(result.content) else ToolOutcomeUi.Succeeded(result.content),
+                                if (result.isError) ToolOutcomeUi.Failed(result.content, result.refusal) else ToolOutcomeUi.Succeeded(result.content),
                             ),
                         ),
                     )
@@ -228,13 +230,13 @@ fun transcriptOf(
 fun toolInfoOf(functionName: String, tools: (String) -> ToolInfo?): ToolInfo? =
     tools(functionName) ?: if (functionName == ToolMenu.FUNCTION_NAME) ToolInfo(ToolMenu.TITLE, RiskLevel.SAFE) else null
 
-private fun toolCallUi(call: ToolCallRequest, info: ToolInfo?, result: Pair<String, Boolean>?, running: Boolean) = ToolCallUi(
+private fun toolCallUi(call: ToolCallRequest, info: ToolInfo?, result: ToolResultContent?, running: Boolean) = ToolCallUi(
     callId = call.id,
     title = info?.title ?: call.name,
     argumentsSummary = summariseArguments(call.arguments),
     argumentsJson = if (call.arguments.isEmpty()) "{}" else prettyJson.encodeToString(JsonObject.serializer(), call.arguments),
     outcome = when {
-        result != null -> if (result.second) ToolOutcomeUi.Failed(result.first) else ToolOutcomeUi.Succeeded(result.first)
+        result != null -> if (result.isError) ToolOutcomeUi.Failed(result.content, result.refusal) else ToolOutcomeUi.Succeeded(result.content)
         running -> ToolOutcomeUi.Running
         else -> ToolOutcomeUi.NoResult
     },

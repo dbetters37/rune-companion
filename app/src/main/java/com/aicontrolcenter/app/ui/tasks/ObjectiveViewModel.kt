@@ -627,11 +627,16 @@ class ObjectiveViewModel(
         return EgressUi(away.size, away.map { it.destinationHost }.distinct(), offPhone.sumOf { it.calls }, recordsCleared)
     }
 
-    /** A tool call the gate refused (not run) because Phone operator is off, in the gate's own words. */
+    /**
+     * A tool call the app refused (not run) because Phone operator is off: by the code its log line carries, never by its
+     * words, which hold the agent's own arguments.
+     */
     private fun refusedForOperatorOff(event: ActivityEvent): Boolean {
         if (event.type != ActivityType.TOOL_CALL) return false
-        val outcome = (event.data?.get("outcome") as? kotlinx.serialization.json.JsonPrimitive)?.content
-        return (outcome == "DENIED" || outcome == "REJECTED") && OperatorOffTexts.isRefusal(event.detail)
+        val data = event.data ?: return false
+        val outcome = (data["outcome"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+        val refusal = (data["refusal"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+        return outcome == "DENIED" && OperatorOffTexts.isRefusal(refusal)
     }
 
     /**

@@ -104,7 +104,7 @@ internal fun AgentTurn(
         item.toolCalls.forEach { call ->
             ToolCallRow(call)
             val outcome = call.outcome
-            if (onTurnOnOperator != null && outcome is ToolOutcomeUi.Failed && OperatorOffTexts.isRefusal(outcome.content)) {
+            if (onTurnOnOperator != null && outcome is ToolOutcomeUi.Failed && OperatorOffTexts.isRefusal(outcome.refusal)) {
                 OperatorRefusedLine(onTurnOnOperator)
             }
         }

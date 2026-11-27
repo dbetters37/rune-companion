@@ -42,8 +42,11 @@ object OperatorOffTexts {
     const val OPEN_SETTINGS: String = "Open Settings"
     const val TURNED_ON: String = "Phone operator is on. Agents still ask your permission for each phone tool."
 
-    /** True when [text] is a tool's refusal because Phone operator is off, in the gate's own words. */
-    fun isRefusal(text: String): Boolean = OperatorGate.OPERATOR_OFF in text
+    /**
+     * True when [code], the refusal code of a tool call (stored with its result and in its log line), says the app refused
+     * it because Phone operator is off. Never judged from words: an agent's arguments or a tool's output can hold any.
+     */
+    fun isRefusal(code: String?): Boolean = code == OperatorGate.OPERATOR_OFF_CODE
 }
 
 /** Which tools need Phone operator on: every phone tool, not the agents' own workspace. */
