@@ -519,6 +519,16 @@ class StoredNamesGoldenTest {
     }
 
     @Test
+    fun `a tool result stored before refusal existed still reads back, with no refusal`() {
+        // Results saved before preview 3 have no such key.
+        val stored = """{"role":"TOOL","text":"","images":[],"toolCalls":[],""" +
+            """"toolResult":{"callId":"call_1","toolName":"clock_now","content":"10:00","isError":false},""" +
+            """"reasoning":null,"providerData":null}"""
+        val message = DataJson.decodeFromString(ChatMessage.serializer(), stored)
+        assertEquals(ToolResultContent("call_1", "clock_now", "10:00", isError = false, refusal = null), message.toolResult)
+    }
+
+    @Test
     fun `exact text of the conversation entry columns`() {
         assertEquals(
             """{"role":"USER","text":"Look","images":[{"mimeType":"image/png","base64":"aGVsbG8="}],"toolCalls":[],""" +
@@ -545,7 +555,7 @@ class StoredNamesGoldenTest {
         )
         assertEquals(
             """{"role":"TOOL","text":"","images":[],"toolCalls":[],""" +
-                """"toolResult":{"callId":"call_1","toolName":"clock_now","content":"10:00","isError":false},""" +
+                """"toolResult":{"callId":"call_1","toolName":"clock_now","content":"10:00","isError":false,"refusal":null},""" +
                 """"reasoning":null,"providerData":null}""",
             encodeColumn(ChatMessage.serializer(), ChatMessage.toolResult("call_1", "clock_now", "10:00")),
         )
