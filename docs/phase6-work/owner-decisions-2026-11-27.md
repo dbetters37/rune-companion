@@ -67,3 +67,24 @@ State on 27 Nov: W works, P partly, N not built.
 24. Turn my notes into a task list by priority (W)
 25. Every morning: weather, calendar, tasks, important emails (P: routines plus calendar, Gmail, web search)
 Small additions with big payoff: alarm and timer tools; a web search tool; then the Gmail connection.
+
+## The owner's tool list (what the app must be able to DO), 27 Nov
+"I need phone access, messages access, contacts, and 25 other things." Every tool uses an official Android feature the
+owner allows once. Sending, calling and paying still ask one tap. Sizes: S small, M medium, L large.
+
+Core: Contacts (find/add/edit, S); Messages (read texts, send after one tap; SMS is a restricted permission, needs
+"Allow restricted settings", M); Phone (call after one tap, call history, S).
+
+1 Notification reader (notification access, M). 2 Notification reply (WhatsApp/Messenger quick reply after one tap, M).
+3 Email over IMAP/SMTP (read, search, sort, archive, move; send after one tap; Gmail via app password, L).
+4 Calendar (read/add/edit/delete, S). 5 Alarms (AlarmClock intents, S). 6 Timers (S). 7 Location (S).
+8 Web search (a search API key, M). 9 All-files access (MANAGE_EXTERNAL_STORAGE switch, M).
+10 Storage analyzer (biggest files, duplicates, M). 11 App usage (usage access, S).
+12 PDF/document text reader (PdfBox-Android, M). 13 Text from pictures (ML Kit on-device OCR, M).
+14 Image understanding (vision through the connected model, M). 15 Image generation (xAI image API, M).
+16 Camera (photo, document scan, M). 17 QR/barcode scanner (S). 18 Voice in (speech to text, M).
+19 Voice out (text to speech, S). 20 Do Not Disturb, ringer, volume (DND access, S).
+21 Brightness and screen timeout (modify system settings, S). 22 Flashlight (S). 23 Clipboard (S).
+24 Media control (play/pause/skip through notification access, S). 25 Device status (battery, storage, memory, network, S).
+Reference for the shape of these: termux/termux-api on GitHub.
+First batch suggested: the core 3, notification reader, calendar, alarms and timers, all-files access, web search.
