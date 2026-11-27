@@ -570,8 +570,8 @@ class ObjectiveViewModel(
     private fun egressOf(privacy: Privacy, usage: List<WorkUsage>, snapshot: RegistrySnapshot, recordsCleared: Boolean): EgressUi {
         val away = privacy.egress.mapNotNull { it.egress }.filter { it.locality != Locality.ON_DEVICE }
         // A model no longer registered counts as off the phone: a privacy line must never say less than happened.
-        // Tokens are the proof a request was sent (a request refused before sending is counted as a call too).
-        val offPhone = usage.filter { snapshot.localityOf(it.modelId) != Locality.ON_DEVICE && it.inputTokens + it.outputTokens > 0 }
+        // A row's calls are the requests that left the phone, counted as today's limits count them (INT3-1).
+        val offPhone = usage.filter { snapshot.localityOf(it.modelId) != Locality.ON_DEVICE }
         return EgressUi(away.size, away.map { it.destinationHost }.distinct(), offPhone.sumOf { it.calls }, recordsCleared)
     }
 
@@ -689,9 +689,10 @@ fun costLineOf(
     prices: Map<com.aicontrolcenter.core.ModelId, ModelPrice>,
     onPhone: Set<com.aicontrolcenter.core.ModelId> = emptySet(),
 ): CostLineUi? {
-    if (rows.isEmpty()) return null
     val tokens = rows.sumOf { it.inputTokens + it.outputTokens }
+    // Calls as today's limits count them (INT3-1): a call refused before sending, or ended by "slow down", is no answer.
     val calls = rows.sumOf { it.calls }
+    if (calls == 0L && tokens == 0L) return null
     val counted = prices.filterValues { it.counts }
     val charged = rows.filter { it.modelId !in onPhone }
     val money = moneyOf(charged, counted)

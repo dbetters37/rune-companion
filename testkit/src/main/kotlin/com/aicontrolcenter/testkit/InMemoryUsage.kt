@@ -87,7 +87,8 @@ class InMemoryUsageStore(
             val old = work[workKey]
             work[workKey] = WorkUsage(
                 kind = item.kind, workId = item.id, modelId = sample.modelId,
-                calls = (old?.calls ?: 0) + 1,
+                // As Room's rows: only a call that counts as a model answer (INT3-1).
+                calls = (old?.calls ?: 0) + UsageTotals.of(sample).countedCalls,
                 inputTokens = (old?.inputTokens ?: 0) + (sample.inputTokens ?: 0),
                 outputTokens = (old?.outputTokens ?: 0) + (sample.outputTokens ?: 0),
                 cachedInputTokens = (old?.cachedInputTokens ?: 0) + (sample.cachedInputTokens ?: 0),

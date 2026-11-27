@@ -271,7 +271,11 @@ internal fun egressWords(egress: EgressUi): String {
     return when {
         egress.transfers > 0 -> buildString {
             append("${egress.transfers} model call${if (egress.transfers == 1) "" else "s"} left this phone, to ${egress.destinations.joinToString(", ")}. See the Log.")
-            if (answers > egress.transfers) append(" In all, $answerWords came from models off this phone; the log no longer holds the rest.")
+            // The counted answers are the requests that left (INT3-1); the log is said to lack some only once records were cleared.
+            if (answers > egress.transfers) {
+                append(" In all, $answerWords came from models off this phone")
+                append(if (egress.recordsCleared) "; older records were cleared." else ".")
+            }
         }
         answers > 0 -> "$answerWords went to models off this phone; the details are no longer in the log."
         egress.recordsCleared -> EgressTexts.RECORDS_CLEARED

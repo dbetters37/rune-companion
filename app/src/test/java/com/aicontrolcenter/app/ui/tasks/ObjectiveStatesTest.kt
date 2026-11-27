@@ -204,8 +204,13 @@ class ObjectiveStatesTest {
         assertEquals(2, egress.offPhoneAnswers, "a model no longer registered counts as off the phone")
         assertEquals("2 model answers went to models off this phone; the details are no longer in the log.", egressWords(egress))
         assertEquals(
-            "1 model call left this phone, to api.x.ai. See the Log. In all, 2 model answers came from models off this phone; the log no longer holds the rest.",
+            "1 model call left this phone, to api.x.ai. See the Log. In all, 2 model answers came from models off this phone; older records were cleared.",
+            egressWords(EgressUi(transfers = 1, destinations = listOf("api.x.ai"), offPhoneAnswers = 2, recordsCleared = true)),
+        )
+        assertEquals(
+            "1 model call left this phone, to api.x.ai. See the Log. In all, 2 model answers came from models off this phone.",
             egressWords(EgressUi(transfers = 1, destinations = listOf("api.x.ai"), offPhoneAnswers = 2)),
+            "no claim that the log lost records it still holds (INT3-1)",
         )
     }
 

@@ -167,6 +167,13 @@ data class UsageTotals(
 
     val totalTokens: Long get() = inputTokens + outputTokens
 
+    /**
+     * The calls that count as model answers: those that sent a request (answered, failed or stopped), but not those a
+     * "slow down" answer ended, nor those the app refused before sending anything. Today's limits, the Today tile and
+     * every "model answers" line count with this one rule (INT3-1).
+     */
+    val countedCalls: Long get() = (ok + failed + cancelled - (errors[ErrorClass.RATE_LIMITED] ?: 0)).coerceAtLeast(0)
+
     /** Mean time to a whole answer, or null without answered calls. */
     val averageAnswerMs: Long? get() = if (ok > 0) answerMsSum / ok else null
 
