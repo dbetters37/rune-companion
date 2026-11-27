@@ -58,6 +58,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.aicontrolcenter.app.di.LocalAppGraph
 import com.aicontrolcenter.app.ui.components.AppCard
 import com.aicontrolcenter.app.ui.components.InfoBanner
+import com.aicontrolcenter.app.ui.components.RowDivider
 import com.aicontrolcenter.app.ui.components.ScreenScaffold
 import com.aicontrolcenter.app.ui.components.StatusChip
 import com.aicontrolcenter.app.ui.components.icon
@@ -183,28 +184,40 @@ fun TeamScreen(state: TeamUiState, liveSummary: String, actions: TeamActions, sc
         }
         BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
             val wide = maxWidth >= WideLayout
-            val headerMax = maxHeight * 0.45f
-            val controls: @Composable () -> Unit = {
-                Controls(state, liveSummary, mode, { chosen = it }, actions, showHint = mode == TeamMode.PICTURE && (screenReaderOn || largeText), tooBig = tooBig)
-            }
+            // Only the objective's card and its notices scroll, in at most this part of the height; the Picture and List
+            // switch and its hint sit below them, always whole, right above the picture (D3B-1).
+            val headerMax = maxHeight * 0.35f
+            val showHint = mode == TeamMode.PICTURE && (screenReaderOn || largeText)
+            val header: @Composable () -> Unit = { Header(state, liveSummary, actions, tooBig = tooBig) }
+            val switch: @Composable () -> Unit = { ModeSwitch(mode, { chosen = it }, showHint) }
             when {
                 mode == TeamMode.LIST -> LazyColumn(
                     modifier = Modifier.fillMaxSize().readableWidth().testTag(TEAM_LIST_TAG),
                     contentPadding = PaddingValues(start = Spacing.screen, end = Spacing.screen, bottom = Spacing.xl),
                 ) {
-                    item(key = "controls") { controls() }
+                    item(key = "controls") {
+                        Column {
+                            header()
+                            switch()
+                        }
+                    }
                     teamListItems(state.graph, picture)
                 }
                 wide -> Row(Modifier.fillMaxSize()) {
                     Column(
                         Modifier.width(340.dp).fillMaxHeight().verticalScroll(rememberScrollState()).padding(start = Spacing.screen, end = Spacing.sm, bottom = Spacing.lg),
-                    ) { controls() }
+                    ) {
+                        header()
+                        switch()
+                    }
                     TeamPicture(state.graph, state.filter, picture, Modifier.weight(1f).fillMaxHeight())
                 }
                 else -> Column(Modifier.fillMaxSize()) {
                     Column(
                         Modifier.fillMaxWidth().heightIn(max = headerMax).verticalScroll(rememberScrollState()).padding(horizontal = Spacing.screen),
-                    ) { controls() }
+                    ) { header() }
+                    RowDivider()
+                    Box(Modifier.fillMaxWidth().padding(horizontal = Spacing.screen)) { switch() }
                     TeamPicture(state.graph, state.filter, picture, Modifier.fillMaxWidth().weight(1f))
                 }
             }
@@ -233,15 +246,12 @@ fun TeamScreen(state: TeamUiState, liveSummary: String, actions: TeamActions, sc
     }
 }
 
-/** Above (or beside) the picture: which objectives, the spoken summary, why something stopped, Picture or List. */
+/** Above (or beside) the picture: which objectives, the spoken summary, why something stopped. */
 @Composable
-private fun Controls(
+private fun Header(
     state: TeamUiState,
     liveSummary: String,
-    mode: TeamMode,
-    onMode: (TeamMode) -> Unit,
     actions: TeamActions,
-    showHint: Boolean,
     tooBig: Boolean,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm), modifier = Modifier.padding(top = Spacing.xs, bottom = Spacing.sm)) {
@@ -266,6 +276,13 @@ private fun Controls(
         }
         if (tooBig) InfoBanner(TeamWords.TOO_MANY)
         TeamWords.leftOut(0, state.graph.spacesLeftOut)?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+    }
+}
+
+/** Picture or List, and under it how to use the picture: never cut off by the part above it (D3B-1). */
+@Composable
+private fun ModeSwitch(mode: TeamMode, onMode: (TeamMode) -> Unit, showHint: Boolean) {
+    Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm), modifier = Modifier.padding(top = Spacing.sm, bottom = Spacing.sm)) {
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
             TeamMode.entries.forEachIndexed { index, option ->
                 SegmentedButton(
