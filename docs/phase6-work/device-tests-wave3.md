@@ -222,9 +222,9 @@ check below is manual on the emulator or the owner's razr).
    message shows "Today's limit is reached" with the limit's sentence alone, "Daily limits" opens the limits screen, and
    the composer says the same while the limit holds. Raise the limit, "Send again": the answer comes.
 4. **Android switched screen control off (D7).** With Screen control on and the service Ready, force-stop the app from
-   Android's App info. Open Tools › Screen: "Screen control was switched off" with Android's sentence ("…after the app was
-   stopped" on Android 14, "force-stopped" on 15+); "Open accessibility settings" opens Android's page (the owner's own
-   tap; the operator never drives it).
+   Android's App info. Open Tools › Screen: in "Set up phone control", step 4 "Turn on AI Control Center in
+   Accessibility" is Not done with Android's sentence under it ("…after the app was stopped" on Android 14,
+   "force-stopped" on 15+); tapping the step opens Android's page (the owner's own tap; the operator never drives it).
 5. **Another app's folder (Tools › Folders).** Share a folder through the picker from a third-party storage app (a file
    manager or a cloud drive that offers folders): the card says "This folder comes from <that app's name>…" (if Android
    hides the name by package visibility: "another app"); switch Read-only on and off: the sentence changes. With

@@ -75,7 +75,9 @@ enum class ToolsTab(val title: String) {
  * The owner's routines and folder pick-up rules are lists of the owner's things and sit in Tools (WP10c builds their
  * screens): "Routines" is offered on the All tools tab and "Folder pick-up rules" on the Folders tab, each only while
  * the graph has the owner's port for it; a read-only folder's "Pick up new files" opens [onNewPickUpRule]; a question
- * in the History opens its own screen ([onOpenQuestion], rule 13), never the Approval screen.
+ * in the History opens its own screen ([onOpenQuestion], rule 13), never the Approval screen. Screen control's setup
+ * steps open Settings at the Phone operator switch ([onOpenOperatorSettings]) and at the Screen control switch
+ * ([onOpenScreenControlSettings]).
  */
 class ToolsNavigation(
     val onOpenAgent: (AgentId) -> Unit,
@@ -88,6 +90,8 @@ class ToolsNavigation(
     val onOpenPickUpRules: () -> Unit = {},
     val onNewPickUpRule: (com.aicontrolcenter.core.FolderId) -> Unit = {},
     val onOpenQuestion: (RequestId) -> Unit = onOpenRequest,
+    val onOpenOperatorSettings: () -> Unit = onOpenSettings,
+    val onOpenScreenControlSettings: () -> Unit = onOpenSettings,
 )
 
 /**
@@ -224,7 +228,7 @@ fun ToolsSectionRoute(initialTab: ToolsTab, initialAgent: AgentId?, navigation: 
                     switchedOffSentence = graph.screenSwitchedOffSentence,
                 )
             }
-            // Coming back from Android's settings: read the service state again.
+            // Coming back from Android's settings or App info: read the service state again, so the setup steps are current.
             LifecycleResumeEffect(viewModel) {
                 viewModel.refresh()
                 onPauseOrDispose { }
@@ -246,7 +250,8 @@ fun ToolsSectionRoute(initialTab: ToolsTab, initialAgent: AgentId?, navigation: 
                         onOpenAccessibilitySettings = { open(graph.systemScreens.accessibilitySettings(), "the accessibility settings") },
                         onOpenAppInfo = { open(graph.systemScreens.appInfo(), "this app's App info page") },
                         onCheckAgain = viewModel::refresh,
-                        onOpenSettings = navigation.onOpenSettings,
+                        onOpenOperatorSettings = navigation.onOpenOperatorSettings,
+                        onOpenScreenControlSettings = navigation.onOpenScreenControlSettings,
                         onStop = viewModel::stop,
                         onResume = viewModel::resume,
                         onOpenPicker = viewModel::openPicker,

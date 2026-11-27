@@ -128,6 +128,21 @@ class AppRobot(private val compose: ComposeContentTestRule) {
         compose.waitForIdle()
     }
 
+    /**
+     * Presses the control whose screen-reader description contains [description] (a row read as one phrase, such as
+     * "Step 3, Allow restricted settings…"), through its click action as TalkBack does.
+     */
+    fun pressDescribed(description: String) = apply {
+        compose.onAllNodes(hasContentDescription(description, substring = true) and hasClickAction()).onFirst().performScrollToIfPossible()
+            .performSemanticsAction(SemanticsActions.OnClick)
+        compose.waitForIdle()
+    }
+
+    /** Waits until something screen readers know by a description containing [description] is on screen. */
+    fun waitUntilDescribed(description: String, timeoutMs: Long = 10_000) = apply {
+        waitUntil(timeoutMs) { compose.onAllNodes(hasContentDescription(description, substring = true)).fetchSemanticsNodes().isNotEmpty() }
+    }
+
     /** Taps a button inside the open dialog. */
     fun tapInDialog(text: String) = apply {
         compose.onNode(hasText(text) and hasClickAction() and hasAnyAncestor(isDialog())).performClick()

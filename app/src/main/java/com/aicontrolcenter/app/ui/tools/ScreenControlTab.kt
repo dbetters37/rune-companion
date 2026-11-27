@@ -1,5 +1,6 @@
 package com.aicontrolcenter.app.ui.tools
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,14 +13,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
@@ -28,20 +33,29 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.isSensitiveData
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.aicontrolcenter.app.ui.components.AppCard
 import com.aicontrolcenter.app.ui.components.ConfirmDialog
 import com.aicontrolcenter.app.ui.components.EmptyState
 import com.aicontrolcenter.app.ui.components.InfoBanner
-import com.aicontrolcenter.app.ui.components.KeyValueRow
 import com.aicontrolcenter.app.ui.components.ObscuredTouchGuard
 import com.aicontrolcenter.app.ui.components.RowDivider
 import com.aicontrolcenter.app.ui.components.SectionHeader
@@ -50,19 +64,29 @@ import com.aicontrolcenter.app.ui.components.readableWidth
 import com.aicontrolcenter.app.ui.icons.Accessibility
 import com.aicontrolcenter.app.ui.icons.AppIcons
 import com.aicontrolcenter.app.ui.icons.Apps
+import com.aicontrolcenter.app.ui.icons.ChevronRight
+import com.aicontrolcenter.app.ui.icons.StatusDisabled
+import com.aicontrolcenter.app.ui.icons.StatusNotDone
 import com.aicontrolcenter.app.ui.icons.Stop
+import com.aicontrolcenter.app.ui.theme.LocalCalmMotion
 import com.aicontrolcenter.app.ui.theme.MonoTextStyle
 import com.aicontrolcenter.app.ui.theme.Spacing
 import com.aicontrolcenter.app.ui.theme.StatusTone
+import com.aicontrolcenter.app.ui.theme.appColors
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.operator.ScreenActionPolicy
+import com.aicontrolcenter.core.operator.ScreenServiceState
+import kotlinx.coroutines.launch
 
 /** What the Screen control tab can ask for. */
 class ScreenControlActions(
     val onOpenAccessibilitySettings: () -> Unit,
     val onOpenAppInfo: () -> Unit,
     val onCheckAgain: () -> Unit,
-    val onOpenSettings: () -> Unit,
+    /** Settings, opened at the Phone operator switch (setup step 1). */
+    val onOpenOperatorSettings: () -> Unit,
+    /** Settings, opened at the Screen control switch (setup step 2). */
+    val onOpenScreenControlSettings: () -> Unit,
     val onStop: () -> Unit,
     val onResume: () -> Unit,
     val onOpenPicker: () -> Unit,
@@ -73,25 +97,14 @@ class ScreenControlActions(
     val onSetPolicy: (String, ScreenActionPolicy) -> Unit = { _, _ -> },
 )
 
-/**
- * Screen control: Android's accessibility service and how to switch it on, Stop and Resume, and
- * the apps agents may be allowed to see and use, each checked to be that exact app. Touches are
- * refused while another app's window covers the tab or its dialogs, since they give agents access.
- */
-/**
- * D7: Android switched screen control off after the app was stopped. That is Android's rule; the app only says so and
- * opens Android's own accessibility settings, where the owner switches it on again with their own tap.
- */
-@Composable
-private fun SwitchedOffNotice(notice: String, onOpenAccessibilitySettings: () -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-        InfoBanner(title = "Screen control was switched off", text = notice, tone = StatusTone.ATTENTION)
-        androidx.compose.material3.OutlinedButton(onClick = onOpenAccessibilitySettings, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-            Text("Open accessibility settings")
-        }
-    }
-}
+/** The authorised apps' header is the third item of the tab, after the setup steps and Stop; step 5 scrolls to it. */
+private const val APPS_HEADER_INDEX = 2
 
+/**
+ * Screen control: the five steps of setting it up, each one tap from where it is done and marked done or not; Stop and
+ * Resume; the apps agents may be allowed to see and use, each checked to be that exact app. Touches are refused while
+ * another app's window covers the tab or its dialogs, since they give agents access.
+ */
 @Composable
 fun ScreenControlTab(state: ScreenControlUiState, actions: ScreenControlActions) {
     if (state.isLoading) {
@@ -100,15 +113,19 @@ fun ScreenControlTab(state: ScreenControlUiState, actions: ScreenControlActions)
     }
     ObscuredTouchGuard()
     var confirmWithdraw by rememberSaveable { mutableStateOf<String?>(null) }
+    val list = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val calm = LocalCalmMotion.current
+    val showApps: () -> Unit = {
+        scope.launch { if (calm) list.scrollToItem(APPS_HEADER_INDEX) else list.animateScrollToItem(APPS_HEADER_INDEX) }
+    }
     LazyColumn(
+        state = list,
         modifier = Modifier.readableWidth().fillMaxSize(),
         contentPadding = PaddingValues(start = Spacing.screen, end = Spacing.screen, top = Spacing.md, bottom = Spacing.xl),
         verticalArrangement = Arrangement.spacedBy(Spacing.md),
     ) {
-        state.switchedOffNotice?.let { notice ->
-            item(key = "switched-off") { SwitchedOffNotice(notice, actions.onOpenAccessibilitySettings) }
-        }
-        item(key = "service") { ServiceCard(state, actions) }
+        item(key = "setup") { SetupChecklistCard(state.checklist, state.service.state, actions, onShowApps = showApps) }
         item(key = "stop") { StopCard(state.stopped, state.isBusy, actions) }
         item(key = "apps-header") {
             Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
@@ -153,45 +170,127 @@ fun ScreenControlTab(state: ScreenControlUiState, actions: ScreenControlActions)
     state.picker?.let { AppPicker(it, actions) }
 }
 
+/** The title of the setup card on top of Tools › Screen control. */
+const val SETUP_TITLE: String = "Set up phone control"
+
+/** Where each setup step leads, as TalkBack offers it ("Double tap to open App info"). */
+internal val SetupStep.destination: String
+    get() = when (this) {
+        SetupStep.PHONE_OPERATOR -> "Open Settings at Phone operator"
+        SetupStep.SCREEN_CONTROL -> "Open Settings at Screen control"
+        SetupStep.RESTRICTED_SETTINGS -> "Open App info"
+        SetupStep.ACCESSIBILITY -> "Open accessibility settings"
+        SetupStep.APPS -> "Show the authorised apps"
+    }
+
+/**
+ * "Set up phone control": how far the owner is, then the five steps in order. Each step is one row that opens where it
+ * is done and says whether it is, with an icon and a word, never colour alone. The steps are read again when the owner
+ * comes back from Android's screens (the Tools section's resume effect) and with Check again.
+ */
 @Composable
-private fun ServiceCard(state: ScreenControlUiState, actions: ScreenControlActions) {
-    val service = state.service
+private fun SetupChecklistCard(checklist: SetupChecklistUi, service: ScreenServiceState, actions: ScreenControlActions, onShowApps: () -> Unit) {
     AppCard {
-        Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-            Text("Android's screen-control permission", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
-            StatusChip(service.label.text, service.label.tone)
-            service.label.detail?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            if (service.steps.isNotEmpty()) {
-                SectionHeader("To switch it on")
-                service.steps.forEachIndexed { index, step ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-                        Text("${index + 1}.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(step, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
-                    }
-                }
+        Text(
+            SETUP_TITLE,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.semantics { heading() },
+        )
+        Row(
+            modifier = Modifier.padding(top = Spacing.xs).semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+        ) {
+            if (checklist.allDone) {
+                // As tall as the summary's first line, at any font size (titleSmall's line height).
+                Icon(AppIcons.StatusReady, contentDescription = null, tint = appColors.ready, modifier = Modifier.size(textSize(20.sp)))
             }
-            if (service.offerAccessibilitySettings) {
-                Button(onClick = actions.onOpenAccessibilitySettings, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                    Text("Open accessibility settings")
-                }
-            }
-            if (service.offerAppInfo) {
-                OutlinedButton(onClick = actions.onOpenAppInfo, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                    Text("Open App info")
-                }
-            }
-            if (service.state != com.aicontrolcenter.core.operator.ScreenServiceState.READY) {
-                TextButton(onClick = actions.onCheckAgain, modifier = Modifier.align(Alignment.End)) { Text("Check again") }
-            }
+            Text(checklist.summary, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+        }
+        checklist.steps.forEach { step ->
             RowDivider(Modifier.padding(vertical = Spacing.xs))
-            Caption("The switches in Settings")
-            KeyValueRow("Phone operator", if (state.operatorEnabled) "On" else "Off")
-            KeyValueRow("Screen control", if (state.screenControlEnabled) "On" else "Off")
-            if (!state.operatorEnabled || !state.screenControlEnabled) {
-                Caption("Both switches must be on before any agent can see or use a screen.")
-                OutlinedButton(onClick = actions.onOpenSettings, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Open Settings") }
+            SetupStepRow(
+                step,
+                onClick = when (step.step) {
+                    SetupStep.PHONE_OPERATOR -> actions.onOpenOperatorSettings
+                    SetupStep.SCREEN_CONTROL -> actions.onOpenScreenControlSettings
+                    SetupStep.RESTRICTED_SETTINGS -> actions.onOpenAppInfo
+                    SetupStep.ACCESSIBILITY -> actions.onOpenAccessibilitySettings
+                    SetupStep.APPS -> onShowApps
+                },
+            )
+        }
+        // Android 9 to 12 send no signal when the service is switched on; coming back to the tab reads it again too.
+        if (service != ScreenServiceState.READY) {
+            TextButton(onClick = actions.onCheckAgain, modifier = Modifier.padding(top = Spacing.xs).heightIn(min = 48.dp)) {
+                Icon(AppIcons.Refresh, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+                Text("Check again", modifier = Modifier.padding(start = Spacing.sm))
             }
         }
+    }
+}
+
+/**
+ * One step: its number, title, status (icon and word) and, while it is not done, what to do there. The whole row is one
+ * target of at least 48 dp, which TalkBack reads as "Step 1, Turn on Phone operator, Done" with where it leads.
+ */
+@Composable
+private fun SetupStepRow(step: SetupStepUi, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = Spacing.touchTarget)
+            .clip(MaterialTheme.shapes.small)
+            .clickable(role = Role.Button, onClickLabel = step.step.destination, onClick = onClick)
+            .clearAndSetSemantics { contentDescription = step.spoken }
+            .padding(vertical = Spacing.sm),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+    ) {
+        StepNumber(step.step.number)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+            Text(step.step.title, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+            StepStatusLine(step.status)
+            step.hint?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        }
+        Icon(
+            AppIcons.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.align(Alignment.CenterVertically).size(24.dp),
+        )
+    }
+}
+
+/** [size] in dp, so an icon beside text grows with the owner's font size as the text does. */
+@Composable
+private fun textSize(size: TextUnit): Dp = with(LocalDensity.current) { size.toDp() }
+
+/** The step's number in a circle that grows with the font size, so a large number never spills out of it. */
+@Composable
+private fun StepNumber(number: Int) {
+    Box(
+        modifier = Modifier.size(textSize(28.sp)).background(MaterialTheme.colorScheme.surfaceContainerHigh, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(number.toString(), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface)
+    }
+}
+
+/** Done (a check mark), Not done (an empty circle) or Not needed on this phone (a dash), each with its word. */
+@Composable
+private fun StepStatusLine(status: StepStatus) {
+    val (icon, color) = when (status) {
+        StepStatus.DONE -> AppIcons.StatusReady to appColors.status(StatusTone.READY)
+        // INFO: a step of setting up that has not happened, deliberately calm.
+        StepStatus.NOT_DONE -> AppIcons.StatusNotDone to appColors.status(StatusTone.INFO)
+        StepStatus.NOT_NEEDED -> AppIcons.StatusDisabled to appColors.status(StatusTone.DISABLED)
+    }
+    // The icon sits on the word's first line ("Not needed on this phone" can wrap at large font sizes).
+    Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.padding(top = textSize(1.sp)).size(textSize(18.sp)))
+        Text(status.label, style = MaterialTheme.typography.titleSmall, color = color)
     }
 }
 

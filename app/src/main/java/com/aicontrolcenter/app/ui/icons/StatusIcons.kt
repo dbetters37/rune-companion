@@ -73,6 +73,19 @@ val AppIcons.StatusUnavailable: ImageVector by lazy(LazyThreadSafetyMode.NONE) {
     }
 }
 
+/** Material Icons Rounded "RadioButtonUnchecked": an empty circle, a step not done yet. */
+val AppIcons.StatusNotDone: ImageVector by lazy(LazyThreadSafetyMode.NONE) {
+    appIcon("StatusNotDone") {
+        p {
+            moveTo(12f, 2f); curveTo(6.48f, 2f, 2f, 6.48f, 2f, 12f); reflectiveCurveToRelative(4.48f, 10f, 10f, 10f)
+            reflectiveCurveToRelative(10f, -4.48f, 10f, -10f); reflectiveCurveTo(17.52f, 2f, 12f, 2f); close()
+            moveTo(12f, 20f); curveToRelative(-4.42f, 0f, -8f, -3.58f, -8f, -8f)
+            reflectiveCurveToRelative(3.58f, -8f, 8f, -8f); reflectiveCurveToRelative(8f, 3.58f, 8f, 8f)
+            reflectiveCurveToRelative(-3.58f, 8f, -8f, 8f); close()
+        }
+    }
+}
+
 /** Material Icons Rounded "DoNotDisturbOn". */
 val AppIcons.StatusDisabled: ImageVector by lazy(LazyThreadSafetyMode.NONE) {
     appIcon("StatusDisabled") {

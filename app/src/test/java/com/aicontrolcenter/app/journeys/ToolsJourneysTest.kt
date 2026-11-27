@@ -4,7 +4,13 @@ import android.app.Application
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -66,6 +72,10 @@ class ToolsJourneysTest {
 
     /** Waits until a control screen readers know as [description] is on screen (file work runs off the main thread). */
     private fun AppRobot.waitForIcon(description: String) = waitUntil { compose.onAllNodes(hasContentDescription(description)).fetchSemanticsNodes().isNotEmpty() }
+
+    /** Waits until the snackbar that says [text] has gone. */
+    private fun AppRobot.messageGone(text: String) =
+        waitUntil { compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes().isEmpty() }
 
     /** The next activity the app asked Android to start, once it has. */
     private fun AppRobot.startedActivity(): Intent {
@@ -144,14 +154,16 @@ class ToolsJourneysTest {
             installSampleApps()
             certificates["org.example.notes"] = "12".repeat(32)
         }.openSectionViaMore("Tools").tap("Screen")
-            .assertShown("The service is off in Android's accessibility settings")
-            .assertShown("Find “AI Control Center operator”")
-            .tap("Open accessibility settings")
+            .assertShown("0 of 5 done")
+            .waitUntilDescribed("Step 4, Turn on AI Control Center in Accessibility, Not done. Find “AI Control Center operator”")
+            .pressDescribed("Step 4, Turn on AI Control Center in Accessibility")
         assertEquals(TestSystemScreens.ACCESSIBILITY_SETTINGS, robot.startedActivity().action)
 
         // The owner switched it on in Android's settings and came back.
         robot.app.screen.setState(ScreenServiceState.READY)
-        robot.waitUntilShown("The service is on")
+        robot.waitUntilDescribed("Step 4, Turn on AI Control Center in Accessibility, Done")
+            // Step 5 leads to the authorised apps further down this screen.
+            .pressDescribed("Step 5, Choose the apps it may use, Not done")
             .tap("Authorise an app")
             .waitUntilShown("Never operated: it can change the phone's security")
             // Picking an app only chooses it; the next step names it and says what authorising allows.
@@ -169,9 +181,12 @@ class ToolsJourneysTest {
 
         robot.scrollListTo("See and use").press("See and use, for Operator").waitUntilShown("May now see and use this app's screen")
         assertEquals(setOf(OperatorCapabilities.SCREEN_READ, OperatorCapabilities.SCREEN_OPERATE), robot.grants().map { it.capability }.toSet())
+        // Each message goes away before the next tap: below the setup steps, Stop and Resume sit at the bottom edge, under it.
+        robot.messageGone("May now see and use this app's screen")
 
         robot.scrollListTo("Stop screen control").tap("Stop screen control").waitUntilShown("Resume screen control")
         assertTrue(robot.app.screen.stopped.value)
+        robot.messageGone("Stopped. No agent can read or use any app's screen")
         robot.tap("Resume screen control").waitUntilShown("Stop screen control")
         assertFalse(robot.app.screen.stopped.value)
 
@@ -179,6 +194,7 @@ class ToolsJourneysTest {
             .waitUntil { runBlocking { robot.app.operatorApps.get("org.example.notes") } == null }
             .scrollListTo("No apps authorised")
         assertEquals(emptyList(), robot.grants())
+        robot.waitUntilDescribed("Step 5, Choose the apps it may use, Not done")
     }
 
     @Test
@@ -206,21 +222,36 @@ class ToolsJourneysTest {
         robot.assertNotShown("Allow Termux commands")
     }
 
+    /** A Settings switch, as screen readers know it. */
+    private fun switch(title: String) = compose.onNode(hasText(title) and SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Switch))
+
     @Test
-    fun `screen control sends the owner to Settings for the two switches, and the restricted-settings steps to App info`() {
+    fun `screen control's setup steps open Settings at each switch and App info, and are marked done on return`() {
         val robot = app { screen.setState(ScreenServiceState.RESTRICTED) }
             .openSectionViaMore("Tools").tap("Screen")
-            .assertShown("Blocked by restricted settings")
-            .tap("Open App info")
+            .waitUntilDescribed("Step 4, Turn on AI Control Center in Accessibility, Not done. Probably blocked by restricted settings")
+            .pressDescribed("Step 3, Allow restricted settings (Android blocks this for apps installed from a file), Not done")
         assertEquals(TestSystemScreens.APP_INFO, robot.startedActivity().action)
 
-        robot.tap("Open Settings")
-            .scrollTo("Phone operator")
-            .tap("Phone operator")
-            .waitUntil { runBlocking { robot.app.settings.get() }.operatorEnabled }
-            .tap("Screen control")
-        robot.waitUntil { runBlocking { robot.app.settings.get() }.accessibilityOperatorEnabled }
+        // Step 1: Settings, opened at the Phone operator switch.
+        robot.pressDescribed("Step 1, Turn on Phone operator, Not done")
+            .waitUntil { compose.onAllNodes(hasText("Phone operator") and hasClickAction()).fetchSemanticsNodes().isNotEmpty() }
+        switch("Phone operator").assertIsDisplayed()
+        robot.tap("Phone operator").waitUntil { runBlocking { robot.app.settings.get() }.operatorEnabled }
+
+        robot.openSectionViaMore("Tools").tap("Screen")
+            .waitUntilDescribed("Step 1, Turn on Phone operator, Done")
+            .assertShown("1 of 5 done")
+            // Step 2: Settings, opened at the Screen control switch.
+            .pressDescribed("Step 2, Turn on Screen control, Not done. In Settings, switch on Screen control.")
+            .waitUntil { compose.onAllNodes(hasText("Screen control") and hasClickAction()).fetchSemanticsNodes().isNotEmpty() }
+        switch("Screen control").assertIsDisplayed()
+        robot.tap("Screen control").waitUntil { runBlocking { robot.app.settings.get() }.accessibilityOperatorEnabled }
         assertTrue(runBlocking { robot.app.settings.get() }.operatorEnabled)
+
+        robot.openSectionViaMore("Tools").tap("Screen")
+            .waitUntilDescribed("Step 2, Turn on Screen control, Done")
+            .assertShown("2 of 5 done")
     }
 
     @Test

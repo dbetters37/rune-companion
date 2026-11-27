@@ -383,7 +383,7 @@ class ToolsViewModelsTest {
         app.screen.switchedOffByAndroid.value = true
         assertEquals(SWITCHED_OFF, vm.uiState.value.switchedOffNotice, "the generic sentence when the device layer gave none")
         app.screen.setState(com.aicontrolcenter.core.operator.ScreenServiceState.READY)
-        assertNull(vm.uiState.value.switchedOffNotice, "never above \"Ready · The service is on\" (D3A-18c)")
+        assertNull(vm.uiState.value.switchedOffNotice, "never beside a service that is on (D3A-18c)")
         app.screen.setState(com.aicontrolcenter.core.operator.ScreenServiceState.NOT_ENABLED)
 
         val sentence = kotlinx.coroutines.flow.MutableStateFlow<String?>("Android switched screen control off after the app was force-stopped. Turn it on again in Android's accessibility settings.")
@@ -400,7 +400,7 @@ class ToolsViewModelsTest {
 
     // --- Screen control ---
 
-    private fun TestScope.screen(app: TestApp, refreshed: MutableList<Unit> = mutableListOf()) =
+    private fun TestScope.screen(app: TestApp, refreshed: MutableList<Unit> = mutableListOf(), sdkInt: Int = 35) =
         ScreenControlViewModel(
             serviceState = app.graph.screenSessions.state,
             control = app.graph.screenControl,
@@ -415,32 +415,204 @@ class ToolsViewModelsTest {
             clock = app.clock,
             zone = ZoneOffset.UTC,
             registry = app.graph.aiAppRegistry,
+            sdkInt = sdkInt,
         ).also { it.uiState.activeIn(backgroundScope) }
 
     @Test
-    fun `the service state is told in plain words, with the steps and buttons that fit it`() {
+    fun `the service state is told in plain words, with what to do while it is not on`() {
         val off = serviceStatusOf(ScreenServiceState.NOT_ENABLED)
-        assertEquals("Off", off.label.text)
-        assertTrue(off.offerAccessibilitySettings && !off.offerAppInfo)
-        assertTrue(off.steps.any { "AI Control Center operator" in it })
+        assertFalse(off.enabled)
+        assertEquals("Find “AI Control Center operator” (often under Downloaded apps) and switch it on.", off.hint)
 
+        // The device layer's guess that restricted settings block the service sends the owner to step 3 first.
         val restricted = serviceStatusOf(ScreenServiceState.RESTRICTED)
-        assertEquals("Blocked by restricted settings", restricted.label.text)
-        assertTrue(restricted.offerAppInfo && restricted.offerAccessibilitySettings)
-        assertTrue(restricted.steps.any { "Allow restricted settings" in it })
+        assertFalse(restricted.enabled)
+        assertTrue("Probably blocked by restricted settings: do step 3 first" in restricted.hint.orEmpty())
 
         val protection = serviceStatusOf(ScreenServiceState.ADVANCED_PROTECTION)
-        assertEquals("Off: Advanced Protection", protection.label.text)
-        assertTrue(protection.steps.isEmpty() && !protection.offerAccessibilitySettings, "nothing the owner can switch here")
+        assertFalse(protection.enabled)
+        assertTrue("Advanced Protection" in protection.hint.orEmpty() && "cannot be used" in protection.hint.orEmpty())
 
-        assertEquals("Ready", serviceStatusOf(ScreenServiceState.READY).label.text)
-        assertEquals("Starting", serviceStatusOf(ScreenServiceState.STARTING).label.text)
-        // Round 2, S6: until Android's settings have been read in the background, the screen says so and offers no steps.
+        val ready = serviceStatusOf(ScreenServiceState.READY)
+        assertTrue(ready.enabled)
+        assertNull(ready.hint)
+        // Switched on in Android but not connected: on, which proves restricted settings were allowed, yet not usable.
+        val starting = serviceStatusOf(ScreenServiceState.STARTING)
+        assertTrue(starting.enabled)
+        assertTrue("off and on again" in starting.hint.orEmpty())
+        // Round 2, S6: until Android's settings have been read in the background, the screen says so and claims nothing.
         val checking = serviceStatusOf(ScreenServiceState.CHECKING)
-        assertEquals("Checking", checking.label.text)
-        assertTrue(checking.steps.isEmpty() && !checking.offerAccessibilitySettings && !checking.offerAppInfo)
+        assertFalse(checking.enabled)
+        assertEquals("Checking Android's settings. This takes a moment.", checking.hint)
         assertEquals(ScreenServiceState.CHECKING, ScreenControlUiState().service.state, "before the first state arrives the screen claims nothing")
         assertEquals("AB:CD:EF:01 … 89:AB", ScreenControlViewModel.fingerprint("abcdef01" + "23".repeat(26) + "89ab"))
+    }
+
+    // --- Screen control: "Set up phone control", the five steps ---
+
+    private fun ScreenControlViewModel.step(step: SetupStep): SetupStepUi = uiState.value.checklist.of(step)
+
+    private fun ScreenControlViewModel.status(step: SetupStep): StepStatus = step(step).status
+
+    @Test
+    fun `nothing set up yet - every step is not done, with what to do there, and the summary counts none`() = runTest(mainRule.dispatcher) {
+        val app = started()
+        app.screen.setState(ScreenServiceState.RESTRICTED)
+        val vm = screen(app)
+        val checklist = vm.uiState.value.checklist
+
+        assertEquals(SetupStep.entries, checklist.steps.map { it.step }, "five steps, in the owner's order")
+        assertEquals(listOf(1, 2, 3, 4, 5), checklist.steps.map { it.step.number })
+        assertEquals(
+            listOf(
+                "Turn on Phone operator",
+                "Turn on Screen control",
+                "Allow restricted settings (Android blocks this for apps installed from a file)",
+                "Turn on AI Control Center in Accessibility",
+                "Choose the apps it may use",
+            ),
+            checklist.steps.map { it.step.title },
+        )
+        assertEquals(List(5) { StepStatus.NOT_DONE }, checklist.steps.map { it.status })
+        assertEquals("0 of 5 done", checklist.summary)
+        assertFalse(checklist.allDone)
+        assertEquals("In Settings, switch on Phone operator.", vm.step(SetupStep.PHONE_OPERATOR).hint)
+        assertEquals("Do step 1 first, then switch on Screen control.", vm.step(SetupStep.SCREEN_CONTROL).hint)
+        assertEquals(RESTRICTED_SETTINGS_HINT, vm.step(SetupStep.RESTRICTED_SETTINGS).hint)
+        assertEquals("Tap ⋮ at the top right, then Allow restricted settings.", RESTRICTED_SETTINGS_HINT)
+        assertTrue("Probably blocked by restricted settings" in vm.step(SetupStep.ACCESSIBILITY).hint.orEmpty(), "the guess, on step 4")
+        assertEquals("Pick at least one app agents may see and use.", vm.step(SetupStep.APPS).hint)
+        assertEquals(
+            "Step 3, Allow restricted settings (Android blocks this for apps installed from a file), Not done. " +
+                "Tap ⋮ at the top right, then Allow restricted settings.",
+            vm.step(SetupStep.RESTRICTED_SETTINGS).spoken,
+        )
+    }
+
+    @Test
+    fun `steps 1 and 2 follow the two switches in Settings`() = runTest(mainRule.dispatcher) {
+        val app = started()
+        app.screen.setState(ScreenServiceState.NOT_ENABLED)
+        val vm = screen(app)
+
+        app.settings.update { it.copy(operatorEnabled = true) }
+        assertEquals(StepStatus.DONE, vm.status(SetupStep.PHONE_OPERATOR))
+        assertNull(vm.step(SetupStep.PHONE_OPERATOR).hint, "no hint once done")
+        assertEquals("Step 1, Turn on Phone operator, Done", vm.step(SetupStep.PHONE_OPERATOR).spoken)
+        assertEquals(StepStatus.NOT_DONE, vm.status(SetupStep.SCREEN_CONTROL))
+        assertEquals("In Settings, switch on Screen control.", vm.step(SetupStep.SCREEN_CONTROL).hint, "step 1 is done now")
+
+        app.settings.update { it.copy(accessibilityOperatorEnabled = true) }
+        assertEquals(StepStatus.DONE, vm.status(SetupStep.SCREEN_CONTROL))
+        assertEquals("2 of 5 done", vm.uiState.value.checklist.summary)
+
+        app.settings.update { it.copy(operatorEnabled = false) }
+        assertEquals(StepStatus.NOT_DONE, vm.status(SetupStep.PHONE_OPERATOR))
+        assertEquals("1 of 5 done", vm.uiState.value.checklist.summary)
+    }
+
+    @Test
+    fun `step 3 is done once the service is switched on, not done before, and not needed below Android 13`() = runTest(mainRule.dispatcher) {
+        val app = started()
+        val vm = screen(app, sdkInt = 33)
+        for (state in listOf(ScreenServiceState.CHECKING, ScreenServiceState.NOT_ENABLED, ScreenServiceState.RESTRICTED, ScreenServiceState.ADVANCED_PROTECTION)) {
+            app.screen.setState(state)
+            assertEquals(StepStatus.NOT_DONE, vm.status(SetupStep.RESTRICTED_SETTINGS), "$state: Android gives no way to read the flag")
+            assertEquals(RESTRICTED_SETTINGS_HINT, vm.step(SetupStep.RESTRICTED_SETTINGS).hint)
+        }
+        // Android lets the owner switch the service on only after restricted settings were allowed: that proves it.
+        for (state in listOf(ScreenServiceState.STARTING, ScreenServiceState.READY)) {
+            app.screen.setState(state)
+            assertEquals(StepStatus.DONE, vm.status(SetupStep.RESTRICTED_SETTINGS), "$state")
+            assertNull(vm.step(SetupStep.RESTRICTED_SETTINGS).hint)
+        }
+
+        // Android 12 and earlier have no restricted settings: the step says so, whatever the service does.
+        val old = screen(app, sdkInt = 32)
+        for (state in ScreenServiceState.entries) {
+            app.screen.setState(state)
+            assertEquals(StepStatus.NOT_NEEDED, old.status(SetupStep.RESTRICTED_SETTINGS), "$state")
+            assertNull(old.step(SetupStep.RESTRICTED_SETTINGS).hint)
+        }
+        assertEquals("Not needed on this phone", StepStatus.NOT_NEEDED.label)
+        assertEquals(
+            "Step 3, Allow restricted settings (Android blocks this for apps installed from a file), Not needed on this phone",
+            old.step(SetupStep.RESTRICTED_SETTINGS).spoken,
+        )
+        app.screen.setState(ScreenServiceState.NOT_ENABLED)
+        assertEquals("0 of 4 done", old.uiState.value.checklist.summary, "a step not needed is not counted")
+    }
+
+    @Test
+    fun `step 4 is done only while Android reports the service on, with the reason and the D7 notice while it is not`() = runTest(mainRule.dispatcher) {
+        val app = started()
+        val vm = screen(app)
+        app.screen.setState(ScreenServiceState.READY)
+        assertEquals(StepStatus.DONE, vm.status(SetupStep.ACCESSIBILITY))
+        assertNull(vm.step(SetupStep.ACCESSIBILITY).hint)
+
+        for (state in ScreenServiceState.entries - ScreenServiceState.READY) {
+            app.screen.setState(state)
+            assertEquals(StepStatus.NOT_DONE, vm.status(SetupStep.ACCESSIBILITY), "$state")
+            assertEquals(serviceStatusOf(state).hint, vm.step(SetupStep.ACCESSIBILITY).hint, "$state: the existing service-status logic")
+        }
+
+        // D7: Android switched it off; step 4 says why, once (no separate notice repeats it).
+        app.screen.setState(ScreenServiceState.NOT_ENABLED)
+        app.screen.switchedOffByAndroid.value = true
+        assertEquals(SWITCHED_OFF, vm.step(SetupStep.ACCESSIBILITY).hint)
+        app.screen.setState(ScreenServiceState.READY)
+        assertEquals(StepStatus.DONE, vm.status(SetupStep.ACCESSIBILITY))
+        assertNull(vm.step(SetupStep.ACCESSIBILITY).hint)
+    }
+
+    @Test
+    fun `step 5 is done once one app is authorised and checked, and every step done says All set`() = runTest(mainRule.dispatcher) {
+        val app = started()
+        app.installSampleApps()
+        app.certificates["org.example.notes"] = "12".repeat(32)
+        app.screen.setState(ScreenServiceState.READY)
+        app.settings.update { it.copy(operatorEnabled = true, accessibilityOperatorEnabled = true) }
+        val vm = screen(app)
+        assertEquals(StepStatus.NOT_DONE, vm.status(SetupStep.APPS))
+        assertEquals("4 of 5 done", vm.uiState.value.checklist.summary)
+
+        // A row without a certificate (authorised before apps were checked) is not trusted, so it does not count.
+        app.graph.ownerOperatorApps.authorise("org.example.terminal", "Terminal", null)
+        assertEquals(StepStatus.NOT_DONE, vm.status(SetupStep.APPS))
+        assertEquals("Authorise your app again below, so it is checked.", vm.step(SetupStep.APPS).hint)
+
+        vm.authorise("org.example.notes", "Notes")
+        assertEquals(StepStatus.DONE, vm.status(SetupStep.APPS))
+        val checklist = vm.uiState.value.checklist
+        assertTrue(checklist.allDone)
+        assertEquals(SETUP_ALL_SET, checklist.summary)
+        assertEquals("All set. Ask the Operator agent to use an app.", SETUP_ALL_SET)
+        assertTrue(checklist.steps.all { it.hint == null })
+
+        // Stop is not a setup step, but the summary does not tell the owner to ask while it holds everything.
+        vm.stop()
+        assertEquals(SETUP_ALL_SET_STOPPED, vm.uiState.value.checklist.summary)
+        vm.resume()
+        assertEquals(SETUP_ALL_SET, vm.uiState.value.checklist.summary)
+
+        vm.withdraw("org.example.notes")
+        assertEquals(StepStatus.NOT_DONE, vm.status(SetupStep.APPS))
+        assertEquals("4 of 5 done", vm.uiState.value.checklist.summary)
+    }
+
+    @Test
+    fun `below Android 13, four steps done is All set`() = runTest(mainRule.dispatcher) {
+        val app = started()
+        app.installSampleApps()
+        app.certificates["org.example.notes"] = "12".repeat(32)
+        app.screen.setState(ScreenServiceState.READY)
+        app.settings.update { it.copy(operatorEnabled = true, accessibilityOperatorEnabled = true) }
+        val vm = screen(app, sdkInt = 32)
+        assertEquals("3 of 4 done", vm.uiState.value.checklist.summary)
+        vm.authorise("org.example.notes", "Notes")
+        assertTrue(vm.uiState.value.checklist.allDone)
+        assertEquals(SETUP_ALL_SET, vm.uiState.value.checklist.summary)
     }
 
     @Test
