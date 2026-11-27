@@ -148,6 +148,37 @@ class BackupReplaceFileTest {
     }
 
     @Test
+    fun `while the owner is asked whether to stop, a backup that gets ready waits, and Stop keeps the file as it was (NEW-b)`() {
+        val existing = existingFile()
+        val backup = heldAtKeyStep()
+        showSave(backup, existing)
+        compose.onAllNodes(hasText("Cancel") and hasClickAction()).onFirst().performScrollTo().performClick()
+        compose.waitForIdle()
+        backup.hold!!.complete(Unit)
+        compose.waitForIdle()
+        assertContentEquals(earlier, existing.readBytes(), "nothing goes into the file while the question is open")
+        compose.onNode(hasText("Stop") and hasClickAction() and hasAnyAncestor(isDialog())).performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText(BackupSaveViewModel.CANCELLED, substring = true).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitForIdle()
+        assertContentEquals(earlier, existing.readBytes(), "Stop did what the dialog said")
+        compose.onAllNodesWithText("${BackupSaveViewModel.CANCELLED} ${BackupSaveViewModel.UNTOUCHED}").onFirst().assertExists()
+    }
+
+    @Test
+    fun `Keep saving after the backup got ready puts it into the file (NEW-b)`() {
+        val existing = existingFile()
+        val backup = heldAtKeyStep()
+        showSave(backup, existing)
+        compose.onAllNodes(hasText("Cancel") and hasClickAction()).onFirst().performScrollTo().performClick()
+        compose.waitForIdle()
+        backup.hold!!.complete(Unit)
+        compose.waitForIdle()
+        compose.onNode(hasText("Keep saving") and hasClickAction() and hasAnyAncestor(isDialog())).performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("Backup saved").fetchSemanticsNodes().isNotEmpty() }
+        assertContentEquals(ScriptedBackup.SAVED_BYTES, existing.readBytes())
+    }
+
+    @Test
     fun `a new empty file the picker made is still removed when the owner stops`() {
         val made = newEmptyFile()
         showSave(heldAtKeyStep(), made)

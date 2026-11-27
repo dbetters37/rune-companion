@@ -21,14 +21,17 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -93,6 +96,11 @@ data class BackupSaveUiState(
     val working: Boolean = false,
     /** True while Stop is offered: not once the ready backup is being put into the chosen file (that takes moments). */
     val cancellable: Boolean = false,
+    /**
+     * True while the owner is asked "Stop saving?". A backup that gets ready meanwhile waits for the answer and does not
+     * go into the chosen file, so Stop always does what the question says (SEC-W3-1).
+     */
+    val stopAsked: Boolean = false,
     val step: BackupStepUi? = null,
     val saved: SavedUi? = null,
     /** Why the last save did nothing, in the owner's words. */
@@ -185,10 +193,14 @@ class BackupSaveViewModel(
         if (!canSave()) return
         val choice = passphrase.forSave(if (passphrase.useOwn) ownPassphrase.text else "") ?: return
         state.update {
-            it.copy(working = true, cancellable = true, step = BackupStepUi(BackupTexts.STEP_GATHERING, null), failure = null, saved = null)
+            it.copy(
+                working = true, cancellable = true, stopAsked = false, step = BackupStepUi(BackupTexts.STEP_GATHERING, null),
+                failure = null, saved = null,
+            )
         }
         job = viewModelScope.launch {
             var madeByPicker = false
+            var replacing = false
             try {
                 madeByPicker = sizeOf(chosen) == 0L
                 val result = try {
@@ -198,8 +210,6 @@ class BackupSaveViewModel(
                         }
                     }
                 } catch (cancelled: CancellationException) {
-                    withContext(NonCancellable) { if (madeByPicker) removeIfStillEmpty(chosen) }
-                    state.update { it.copy(working = false, cancellable = false, step = null, failure = untouched(CANCELLED, madeByPicker)) }
                     throw cancelled
                 } catch (_: Exception) {
                     BackupResult.Failed(BackupProblem.CannotOpenFile)
@@ -207,13 +217,15 @@ class BackupSaveViewModel(
                 val done = (result as? BackupResult.Done)?.value
                 val ready = done?.takeIf { withContext(work) { isCompleteBackup(staging, it.report.sizeBytes) } }
                 if (ready == null) {
-                    if (madeByPicker) removeIfStillEmpty(chosen)
+                    if (madeByPicker) withContext(NonCancellable) { removeIfStillEmpty(chosen) }
                     val problem = (result as? BackupResult.Failed)?.problem ?: BackupProblem.CannotOpenFile
-                    state.update { it.copy(working = false, cancellable = false, step = null, failure = untouched(problem.text, madeByPicker)) }
+                    state.update { it.ended(failure = untouched(problem.text, madeByPicker)) }
                     return@launch
                 }
-                // The whole backup is ready: only now is the chosen file written. No Stop from here, it takes moments.
-                state.update { it.copy(cancellable = false, step = BackupStepUi(STEP_REPLACING, null)) }
+                // The whole backup is ready: only now is the chosen file written, and not while the owner is asked
+                // whether to stop (Stop then leaves the file as it was). No Stop from here, it takes moments.
+                stopOfferEnds()
+                replacing = true
                 val replaced = withContext(NonCancellable) {
                     try {
                         chosen.replaceWith(staging)
@@ -231,26 +243,59 @@ class BackupSaveViewModel(
                         replaced.chosenUntouched -> untouched(NOT_WRITTEN, madeByPicker = false)
                         else -> "$NOT_WRITTEN $MAY_BE_DAMAGED"
                     }
-                    state.update { it.copy(working = false, step = null, failure = text) }
+                    state.update { it.ended(failure = text) }
                     return@launch
                 }
                 // Shown once: after a save the generated passphrase and the typed one are gone from this screen.
                 forget()
                 state.update {
-                    it.copy(
-                        working = false, cancellable = false, step = null, generated = null,
+                    it.ended(failure = null).copy(
+                        generated = null,
                         saved = SavedUi(BackupTexts.counts(ready.report.counts) + ".", formatBytes(ready.report.sizeBytes), ready.notes),
                     )
                 }
+            } catch (cancelled: CancellationException) {
+                // Stopped at any point before the ready backup went into the file: while the file's app was asked its
+                // size, while the key was made, while the backup was checked, or while the owner was asked. The screen
+                // is free again at once; the chosen file was never touched.
+                withContext(NonCancellable) {
+                    withContext(work) { deleteQuietly(staging) }
+                    if (!replacing) {
+                        state.update { it.ended(failure = untouched(CANCELLED, madeByPicker)) }
+                        if (madeByPicker) removeIfStillEmpty(chosen)
+                    }
+                }
+                throw cancelled
             } finally {
                 withContext(NonCancellable + work) { deleteQuietly(staging) }
             }
         }
     }
 
+    /** The owner tapped Cancel or Back while saving: "Stop saving?" is asked; the ready backup waits for the answer. */
+    fun askToStop() {
+        state.update { if (it.cancellable) it.copy(stopAsked = true) else it }
+    }
+
+    /** "Keep saving": the question goes and the save goes on. */
+    fun keepSaving() {
+        state.update { it.copy(stopAsked = false) }
+    }
+
     /** Stops the save (the key step stops within moments); the chosen file stays as it was. */
     fun cancel() {
-        if (state.value.cancellable) job?.cancel()
+        if (!state.value.cancellable) return
+        // The job first: clearing the question first would let a ready backup that waits for it go into the file.
+        job?.cancel()
+        state.update { it.copy(stopAsked = false) }
+    }
+
+    /** Waits while the owner is asked whether to stop; then Stop is no longer offered (one step, so no tap slips in). */
+    private suspend fun stopOfferEnds() {
+        while (true) {
+            val now = state.first { !it.stopAsked }
+            if (state.compareAndSet(now, now.copy(cancellable = false, step = BackupStepUi(STEP_REPLACING, null)))) return
+        }
     }
 
     /** The owner left the screen: the passphrases go (rule 27). */
@@ -267,9 +312,14 @@ class BackupSaveViewModel(
         forget()
     }
 
-    /** The chosen file's size, or null when its app does not say or cannot be asked. */
+    /**
+     * The chosen file's size, or null when its app does not say, cannot be asked, or takes longer than [SIZE_WAIT_MS]
+     * (a hung cloud drive). Asked on [work], never on the main thread. Unknown counts as "held something": never removed.
+     */
     private suspend fun sizeOf(chosen: ChosenBackupFile): Long? = try {
-        chosen.size()
+        withTimeoutOrNull(SIZE_WAIT_MS) { withContext(work) { chosen.size() } }
+    } catch (e: TimeoutCancellationException) {
+        null
     } catch (e: CancellationException) {
         throw e
     } catch (_: Exception) {
@@ -295,12 +345,19 @@ class BackupSaveViewModel(
         runCatching { file.delete() }
     }
 
+    /** The state once a save has ended, saved or not: nothing is working, nothing to stop, nothing asked. */
+    private fun BackupSaveUiState.ended(failure: String?): BackupSaveUiState =
+        copy(working = false, cancellable = false, stopAsked = false, step = null, failure = failure)
+
     /** The sentence for a save that did not touch the chosen file: an earlier file is said to be as it was. */
     private fun untouched(text: String, madeByPicker: Boolean): String = if (madeByPicker) text else "$text $UNTOUCHED"
 
     companion object {
         const val NOT_THE_SAME: String = "The two passphrases are not the same."
         const val CANCELLED: String = "Stopped. Nothing was saved."
+
+        /** How long the chosen file's app may take to say the file's size (a cloud drive can hang): then it is not known. */
+        const val SIZE_WAIT_MS: Long = 15_000
 
         /** Said after a save that did not touch a file the owner chose to replace. */
         const val UNTOUCHED: String = "The file you chose is as it was."

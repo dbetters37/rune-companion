@@ -3,6 +3,7 @@ package com.aicontrolcenter.app.ui.backup
 import android.content.ActivityNotFoundException
 import android.content.ContentResolver
 import android.net.Uri
+import android.os.CancellationSignal
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import androidx.activity.compose.BackHandler
@@ -57,7 +58,10 @@ import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.core.backup.BackupFormat
 import com.aicontrolcenter.data.backup.BackupTexts
 import com.aicontrolcenter.data.backup.DetailedOwnerBackup
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
@@ -90,14 +94,13 @@ fun BackupSaveScreen(viewModel: BackupSaveViewModel, suggestedName: String, onBa
     SecureWindow()
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    var askStop by rememberSaveable { mutableStateOf(false) }
     var noPicker by rememberSaveable { mutableStateOf(false) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(BackupFormat.MIME_TYPE)) { uri ->
         if (uri != null) viewModel.save(chosen = chosenFileOf(context.contentResolver, uri), staging = File(context.cacheDir, STAGING_NAME))
     }
     // While the ready backup goes into the chosen file (moments) there is nothing to stop: Back waits.
-    BackHandler(enabled = state.working) { if (state.cancellable) askStop = true }
-    ScreenScaffold(title = "Save a backup", onBack = { if (state.working) { if (state.cancellable) askStop = true } else onBack() }) { padding ->
+    BackHandler(enabled = state.working) { viewModel.askToStop() }
+    ScreenScaffold(title = "Save a backup", onBack = { if (state.working) viewModel.askToStop() else onBack() }) { padding ->
         Column(
             modifier = Modifier
                 .padding(padding)
@@ -125,7 +128,7 @@ fun BackupSaveScreen(viewModel: BackupSaveViewModel, suggestedName: String, onBa
             }
             val step = state.step
             if (state.working && step != null) {
-                BackupStepCard(step, keepOpen = BackupTexts.KEEP_OPEN, cancellable = state.cancellable, onCancel = { askStop = true })
+                BackupStepCard(step, keepOpen = BackupTexts.KEEP_OPEN, cancellable = state.cancellable, onCancel = viewModel::askToStop)
             } else {
                 state.failure?.let { InfoBanner(it, tone = StatusTone.ATTENTION, title = "Not saved") }
                 if (noPicker) InfoBanner(NO_PICKER, tone = StatusTone.ATTENTION)
@@ -152,17 +155,15 @@ fun BackupSaveScreen(viewModel: BackupSaveViewModel, suggestedName: String, onBa
             }
         }
     }
-    if (askStop) {
+    // The question lives in the view model: a backup that gets ready while it is open waits for the answer (SEC-W3-1).
+    if (state.stopAsked && state.cancellable) {
         ConfirmDialog(
             title = "Stop saving?",
             message = STOP_MESSAGE,
             confirmLabel = "Stop",
             dismissLabel = "Keep saving",
-            onConfirm = {
-                askStop = false
-                viewModel.cancel()
-            },
-            onDismiss = { askStop = false },
+            onConfirm = viewModel::cancel,
+            onDismiss = viewModel::keepSaving,
         )
     }
 }
@@ -321,9 +322,23 @@ internal fun chosenFileOf(resolver: ContentResolver, uri: Uri): ChosenBackupFile
  * ready, and checked afterwards by the size its app reports.
  */
 internal class ChosenDocument(private val resolver: ContentResolver, private val uri: Uri) : ChosenBackupFile {
-    override suspend fun size(): Long? = withContext(Dispatchers.IO) {
-        resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { row ->
-            if (row.moveToFirst() && !row.isNull(0)) row.getLong(0) else null
+    /**
+     * Asks the document's app on a background thread. A Stop or the save's time limit does not wait for an app that
+     * hangs (a cloud drive offline): the question is called off and the answer, if it ever comes, is dropped.
+     */
+    override suspend fun size(): Long? {
+        val signal = CancellationSignal()
+        val asked = CoroutineScope(Dispatchers.IO).async {
+            resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null, signal)?.use { row ->
+                if (row.moveToFirst() && !row.isNull(0)) row.getLong(0) else null
+            }
+        }
+        return try {
+            asked.await()
+        } catch (stopped: CancellationException) {
+            runCatching { signal.cancel() }
+            asked.cancel()
+            throw stopped
         }
     }
 
