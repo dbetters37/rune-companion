@@ -139,15 +139,10 @@ class SettingsViewModel(
     }
 
     /** The phone operator's master switch: off, every phone tool is refused before anyone is asked. */
-    fun setOperatorEnabled(enabled: Boolean) = change {
-        if (settings.get().operatorEnabled == enabled) return@change
-        settings.update { it.copy(operatorEnabled = enabled) }
-        activity.record(
-            ActivityType.USER_ACTION,
-            if (enabled) "Phone operator turned on" else "Phone operator turned off",
-            if (enabled) "Agents may use their phone tools, each with your permission." else "No agent can use the phone's files, apps, web pages or scripts.",
-        )
-    }
+    fun setOperatorEnabled(enabled: Boolean) = change { operatorSwitch.set(enabled) }
+
+    /** The same switch "Turn on" flips elsewhere: one path, one line in the activity log. */
+    private val operatorSwitch = PhoneOperatorSwitch(settings, activity)
 
     /**
      * The second switch, for screen control (Android's accessibility service): off, no agent reads

@@ -1,5 +1,10 @@
 package com.aicontrolcenter.app.ui.chat
 
+import com.aicontrolcenter.app.ui.components.OperatorOffTexts
+import com.aicontrolcenter.app.ui.components.PhoneTools
+import com.aicontrolcenter.app.ui.settings.PhoneOperatorSwitch
+import com.aicontrolcenter.app.ui.tasks.NewObjectiveViewModel
+import com.aicontrolcenter.core.ToolId
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
@@ -83,6 +88,12 @@ data class ChatUiState(
     val cost: ChatCostUi? = null,
     /** Today's limit's sentence while it is reached and this chat's text leaves the phone (rule 6); null otherwise. */
     val limitReached: String? = null,
+    /** Phone operator is off and this agent has phone tools: said before the owner asks it anything, with "Turn on". */
+    val operatorOff: Boolean = false,
+    /** Phone operator is off now: a phone tool refused for that shows "Turn on" where it was refused. */
+    val operatorSwitchedOff: Boolean = false,
+    /** "Turn on" can switch it on here (the owner's switch is at hand). */
+    val canTurnOnOperator: Boolean = false,
 ) {
     val isRunning: Boolean get() = live != null
     val canSend: Boolean get() = canSend(draft)
@@ -135,6 +146,10 @@ class ChatViewModel(
     usage: Flow<List<WorkUsage>> = flowOf(emptyList()),
     prices: Flow<List<ModelPrice>> = flowOf(emptyList()),
     today: Flow<TodayUse> = flowOf(TodayUse.NONE),
+    /** The owner's Phone operator switch, for "Turn on"; owner UI only. Null: only the way to Settings is offered. */
+    private val operatorSwitch: PhoneOperatorSwitch? = null,
+    /** Which tools need Phone operator on (the registered tools' specs in the app). */
+    private val isPhoneTool: (ToolId) -> Boolean = PhoneTools.CATALOGUE,
 ) : ViewModel() {
 
     private data class Local(
@@ -279,6 +294,9 @@ class ChatViewModel(
             destination = destination,
             blockedReason = blocked,
             hasEarlier = window.hasEarlier,
+            operatorOff = !snapshot.settings.operatorEnabled && profile?.toolIds?.any(isPhoneTool) == true,
+            operatorSwitchedOff = !snapshot.settings.operatorEnabled,
+            canTurnOnOperator = operatorSwitch != null,
         )
         return Built(state, provider?.id, provider?.name, provider?.status in PROBLEM_STATUSES, blockedByConnection)
     }
@@ -414,6 +432,21 @@ class ChatViewModel(
                 failure.providerFailureText("The check")
             }
             local.update { it.copy(isCheckingProvider = false, lastFailureRetryable = null, message = UserMessage(text, ++messageCounter)) }
+        }
+    }
+
+    /** "Turn on" on the Phone operator card or under a refused phone tool: the owner's switch, as in Settings. */
+    fun turnOnOperator() {
+        val switch = operatorSwitch ?: return
+        viewModelScope.launch {
+            try {
+                switch.set(true)
+                show(OperatorOffTexts.TURNED_ON)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                show(NewObjectiveViewModel.OPERATOR_NOT_TURNED_ON)
+            }
         }
     }
 

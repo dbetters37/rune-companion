@@ -1,5 +1,7 @@
 package com.aicontrolcenter.app.ui.chat
 
+import com.aicontrolcenter.app.ui.components.OperatorOffTexts
+import com.aicontrolcenter.app.ui.components.OperatorRefusedLine
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -90,11 +92,22 @@ internal fun AgentTurn(
     showAvatar: Boolean,
     /** Renders the reply's Markdown (task results are written in it); the chat shows replies as written. */
     markdown: Boolean = false,
+    /**
+     * Set while Phone operator is off (owner screens only): under a phone tool refused for that, a line with "Turn on",
+     * where it was refused rather than only in the end result.
+     */
+    onTurnOnOperator: (() -> Unit)? = null,
 ) {
     AgentColumn(agentName, colorIndex, showAvatar) {
         item.reasoning?.let { ReasoningSummary(it, live = false) }
         if (item.text.isNotBlank()) AgentBubble(item.text, markdown = markdown)
-        item.toolCalls.forEach { ToolCallRow(it) }
+        item.toolCalls.forEach { call ->
+            ToolCallRow(call)
+            val outcome = call.outcome
+            if (onTurnOnOperator != null && outcome is ToolOutcomeUi.Failed && OperatorOffTexts.isRefusal(outcome.content)) {
+                OperatorRefusedLine(onTurnOnOperator)
+            }
+        }
         item.footer?.let { ReplyFooter(it) }
     }
 }

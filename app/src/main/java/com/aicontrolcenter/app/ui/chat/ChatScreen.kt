@@ -1,5 +1,8 @@
 package com.aicontrolcenter.app.ui.chat
 
+import com.aicontrolcenter.app.ui.components.OperatorOffCard
+import com.aicontrolcenter.app.ui.components.PhoneTools
+import com.aicontrolcenter.app.ui.settings.PhoneOperatorSwitch
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -109,6 +112,10 @@ class ChatActions(
     val onShowEarlier: () -> Unit = {},
     /** Opens Settings › Daily limits, from today's limit sentence. */
     val onOpenDailyLimits: () -> Unit = {},
+    /** "Turn on" Phone operator, on its card or under a phone tool refused because it is off. */
+    val onTurnOnOperator: () -> Unit = {},
+    /** The Phone operator card's link: Settings › Phone operator. */
+    val onOpenOperatorSettings: () -> Unit = {},
 )
 
 /**
@@ -123,6 +130,7 @@ fun ChatRoute(
     onOpenProvider: (ProviderId) -> Unit,
     onOpenRequest: (RequestId) -> Unit = {},
     onOpenDailyLimits: () -> Unit = {},
+    onOpenOperatorSettings: () -> Unit = {},
 ) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel {
@@ -137,6 +145,9 @@ fun ChatRoute(
             usage = graph.usageReports.observeWorkUsage(WorkKind.CHAT, conversationId.value),
             prices = graph.modelPrices.observeAll(),
             today = graph.todayUsage.observe(),
+            // Owner UI: the owner's own switch, never anything an agent reaches.
+            operatorSwitch = PhoneOperatorSwitch(graph.settings, graph.activityRecorder),
+            isPhoneTool = PhoneTools.of(graph.toolRegistry.all().map { it.spec }),
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -157,6 +168,8 @@ fun ChatRoute(
             onSendAgain = viewModel::sendAgain,
             onShowEarlier = viewModel::showEarlier,
             onOpenDailyLimits = onOpenDailyLimits,
+            onTurnOnOperator = viewModel::turnOnOperator,
+            onOpenOperatorSettings = onOpenOperatorSettings,
         ),
     )
 }
@@ -222,6 +235,14 @@ fun ChatScreen(state: ChatUiState, draft: TextFieldState, actions: ChatActions) 
                         modifier = Modifier.readableWidth().padding(horizontal = Spacing.screen, vertical = Spacing.sm),
                     )
                 }
+                // Said before the owner asks anything: this agent's phone tools are refused while Phone operator is off.
+                if (state.operatorOff) {
+                    OperatorOffCard(
+                        onTurnOn = actions.onTurnOnOperator.takeIf { state.canTurnOnOperator },
+                        onOpenSettings = actions.onOpenOperatorSettings,
+                        modifier = Modifier.readableWidth().padding(horizontal = Spacing.screen, vertical = Spacing.sm),
+                    )
+                }
                 Transcript(state, actions, Modifier.weight(1f))
                 Composer(state, draft, actions)
             }
@@ -271,7 +292,10 @@ private fun Transcript(state: ChatUiState, actions: ChatActions, modifier: Modif
             when (item) {
                 is TranscriptItem.Owner -> OwnerBubble(item.text)
                 // One avatar per run of agent messages, so a turn with tool calls reads as one speaker.
-                is TranscriptItem.Agent -> AgentTurn(state.agentName, state.agentColorIndex, item, showAvatar = state.items.getOrNull(index - 1) !is TranscriptItem.Agent)
+                is TranscriptItem.Agent -> AgentTurn(
+                    state.agentName, state.agentColorIndex, item, showAvatar = state.items.getOrNull(index - 1) !is TranscriptItem.Agent,
+                    onTurnOnOperator = actions.onTurnOnOperator.takeIf { state.operatorSwitchedOff && state.canTurnOnOperator },
+                )
                 is TranscriptItem.Notice -> NoticeRow(item, state, actions, isLast = item === state.items.lastOrNull { it !is TranscriptItem.Request })
                 // Answered on its Approval screen only, never in the chat.
                 is TranscriptItem.Request -> RequestCard(item.request, onOpen = { actions.onOpenRequest(item.request.id) })

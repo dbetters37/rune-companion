@@ -1,5 +1,7 @@
 package com.aicontrolcenter.app.ui.tasks
 
+import com.aicontrolcenter.app.ui.components.OperatorOffTexts
+import com.aicontrolcenter.app.ui.settings.PhoneOperatorSwitch
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -128,6 +130,10 @@ data class TaskDetailUiState(
     val waitingFor: List<RequestUi> = emptyList(),
     val isBusy: Boolean = false,
     val message: UserMessage? = null,
+    /** Phone operator is off now: a phone tool refused for that shows "Turn on" where it was refused. */
+    val operatorSwitchedOff: Boolean = false,
+    /** "Turn on" can switch it on here (the owner's switch is at hand). */
+    val canTurnOnOperator: Boolean = false,
 )
 
 /**
@@ -164,6 +170,8 @@ class TaskDetailViewModel(
     workUsage: Flow<List<WorkUsage>> = flowOf(emptyList()),
     /** The owner's prices, read only. */
     prices: Flow<List<ModelPrice>> = flowOf(emptyList()),
+    /** The owner's Phone operator switch, for "Turn on" under a refused phone tool; owner UI only. */
+    private val operatorSwitch: PhoneOperatorSwitch? = null,
 ) : ViewModel() {
 
     private data class Local(val isBusy: Boolean = false, val message: UserMessage? = null)
@@ -227,6 +235,22 @@ class TaskDetailViewModel(
 
     fun messageShown() = local.update { it.copy(message = null) }
 
+    /** "Turn on" under a phone tool refused because Phone operator is off: the owner's switch, as in Settings. */
+    fun turnOnOperator() {
+        val switch = operatorSwitch ?: return
+        viewModelScope.launch {
+            val text = try {
+                switch.set(true)
+                OperatorOffTexts.TURNED_ON
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                NewObjectiveViewModel.OPERATOR_NOT_TURNED_ON
+            }
+            local.update { it.copy(message = UserMessage(text, ++messageCounter)) }
+        }
+    }
+
     private fun build(stored: Stored?, entries: List<ConversationEntry>, local: Local, requests: List<OwnerRequest>, cost: CostLineUi?): TaskDetailUiState {
         val task = stored?.tree?.task?.takeIf { record -> stored.tree.summaries.any { it.id == record.id } }
             ?: return TaskDetailUiState(isLoading = false, notFound = true, message = local.message)
@@ -272,6 +296,8 @@ class TaskDetailViewModel(
                 retryNote = retryNote(task),
             ),
             transcript = transcriptOf(entries, ::toolInfo, assignedModelName = null, turnRunning = task.status == TaskStatus.RUNNING),
+            operatorSwitchedOff = !stored.snapshot.settings.operatorEnabled,
+            canTurnOnOperator = operatorSwitch != null,
             messages = messagesUiOf(stored.messages.filter { it.taskId == task.id }, tree, faces, now, zone),
             waitingFor = requests.filter { it.taskId == task.id && it.isOpenAt(now) }.map { requestUi(it, stored.snapshot, capabilityInfo, now, zone) },
             isBusy = local.isBusy,

@@ -91,7 +91,7 @@ internal object ScreenTools {
      */
     suspend fun front(d: OperatorToolDependencies, title: String, acting: Boolean, agent: AgentId? = null): Front {
         val settings = d.settings()
-        if (!settings.operatorEnabled) throw ToolCallRejected("Phone operation is switched off in Settings, so \"$title\" cannot be used.")
+        if (!settings.operatorEnabled) throw ToolCallRejected("${com.aicontrolcenter.core.operator.OperatorGate.OPERATOR_OFF}, so \"$title\" cannot be used.")
         if (!settings.accessibilityOperatorEnabled) throw ToolCallRejected("Screen control is switched off in Settings.")
         if (acting && settings.localOnlyMode) throw ToolCallRejected(localOnly(title))
         val state = knownState(d)

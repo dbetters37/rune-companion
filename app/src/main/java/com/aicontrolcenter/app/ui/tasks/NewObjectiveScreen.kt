@@ -42,6 +42,9 @@ import com.aicontrolcenter.app.ui.components.AgentAvatar
 import com.aicontrolcenter.app.ui.components.AppCard
 import com.aicontrolcenter.app.ui.components.ConfirmDialog
 import com.aicontrolcenter.app.ui.components.InfoBanner
+import com.aicontrolcenter.app.ui.components.OperatorOffCard
+import com.aicontrolcenter.app.ui.components.PhoneTools
+import com.aicontrolcenter.app.ui.settings.PhoneOperatorSwitch
 import com.aicontrolcenter.app.ui.components.RowDivider
 import com.aicontrolcenter.app.ui.components.SIMULATOR_LABEL
 import com.aicontrolcenter.app.ui.components.ScreenScaffold
@@ -77,6 +80,10 @@ class NewObjectiveActions(
     val onOpenDailyLimits: () -> Unit = {},
     /** The background warning's link: Settings (Working in the background). */
     val onOpenSettings: () -> Unit = {},
+    /** "Turn on" on the Phone operator card. */
+    val onTurnOnOperator: () -> Unit = {},
+    /** The Phone operator card's link: Settings › Phone operator. */
+    val onOpenOperatorSettings: () -> Unit = {},
 )
 
 /**
@@ -89,12 +96,16 @@ fun NewObjectiveRoute(
     onStarted: (TaskId) -> Unit,
     onOpenDailyLimits: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
+    onOpenOperatorSettings: () -> Unit = {},
 ) {
     val graph = LocalAppGraph.current
     val viewModel = viewModel {
         NewObjectiveViewModel(
             graph.orchestrator, graph.registryDirectory, graph.memoryService, graph.notifications, awaitStartup = graph::awaitStartup,
             today = graph.todayUsage.observe(), storage = graph.storageWatch, background = graph.backgroundHealth.state,
+            // Owner UI: the owner's own switch, never anything an agent reaches.
+            operatorSwitch = PhoneOperatorSwitch(graph.settings, graph.activityRecorder),
+            isPhoneTool = PhoneTools.of(graph.toolRegistry.all().map { it.spec }),
         )
     }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -120,6 +131,8 @@ fun NewObjectiveRoute(
             onRequestPermission = { if (permission != null) launcher.launch(permission) else viewModel.notificationsAnswered() },
             onOpenDailyLimits = onOpenDailyLimits,
             onOpenSettings = onOpenSettings,
+            onTurnOnOperator = viewModel::turnOnOperator,
+            onOpenOperatorSettings = onOpenOperatorSettings,
         ),
     )
 }
@@ -146,6 +159,13 @@ fun NewObjectiveScreen(state: NewObjectiveUiState, objective: TextFieldState, ac
             verticalArrangement = Arrangement.spacedBy(Spacing.md),
         ) {
             DirectorLine(state.director)
+            // Before work starts, not after minutes of it: phone tools are refused while Phone operator is off.
+            if (state.operatorOff) {
+                OperatorOffCard(
+                    onTurnOn = actions.onTurnOnOperator.takeIf { state.canTurnOnOperator },
+                    onOpenSettings = actions.onOpenOperatorSettings,
+                )
+            }
             state.reasoningWarning?.let { InfoBanner(title = "The Director's model plans less well", text = it, tone = StatusTone.ATTENTION) }
             state.storageWarning?.let {
                 InfoBanner(

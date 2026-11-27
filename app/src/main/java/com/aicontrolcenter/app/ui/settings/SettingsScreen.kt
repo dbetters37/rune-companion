@@ -100,6 +100,8 @@ class SettingsSlots(
     val backup: (@Composable () -> Unit)? = null,
     /** Appearance: Calm (WP10b). */
     val motion: (@Composable () -> Unit)? = null,
+    /** Brings the Phone operator section into view when Settings is opened for it ("Open Settings" on its card). */
+    val phoneOperatorAnchor: Modifier = Modifier,
 )
 
 /**
@@ -108,7 +110,7 @@ class SettingsSlots(
  * background; from a Routines or Folder pick-up screen whose master switch is off, to that switch.
  */
 @Serializable
-enum class SettingsAnchor { BACKGROUND, ROUTINES }
+enum class SettingsAnchor { BACKGROUND, ROUTINES, PHONE_OPERATOR }
 
 /** [scrollTo] opens the section scrolled to that part, once (not again when the owner comes back to it). */
 @Composable
@@ -146,6 +148,7 @@ fun SettingsRoute(navigation: SettingsNavigation = SettingsNavigation(), scrollT
         routines = routines?.let { { RoutinesSection(it, navigation.onOpenRoutines, navigation.onOpenPickUpRules, anchor.modifier(SettingsAnchor.ROUTINES)) } },
         backup = if (hasBackup) ({ BackupSection(navigation.onSaveBackup, navigation.onRestoreBackup) }) else null,
         motion = { MotionSection(motion) },
+        phoneOperatorAnchor = anchor.modifier(SettingsAnchor.PHONE_OPERATOR),
     )
     SettingsScreen(
         state = state,
@@ -211,7 +214,7 @@ fun SettingsScreen(state: SettingsUiState, actions: SettingsActions, slots: Sett
             // Cost first among the Phase 6 parts: the owner's spending and its history (goals 1-2).
             slots.dailyLimits?.invoke()
             slots.usageHistory?.invoke()
-            PhoneOperatorSection(state.settings, actions)
+            PhoneOperatorSection(state.settings, actions, slots.phoneOperatorAnchor)
             slots.questions?.invoke()
             slots.background?.invoke()
             slots.routines?.invoke()
@@ -296,8 +299,8 @@ private fun PrivacySection(
  * each says exactly what turning it on allows. Screen control needs the phone operator on too.
  */
 @Composable
-private fun PhoneOperatorSection(settings: FrameworkSettings, actions: SettingsActions) {
-    Column {
+private fun PhoneOperatorSection(settings: FrameworkSettings, actions: SettingsActions, modifier: Modifier = Modifier) {
+    Column(modifier) {
         SectionHeader("Phone operator")
         AppCard {
             SwitchRow(

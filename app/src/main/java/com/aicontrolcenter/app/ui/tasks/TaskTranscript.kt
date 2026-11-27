@@ -40,7 +40,7 @@ import com.aicontrolcenter.app.ui.components.calmAnimateContentSize
  * conversation is not the owner: it is the brief the app wrote for the agent, so it is shown as
  * a brief rather than as something the owner said.
  */
-internal fun LazyListScope.taskTranscript(items: List<TranscriptItem>, agent: AgentFaceUi?) {
+internal fun LazyListScope.taskTranscript(items: List<TranscriptItem>, agent: AgentFaceUi?, onTurnOnOperator: (() -> Unit)? = null) {
     itemsIndexed(items, key = { _, item -> "transcript-${item.key}" }) { index, item ->
         Column(Modifier.padding(horizontal = Spacing.screen, vertical = Spacing.xs)) {
             when (item) {
@@ -51,6 +51,7 @@ internal fun LazyListScope.taskTranscript(items: List<TranscriptItem>, agent: Ag
                     item = item,
                     showAvatar = items.getOrNull(index - 1) !is TranscriptItem.Agent,
                     markdown = true,
+                    onTurnOnOperator = onTurnOnOperator,
                 )
                 is TranscriptItem.Notice -> TranscriptNotice(item)
                 // A task's requests are shown at the top of the task screen, not in its transcript.

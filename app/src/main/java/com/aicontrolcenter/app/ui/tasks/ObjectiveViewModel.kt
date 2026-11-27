@@ -1,5 +1,7 @@
 package com.aicontrolcenter.app.ui.tasks
 
+import com.aicontrolcenter.app.ui.components.OperatorOffTexts
+import com.aicontrolcenter.app.ui.settings.PhoneOperatorSwitch
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
@@ -203,6 +205,13 @@ data class ObjectiveUiState(
     val messageFilter: MessageFilter = MessageFilter.ALL,
     val log: List<ActivityRowUi> = emptyList(),
     val egress: EgressUi = EgressUi(),
+    /**
+     * A phone tool of this objective was refused because Phone operator is off, and it still is: said on the objective,
+     * where the owner watches, with "Turn on", not only in a task's end result.
+     */
+    val operatorRefused: Boolean = false,
+    /** "Turn on" can switch it on here (the owner's switch is at hand). */
+    val canTurnOnOperator: Boolean = false,
     /** The final document (Markdown), once the Director has written it. */
     val document: String? = null,
     /** [document] parsed, off the main thread (P7). */
@@ -268,6 +277,8 @@ class ObjectiveViewModel(
     spaces: Flow<List<KnowledgeSpace>> = flowOf(emptyList()),
     /** Where the state is built (the app's background pool; tests stay on their dispatcher). */
     computation: CoroutineContext = EmptyCoroutineContext,
+    /** The owner's Phone operator switch, for "Turn on" after a phone tool was refused; owner UI only. */
+    private val operatorSwitch: PhoneOperatorSwitch? = null,
 ) : ViewModel() {
 
     private data class Local(
@@ -439,6 +450,22 @@ class ObjectiveViewModel(
 
     fun messageShown() = local.update { it.copy(message = null) }
 
+    /** "Turn on" after a phone tool of this objective was refused because Phone operator is off: as in Settings. */
+    fun turnOnOperator() {
+        val switch = operatorSwitch ?: return
+        viewModelScope.launch {
+            val text = try {
+                switch.set(true)
+                OperatorOffTexts.TURNED_ON
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                NewObjectiveViewModel.OPERATOR_NOT_TURNED_ON
+            }
+            local.update { it.copy(message = UserMessage(text, ++messageCounter)) }
+        }
+    }
+
     fun documentCopied() = local.update { it.copy(message = UserMessage("Document copied.", ++messageCounter)) }
 
     private fun build(stored: Stored, log: List<ActivityEvent>, extras: Extras, privacy: Privacy, local: Local, requests: List<OwnerRequest>): ObjectiveUiState {
@@ -462,6 +489,8 @@ class ObjectiveViewModel(
                 ActivityRowUi(event, formatCompactTimestamp(event.at, now, zone), event.agentId?.let { names[it]?.profile?.name })
             },
             egress = egressOf(privacy, extras.cost, stored.snapshot, recordsCleared(objective, privacy, stored.settings, now)),
+            operatorRefused = !stored.settings.operatorEnabled && log.any(::refusedForOperatorOff),
+            canTurnOnOperator = operatorSwitch != null,
             document = objective.result?.takeIf { it.isNotBlank() },
             documentBlocks = blocksOf(objective.result?.takeIf { it.isNotBlank() }),
             documentNote = documentNote(objective, progress),
@@ -573,6 +602,13 @@ class ObjectiveViewModel(
         // A row's calls are the requests that left the phone, counted as today's limits count them (INT3-1).
         val offPhone = usage.filter { snapshot.localityOf(it.modelId) != Locality.ON_DEVICE }
         return EgressUi(away.size, away.map { it.destinationHost }.distinct(), offPhone.sumOf { it.calls }, recordsCleared)
+    }
+
+    /** A tool call the gate refused (not run) because Phone operator is off, in the gate's own words. */
+    private fun refusedForOperatorOff(event: ActivityEvent): Boolean {
+        if (event.type != ActivityType.TOOL_CALL) return false
+        val outcome = (event.data?.get("outcome") as? kotlinx.serialization.json.JsonPrimitive)?.content
+        return (outcome == "DENIED" || outcome == "REJECTED") && OperatorOffTexts.isRefusal(event.detail)
     }
 
     /**

@@ -47,6 +47,12 @@ object OperatorGate {
      */
     val workspaceCapabilities: Set<Capability> = setOf(OperatorCapabilities.WORKSPACE_READ, OperatorCapabilities.WORKSPACE_WRITE)
 
+    /**
+     * How every refusal because [FrameworkSettings.operatorEnabled] is off begins: the owner's screens recognise it and
+     * offer to turn the switch on where the refusal shows.
+     */
+    const val OPERATOR_OFF: String = "Phone operation is switched off in Settings"
+
     /** Capabilities that need [FrameworkSettings.operatorEnabled]: everything outside the agents' own workspace. */
     val operatorCapabilities: Set<Capability> = OperatorCapabilities.all.map { it.capability }.toSet() - workspaceCapabilities
 
@@ -63,7 +69,7 @@ object OperatorGate {
             return "$what named the wrong kind of target for \"${info.title}\", so it was not run."
         }
         if (f.capability in operatorCapabilities && !f.settings.operatorEnabled) {
-            return "Phone operation is switched off in Settings, so $what cannot be used."
+            return "$OPERATOR_OFF, so $what cannot be used."
         }
         when (val c = f.constraint) {
             is CapabilityConstraint.Folder -> if (f.folder?.id != c.folderId) return "That shared folder was removed or is not available."
