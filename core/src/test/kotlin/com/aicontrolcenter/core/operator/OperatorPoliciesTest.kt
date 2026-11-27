@@ -158,8 +158,8 @@ class OperatorPoliciesTest {
         val writer = agent.copy(toolIds = agent.toolIds + ToolId("workspace.write_file") + ToolId("workspace.read_file") + ToolId("web.read_page"))
         assertNull(OperatorGate.refusal(facts(ToolId("workspace.write_file"), OperatorCapabilities.WORKSPACE_WRITE, CapabilityConstraint.None, settings = off, agent = writer)))
         assertNull(OperatorGate.refusal(facts(ToolId("workspace.read_file"), OperatorCapabilities.WORKSPACE_READ, CapabilityConstraint.None, settings = off, agent = writer)))
-        assertTrue(OperatorGate.refusal(facts(ToolId("web.read_page"), OperatorCapabilities.WEB_READ, CapabilityConstraint.None, settings = off, agent = writer))!!.startsWith("Phone operation is switched off"))
-        assertTrue(OperatorGate.refusal(facts(ToolId("folders.read"), OperatorCapabilities.FOLDERS_READ, CapabilityConstraint.Folder(folder.id), settings = off))!!.startsWith("Phone operation is switched off"))
+        assertTrue(OperatorGate.refusal(facts(ToolId("web.read_page"), OperatorCapabilities.WEB_READ, CapabilityConstraint.None, settings = off, agent = writer))!!.startsWith("Phone operator is switched off"))
+        assertTrue(OperatorGate.refusal(facts(ToolId("folders.read"), OperatorCapabilities.FOLDERS_READ, CapabilityConstraint.Folder(folder.id), settings = off))!!.startsWith("Phone operator is switched off"))
         assertEquals(OperatorCapabilities.all.map { it.capability }.toSet() - OperatorGate.workspaceCapabilities, OperatorGate.operatorCapabilities)
     }
 

@@ -51,7 +51,7 @@ object OperatorGate {
      * How every refusal because [FrameworkSettings.operatorEnabled] is off begins: the owner's screens recognise it and
      * offer to turn the switch on where the refusal shows.
      */
-    const val OPERATOR_OFF: String = "Phone operation is switched off in Settings"
+    const val OPERATOR_OFF: String = "Phone operator is switched off in Settings"
 
     /**
      * The code a refusal because [FrameworkSettings.operatorEnabled] is off carries, apart from its words: on the stored

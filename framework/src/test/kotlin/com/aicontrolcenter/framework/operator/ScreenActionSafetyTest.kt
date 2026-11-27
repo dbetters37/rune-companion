@@ -220,9 +220,9 @@ class ScreenActionSafetyTest {
         assertTrue(f.screen.calls.isEmpty() && f.screen.inspected.isEmpty(), f.screen.calls.toString())
         val logged = b.events(ActivityType.TOOL_CALL).joinToString { it.detail }
         assertFalse("Share note" in logged || "PIN" in logged, logged)
-        // Phone operation switched off: the same.
+        // Phone operator switched off: the same.
         f.settings = f.settings.copy(accessibilityOperatorEnabled = true, operatorEnabled = false)
-        assertTrue("Phone operation is switched off" in f.rejected("screen.read"))
+        assertTrue("Phone operator is switched off" in f.rejected("screen.read"))
         assertTrue(f.screen.calls.isEmpty() && f.screen.inspected.isEmpty())
         // OPERATOR-OFF: through the executor it is a refusal with the gate's code, logged with it.
         val off = executor.execute(ToolCallRequest("c2", "screen_tap", json("exact_text" to "Share note")), b.context(who = agent))

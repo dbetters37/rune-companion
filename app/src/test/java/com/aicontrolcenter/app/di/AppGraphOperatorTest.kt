@@ -150,7 +150,7 @@ class AppGraphOperatorTest {
         val refused = app.call("web_read_page", buildJsonObject { put("url", "https://example.org/news") })
 
         assertEquals(ToolCallEnd.DENIED, refused.end)
-        assertTrue("Phone operation is switched off" in refused.outcome.content, refused.outcome.content)
+        assertTrue("Phone operator is switched off" in refused.outcome.content, refused.outcome.content)
         assertTrue(app.ownerRequestStore.observeRecent(10).first().isEmpty(), "nobody was asked")
     }
 

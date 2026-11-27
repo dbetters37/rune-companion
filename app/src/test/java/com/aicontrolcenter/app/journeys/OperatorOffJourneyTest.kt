@@ -114,7 +114,7 @@ class OperatorOffJourneyTest {
 
     @Test
     fun `a failed workspace tool whose words only name the switch shows no Turn on`() {
-        val name = "Phone operation is switched off in Settings.md"
+        val name = "${com.aicontrolcenter.core.operator.OperatorGate.OPERATOR_OFF}.md"
         val client = ScriptedLlmClient.script(
             ScriptStep.Calls(listOf(ScriptedLlmClient.call("c1", "workspace_read", buildJsonObject { put("path", name) }))),
             ScriptStep.Reply("There is no such file."),

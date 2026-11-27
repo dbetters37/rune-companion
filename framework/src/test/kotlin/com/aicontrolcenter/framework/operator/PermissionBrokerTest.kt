@@ -81,7 +81,7 @@ class PermissionBrokerTest {
         f.settings.update { it.copy(accessibilityOperatorEnabled = true, localOnlyMode = true) }
         refused(f.readPage, f.assessment(constraint = CapabilityConstraint.None, dataGoesTo = "example.com"), "Local-only mode")
         f.settings.update { it.copy(localOnlyMode = false, operatorEnabled = false) }
-        refused(f.writeFolder, f.assessment(modifying), "Phone operation is switched off")
+        refused(f.writeFolder, f.assessment(modifying), "Phone operator is switched off")
         // OPERATOR-OFF: the refusal carries the gate's code, so owner screens never judge it by its words.
         val off = f.broker.authorize(f.writeFolder, f.assessment(modifying), f.context()) as com.aicontrolcenter.core.tools.Authorization.Denied
         assertEquals(com.aicontrolcenter.core.operator.OperatorGate.OPERATOR_OFF_CODE, off.refusal)
