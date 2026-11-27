@@ -133,6 +133,15 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
 
     /** No app in front and nothing authorised until a test sets [FakeScreenOperator.screen] and [FakeScreenOperator.authorised]. */
     val screen = FakeScreenOperator()
+
+    /** How often the app asked Android for the accessibility service's state again (start-up, coming back to Tools › Screen). */
+    val screenRefreshes = java.util.concurrent.atomic.AtomicInteger()
+
+    /**
+     * What Android reports for the service when the app asks again; null keeps [screen]'s state. As Android 9 to 12,
+     * which send no signal of their own when the owner switches the service on: the app sees it only when it asks.
+     */
+    @Volatile var screenStateOnRefresh: com.aicontrolcenter.core.operator.ScreenServiceState? = null
     val shell = FakeShellRunner()
 
     /** What the start-up sweep finds and stops: processes a shell command left when the app died under it. */
@@ -232,6 +241,10 @@ class TestApp(scope: CoroutineScope, settings: FrameworkSettings = FrameworkSett
             // Captures the set, not this test app (which holds the owner's services).
             protectedPackages = protectedPackages.let { fixed -> { fixed } },
             ownPackage = OWN_PACKAGE,
+            refreshScreenState = {
+                screenRefreshes.incrementAndGet()
+                screenStateOnRefresh?.let(screen::setState)
+            },
             systemScreens = systemScreens,
         ),
         clock = clock,

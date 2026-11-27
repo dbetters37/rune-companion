@@ -102,15 +102,18 @@ class SettingsSlots(
     val motion: (@Composable () -> Unit)? = null,
     /** Brings the Phone operator section into view when Settings is opened for it ("Open Settings" on its card). */
     val phoneOperatorAnchor: Modifier = Modifier,
+    /** Brings the Screen control switch into view when Settings is opened for it (step 2 of Tools › Screen control's setup). */
+    val screenControlAnchor: Modifier = Modifier,
 )
 
 /**
  * A part of Settings the section can open scrolled to (wave 3, handoff-WP10b.md 3.1): one tap from the Dashboard's
  * phone item, or from the New objective form's background warning, to the fix in Settings › Working in the
- * background; from a Routines or Folder pick-up screen whose master switch is off, to that switch.
+ * background; from a Routines or Folder pick-up screen whose master switch is off, to that switch; from Tools › Screen
+ * control's setup steps, to the Phone operator and Screen control switches.
  */
 @Serializable
-enum class SettingsAnchor { BACKGROUND, ROUTINES, PHONE_OPERATOR }
+enum class SettingsAnchor { BACKGROUND, ROUTINES, PHONE_OPERATOR, SCREEN_CONTROL }
 
 /** [scrollTo] opens the section scrolled to that part, once (not again when the owner comes back to it). */
 @Composable
@@ -149,6 +152,7 @@ fun SettingsRoute(navigation: SettingsNavigation = SettingsNavigation(), scrollT
         backup = if (hasBackup) ({ BackupSection(navigation.onSaveBackup, navigation.onRestoreBackup) }) else null,
         motion = { MotionSection(motion) },
         phoneOperatorAnchor = anchor.modifier(SettingsAnchor.PHONE_OPERATOR),
+        screenControlAnchor = anchor.modifier(SettingsAnchor.SCREEN_CONTROL),
     )
     SettingsScreen(
         state = state,
@@ -214,7 +218,7 @@ fun SettingsScreen(state: SettingsUiState, actions: SettingsActions, slots: Sett
             // Cost first among the Phase 6 parts: the owner's spending and its history (goals 1-2).
             slots.dailyLimits?.invoke()
             slots.usageHistory?.invoke()
-            PhoneOperatorSection(state.settings, actions, slots.phoneOperatorAnchor)
+            PhoneOperatorSection(state.settings, actions, slots.phoneOperatorAnchor, slots.screenControlAnchor)
             slots.questions?.invoke()
             slots.background?.invoke()
             slots.routines?.invoke()
@@ -299,7 +303,12 @@ private fun PrivacySection(
  * each says exactly what turning it on allows. Screen control needs the phone operator on too.
  */
 @Composable
-private fun PhoneOperatorSection(settings: FrameworkSettings, actions: SettingsActions, modifier: Modifier = Modifier) {
+private fun PhoneOperatorSection(
+    settings: FrameworkSettings,
+    actions: SettingsActions,
+    modifier: Modifier = Modifier,
+    screenControlAnchor: Modifier = Modifier,
+) {
     Column(modifier) {
         SectionHeader("Phone operator")
         AppCard {
@@ -323,6 +332,7 @@ private fun PhoneOperatorSection(settings: FrameworkSettings, actions: SettingsA
                     if (!settings.operatorEnabled) " Needs Phone operator on as well." else "",
                 checked = settings.accessibilityOperatorEnabled,
                 onCheckedChange = actions.onScreenControlEnabledChange,
+                modifier = screenControlAnchor,
                 // Always possible to turn off; turning on only makes sense with the phone operator on.
                 enabled = settings.operatorEnabled || settings.accessibilityOperatorEnabled,
             )

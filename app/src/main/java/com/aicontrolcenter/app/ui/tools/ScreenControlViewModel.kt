@@ -1,12 +1,11 @@
 package com.aicontrolcenter.app.ui.tools
 
+import android.os.Build
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.aicontrolcenter.app.ui.components.StatusLabel
 import com.aicontrolcenter.app.ui.components.UserMessage
 import com.aicontrolcenter.app.ui.components.formatCompactTimestamp
-import com.aicontrolcenter.app.ui.theme.StatusTone
 import com.aicontrolcenter.core.AgentId
 import com.aicontrolcenter.core.Clock
 import com.aicontrolcenter.core.ToolId
@@ -34,18 +33,122 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.ZoneId
 
-/** The accessibility service's state in plain words, with how to switch it on. */
+/** The accessibility service's state for the setup steps: whether Android has it on, and what to do while it is not. */
 @Immutable
 data class ServiceStatusUi(
     val state: ScreenServiceState,
-    val label: StatusLabel,
-    /** What to do, in order; empty when there is nothing to do or nothing that can be done. */
-    val steps: List<String>,
-    /** Show the button to this app's App info page ("Allow restricted settings"). */
-    val offerAppInfo: Boolean,
-    /** Show the button to Android's accessibility settings. */
-    val offerAccessibilitySettings: Boolean,
+    /**
+     * Switched on in Android's accessibility settings (connected or still starting). On Android 13 and later that
+     * proves restricted settings were allowed: Android does not let the owner switch it on before.
+     */
+    val enabled: Boolean,
+    /** One line for step 4 while the service is not connected; null once it is. */
+    val hint: String?,
 )
+
+/** The five steps of setting up phone control, in the order the owner does them. */
+enum class SetupStep(val title: String) {
+    PHONE_OPERATOR("Turn on Phone operator"),
+    SCREEN_CONTROL("Turn on Screen control"),
+    RESTRICTED_SETTINGS("Allow restricted settings (Android blocks this for apps installed from a file)"),
+    ACCESSIBILITY("Turn on AI Control Center in Accessibility"),
+    APPS("Choose the apps it may use"),
+    ;
+
+    val number: Int get() = ordinal + 1
+}
+
+/** Whether a setup step is done, in the owner's words. */
+enum class StepStatus(val label: String) {
+    DONE("Done"),
+    NOT_DONE("Not done"),
+
+    /** Only "Allow restricted settings", below Android 13, where Android has no such block. */
+    NOT_NEEDED("Not needed on this phone"),
+}
+
+/** One row of the setup checklist. */
+@Immutable
+data class SetupStepUi(
+    val step: SetupStep,
+    val status: StepStatus,
+    /** What to do there, while the step is not done; null otherwise. */
+    val hint: String?,
+) {
+    /**
+     * What TalkBack reads for the row: "Step 1, Turn on Phone operator, Done". While it is not done the hint follows,
+     * as a sighted owner reads it under the title.
+     */
+    val spoken: String get() = "Step ${step.number}, ${step.title}, ${status.label}" + (hint?.let { ". $it" } ?: "")
+}
+
+/** "Set up phone control" on top of Tools › Screen control: the five steps and how far the owner is. */
+@Immutable
+data class SetupChecklistUi(val steps: List<SetupStepUi>, val summary: String) {
+    /** Every step is done, or not needed on this phone. */
+    val allDone: Boolean get() = steps.none { it.status == StepStatus.NOT_DONE }
+
+    fun of(step: SetupStep): SetupStepUi = steps.first { it.step == step }
+}
+
+/** The first Android version (13, API 33) that blocks accessibility for apps installed from a file until restricted settings are allowed. */
+internal const val RESTRICTED_SETTINGS_FROM_SDK: Int = 33
+
+/** Above the steps once every one is done. */
+const val SETUP_ALL_SET: String = "All set. Ask the Operator agent to use an app."
+
+/** Above the steps once every one is done, while the owner has pressed Stop. */
+const val SETUP_ALL_SET_STOPPED: String = "All set, but screen control is stopped. Resume it below to use it."
+
+/** The hint of step 3, "Allow restricted settings", on this app's App info page. */
+const val RESTRICTED_SETTINGS_HINT: String = "Tap ⋮ at the top right, then Allow restricted settings."
+
+/**
+ * The setup checklist from what the screen already knows: the two switches in Settings, Android's accessibility
+ * service ([service], from [serviceStatusOf] with its restricted-settings guess), the authorised apps and the Android
+ * version ([sdkInt]). Android offers no way to read whether restricted settings were allowed, so step 3 counts as done
+ * once the service is switched on, which Android allows only after it. [switchedOffNotice] (D7) says on step 4 why
+ * Android switched the service off.
+ */
+fun setupChecklistOf(
+    operatorEnabled: Boolean,
+    screenControlEnabled: Boolean,
+    service: ServiceStatusUi,
+    apps: List<OperatorAppUi>,
+    sdkInt: Int,
+    stopped: Boolean = false,
+    switchedOffNotice: String? = null,
+): SetupChecklistUi {
+    fun step(step: SetupStep, done: Boolean, hint: String?) =
+        SetupStepUi(step, if (done) StepStatus.DONE else StepStatus.NOT_DONE, hint.takeUnless { done })
+
+    val serviceOn = service.state == ScreenServiceState.READY
+    val steps = listOf(
+        step(SetupStep.PHONE_OPERATOR, operatorEnabled, "In Settings, switch on Phone operator."),
+        step(
+            SetupStep.SCREEN_CONTROL, screenControlEnabled,
+            if (operatorEnabled) "In Settings, switch on Screen control." else "Do step 1 first, then switch on Screen control.",
+        ),
+        if (sdkInt < RESTRICTED_SETTINGS_FROM_SDK) {
+            SetupStepUi(SetupStep.RESTRICTED_SETTINGS, StepStatus.NOT_NEEDED, hint = null)
+        } else {
+            step(SetupStep.RESTRICTED_SETTINGS, service.enabled, RESTRICTED_SETTINGS_HINT)
+        },
+        step(SetupStep.ACCESSIBILITY, serviceOn, switchedOffNotice?.takeUnless { serviceOn } ?: service.hint),
+        step(
+            SetupStep.APPS, apps.any { it.inEffect },
+            if (apps.isEmpty()) "Pick at least one app agents may see and use." else "Authorise your app again below, so it is checked.",
+        ),
+    )
+    val needed = steps.count { it.status != StepStatus.NOT_NEEDED }
+    val done = steps.count { it.status == StepStatus.DONE }
+    val summary = when {
+        done < needed -> "$done of $needed done"
+        stopped -> SETUP_ALL_SET_STOPPED
+        else -> SETUP_ALL_SET
+    }
+    return SetupChecklistUi(steps, summary)
+}
 
 /** An app the owner authorised for screen control. */
 @Immutable
@@ -107,13 +210,15 @@ data class ScreenControlUiState(
     /** The owner pressed Stop; nothing is read or done until Resume. */
     val stopped: Boolean = false,
     val apps: List<OperatorAppUi> = emptyList(),
+    /** "Set up phone control": the five steps, each done or not, on top of the tab. */
+    val checklist: SetupChecklistUi = setupChecklistOf(false, false, service, apps, RESTRICTED_SETTINGS_FROM_SDK),
     val picker: AppPickerUi? = null,
     val isBusy: Boolean = false,
     val message: UserMessage? = null,
     /**
      * D7: Android switched screen control off (the app was stopped or force-stopped while the service was on), in the
      * device layer's words; null otherwise. Android's own rule: only the owner can switch it on again, in Android's
-     * accessibility settings.
+     * accessibility settings. Shown as the hint of the checklist's step 4, which opens them.
      */
     val switchedOffNotice: String? = null,
 ) {
@@ -130,13 +235,14 @@ internal const val SWITCHED_OFF: String =
     "Android switched screen control off after the app was stopped. Turn it on again in Android's accessibility settings."
 
 /**
- * The Screen control tab: whether Android's accessibility service is on (and if not, the exact
- * steps to switch it on), the Stop state with Resume, the apps the owner authorised (each with
- * its recorded signing certificate and which agents may see or use it), and adding an installed
- * app. Authorising records the app's signing certificate, so another app installed later under
+ * The Screen control tab: the five steps of setting it up, each done or not ([SetupChecklistUi]), the Stop state with
+ * Resume, the apps the owner authorised (each with its recorded signing certificate and which agents may see or use it),
+ * and adding an installed app. Authorising records the app's signing certificate, so another app installed later under
  * the same name is not trusted.
  *
  * Only the owner reaches this screen: agents never operate this app, so they cannot press Resume.
+ *
+ * @param sdkInt the Android version (injected for tests of other versions): below 13, restricted settings do not exist.
  */
 class ScreenControlViewModel(
     serviceState: Flow<ScreenServiceState>,
@@ -158,6 +264,7 @@ class ScreenControlViewModel(
     private val registry: AiAppRegistry? = null,
     /** Why Android switched screen control off, in the device layer's words (owner-only); null when it has none. */
     switchedOffSentence: StateFlow<String?> = MutableStateFlow(null),
+    private val sdkInt: Int = Build.VERSION.SDK_INT,
 ) : ViewModel() {
 
     private data class Local(val picker: AppPickerUi? = null, val isBusy: Boolean = false, val message: UserMessage? = null)
@@ -177,36 +284,48 @@ class ScreenControlViewModel(
         val (state, stopped, settings) = facts
         val now = clock.now()
         val agents = snapshot.agents.map { it.profile }
+        val service = serviceStatusOf(state)
+        // Once the service is on again the notice is out of date (the device clears its flag then too, D3A-18c).
+        val notice = switchedOff.takeIf { state != ScreenServiceState.READY }
+        val shown = list.map { app ->
+            OperatorAppUi(
+                packageName = app.packageName,
+                label = app.label,
+                authorised = "Authorised ${formatCompactTimestamp(app.authorisedAt, now, zone)}",
+                certificate = if (app.signingCertSha256 != null) {
+                    "Checked: this exact app. A look-alike app with the same name is not trusted."
+                } else {
+                    "Not checked when it was authorised, so agents cannot use it. Authorise it again to check it."
+                },
+                fingerprint = app.signingCertSha256?.let { "Signing certificate fingerprint: ${fingerprint(it)}" },
+                inEffect = app.signingCertSha256 != null,
+                agents = agentAccessOf(agents, all, CapabilityConstraint.App(app.packageName), KIND, { familiesOf(it, familyOfTool) }, now),
+                policy = app.policy,
+            )
+            }
         ScreenControlUiState(
             isLoading = false,
-            service = serviceStatusOf(state),
+            service = service,
             operatorEnabled = settings.operatorEnabled,
             screenControlEnabled = settings.accessibilityOperatorEnabled,
             stopped = stopped,
-            apps = list.map { app ->
-                OperatorAppUi(
-                    packageName = app.packageName,
-                    label = app.label,
-                    authorised = "Authorised ${formatCompactTimestamp(app.authorisedAt, now, zone)}",
-                    certificate = if (app.signingCertSha256 != null) {
-                        "Checked: this exact app. A look-alike app with the same name is not trusted."
-                    } else {
-                        "Not checked when it was authorised, so agents cannot use it. Authorise it again to check it."
-                    },
-                    fingerprint = app.signingCertSha256?.let { "Signing certificate fingerprint: ${fingerprint(it)}" },
-                    inEffect = app.signingCertSha256 != null,
-                    agents = agentAccessOf(agents, all, CapabilityConstraint.App(app.packageName), KIND, { familiesOf(it, familyOfTool) }, now),
-                    policy = app.policy,
-                )
-            },
+            apps = shown,
+            checklist = setupChecklistOf(
+                operatorEnabled = settings.operatorEnabled,
+                screenControlEnabled = settings.accessibilityOperatorEnabled,
+                service = service,
+                apps = shown,
+                sdkInt = sdkInt,
+                stopped = stopped,
+                switchedOffNotice = notice,
+            ),
             picker = local.picker?.let { picker ->
                 // Already-authorised marks follow the list as it changes.
                 picker.copy(apps = picker.apps.map { item -> if (list.any { it.packageName == item.packageName }) item.copy(note = "Authorised", selectable = false) else item })
             },
             isBusy = local.isBusy,
             message = local.message,
-            // Once the service is on again the notice is out of date (the device clears its flag then too, D3A-18c).
-            switchedOffNotice = switchedOff.takeIf { state != ScreenServiceState.READY },
+            switchedOffNotice = notice,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ScreenControlUiState())
 
@@ -363,64 +482,28 @@ class ScreenControlViewModel(
     }
 }
 
-/** The service's [state] for the owner, with the steps to switch it on. */
+/**
+ * The service's [state] for the setup steps: whether it is switched on in Android's settings, and step 4's hint while it
+ * is not connected. [ScreenServiceState.RESTRICTED] is the device layer's guess that Android's restricted settings block
+ * it (Android does not say for sure), so the hint sends the owner to step 3 first.
+ */
 fun serviceStatusOf(state: ScreenServiceState): ServiceStatusUi = when (state) {
-    ScreenServiceState.CHECKING -> ServiceStatusUi(
-        state,
-        StatusLabel("Checking", StatusTone.WAITING, "Looking up the service in Android's settings. This takes a moment."),
-        steps = emptyList(), offerAppInfo = false, offerAccessibilitySettings = false,
-    )
-    ScreenServiceState.READY -> ServiceStatusUi(
-        state,
-        StatusLabel("Ready", StatusTone.READY, "The service is on. Agents can read and use only the apps listed below, each with your permission."),
-        steps = emptyList(), offerAppInfo = false, offerAccessibilitySettings = false,
-    )
+    ScreenServiceState.CHECKING -> ServiceStatusUi(state, enabled = false, hint = "Checking Android's settings. This takes a moment.")
+    ScreenServiceState.READY -> ServiceStatusUi(state, enabled = true, hint = null)
     ScreenServiceState.STARTING -> ServiceStatusUi(
-        state,
-        StatusLabel(
-            "Starting", StatusTone.WAITING,
-            "The service is switched on in Android's settings but has not connected yet. If this does not change, switch it off and on again.",
-        ),
-        steps = listOf(
-            "Tap “Open accessibility settings”.",
-            "Open “AI Control Center operator”, switch it off, then on again.",
-            "Come back here.",
-        ),
-        offerAppInfo = false, offerAccessibilitySettings = true,
+        state, enabled = true,
+        hint = "On in Android, but not connected yet. Switch “AI Control Center operator” off and on again.",
     )
     ScreenServiceState.NOT_ENABLED -> ServiceStatusUi(
-        state,
-        StatusLabel("Off", StatusTone.INFO, "The service is off in Android's accessibility settings, so nothing can read or use any screen."),
-        steps = listOf(
-            "Tap “Open accessibility settings”.",
-            "Find “AI Control Center operator” (often under “Downloaded apps” or “Installed apps”).",
-            "Switch it on and confirm. Android warns that it can see and control the screen: here it does so only for the apps you authorise below.",
-            "Come back here. The status changes to Ready.",
-        ),
-        offerAppInfo = false, offerAccessibilitySettings = true,
+        state, enabled = false,
+        hint = "Find “AI Control Center operator” (often under Downloaded apps) and switch it on.",
     )
     ScreenServiceState.RESTRICTED -> ServiceStatusUi(
-        state,
-        StatusLabel(
-            "Blocked by restricted settings", StatusTone.ATTENTION,
-            "Android blocks accessibility for apps installed from a file until you allow restricted settings for that app. This is a guess: Android does not say for sure.",
-        ),
-        steps = listOf(
-            "Tap “Open accessibility settings”, find “AI Control Center operator” and try to switch it on. Android says the setting is restricted.",
-            "Come back here and tap “Open App info”.",
-            "Tap ⋮ at the top right, then “Allow restricted settings”, and confirm with your PIN, pattern or fingerprint.",
-            "Open the accessibility settings again and switch “AI Control Center operator” on.",
-            "Come back here. The status changes to Ready.",
-        ),
-        offerAppInfo = true, offerAccessibilitySettings = true,
+        state, enabled = false,
+        hint = "Probably blocked by restricted settings: do step 3 first, then switch on “AI Control Center operator”.",
     )
     ScreenServiceState.ADVANCED_PROTECTION -> ServiceStatusUi(
-        state,
-        StatusLabel(
-            "Off: Advanced Protection", StatusTone.UNAVAILABLE,
-            "Android's Advanced Protection is on, and it switches off services like this one. Screen control cannot be used while it is on. " +
-                "Everything else in this app works as before.",
-        ),
-        steps = emptyList(), offerAppInfo = false, offerAccessibilitySettings = false,
+        state, enabled = false,
+        hint = "Android's Advanced Protection is on and keeps this off. Screen control cannot be used while it is on.",
     )
 }

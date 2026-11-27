@@ -310,7 +310,8 @@ class CostAndChatScreenshotTest {
 
     @Test
     fun toolsScreenSwitchedOff() {
-        app { toolsWorld() }.openSectionViaMore("Tools").tap("Screen").waitUntilShown("Screen control was switched off")
+        // D7: why Android switched it off is said once, on step 4, which opens Android's accessibility settings.
+        app { toolsWorld() }.openSectionViaMore("Tools").tap("Screen").waitUntilDescribed("Not done. Android switched screen control off")
         shoot("tools_screen_switched_off")
     }
 
@@ -337,7 +338,7 @@ class CostAndChatScreenshotTest {
     @Test
     @Config(qualifiers = NARROW_WAVE3)
     fun toolsScreenNarrow() {
-        app { toolsWorld() }.openSectionViaMore("Tools").tap("Screen").waitUntilShown("Screen control was switched off")
+        app { toolsWorld() }.openSectionViaMore("Tools").tap("Screen").waitUntilDescribed("Not done. Android switched screen control off")
         shoot("tools_screen_switched_off_360")
     }
 }

@@ -138,6 +138,7 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
     val openBackgroundSettings: () -> Unit = { navController.navigateToSection(SettingsRoute(SettingsAnchor.BACKGROUND), restore = false) }
     val openRoutineSettings: () -> Unit = { navController.navigateToSection(SettingsRoute(SettingsAnchor.ROUTINES), restore = false) }
     val openOperatorSettings: () -> Unit = { navController.navigateToSection(SettingsRoute(SettingsAnchor.PHONE_OPERATOR), restore = false) }
+    val openScreenControlSettings: () -> Unit = { navController.navigateToSection(SettingsRoute(SettingsAnchor.SCREEN_CONTROL), restore = false) }
     val openRoutines: () -> Unit = { navController.open(RoutinesRoute) }
     val openRoutine: (RoutineId) -> Unit = { navController.open(RoutineEditorRoute(it.value)) }
     val openPickUpRules: () -> Unit = { navController.open(PickUpRulesRoute) }
@@ -452,6 +453,8 @@ fun AppNavHost(navController: NavHostController, modifier: Modifier = Modifier) 
                     onOpenWorkspace = openWorkspace,
                     onOpenRequest = openRequest,
                     onOpenSettings = openSettings,
+                    onOpenOperatorSettings = openOperatorSettings,
+                    onOpenScreenControlSettings = openScreenControlSettings,
                     // Opened from an agent, on top of its screen: Back returns there.
                     onBack = if (route.agentId != null) back else null,
                     onOpenRoutines = openRoutines,
