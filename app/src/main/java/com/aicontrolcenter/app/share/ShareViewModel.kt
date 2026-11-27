@@ -24,7 +24,9 @@ import com.aicontrolcenter.core.memory.MemoryValidationException
 import com.aicontrolcenter.core.operator.DocResult
 import com.aicontrolcenter.core.operator.RelativePath
 import com.aicontrolcenter.core.operator.Workspace
+import com.aicontrolcenter.core.registry.Locality
 import com.aicontrolcenter.core.registry.RegistryDirectory
+import com.aicontrolcenter.core.registry.effectiveLocality
 import com.aicontrolcenter.core.registry.RegistrySnapshot
 import com.aicontrolcenter.core.settings.SettingsView
 import kotlinx.coroutines.CancellationException
@@ -198,7 +200,7 @@ class ShareViewModel(
             targets = targets,
             selected = selected,
             noSpaces = spaces.isEmpty(),
-            saveLine = selected?.let { saveLine(it, targets, summary.parts) },
+            saveLine = selected?.let { saveLine(it, targets, summary.parts) + whatLeaves(it, snapshot, localOnly) },
             localOnly = localOnly,
             asksTitle = items.size == 1,
             saving = local.saving,
@@ -389,6 +391,35 @@ class ShareViewModel(
         ShareTarget.Workspace -> "Saves ${plural(items.size, "text file")} in the workspace folder “${ShareSaving.FOLDER}”."
     }
 
+    /**
+     * What leaves the phone once it is saved in [target] (D3B-3), from the registry as read: who can recall it (a space's
+     * readers) or read it (agents with the workspace tools), and whether their models are off this phone and where.
+     * Nothing without a directory to read it from.
+     */
+    private fun whatLeaves(target: ShareTarget, snapshot: RegistrySnapshot, localOnly: Boolean): String {
+        if (directory == null) return ""
+        val agents = snapshot.agents.map { it.profile }
+        val readers = when (target) {
+            is ShareTarget.Space -> agents.filter { target.id in it.memory.readableSpaces }
+            ShareTarget.Workspace -> agents.filter { WORKSPACE_READ in it.toolIds }
+        }
+        // Each reader's models as registered: those off this phone, by provider; a reader with none registered has no model yet.
+        val providers = readers.associateWith { agent ->
+            (listOfNotNull(agent.modelId) + agent.fallbackModelIds).mapNotNull { id -> snapshot.modelsById[id]?.let(snapshot::provider) }
+        }
+        val away = providers.mapValues { (_, all) -> all.filter { it.effectiveLocality != Locality.ON_DEVICE }.map { it.name }.distinct() }
+            .filterValues { it.isNotEmpty() }
+        val sentence = ShareTexts.whatLeaves(
+            readers = readers.map { it.name },
+            offPhone = away.keys.map { it.name },
+            destinations = away.values.flatten().distinct(),
+            noModel = providers.filterValues { it.isEmpty() }.keys.map { it.name },
+            localOnly = localOnly,
+            workspace = target == ShareTarget.Workspace,
+        )
+        return " $sentence"
+    }
+
     private fun summarise(items: List<SharedItem>): Summary {
         var parts = 0
         var words = 0L
@@ -437,6 +468,9 @@ class ShareViewModel(
         /** How much of each item the screen shows. */
         const val PREVIEW_CHARS = 400
 
+        /** The tool an agent reads the workspace with. */
+        val WORKSPACE_READ = com.aicontrolcenter.core.ToolId("workspace.read")
+
         fun utf8Length(text: String): Long {
             var count = 0L
             var i = 0
@@ -462,12 +496,68 @@ class ShareViewModel(
 object ShareTexts {
     const val TITLE: String = "Save to memory"
 
+    private const val STORING_FREE: String = "Storing is free. Only what agents recall is sent to a model."
+
     /** The plan's cost and privacy line (owner request #43). */
     const val STORING: String =
-        "Storing is free. Only what agents recall is sent to a model. A cloud model would receive this text; " +
-            "local-only mode and space access keep it on the phone."
+        "$STORING_FREE A cloud model would receive this text; local-only mode and space access keep it on the phone."
 
     const val LOCAL_ONLY_ON: String = "Local-only mode is on: agents use only models on this phone, so what they recall stays on it."
+
+    /** The cost and privacy line with local-only mode on: the cloud sentence is replaced, not added to (D3B-3). */
+    const val STORING_LOCAL_ONLY: String = "$STORING_FREE $LOCAL_ONLY_ON"
+
+    /**
+     * What leaves the phone once it is saved in the chosen place, said right above Save (D3B-3): [readers] can recall it
+     * from a space (or read it in the [workspace]); [offPhone] are those of them whose model is off this phone, at
+     * [destinations]. "Researcher and Writer can recall it. They use a model off this phone (xAI), so what they recall
+     * from it is sent there."
+     */
+    fun whatLeaves(
+        readers: List<String>,
+        offPhone: List<String>,
+        destinations: List<String>,
+        localOnly: Boolean,
+        workspace: Boolean,
+        noModel: List<String> = emptyList(),
+    ): String {
+        val verb = if (workspace) "read" else "recall"
+        if (readers.isEmpty()) {
+            return if (workspace) "No agent can use the workspace yet, so it stays on this phone until you let one."
+            else "No agent can read it yet, so it stays on this phone until you let one."
+        }
+        val who = "${names(readers)} can $verb it."
+        val one = readers.size == 1
+        return when {
+            localOnly -> "$who Local-only mode is on, so what ${if (one) readers[0] else "they"} ${if (one) verb + "s" else verb} stays on this phone."
+            offPhone.isEmpty() && noModel.isNotEmpty() -> {
+                val none = noModel.size == 1
+                "$who ${if (noModel.size == readers.size) (if (none) "It has" else "They have") else names(noModel) + (if (none) " has" else " have")} " +
+                    "no model yet: what ${if (none) noModel[0] + " " + verb + "s" else "they $verb"} goes to the model you give ${if (none) "it" else "them"}."
+            }
+            offPhone.isEmpty() -> "${names(readers)} can $verb it with ${if (one) "a model" else "models"} on this phone, so it stays here."
+            else -> {
+                val single = offPhone.size == 1
+                val subject = when {
+                    single -> offPhone[0]
+                    offPhone.size == readers.size -> "They"
+                    else -> names(offPhone)
+                }
+                val model = if (destinations.size == 1) "a model" else "models"
+                val reader = if (single) offPhone[0] else "they"
+                "$who $subject ${if (single) "uses" else "use"} $model off this phone (${destinations.joinToString(", ")}), " +
+                    "so what $reader ${if (single) verb + "s" else verb} from it is sent there."
+            }
+        }
+    }
+
+    /** "Researcher", "Researcher and Writer", "Researcher, Writer and Analyst", "A, B, C and 2 more". */
+    private fun names(all: List<String>): String = when (all.size) {
+        1 -> all[0]
+        2 -> "${all[0]} and ${all[1]}"
+        3 -> "${all[0]}, ${all[1]} and ${all[2]}"
+        else -> "${all[0]}, ${all[1]}, ${all[2]} and ${all.size - 3} more"
+    }
 
     /** That the text is data, never the owner's instructions. */
     const val AS_DATA: String =

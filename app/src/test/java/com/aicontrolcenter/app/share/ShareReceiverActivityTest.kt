@@ -144,8 +144,10 @@ class ShareReceiverActivityTest {
         assertEquals(emptyList(), app.stored(), "Save without a place is not possible")
 
         pick("Memory space “Screen notes”")
-        waitFor("Saves 1 memory in “Screen notes”.")
-        compose.onNodeWithText("Saves 1 memory in “Screen notes”.").assertIsDisplayed()
+        // Right above Save: what Save does, and what leaves the phone for this place (D3B-3).
+        val line = "Saves 1 memory in “Screen notes”. No agent can read it yet, so it stays on this phone until you let one."
+        waitFor(line)
+        compose.onNodeWithText(line).assertIsDisplayed()
         assertEquals(emptyList(), app.stored(), "picking a place stores nothing")
         tap(ShareTexts.SAVE)
         waitFor(ShareTexts.SAVED)
@@ -207,7 +209,7 @@ class ShareReceiverActivityTest {
         val app = app(FrameworkSettings(localOnlyMode = true))
         app.space("Screen notes")
         launch(sendText("Stays here."))
-        waitFor(ShareTexts.LOCAL_ONLY_ON)
+        waitFor(ShareTexts.STORING_LOCAL_ONLY)
         pick("Memory space “Screen notes”")
         tap(ShareTexts.SAVE)
         waitFor(ShareTexts.SAVED)

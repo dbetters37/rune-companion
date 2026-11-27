@@ -209,8 +209,10 @@ private fun Form(state: ShareUiState, title: TextFieldState, actions: ShareActio
                     enabled = !busy,
                 )
             }
-            WhereToSave(state, actions.onSelect, enabled = !busy)
+            // What storing costs and where recalled text goes comes before the places, so it is read before one is picked;
+            // the line above Save then says it for the place chosen (D3B-3).
             PrivacyAndCost(state.localOnly)
+            WhereToSave(state, actions.onSelect, enabled = !busy)
             if (!pinned) SaveArea(state, actions, pinned = false)
         }
         if (pinned) {
@@ -324,17 +326,13 @@ private fun TargetRow(target: ShareTargetUi, selected: Boolean, enabled: Boolean
     }
 }
 
-/** The plan's line on cost and privacy, and, when local-only mode is on, that recalled text stays on the phone. */
+/** The plan's line on cost and privacy; with local-only mode on, its cloud sentence is replaced by local-only's (D3B-3). */
 @Composable
 private fun PrivacyAndCost(localOnly: Boolean) {
-    Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+    if (localOnly) {
+        InfoBanner(text = ShareTexts.STORING_LOCAL_ONLY, icon = AppIcons.OnDevice)
+    } else {
         InfoBanner(text = ShareTexts.STORING, icon = AppIcons.Privacy)
-        if (localOnly) {
-            Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm), modifier = Modifier.semantics(mergeDescendants = true) {}) {
-                Icon(AppIcons.OnDevice, contentDescription = null, tint = appColors.onDevice, modifier = Modifier.size(20.dp))
-                Text(ShareTexts.LOCAL_ONLY_ON, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f))
-            }
-        }
     }
 }
 

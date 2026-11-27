@@ -91,7 +91,7 @@ class ShareViewModelTest {
         assertEquals(ShareTexts.CHOOSE_FIRST, viewModel.uiState.value.problem, "Save without a place stores nothing")
         viewModel.select(ShareTarget.Space(notes))
         assertTrue(viewModel.uiState.value.canSave)
-        assertEquals("Saves 1 memory in “Screen notes”.", viewModel.uiState.value.saveLine)
+        assertEquals("Saves 1 memory in “Screen notes”. No agent can read it yet, so it stays on this phone until you let one.", viewModel.uiState.value.saveLine)
         assertEquals(emptyList(), app.stored(), "picking a place stores nothing either")
     }
 
@@ -132,7 +132,7 @@ class ShareViewModelTest {
         assertFalse(viewModel.uiState.value.asksTitle, "several items keep their own names")
         viewModel.select(ShareTarget.Space(notes))
         assertEquals(
-            "Saves 4 memories in “Screen notes”. " + ShareTexts.SPLIT,
+            "Saves 4 memories in “Screen notes”. " + ShareTexts.SPLIT + " No agent can read it yet, so it stays on this phone until you let one.",
             viewModel.uiState.value.saveLine,
         )
         viewModel.save()
@@ -198,7 +198,10 @@ class ShareViewModelTest {
         workspace.write(folder.child("notes.txt"), "older".toByteArray(), overwrite = false)
         val viewModel = share(app, listOf(SharedItem("notes.txt", "Newer notes.", fromFile = true), SharedItem(null, "Shared words.")), workspace = workspace)
         viewModel.select(ShareTarget.Workspace)
-        assertEquals("Saves 2 text files in the workspace folder “From other apps”.", viewModel.uiState.value.saveLine)
+        assertEquals(
+            "Saves 2 text files in the workspace folder “From other apps”. No agent can use the workspace yet, so it stays on this phone until you let one.",
+            viewModel.uiState.value.saveLine,
+        )
         viewModel.save()
 
         suspend fun read(name: String) = (workspace.read(folder.child(name), 0, 1_000) as DocResult.Ok).value.bytes.decodeToString()
